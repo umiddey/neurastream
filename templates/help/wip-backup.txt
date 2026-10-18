@@ -1,0 +1,12 @@
+Push unfinished work to the PRIVATE GitHub repo umiddey/wip-backup (off this disk).
+
+Per repo under ROOTS (one per shared git dir):
+  - every local branch with commits on no remote  -> refs/heads/<repo>/<branch>
+  - newest wip-snapshot ref per worktree          -> refs/heads/wip/<worktree-key>
+Never touches worktrees, branches or the real remotes. Hooks are NOT bypassed (machine
+rule: --no-verify is banned): a repo with a pre-push hook is skipped and listed. A ref
+whose new commits fail `git-secret-gate scan` (gitleaks, owner order 2026-10-11: never a
+password on git, private repos included) is NOT pushed and is listed as skipped.
+
+Restore: git fetch git@github.com:umiddey/wip-backup-clean.git '<repo>/<branch>:<branch>'
+Usage: wip-backup [--dry-run] [--quiet]
