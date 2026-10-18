@@ -40,8 +40,7 @@ export function helpText(): string {
 }
 
 export async function run(cmd: string, args: string[]): Promise<number> {
-	if ((PORTED as readonly string[]).includes(cmd)) return runPorted(cmd, args);
-	if (cmd === "help" || cmd === "--help" || cmd === "-h" || args.includes("--help") || args.includes("-h")) {
+	if (cmd === "help" || cmd === "--help" || cmd === "-h") {
 		console.log(helpText());
 		return 0;
 	}
@@ -55,10 +54,7 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 			return 1;
 		}
 	}
-	if ((BINS as readonly string[]).includes(cmd)) {
-		console.error(`${cmd}: not ported yet`);
-		return 2;
-	}
+	if ((PORTED as readonly string[]).includes(cmd)) return runPorted(cmd, args);
 	console.error(`unknown command ${cmd}\n${helpText()}`);
 	return 2;
 }

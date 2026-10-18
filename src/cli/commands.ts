@@ -1,9 +1,19 @@
 import { agentLedger } from "../core/agent-ledger.ts";
 import { agentScore } from "../core/agent-score.ts";
 import { briefLint } from "../core/brief-lint.ts";
+import { glmReset } from "../core/glm-reset.ts";
+import { heavyRun } from "../core/heavy-run.ts";
 import { mainHealth } from "../core/main-health.ts";
+import { mainStart } from "../core/main-start.ts";
+import { machineGuard } from "../core/machine-guard.ts";
 import { ocRun } from "../core/oc-run.ts";
 import { pmFailFacts } from "../core/pm-fail-facts.ts";
+import { priorityWatch } from "../core/priority-watch.ts";
+import { queueCancel } from "../core/queue-cancel.ts";
+import { queueCheck } from "../core/queue-check.ts";
+import { queueClose } from "../core/queue-close.ts";
+import { resourceAlerts } from "../core/resource-alerts.ts";
+import { tmpSnapshot } from "../core/tmp-snapshot.ts";
 import { wipBackup } from "../core/wip-backup.ts";
 import { wipCheck } from "../core/wip-check.ts";
 import { wipSnapshot } from "../core/wip-snapshot.ts";
@@ -19,6 +29,16 @@ export const PORTED = [
 	"wip-snapshot",
 	"pm-fail-facts",
 	"main-health",
+	"queue-check",
+	"queue-close",
+	"queue-cancel",
+	"main-start",
+	"machine-guard",
+	"glm-reset",
+	"priority-watch",
+	"resource-alerts",
+	"tmp-snapshot",
+	"heavy-run",
 ] as const;
 
 export async function runPorted(cmd: string, args: string[]): Promise<number> {
@@ -42,6 +62,26 @@ export async function runPorted(cmd: string, args: string[]): Promise<number> {
 			return pmFailFacts(args, rt.cfg);
 		case "main-health":
 			return mainHealth(args, rt.cfg, rt.source);
+		case "queue-check":
+			return queueCheck(args, rt.cfg);
+		case "queue-close":
+			return queueClose(args, rt.cfg);
+		case "queue-cancel":
+			return queueCancel(args, rt.cfg);
+		case "main-start":
+			return mainStart(args, rt.cfg);
+		case "machine-guard":
+			return machineGuard(args, rt.cfg);
+		case "glm-reset":
+			return glmReset(args, rt.cfg);
+		case "priority-watch":
+			return priorityWatch(args, rt.cfg);
+		case "resource-alerts":
+			return resourceAlerts(args, rt.cfg);
+		case "tmp-snapshot":
+			return tmpSnapshot(args, rt.cfg);
+		case "heavy-run":
+			return heavyRun(args, rt.cfg);
 		default:
 			return 2;
 	}
