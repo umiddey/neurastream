@@ -1,0 +1,3 @@
+main-health: how heavy is the OptChat main thread right now?
+Context size per call (from the main session jsonl), last user message, open work.
+Usage: main-health [session.jsonl]  (default: newest top-level session under ~/.omp/agent/sessions)
