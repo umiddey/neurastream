@@ -64,6 +64,8 @@ export interface Config {
 		warn_chars: number;
 		aim_chars: number;
 		path_prefixes: string[];
+		method_read: string;
+		heavy_path: string;
 	};
 	oc: { model_prefix: string; tail_lines: number; tail_chars: number };
 	wip: {

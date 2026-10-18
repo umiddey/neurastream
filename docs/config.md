@@ -68,6 +68,8 @@ brief:
   warn_chars: 12000
   aim_chars: 8000
   path_prefixes: ["$HOME/"]
+  method_read: "$HOME/projects/opus-implementer-method.md"  # text of the missing-method line
+  heavy_path: "$HOME/Work/heavy-run.sh"                    # text of the missing-heavy-run line
 
 oc:
   model_prefix: "opencode/"

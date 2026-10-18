@@ -1,0 +1,5 @@
+brief-lint: refuse a subagent brief that misses a rule Main keeps forgetting.
+
+Owner 2026-10-11: what can be checked deterministically is checked by a script, not by memory.
+Run on every brief file BEFORE spawning; exit 1 = fix the brief first.
+Usage: brief-lint <brief.md> [<brief.md> ...]
