@@ -1,0 +1,47 @@
+# neurastream: the orchestration setup as a harness-agnostic npm package
+Worktree: /home/ukd/projects/neurastream
+Branch: feat/package
+PRIORITY-ID:
+
+## Goal
+- Owner (2026-10-18 23:00): "is there a way we can version control our entire setup like the way we run shit here along with the scripts and everything" → "by version control i meant productionize, with npm and shit" → "my orchestrator should be agnostic … today it works with omp but it should also work later with other things, so keep it open". Name: neurastream (owner 2026-10-18).
+- Done = npm package `neurastream` with a harness-free core and an `omp` adapter. A fresh machine runs `bun add -g neurastream`, `neurastream init`, `neurastream adapter install omp`, and gets the same queue, guards, blockers, scoring, ledger and brief rules we run today, driven by `~/.config/neurastream/config.yml` instead of hardcoded paths.
+
+## Forbidden
+- Read /home/ukd/projects/opus-implementer-method.md first and work by it. `find` is broken: use grep/glob/read.
+- Read /home/ukd/projects/neurastream/AGENTS.md first; its rules apply (core/adapter split is a hard rule).
+- Never push. Never publish to npm. Never link or install the package into the real HOME; every smoke uses `HOME=/tmp/neurastream-home-<name>`.
+- Live setup is READ ONLY (source to port from): /home/ukd/.omp/agent, /home/ukd/.local/bin, /home/ukd/.local/state. Never edit, move or delete anything there.
+- Never read or copy secrets: /home/ukd/.config/gateforge/**, any `*.env*`, `*keys*.txt`, `mcp.json`, keyrings.
+- No behaviour change while porting: same rules, thresholds, exit codes. Anything that looks wrong in an original goes in your Progress bullet, not into the port.
+- No harness name or import in `src/core/` (verify: `grep -rniE "omp|oh-my-pi|claude|opencode|codex|cursor" src/core` prints nothing).
+- Out of scope (personal tools): ai-terminal, claude-*, codex/gemini/copilot/opencode/pi wrappers, kbd/voice/mic/pamixer scripts, muse, qwen-local, omp-local-qwen, token-*, git wrapper, git-secret-gate, python entry-point shims.
+- Budget: stop and write your Progress bullet within ~100 tool calls (bullet by call 85: done, verified with command+result, commits, next step).
+- No questions at the end: decide by these rules, record the decision.
+
+## Blockers
+- no-push
+- deny-path /home/ukd/.omp/agent/** /home/ukd/.local/bin/** /home/ukd/.local/state/** /home/ukd/.config/** INDEX.md
+- deny-command npm\s+publish bun\s+publish npm\s+link ^(?!.*HOME=/tmp/neurastream-home).*bun\s+link ^(?!.*HOME=/tmp/neurastream-home).*omp\s+(plugin\s+)?(install|link) --no-verify git\s+add\s+(-A|--all|\.)(\s|$)
+
+## Phases
+- [ ] P1 Inventory + interface: `docs/inventory.md` lists every in-scope file (Background) with language, lines, what it enforces, every hardcoded path/branch/provider/model/price/threshold and the config key replacing it, and which parts are harness-specific (omp session files, extension events, subagent names). `docs/config.md` defines config.yml with defaults = today's values. `docs/adapter.md` defines the adapter interface: run/cost source (list agent runs with model, calls, $ , status), pre-tool guard event (tool, paths, command → allow/refuse+reason), prompt-inject event, spawn check, plan-edit restriction — difficulty: 4 — verify: `cd /home/ukd/projects/neurastream && test -s docs/inventory.md && test -s docs/config.md && test -s docs/adapter.md`
+- [ ] P2 Skeleton: package.json (`name: neurastream`, `bin`: `neurastream` + compatibility bins with today's names), `src/core`, `src/adapters/omp`, `src/cli`, tsconfig, `typecheck` + `test` scripts, config loader with schema validation + defaults, `src/core/adapter.ts` interface, README install section — difficulty: 2 — verify: `cd /home/ukd/projects/neurastream && bun install && bun run typecheck && bun test`
+- [ ] P3 Core ports of the Python commands (agent-score, agent-ledger, brief-lint, oc-run, wip-check, wip-backup, wip-snapshot, pm-fail-facts, main-health) to Bun TS on config + adapter. Run data comes from the adapter, never from omp files directly. Golden tests: record each original's stdout+exit code on a sandbox copy of the needed state (never secrets) under /tmp/neurastream-home-golden; the port must match — difficulty: 4 — verify: `cd /home/ukd/projects/neurastream && bun test tests/golden && bun run typecheck`
+- [ ] P4 Core ports of the Bun/bash commands: queue-check, queue-close, queue-cancel (+ queue/lib.ts, TEMPLATE.md), main-start, machine-guard, glm-reset, priority-watch, resource-alerts, tmp-snapshot, heavy-run (from /home/ukd/Work/heavy-run.sh); same golden tests — difficulty: 4 — verify: `cd /home/ukd/projects/neurastream && bun test tests/golden && bun run typecheck`
+- [ ] P5 Guards in core + omp adapter: main-guard and plan-guard rules (5-change window, spawn allow-list, plan-edit restriction, call 90/100 budget, blocker execution) move into core as pure functions; blockers (_blocker, deny-command, deny-path, deny-text, no-push) ported to TS; `neurastream guard <event> --json` exposes every decision over stdin/stdout. `src/adapters/omp/` = omp extension(s) (package.json `omp.extensions`) that translate omp events to core calls, the omp session/cost reader, herdr-omp-agent-state. Agent pins (/home/ukd/.omp/agent/agents/*.md, skip `.bak*`) ship as templates. Tests: same refusals as today for a toy plan (denied command, denied path, non-Progress plan edit, spawn outside allow-list, 6th change in window), once through the omp adapter and once through `neurastream guard --json` — difficulty: 8 — verify: `cd /home/ukd/projects/neurastream && bun test tests/guards && bun run typecheck && ! grep -rniE "omp|oh-my-pi|claude|opencode|codex|cursor" src/core`
+- [ ] P6 `neurastream init` + `neurastream adapter install omp`: init creates config, INDEX.md, notes/ (ranking, subagents, lessons), queue template, state dirs, idempotent (2nd run changes nothing); adapter install links the omp extension under the sandbox HOME. End-to-end sandbox smoke: `bun pm pack` → install tarball under HOME=/tmp/neurastream-home-e2e → init → adapter install omp → toy repo + plan → queue-check 0 → agent-score accept + board → blocker refusal → queue-close on a merged toy branch. Transcript in `docs/smoke.md` — difficulty: 3 — verify: `cd /home/ukd/projects/neurastream && test -s docs/smoke.md && grep -q "queue-close" docs/smoke.md`
+
+## Done check
+`cd /home/ukd/projects/neurastream && git merge-base --is-ancestor HEAD origin/main && bun run typecheck && bun test`
+
+## Progress
+Status: open
+- 2026-10-18 23:40 (Main): renamed to neurastream (owner), plan rewritten harness-agnostic (core + adapters). Implementer: GLM, spawn after PmSuiteW13GlmP9b reports (ledger cap). Acceptance per phase = its verify command exits 0 in your own latest run; report Gate missing before -> after as "n/a (no gateforge)".
+- 2026-10-18 23:10 (Main): repo created, plan written.
+
+## Background
+- Source inventory (read-only): bins in /home/ukd/.local/bin (python: agent-score 312 lines, agent-ledger 128, brief-lint 81, oc-run 39, wip-check 70, wip-backup 112, wip-snapshot 110, pm-fail-facts 77, main-health 47; bun: queue-check, queue-close, queue-cancel; bash: main-start, machine-guard, glm-reset, priority-watch, resource-alerts, tmp-snapshot.sh); /home/ukd/Work/heavy-run.sh; /home/ukd/.omp/agent/{extensions,queue,blockers,agents,notes}; rules in /home/ukd/.omp/agent/AGENTS.md.
+- Later adapters (not this plan): Claude Code (hooks → `neurastream guard --json`), OpenCode, Codex. The interface in P1 must be enough for them without core changes.
+- Not packaged: sessions, databases, memories, blobs (runtime data); secrets; PM batch scripts in ~/.config/gateforge/pm-batch (they hold keys).
+- After review Main does the cutover with the owner (guard files locked: owner `touch ~/.omp/agent/.guard-unlock`): install, retire old copies, command names stay identical so AGENTS.md needs no rename. Publishing to npm is an owner decision after cutover.
