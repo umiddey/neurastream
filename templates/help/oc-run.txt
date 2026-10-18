@@ -1,0 +1,4 @@
+oc-run <Agent> -- [KEY=VAL ...] <command ...>
+Runs an OpenCode worker (e.g. `PLAN=... OPENCODE_CONFIG_CONTENT=... timeout 3500 opencode run -m <model> "..."`),
+passes its output through, and logs agent, model, plan, start/end, exit and whether it ended with a final message
+to ~/.local/state/agent-score/oc-runs.jsonl for agent-score (agent-ledger cannot see OpenCode runs).
