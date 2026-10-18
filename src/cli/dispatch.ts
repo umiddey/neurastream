@@ -1,4 +1,5 @@
 import { ConfigError, configFile, loadConfig } from "../core/config.ts";
+import { PORTED, runPorted } from "./commands.ts";
 
 const BINS = [
 	"agent-score",
@@ -39,6 +40,7 @@ export function helpText(): string {
 }
 
 export async function run(cmd: string, args: string[]): Promise<number> {
+	if ((PORTED as readonly string[]).includes(cmd)) return runPorted(cmd, args);
 	if (cmd === "help" || cmd === "--help" || cmd === "-h" || args.includes("--help") || args.includes("-h")) {
 		console.log(helpText());
 		return 0;
