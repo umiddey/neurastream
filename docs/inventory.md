@@ -182,12 +182,13 @@ Shared queue model. This is core (rules), with paths from config.
 
 | Constant | Today | Key |
 |---|---|---|
-| `INDEX` | env `QUEUE_INDEX` or the agent index | `paths.queue_index` |
-| `BLOCKERS_DIR` | env `QUEUE_BLOCKERS` or the agent blockers dir | `paths.blockers` |
+| agent dir | env `QUEUE_AGENT` or `~/.config/neurastream` | `paths.agent_dir` |
+| `INDEX` | env `QUEUE_INDEX` or `<agent_dir>/INDEX.md` | `paths.queue_index` |
+| `BLOCKERS_DIR` | env `QUEUE_BLOCKERS` or `<agent_dir>/blockers` | `paths.blockers` |
 | `STATE_DIR` | env `QUEUE_STATE` or `~/.local/state/queue` | `paths.queue_state` |
-| `SUBAGENTS_MD` | env `QUEUE_SUBAGENTS` or notes/subagents.md | `paths.subagents` |
-| `GLOBAL_CANCELLED` | env `QUEUE_CANCELLED` or the agent CANCELLED.md | `paths.cancelled` |
-| `UNLOCK` | agent `.guard-unlock` | `paths.unlock` |
+| `SUBAGENTS_MD` | env `QUEUE_SUBAGENTS` or `<agent_dir>/notes/subagents.md` | `paths.subagents` |
+| `GLOBAL_CANCELLED` | env `QUEUE_CANCELLED` or `<agent_dir>/CANCELLED.md` | `paths.cancelled` |
+| `UNLOCK` | env `QUEUE_UNLOCK` or `<agent_dir>/.guard-unlock` | `paths.unlock` |
 | `UNLOCK_MINUTES` | 30 | `guards.unlock_minutes` |
 | `BACKGROUND_MAX_LINES` | 40 | `queue.background_max_lines` |
 | `SUB_WARN_CALLS` / `SUB_MAX_CALLS` | 90 / 100 | `guards.sub_warn_calls` / `guards.sub_max_calls` |
@@ -196,8 +197,8 @@ Shared queue model. This is core (rules), with paths from config.
 | status values | open, complete, cancelled | behaviour |
 | priority id | `^[A-Z]{2}[0-9]{2}$` on a `PRIORITY-ID:` line | `queue.priority_id` |
 | cancel match | at least 3 shared key words, or half the smaller set if shorter | `queue.cancel_min_words` |
-| `PROTECTED` | guards, queue, blockers, pins, AGENTS.md, CANCELLED.md, queue state, harness config.yml, subagents.md, unlock, git-no-verify guard, five bins, git-secret-gate config dir | `guards.protected`, filled by init and adapter install |
-| env overrides | the `QUEUE_*` names above | still honoured, and they win over the file (tests) |
+| `PROTECTED` | same relative suffixes as today, rooted at `paths.agent_dir` (extensions, queue, blockers, pins, AGENTS.md, CANCELLED.md, agent config.yml, subagents.md, unlock, sibling git-no-verify guard) plus queue state, five bins, git-secret-gate config dir | `paths.agent_dir` until init/adapter install fills `guards.protected` |
+| env overrides | `QUEUE_AGENT`, `QUEUE_INDEX`, `QUEUE_BLOCKERS`, `QUEUE_STATE`, `QUEUE_SUBAGENTS`, `QUEUE_CANCELLED`, `QUEUE_UNLOCK` | still honoured, and they win over the file (tests) |
 
 `TEMPLATE.md` (36 lines) ships as the package template. Header fields: Worktree, Branch, PRIORITY-ID. Difficulty scale in the comment: 1, 2, 3, 4, 5, 8. The parser enforces `verify: \`command\`` only, not the difficulty number.
 

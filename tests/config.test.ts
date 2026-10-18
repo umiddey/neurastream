@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConfigError, loadConfig, TEMPLATE_PATH } from "../src/core/config.ts";
@@ -30,6 +30,7 @@ describe("loadConfig", () => {
 		expect(cfg.wip.limit).toBe(6);
 		expect(cfg.machine.avail_min_mb).toBe(3072);
 		expect(cfg.paths.home).toBe(home);
+		expect(cfg.paths.agent_dir).toBe(`${home}/.config/neurastream`);
 		expect(cfg.paths.work_roots).toEqual([`${home}/Work`, `${home}/projects`]);
 		expect(cfg.ledger.providers.length).toBe(7);
 	});
@@ -79,13 +80,24 @@ describe("adapter", () => {
 });
 
 describe("core has no harness name", () => {
+	function filesUnder(dir: string): string[] {
+		const out: string[] = [];
+		for (const name of readdirSync(dir)) {
+			const p = join(dir, name);
+			if (statSync(p).isDirectory()) out.push(...filesUnder(p));
+			else out.push(p);
+		}
+		return out;
+	}
+
 	test("src/core matches none of the forbidden tokens", () => {
 		const root = join(import.meta.dir, "../src/core");
 		const hits: string[] = [];
-		const rx = /omp|oh-my-pi|claude|opencode|codex|cursor/i;
-		for (const name of readdirSync(root)) {
-			const text = readFileSync(join(root, name), "utf8");
-			if (rx.test(text)) hits.push(name);
+		// Same six tokens as the plan grep. Boundaries so required protocol words
+		// "complete" and "prompt" (they contain the letters omp) do not count; ".omp" still does.
+		const rx = /\b(?:omp|oh-my-pi|claude|opencode|codex|cursor)\b/i;
+		for (const file of filesUnder(root)) {
+			if (rx.test(readFileSync(file, "utf8"))) hits.push(file.slice(root.length + 1));
 		}
 		expect(hits).toEqual([]);
 		expect(readFileSync(TEMPLATE_PATH, "utf8").length).toBeGreaterThan(100);

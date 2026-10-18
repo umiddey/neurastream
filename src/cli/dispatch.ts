@@ -1,4 +1,5 @@
 import { ConfigError, configFile, loadConfig } from "../core/config.ts";
+import { applyQueueEnv } from "../core/queue/env.ts";
 import { PORTED, runPorted } from "./commands.ts";
 
 const BINS = [
@@ -54,7 +55,15 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 			return 1;
 		}
 	}
-	if ((PORTED as readonly string[]).includes(cmd)) return runPorted(cmd, args);
+	if ((PORTED as readonly string[]).includes(cmd)) {
+		try {
+			applyQueueEnv(loadConfig());
+		} catch (err) {
+			console.error(err instanceof ConfigError ? err.message : String(err));
+			return 1;
+		}
+		return runPorted(cmd, args);
+	}
 	console.error(`unknown command ${cmd}\n${helpText()}`);
 	return 2;
 }

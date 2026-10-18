@@ -6,19 +6,24 @@ import os from "node:os";
 import path from "node:path";
 
 const HOME = os.homedir();
+// Base set by applyQueueEnv from paths.agent_dir. Specific QUEUE_* vars still win.
+function agentDir(): string {
+	return process.env.QUEUE_AGENT ?? `${HOME}/.config/neurastream`;
+}
 export function indexPath(): string {
-	return process.env.QUEUE_INDEX ?? `${HOME}/.omp/agent/INDEX.md`;
+	return process.env.QUEUE_INDEX ?? `${agentDir()}/INDEX.md`;
 }
 export function blockersDirPath(): string {
-	return process.env.QUEUE_BLOCKERS ?? `${HOME}/.omp/agent/blockers`;
+	return process.env.QUEUE_BLOCKERS ?? `${agentDir()}/blockers`;
 }
 export function stateDirPath(): string {
 	return process.env.QUEUE_STATE ?? `${HOME}/.local/state/queue`;
 }
 // Import-time snapshots under the live lib's names; the bins import them as values.
-export const INDEX = indexPath();
-export const BLOCKERS_DIR = blockersDirPath();
-export const STATE_DIR = stateDirPath();
+// refreshQueuePaths() reassigns them after applyQueueEnv, so a static import still sees config.
+export let INDEX = indexPath();
+export let BLOCKERS_DIR = blockersDirPath();
+export let STATE_DIR = stateDirPath();
 export const REPO_INDEX = "INDEX.md";
 export const BACKGROUND_MAX_LINES = 40;
 export const SUB_WARN_CALLS = 90;
@@ -129,7 +134,7 @@ export function parsePlan(repo: string, file: string, text: string | null, block
 	const secs = sections(text);
 	for (const s of REQUIRED) {
 		if (s === "progress" ? !secs.has(s) : !items(secs.get(s) ?? "").length)
-			errors.push(`missing or empty "## ${s.replace(/^\w/, c => c.toUpperCase())}" section (template: ~/.omp/agent/queue/TEMPLATE.md)`);
+			errors.push(`missing or empty "## ${s.replace(/^\w/, c => c.toUpperCase())}" section (template: ${agentDir()}/queue/TEMPLATE.md)`);
 	}
 	const known = new Set([...REQUIRED, "applies to", "background"]);
 	for (const s of secs.keys()) if (!known.has(s)) errors.push(`unknown section "## ${s}" (allowed: ${[...known].join(", ")})`);
@@ -335,30 +340,37 @@ export function writeTargets(toolName: string, input: Record<string, unknown>, c
 	return [...out];
 }
 
-export const UNLOCK = `${HOME}/.omp/agent/.guard-unlock`;
+export function unlockPath(): string {
+	return process.env.QUEUE_UNLOCK ?? `${agentDir()}/.guard-unlock`;
+}
+export let UNLOCK = unlockPath();
 export const UNLOCK_MINUTES = 30;
-export const PROTECTED = [
-	`${HOME}/.omp/agent/extensions/`,
-	`${HOME}/.omp/agent/queue/`,
-	`${HOME}/.omp/agent/blockers/`,
-	`${HOME}/.omp/agent/agents/`,
-	`${HOME}/.omp/agent/AGENTS.md`,
-	`${HOME}/.omp/agent/CANCELLED.md`,
-	`${HOME}/.local/state/queue/`,
-	`${HOME}/.omp/agent/config.yml`,
-	`${HOME}/.omp/agent/notes/subagents.md`,
-	`${HOME}/.omp/agent/.guard-unlock`,
-	`${HOME}/.omp/git-no-verify-guard.mjs`,
-	`${HOME}/.local/bin/queue-check`,
-	`${HOME}/.local/bin/queue-close`,
-	`${HOME}/.local/bin/queue-cancel`,
-	`${HOME}/.local/bin/agent-ledger`,
-	`${HOME}/.local/bin/brief-lint`,
-	`${HOME}/.local/bin/main-start`,
-	`${HOME}/.local/bin/git`,
-	`${HOME}/.local/bin/git-secret-gate`,
-	`${HOME}/.config/git-secret-gate/`,
-];
+function protectedPaths(): string[] {
+	const agent = agentDir();
+	return [
+		`${agent}/extensions/`,
+		`${agent}/queue/`,
+		`${agent}/blockers/`,
+		`${agent}/agents/`,
+		`${agent}/AGENTS.md`,
+		`${agent}/CANCELLED.md`,
+		`${stateDirPath()}/`,
+		`${agent}/config.yml`,
+		`${agent}/notes/subagents.md`,
+		`${agent}/.guard-unlock`,
+		`${path.dirname(agent)}/git-no-verify-guard.mjs`,
+		`${HOME}/.local/bin/queue-check`,
+		`${HOME}/.local/bin/queue-close`,
+		`${HOME}/.local/bin/queue-cancel`,
+		`${HOME}/.local/bin/agent-ledger`,
+		`${HOME}/.local/bin/brief-lint`,
+		`${HOME}/.local/bin/main-start`,
+		`${HOME}/.local/bin/git`,
+		`${HOME}/.local/bin/git-secret-gate`,
+		`${HOME}/.config/git-secret-gate/`,
+	];
+}
+export let PROTECTED = protectedPaths();
 
 export function unlocked(): boolean {
 	try {
@@ -374,9 +386,9 @@ export function protectedHit(paths: string[]): string | null {
 }
 
 export function subagentsPath(): string {
-	return process.env.QUEUE_SUBAGENTS ?? `${HOME}/.omp/agent/notes/subagents.md`;
+	return process.env.QUEUE_SUBAGENTS ?? `${agentDir()}/notes/subagents.md`;
 }
-export const SUBAGENTS_MD = subagentsPath();
+export let SUBAGENTS_MD = subagentsPath();
 export function allowedAgents(file = subagentsPath()): Set<string> {
 	let text = "";
 	try {
@@ -388,9 +400,9 @@ export function allowedAgents(file = subagentsPath()): Set<string> {
 
 export const CANCELLED_REL = "docs/plans/CANCELLED.md";
 export function globalCancelledPath(): string {
-	return process.env.QUEUE_CANCELLED ?? `${HOME}/.omp/agent/CANCELLED.md`;
+	return process.env.QUEUE_CANCELLED ?? `${agentDir()}/CANCELLED.md`;
 }
-export const GLOBAL_CANCELLED = globalCancelledPath();
+export let GLOBAL_CANCELLED = globalCancelledPath();
 export function cancelledFile(repo: string): string {
 	return path.join(repo, CANCELLED_REL);
 }
@@ -469,7 +481,17 @@ export function cancelledProblem(plan: Plan, c: CancelledEntry): string {
 
 export const CANCEL_WORDS =
 	/\b(?:cancel(?:led|ed)?|abort|scrap|call (?:it|that|this) off|forget (?:it|about)|no longer (?:do|need|want)|skip (?:it|that|this|the)|(?:don'?t|do not|never|stop|quit|not to|not) (?:do|doing|start|starting|work(?:ing)? on|implement|implementing|build|building|touch|run|running|continue|continuing|bother|pursue|go ahead|proceed)|stop (?:it|that|this|the|working|now)|drop (?:it|that|this|the))\b/i;
-export const CANCEL_PENDING = path.join(STATE_DIR, "cancel-pending.json");
+export let CANCEL_PENDING = path.join(STATE_DIR, "cancel-pending.json");
+export function refreshQueuePaths(): void {
+	INDEX = indexPath();
+	BLOCKERS_DIR = blockersDirPath();
+	STATE_DIR = stateDirPath();
+	UNLOCK = unlockPath();
+	PROTECTED = protectedPaths();
+	SUBAGENTS_MD = subagentsPath();
+	GLOBAL_CANCELLED = globalCancelledPath();
+	CANCEL_PENDING = path.join(STATE_DIR, "cancel-pending.json");
+}
 export function cancelPending(): { at: string; words: string } | null {
 	try {
 		return JSON.parse(readFileSync(CANCEL_PENDING, "utf8"));

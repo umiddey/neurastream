@@ -2,6 +2,7 @@ paths:
   home: "~"
   work_roots: ["~/Work", "~/projects"]
   config_dir: "~/.config/neurastream"
+  agent_dir: "~/.config/neurastream"
   score_state: "~/.local/state/agent-score"
   queue_state: "~/.local/state/queue"
   queue_index: "~/.config/neurastream/INDEX.md"

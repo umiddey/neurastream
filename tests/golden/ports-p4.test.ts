@@ -33,11 +33,13 @@ function pinOmp(home: string): void {
   work_roots:
     - "${join(home, "Work")}"
     - "${join(home, "projects")}"
+  agent_dir: "${join(home, ".omp/agent")}"
   queue_index: "${join(home, ".omp/agent/INDEX.md")}"
   blockers: "${join(home, ".omp/agent/blockers")}"
   queue_state: "${join(home, ".local/state/queue")}"
   subagents: "${join(home, ".omp/agent/notes/subagents.md")}"
   cancelled: "${join(home, ".omp/agent/CANCELLED.md")}"
+  unlock: "${join(home, ".omp/agent/.guard-unlock")}"
   heavy_lock: "${join(home, "Work/.heavy-run.lock")}"
   heavy_owner: "${join(home, "Work/.heavy-run.owner")}"
   heavy_log: "${join(home, "Work/.heavy-run.log")}"
@@ -59,7 +61,20 @@ snapshot:
 }
 
 function envFor(home: string, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
-	return { ...process.env, HOME: home, PATH: `${join(home, ".local/bin")}:${process.env.PATH ?? ""}`, ...extra };
+	const agent = join(home, ".omp/agent");
+	return {
+		...process.env,
+		HOME: home,
+		PATH: `${join(home, ".local/bin")}:${process.env.PATH ?? ""}`,
+		QUEUE_AGENT: agent,
+		QUEUE_INDEX: join(agent, "INDEX.md"),
+		QUEUE_BLOCKERS: join(agent, "blockers"),
+		QUEUE_STATE: join(home, ".local/state/queue"),
+		QUEUE_SUBAGENTS: join(agent, "notes/subagents.md"),
+		QUEUE_CANCELLED: join(agent, "CANCELLED.md"),
+		QUEUE_UNLOCK: join(agent, ".guard-unlock"),
+		...extra,
+	};
 }
 
 function match(

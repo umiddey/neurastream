@@ -2,7 +2,7 @@
 
 Path: `~/.config/neurastream/config.yml`. `neurastream init` creates it. A second init does not change it.
 
-The loader merges, in order (later wins): packaged defaults below, this file, then the env overrides named in the inventory (`QUEUE_INDEX`, `QUEUE_BLOCKERS`, `QUEUE_STATE`, `QUEUE_SUBAGENTS`, `QUEUE_CANCELLED`, `MAIN_GUARD_LIMIT`, `MAIN_GUARD_WINDOW_MIN`, `MAIN_GUARD_ROOTS`, `MAIN_GUARD_LEDGER`, `MAIN_GUARD_LOG`, `PLAN_GUARD_LOG`, `WIP_LIMIT`, `WIP_DAYS`, `WIP_BACKUP_MAX_REPO_MB`, `WIP_SNAPSHOT_MAX_MB`, `LOAD_MAX`, `AVAIL_MIN_MB`, `DISK_MIN_GB`, `TMP_MAX_MB`, `IDLE_MAX_MIN`). Env exists so tests and the old command lines keep working. Code reads the merged object only.
+The loader merges, in order (later wins): packaged defaults below, this file, then the env overrides named in the inventory (`QUEUE_AGENT`, `QUEUE_INDEX`, `QUEUE_BLOCKERS`, `QUEUE_STATE`, `QUEUE_SUBAGENTS`, `QUEUE_CANCELLED`, `QUEUE_UNLOCK`, `MAIN_GUARD_LIMIT`, `MAIN_GUARD_WINDOW_MIN`, `MAIN_GUARD_ROOTS`, `MAIN_GUARD_LEDGER`, `MAIN_GUARD_LOG`, `PLAN_GUARD_LOG`, `WIP_LIMIT`, `WIP_DAYS`, `WIP_BACKUP_MAX_REPO_MB`, `WIP_SNAPSHOT_MAX_MB`, `LOAD_MAX`, `AVAIL_MIN_MB`, `DISK_MIN_GB`, `TMP_MAX_MB`, `IDLE_MAX_MIN`). Env exists so tests and the old command lines keep working. Code reads the merged object only.
 
 `src/core` does not embed `/home/ukd`, a branch, a provider, a model, a price, or a harness name. Those values live here. `~` and `$HOME` expand at load. An empty string means unset (the command requires the flag).
 
@@ -15,6 +15,7 @@ paths:
   home: "~"                                  # today: /home/ukd
   work_roots: ["~/Work", "~/projects"]       # today: /home/ukd/Work, /home/ukd/projects
   config_dir: "~/.config/neurastream"
+  agent_dir: "~/.config/neurastream"        # root for index, blockers, notes, unlock, protected suffixes
   score_state: "~/.local/state/agent-score"  # events.jsonl, oc-runs.jsonl
   queue_state: "~/.local/state/queue"
   queue_index: "~/.config/neurastream/INDEX.md"
@@ -185,7 +186,7 @@ adapter:
   extensions: "~/.omp/agent/extensions"
 ```
 
-`paths.queue_index`, `paths.blockers`, `paths.ranking_board`, `paths.subagents`, `paths.cancelled`, and `paths.unlock` stay at the portable defaults unless the owner points them at the live files at cutover. Cutover is Main's job.
+`paths.agent_dir`, `paths.queue_index`, `paths.blockers`, `paths.ranking_board`, `paths.subagents`, `paths.cancelled`, and `paths.unlock` stay at the portable defaults unless the owner points them at the live files at cutover. Cutover is Main's job.
 
 The harness `config.yml` (models, theme) is not read and not copied.
 

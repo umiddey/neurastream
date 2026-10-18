@@ -21,6 +21,7 @@ export interface Config {
 		home: string;
 		work_roots: string[];
 		config_dir: string;
+		agent_dir: string;
 		score_state: string;
 		queue_state: string;
 		queue_index: string;
@@ -129,11 +130,13 @@ export interface Config {
 
 type EnvKind = "string" | "number" | "csv";
 const ENV_MAP: Record<string, { path: string[]; kind: EnvKind }> = {
+	QUEUE_AGENT: { path: ["paths", "agent_dir"], kind: "string" },
 	QUEUE_INDEX: { path: ["paths", "queue_index"], kind: "string" },
 	QUEUE_BLOCKERS: { path: ["paths", "blockers"], kind: "string" },
 	QUEUE_STATE: { path: ["paths", "queue_state"], kind: "string" },
 	QUEUE_SUBAGENTS: { path: ["paths", "subagents"], kind: "string" },
 	QUEUE_CANCELLED: { path: ["paths", "cancelled"], kind: "string" },
+	QUEUE_UNLOCK: { path: ["paths", "unlock"], kind: "string" },
 	MAIN_GUARD_LIMIT: { path: ["guards", "main_edit_limit"], kind: "number" },
 	MAIN_GUARD_WINDOW_MIN: { path: ["guards", "main_window_min"], kind: "number" },
 	MAIN_GUARD_ROOTS: { path: ["paths", "work_roots"], kind: "csv" },
