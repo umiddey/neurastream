@@ -1,0 +1,10 @@
+wip-snapshot: save every uncommitted change in every worktree as a hidden git commit.
+
+Owner 2026-10-11: "how are you ensuring unfinished work is at least committed?"
+For each worktree under ROOTS with tracked changes or new (non-ignored) files, build a commit
+from a TEMPORARY index (parent = HEAD) and store it at refs/wip/<worktree>/<stamp>.
+The working tree, the real index, HEAD and every branch stay untouched, so it is safe while
+agents work. Skips a worktree whose content equals its last snapshot. New files > MAX_MB skipped.
+Writes ~/Work/WIP-STATUS.md (wip-check output + snapshot list).
+Restore: git -C <wt> restore --source=<ref> --worktree -- <paths or .>   |   list: git for-each-ref refs/wip
+Usage: wip-snapshot [--quiet]
