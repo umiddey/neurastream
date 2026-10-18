@@ -23,6 +23,12 @@ export interface Run {
 	lastWriteAt: number;
 	endedAt: number | null;
 	messages: RunMessage[];
+	scoreModel: string;
+	scoreCost: number;
+	scoreHours: number;
+	scoreRunning: boolean;
+	scoreSurvived: boolean;
+	scoreEnd: string;
 }
 
 export interface MainSession {
@@ -33,7 +39,7 @@ export interface MainSession {
 
 export interface RunSource {
 	listRuns(since: number): Run[];
-	mainSession(): MainSession | null;
+	mainSession(file?: string): MainSession | null;
 }
 
 export interface Decision {
