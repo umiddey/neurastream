@@ -1,0 +1,5 @@
+agent-ledger: per-agent tokens, list cost, state and how each run ended.
+
+Reads omp session jsonl files (default: every session dir modified in the last N hours).
+Shows dead agents (last error) so a crash or quota stop is seen at once, not by the owner.
+Usage: agent-ledger [--hours 24] [--all]
