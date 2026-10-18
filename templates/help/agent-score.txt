@@ -1,0 +1,16 @@
+agent-score: rank subagent workers by CORRECT work per dollar and per hour (owner 2026-10-16, AGENTS.md line 16).
+
+Points come only from work Main accepted, weighted by the plan phase's `difficulty: N` (set at plan time).
+Cost = the worker's own list cost + Main's steering cost (Main tokens spent on turns that mention the agent).
+
+  agent-score accept <Agent> --plan <plan.md> --phase P2 --commits <sha,sha|a..b> [--repo R] [--branch B] [--weight N] [--rework] [--note T]
+        commits must be ancestors of --branch (default pm/pr01-counts in /home/ukd/Work/pm-counts); --rework = needed fixes by Main/another agent
+  agent-score diagnose <Agent> --plan <plan.md> --phase P --evidence <file> [--weight N]
+        a real product bug found and recorded (no commit needed); default weight 4
+  agent-score penalty <Agent> --kind false-claim|rule-break|escaped-defect --note T [--plan <plan.md>]
+  agent-score exempt <sha,...> --note T [--repo R]          commits that are Main's own (merges, rebuilds), not a worker's
+  agent-score check [--repo R] [--branch B]                 exit 1 = commits on the branch since the base with no accept/exempt record
+  agent-score base <sha> [--repo R] [--branch B]            set where `check` starts (one-time per branch)
+  agent-score board [--days 7]                              print the ranking and write ~/.omp/agent/notes/subagent-ranking.md
+  agent-score gate <Agent-or-model>                         before a spawn: WARN when the chosen worker ranks below another worker (never blocks)
+  oc-run <Agent> -- <PLAN=... opencode run ...>             (separate wrapper) logs OpenCode runs, which agent-ledger cannot see
