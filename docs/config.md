@@ -121,9 +121,11 @@ guards:
   free_prefixes: ["~/Work/gf-testbed/", "~/Work/archive/", "~/Work/heavy-run.sh"]
   bypass_spawn: ["opencode run"]
   protected: []
+  ledger_command: "agent-ledger --hours 12"
 
 machine:
   load_over_cores: 4
+  load_max: 0                       # 0 = nproc + load_over_cores; env LOAD_MAX sets an absolute cap
   avail_min_mb: 3072
   disk_min_gb: 15
   disk_path: "$HOME"

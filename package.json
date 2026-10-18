@@ -1,0 +1,42 @@
+{
+  "name": "neurastream",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Harness-agnostic agent orchestration: queue, guards, blockers, scoring, ledger.",
+  "type": "module",
+  "bin": {
+    "neurastream": "./src/cli/main.ts",
+    "agent-score": "./src/cli/main.ts",
+    "agent-ledger": "./src/cli/main.ts",
+    "brief-lint": "./src/cli/main.ts",
+    "oc-run": "./src/cli/main.ts",
+    "wip-check": "./src/cli/main.ts",
+    "wip-backup": "./src/cli/main.ts",
+    "wip-snapshot": "./src/cli/main.ts",
+    "pm-fail-facts": "./src/cli/main.ts",
+    "main-health": "./src/cli/main.ts",
+    "queue-check": "./src/cli/main.ts",
+    "queue-close": "./src/cli/main.ts",
+    "queue-cancel": "./src/cli/main.ts",
+    "main-start": "./src/cli/main.ts",
+    "machine-guard": "./src/cli/main.ts",
+    "glm-reset": "./src/cli/main.ts",
+    "priority-watch": "./src/cli/main.ts",
+    "resource-alerts": "./src/cli/main.ts",
+    "tmp-snapshot": "./src/cli/main.ts",
+    "heavy-run": "./src/cli/main.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "omp": {
+    "extensions": [
+      "./src/adapters/omp/index.ts"
+    ]
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.14",
+    "typescript": "^5.9.3"
+  }
+}
