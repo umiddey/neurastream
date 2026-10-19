@@ -126,6 +126,8 @@ export interface Config {
 	priority: { sleep_sec: number };
 	alerts: { temp_c: number; mem_psi: number; io_psi: number; cooldown_sec: number };
 	snapshot: { tmp_dest: string; git_repo: string; git_backup: string; excludes: string[] };
+	/** Optional overlay written by adapter install. Absent until an adapter is installed. */
+	adapter?: { name: string; sessions: string; pins: string; extensions: string };
 }
 
 type EnvKind = "string" | "number" | "csv";
@@ -183,7 +185,13 @@ function merge(base: unknown, over: unknown, path: string): unknown {
 		const out: Record<string, unknown> = { ...base };
 		for (const key of Object.keys(over)) {
 			const next = path ? `${path}.${key}` : key;
-			if (!(key in base)) throw new ConfigError(`unknown key ${next}`);
+			if (!(key in base)) {
+				if (path === "" && key === "adapter") {
+					out[key] = adapterOverlay(over[key], next);
+					continue;
+				}
+				throw new ConfigError(`unknown key ${next}`);
+			}
 			out[key] = merge(base[key], over[key], next);
 		}
 		return out;
@@ -191,6 +199,21 @@ function merge(base: unknown, over: unknown, path: string): unknown {
 	if (typeof over !== typeof base) throw new ConfigError(`${path} must be a ${typeof base}`);
 	if (typeof base === "number" && !Number.isFinite(over as number)) throw new ConfigError(`${path} must be a number`);
 	return over;
+}
+const ADAPTER_KEYS = ["name", "sessions", "pins", "extensions"] as const;
+
+function adapterOverlay(value: unknown, path: string): Record<string, string> {
+	if (!isObj(value)) throw new ConfigError(`${path} must be an object`);
+	for (const key of Object.keys(value)) {
+		if (!ADAPTER_KEYS.includes(key as (typeof ADAPTER_KEYS)[number])) throw new ConfigError(`unknown key ${path}.${key}`);
+	}
+	const out: Record<string, string> = {};
+	for (const key of ADAPTER_KEYS) {
+		const v = value[key];
+		if (typeof v !== "string" || v === "") throw new ConfigError(`${path}.${key} must be a string`);
+		out[key] = v;
+	}
+	return out;
 }
 
 function expand(value: unknown, home: string): unknown {

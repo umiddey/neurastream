@@ -281,5 +281,6 @@ export function ompRunSource(root: string, cfg: Config): RunSource {
 }
 
 export function defaultRunSource(cfg: Config): RunSource {
-	return ompRunSource(join(cfg.paths.home, ".omp", "agent", "sessions"), cfg);
+	const root = cfg.adapter?.sessions || join(cfg.paths.home, ".omp", "agent", "sessions");
+	return ompRunSource(root, cfg);
 }

@@ -1,6 +1,8 @@
 import { ConfigError, configFile, loadConfig } from "../core/config.ts";
 import { applyQueueEnv } from "../core/queue/env.ts";
+import { runAdapterInstall } from "../adapters/omp/install.ts";
 import { GUARD_USAGE, runGuard } from "./guard.ts";
+import { runInit } from "./init.ts";
 import { PORTED, runPorted } from "./commands.ts";
 
 const BINS = [
@@ -31,10 +33,11 @@ export function helpText(): string {
 		"",
 		"Usage:",
 		"  neurastream --help",
+		"  neurastream init              create config, index, notes, blockers, queue template, state dirs",
+		"  neurastream adapter install omp",
+		"                                link the omp extension under this HOME",
 		"  neurastream config [--json]   print the merged config (defaults + file + env)",
 		"  neurastream guard <event> --json",
-		"                                one guard decision: event JSON on stdin, Decision JSON on",
-		"                                stdout, exit 0 allow / 2 refuse",
 		`                                (${GUARD_USAGE.slice(GUARD_USAGE.indexOf("(") + 1, -1)})`,
 		"",
 		"Compatibility bins (same names as today; ports land in later phases):",
@@ -50,6 +53,8 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 		console.log(helpText());
 		return 0;
 	}
+	if (cmd === "init") return runInit();
+	if (cmd === "adapter") return runAdapterInstall(args);
 	if (cmd === "config") {
 		try {
 			const cfg = loadConfig();

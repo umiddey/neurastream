@@ -176,7 +176,7 @@ snapshot:
 
 ## omp overlay (adapter install, not core)
 
-Written only by `neurastream adapter install omp`. A machine that never installs that adapter does not get these keys.
+Written only by `neurastream adapter install omp`, appended to this file. The loader accepts this one optional top-level object (name, sessions, pins, extensions, all non-empty strings) and still rejects every other unknown key. A machine that never installs that adapter does not get these keys.
 
 ```yaml
 adapter:

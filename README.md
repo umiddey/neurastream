@@ -13,9 +13,9 @@ neurastream init
 neurastream adapter install omp
 ```
 
-`init` writes `~/.config/neurastream/config.yml` from the defaults in `docs/config.md`. A second run changes nothing. `adapter install omp` links the extension under that same home. Neither command touches `~/.omp` or `~/.local` of the real user.
+`init` writes `~/.config/neurastream/config.yml` from the defaults in `docs/config.md`, plus an empty index, notes, the queue template, blocker wrappers, and the state directories. A second run changes nothing. `adapter install omp` links the extension under that same home (`~/.omp/agent/extensions` and `omp plugin link`). Neither command touches `~/.omp` or `~/.local` of the real user.
 
-Until those two commands land, check the loader:
+Check the merged result:
 
 ```sh
 neurastream config --json

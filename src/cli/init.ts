@@ -1,0 +1,189 @@
+// `neurastream init`: one-time layout under the caller's HOME. A second run creates nothing
+// and rewrites nothing (docs/config.md). Paths come from the loaded config, not literals in core.
+
+import { createHash } from "node:crypto";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { configFile, loadConfig, TEMPLATE_PATH, type Config } from "../core/config.ts";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+export const PACKAGE_ROOT = resolve(HERE, "../..");
+
+const BLOCKERS: { name: string; fn: string }[] = [
+	{ name: "deny-command", fn: "denyCommand" },
+	{ name: "deny-path", fn: "denyPath" },
+	{ name: "deny-text", fn: "denyText" },
+	{ name: "no-push", fn: "noPush" },
+];
+
+export interface InitResult {
+	created: string[];
+	unchanged: string[];
+}
+
+function tilde(home: string, p: string): string {
+	const abs = resolve(p);
+	if (abs === home) return "~";
+	if (abs.startsWith(`${home}/`)) return `~/${abs.slice(home.length + 1)}`;
+	return abs;
+}
+
+function yamlQuote(value: string): string {
+	return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+}
+
+function packageBinNames(): string[] {
+	const pkg = JSON.parse(readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8")) as { bin?: Record<string, string> };
+	return Object.keys(pkg.bin ?? {});
+}
+
+/** Installed compatibility bins under this home, as config paths (`~` when under home). */
+export function installedBins(home: string, invoked: string): string[] {
+	const names = packageBinNames();
+	const dirs = [dirname(resolve(invoked || ".")), join(home, ".bun", "bin")];
+	const out: string[] = [];
+	for (const dir of dirs) {
+		for (const name of names) {
+			const p = join(dir, name);
+			if (existsSync(p)) out.push(tilde(home, p));
+		}
+	}
+	return [...new Set(out)];
+}
+
+function configText(home: string, invoked: string): string {
+	let text = readFileSync(TEMPLATE_PATH, "utf8");
+	if (!text.endsWith("\n")) text += "\n";
+	if (existsSync(join(home, "Work", "pm-counts"))) {
+		if (!text.includes('default_repo: ""')) throw new Error("templates/config.yml has no default_repo placeholder");
+		text = text.replace('default_repo: ""', 'default_repo: "~/Work/pm-counts"');
+	}
+	const protectedPaths = [
+		...installedBins(home, invoked),
+		"~/.config/neurastream/notes/",
+		"~/.config/neurastream/blockers/",
+		"~/.config/neurastream/queue/",
+	];
+	const list = ["  protected:", ...protectedPaths.map(p => `    - ${yamlQuote(p)}`)].join("\n");
+	if (!text.includes("  protected: []")) throw new Error("templates/config.yml has no protected placeholder");
+	return text.replace("  protected: []", list);
+}
+
+function putFile(dest: string, body: string, mode: number, created: string[], unchanged: string[]): void {
+	if (existsSync(dest)) {
+		unchanged.push(dest);
+		return;
+	}
+	mkdirSync(dirname(dest), { recursive: true });
+	writeFileSync(dest, body, { mode });
+	chmodSync(dest, mode);
+	created.push(dest);
+}
+
+function putDir(dir: string): void {
+	mkdirSync(dir, { recursive: true });
+}
+
+function blockerWrapper(fn: string): string {
+	const from = join(PACKAGE_ROOT, "src/core/blockers.ts");
+	return `#!/usr/bin/env bun\nimport { ${fn}, runBlockerScript } from ${JSON.stringify(from)};\n\nrunBlockerScript(${fn});\n`;
+}
+
+function note(name: string): string {
+	return readFileSync(join(PACKAGE_ROOT, "templates/notes", name), "utf8");
+}
+
+const RANKING_STUB = `# Subagent ranking board
+
+Empty until \`agent-score board\` writes this file. Do not hand-edit after that.
+`;
+
+/** Create the layout. Existing files are left byte-for-byte alone. */
+export function initHome(home: string, opts: { invoked?: string; env?: NodeJS.ProcessEnv } = {}): InitResult {
+	const created: string[] = [];
+	const unchanged: string[] = [];
+	const invoked = opts.invoked ?? "";
+	const cfgPath = configFile(home);
+	putFile(cfgPath, configText(home, invoked), 0o644, created, unchanged);
+
+	const cfg: Config = loadConfig({ home, env: opts.env ?? {} });
+	putDir(cfg.paths.config_dir);
+	putDir(cfg.paths.agent_dir);
+	putDir(cfg.paths.notes);
+	putDir(cfg.paths.blockers);
+	putDir(dirname(cfg.paths.queue_index));
+	putDir(cfg.paths.score_state);
+	putDir(cfg.paths.queue_state);
+	putDir(dirname(cfg.paths.guard_log));
+	putDir(dirname(cfg.paths.plan_guard_log));
+	putDir(cfg.paths.alert_state);
+	putDir(dirname(cfg.paths.snapshot_lock));
+	for (const root of cfg.paths.work_roots) putDir(root);
+	putDir(join(cfg.paths.agent_dir, "queue"));
+
+	putFile(cfg.paths.queue_index, "", 0o644, created, unchanged);
+	putFile(cfg.paths.subagents, note("subagents.md"), 0o644, created, unchanged);
+	putFile(join(cfg.paths.notes, "lessons.md"), note("lessons.md"), 0o644, created, unchanged);
+	putFile(cfg.paths.ranking_board, RANKING_STUB, 0o644, created, unchanged);
+	putFile(
+		join(cfg.paths.agent_dir, "queue", "TEMPLATE.md"),
+		readFileSync(join(PACKAGE_ROOT, "templates/queue/TEMPLATE.md"), "utf8"),
+		0o644,
+		created,
+		unchanged,
+	);
+	for (const b of BLOCKERS) {
+		putFile(join(cfg.paths.blockers, b.name), blockerWrapper(b.fn), 0o755, created, unchanged);
+	}
+	return { created, unchanged };
+}
+
+export function printInit(result: InitResult): void {
+	if (result.created.length === 0) {
+		console.log("neurastream init: unchanged");
+		return;
+	}
+	console.log("neurastream init: created");
+	for (const p of result.created) console.log(`  ${p}`);
+	if (result.unchanged.length) console.log(`neurastream init: left ${result.unchanged.length} existing file(s) alone`);
+}
+
+export function runInit(): number {
+	try {
+		printInit(initHome(homedir(), { invoked: process.argv[1] ?? "", env: process.env }));
+		return 0;
+	} catch (err) {
+		console.error(err instanceof Error ? err.message : String(err));
+		return 1;
+	}
+}
+
+/** Content hash of a tree. Directory entries count; mtimes do not. A no-op init keeps this stable. */
+export function treeHash(root: string): string {
+	const lines: string[] = [];
+	function walk(dir: string): void {
+		let names: string[] = [];
+		try {
+			names = readdirSync(dir).sort();
+		} catch {
+			return;
+		}
+		for (const name of names) {
+			const p = join(dir, name);
+			const rel = relative(root, p);
+			const st = lstatSync(p);
+			if (st.isSymbolicLink()) {
+				lines.push(`link ${rel} -> ${readlinkSync(p)}`);
+			} else if (st.isDirectory()) {
+				lines.push(`dir ${rel}/`);
+				walk(p);
+			} else if (st.isFile()) {
+				lines.push(`file ${rel} ${createHash("sha256").update(readFileSync(p)).digest("hex")}`);
+			}
+		}
+	}
+	walk(root);
+	return createHash("sha256").update(lines.join("\n")).digest("hex");
+}
