@@ -1,6 +1,7 @@
 import { ConfigError, configFile, loadConfig } from "../core/config.ts";
 import { applyQueueEnv } from "../core/queue/env.ts";
 import { runAdapterInstall } from "../adapters/omp/install.ts";
+import { runDoctor } from "../adapters/omp/doctor.ts";
 import { GUARD_USAGE, runGuard } from "./guard.ts";
 import { runInit } from "./init.ts";
 import { PORTED, runPorted } from "./commands.ts";
@@ -36,6 +37,7 @@ export function helpText(): string {
 		"  neurastream init              create config, index, notes, blockers, queue template, state dirs",
 		"  neurastream adapter install omp",
 		"                                link the omp extension under this HOME",
+		"  neurastream doctor            report hand-edited live files and a stale install",
 		"  neurastream config [--json]   print the merged config (defaults + file + env)",
 		"  neurastream guard <event> --json",
 		`                                (${GUARD_USAGE.slice(GUARD_USAGE.indexOf("(") + 1, -1)})`,
@@ -65,6 +67,7 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 			return 1;
 		}
 	}
+	if (cmd === "doctor") return runDoctor();
 	if (cmd === "guard") {
 		return runGuard(args[0] ?? "");
 	}

@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Config } from "./config.ts";
 
 function bin(name: string, cfg: Config): string {
@@ -40,5 +41,11 @@ export function mainStart(args: string[], cfg: Config): number {
 		while (lines.length && lines.at(-1) === "") lines.pop();
 		if (lines.length) console.log(lines.join("\n"));
 	} catch {}
+	console.log("=== doctor");
+	const cli = join(dirname(fileURLToPath(import.meta.url)), "../cli/main.ts");
+	const doctor = spawnSync(process.execPath, [cli, "doctor"], { encoding: "utf8", env: process.env });
+	const text = `${doctor.stdout ?? ""}${doctor.stderr ?? ""}`;
+	process.stdout.write(text.endsWith("\n") || text === "" ? text : `${text}\n`);
+	if (doctor.error) console.log(doctor.error.message);
 	return 0;
 }

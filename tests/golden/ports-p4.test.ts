@@ -599,7 +599,8 @@ test("main-start matches the original", () => {
 	chmodSync(oracle, 0o755);
 	const py = runBash(oracle, ["6"], env);
 	const port = runPort("main-start", ["6"], env);
-	expect(stripLoadavg(port.stdout)).toBe(stripLoadavg(py.stdout));
+	const portOut = port.stdout.replace(/=== doctor\n[\s\S]*$/, "");
+	expect(stripLoadavg(portOut)).toBe(stripLoadavg(py.stdout));
 	expect(port.stderr).toBe(py.stderr);
 	expect(port.code).toBe(py.code);
 });

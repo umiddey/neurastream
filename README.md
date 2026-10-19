@@ -24,3 +24,14 @@ neurastream config --json
 Compatibility bins keep today's names (`agent-score`, `agent-ledger`, `brief-lint`, `oc-run`, `wip-check`, `wip-backup`, `wip-snapshot`, `pm-fail-facts`, `main-health`, `queue-check`, `queue-close`, `queue-cancel`, `main-start`, `machine-guard`, `glm-reset`, `priority-watch`, `resource-alerts`, `tmp-snapshot`, `heavy-run`). They are the same program, selected by the bin name.
 
 Green is `bun run typecheck` and `bun test`, both exit 0.
+
+## Changing a script
+
+Edit the script in this repo. Green is `bun run typecheck` and `bun test`, both exit 0. Main tags the release. The publish workflow puts that tag on npm. Then:
+
+```sh
+bun add -g neurastream@latest
+neurastream adapter install omp
+```
+
+Live copies are never hand-edited. `neurastream doctor` names each hand-edited or foreign installed file, and a stale install (the installed version is not `npm view neurastream version`). If the registry cannot be reached, that check is a warning, not a failure.
