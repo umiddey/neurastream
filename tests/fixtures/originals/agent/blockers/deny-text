@@ -1,0 +1,14 @@
+#!/usr/bin/env python3
+r"""deny-text <regex>...: refuse writes/edits (and shell commands) whose new text matches any regex.
+Example: `- deny-text test\.skip requireObservation:\s*consumed`"""
+import os, re, sys
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from _blocker import ARGS, SHELL, WRITES, block, written_text
+
+if not ARGS:
+    block("deny-text needs at least one regex in the plan")
+if WRITES or SHELL:
+    text = written_text()
+    for rx in ARGS:
+        if re.search(rx, text):
+            block(f"new text matches forbidden pattern /{rx}/ (plan Forbidden list)")

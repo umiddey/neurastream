@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""wip-check: unlanded work across Main's repos (owner 2026-10-11: land before starting new work).
+
+Lists every local branch with commits on no remote, and every worktree with uncommitted changes.
+Exit 1 when unlanded branches exceed WIP_LIMIT (default 6) so the number cannot be ignored.
+Usage: wip-check [--limit N]
+"""
+import os, subprocess, sys, time
+
+# Every git checkout under these roots; worktrees of one repo are deduped by their common git dir.
+ROOTS = ["/home/ukd/Work", "/home/ukd/projects"]
+REPOS = sorted(
+    os.path.join(root, d) for root in ROOTS if os.path.isdir(root)
+    for d in os.listdir(root) if os.path.exists(os.path.join(root, d, ".git"))
+)
+limit = int(os.environ.get("WIP_LIMIT", "6"))
+if "--limit" in sys.argv:
+    limit = int(sys.argv[sys.argv.index("--limit") + 1])
+
+# Only branches touched in the last WIP_DAYS count as live work; older ones are history (--all shows them).
+days = 10**6 if "--all" in sys.argv else float(os.environ.get("WIP_DAYS", "14"))
+
+
+def git(repo, *args):
+    r = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+seen, unlanded, dirty = set(), [], []
+for repo in REPOS:
+    if not os.path.isdir(repo):
+        continue
+    common = os.path.realpath(os.path.join(repo, git(repo, "rev-parse", "--git-common-dir") or "."))
+    if common in seen:
+        continue
+    seen.add(common)
+    url = git(repo, "config", "remote.origin.url")
+    name = os.path.basename(url).removesuffix(".git") if url else os.path.basename(repo)
+    for line in git(repo, "for-each-ref", "--format=%(refname:short)\t%(committerdate:unix)\t%(objectname:short)", "refs/heads").splitlines():
+        br, ts, sha = line.split("\t")
+        if time.time() - int(ts) > days * 86400:
+            continue
+        n = git(repo, "rev-list", "--count", br, "--not", "--remotes")
+        if n and int(n) > 0:
+            unlanded.append((int(ts), name, br, sha, int(n)))
+    wt = None
+    for line in git(repo, "worktree", "list", "--porcelain").splitlines():
+        if line.startswith("worktree "):
+            wt = line[9:]
+        elif line == "bare":
+            wt = None
+        elif line == "" and wt:
+            wt = None
+        if wt and line.startswith("HEAD") and os.path.isdir(wt):
+            st = git(wt, "status", "--porcelain", "--untracked-files=no")
+            if st:
+                dirty.append((wt, len(st.splitlines())))
+
+now = time.time()
+unlanded.sort(reverse=True)
+print(f"UNLANDED branches (commits on no remote): {len(unlanded)}  limit {limit}")
+for ts, name, br, sha, n in unlanded:
+    age = (now - ts) / 3600
+    print(f"  {name:32} {br:48} {sha} +{n:<3} {age:6.1f}h old")
+print(f"DIRTY worktrees (uncommitted tracked changes): {len(dirty)}")
+for wt, n in dirty:
+    print(f"  {wt}  {n} files")
+if len(unlanded) > limit:
+    print(f"WIP OVER LIMIT: land, push or close branches before starting new work.")
+    sys.exit(1)

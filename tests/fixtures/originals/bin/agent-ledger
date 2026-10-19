@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+"""agent-ledger: per-agent tokens, list cost, state and how each run ended.
+
+Reads omp session jsonl files (default: every session dir modified in the last N hours).
+Shows dead agents (last error) so a crash or quota stop is seen at once, not by the owner.
+Usage: agent-ledger [--hours 24] [--all]
+"""
+import glob, json, os, sys, time
+
+hours = 24.0
+if "--hours" in sys.argv:
+    hours = float(sys.argv[sys.argv.index("--hours") + 1])
+root = os.path.expanduser("~/.omp/agent/sessions")
+cut = time.time() - hours * 3600
+rows = []
+# Main sessions live at sessions/<project>/<session>.jsonl, subagents one level deeper.
+for f in glob.glob(f"{root}/*/*.jsonl") + glob.glob(f"{root}/*/*/*.jsonl"):
+    mt = os.path.getmtime(f)
+    if mt < cut:
+        continue
+    name = os.path.basename(f)[:-6]
+    if name[:4].isdigit():
+        name = "MAIN " + name[11:19]
+    model, calls, tok, cache, cost, err, exited, yielded, waiting = "?", 0, 0, 0, 0.0, "", False, False, ""
+    try:
+        with open(f, errors="replace") as fh:
+            for line in fh:
+                try:
+                    d = json.loads(line)
+                except ValueError:
+                    continue
+                if d.get("customType") == "session_exit":
+                    exited = True
+                if d.get("customType") == "tool_execution_start":
+                    dd = d.get("data", {})
+                    waiting = ("WAITING: " + str(dd.get("intent", ""))[:40]) if dd.get("toolName") == "wait" else ""
+                m = d.get("message", d)
+                if not isinstance(m, dict):
+                    continue
+                if m.get("role") == "assistant":
+                    exited = yielded = False  # activity after an earlier exit/yield = resumed run
+                if m.get("role") == "toolResult":
+                    waiting = ""
+                if m.get("role") == "toolResult" and m.get("toolName") == "yield" and not m.get("isError"):
+                    yielded = True
+                if m.get("model") and m.get("provider"):
+                    model = f'{m["provider"]}/{m["model"]}'
+                elif isinstance(m.get("model"), str) and "/" in m["model"]:
+                    model = m["model"]
+                u = m.get("usage")
+                if isinstance(u, dict) and "totalTokens" in u:
+                    calls += 1
+                    tok += u.get("totalTokens", 0)
+                    cache += u.get("cacheRead", 0)
+                    c = u.get("cost")
+                    cost += c.get("total", 0) if isinstance(c, dict) else 0
+                if m.get("errorMessage"):
+                    err = m["errorMessage"].splitlines()[0][:90]
+                elif m.get("role") == "assistant" and m.get("stopReason") in ("stop", "end_turn", "toolUse"):
+                    err = ""
+    except OSError:
+        continue
+    # done = last act was a successful yield (resumed activity resets `yielded`); RUNNING = no session_exit yet
+    # (an omp subagent writes nothing while blocked in `wait`: shown as WAITING + idle minutes).
+    if yielded and not name.startswith("MAIN"):
+        state = "done"
+    elif not exited and not err:
+        idle = int((time.time() - mt) // 60)
+        state = (waiting or "RUNNING") + (f" (idle {idle}m)" if idle >= 5 else "")
+    elif name.startswith("MAIN"):
+        state = "done"
+    else:
+        state = "DIED: " + (err or "exited without a result")
+    # Short-context rule (owner 2026-10-13, GLM quota burn; limit 100 since owner 2026-10-15): a live subagent past 100 calls must be replaced by a fresh one.
+    if state.startswith(("RUNNING", "WAITING")) and not name.startswith("MAIN") and calls > 100:
+        state += f" OVER-BUDGET({calls}>100 calls)"
+    rows.append((mt, name, model, calls, tok, cache, cost, state))
+
+rows.sort()
+tt = sum(r[4] for r in rows)
+tc = sum(r[6] for r in rows)
+print(f"{'agent':28} {'model':38} {'calls':>5} {'Mtok':>7} {'cache%':>6} {'$list':>7} last-write  ended")
+for mt, name, model, calls, tok, cache, cost, state in rows:
+    if calls == 0 and "--all" not in sys.argv:
+        continue
+    pct = 100 * cache / tok if tok else 0
+    print(f"{name[:28]:28} {model[:38]:38} {calls:5} {tok/1e6:7.1f} {pct:5.0f}% {cost:7.2f} {time.strftime('%m-%d %H:%M', time.localtime(mt))} {state}")
+print(f"TOTAL {tt/1e6:.1f} Mtok, ${tc:.2f} list: whole-run totals of sessions active in the last {hours:g}h")
+
+# --cap: provider-cap check before a spawn (owner 2026-10-11: max 2 running per PROVIDER).
+# "Running" = no session_exit record yet. Optional --provider/--slots checks a planned spawn.
+if "--cap" in sys.argv:
+    live = {}
+    for mt, name, model, calls, tok, cache, cost, state in rows:
+        if state.startswith(("RUNNING", "WAITING")) and not name.startswith("MAIN"):
+            live.setdefault(model.split("/")[0], []).append(name)
+    print("running per provider:", {k: len(v) for k, v in live.items()})
+    full = [k for k, v in live.items() if len(v) >= 2]
+    for k in full:
+        print(f"FULL {k}: {', '.join(live[k])}")
+    over = [r[1] for r in rows if "OVER-BUDGET" in r[7]]
+    if over:
+        print(f"OVER-BUDGET: {', '.join(over)} past 100 calls: stop them (report + fresh agent with tight brief) before spawning more")
+    if "--provider" in sys.argv:
+        try:
+            provider = sys.argv[sys.argv.index("--provider") + 1]
+            slots = int(sys.argv[sys.argv.index("--slots") + 1]) if "--slots" in sys.argv else 1
+        except (IndexError, ValueError):
+            sys.exit("Invalid --provider/--slots arguments")
+        if provider not in {"zai", "openai-codex", "anthropic", "xai-oauth", "google-antigravity", "openrouter", "opencode-zen"} or not 1 <= slots <= 2:
+            sys.exit("Invalid provider or slot count")
+        full = [provider] if len(live.get(provider, [])) + slots > 2 else []
+        print(f"planned provider: {provider}, current={len(live.get(provider, []))}, slots={slots}, allowed={not full}")
+    # Priority check: a queued plan (<repo>/.queue/*.md of a repo in ~/.omp/agent/INDEX) may carry a line
+    # `PRIORITY-ID: <ID>` (ID = 2 capital letters + 2 digits, e.g. PR01). Every such ID needs a running agent whose
+    # name contains the ID verbatim (e.g. PR01GlmPmBucketC); otherwise the spawn is refused unless `--priority` marks
+    # it as that work. IDs, not words, so "Pm" in an unrelated name cannot count. Plans parked "WAITING on owner" are skipped.
+    import os, subprocess
+    qc = subprocess.run([os.path.expanduser("~/.local/bin/queue-check"), "--priority-ids"], capture_output=True, text=True)
+    if qc.returncode != 0:
+        sys.exit(f"queue-check --priority-ids failed: {qc.stderr.strip()}")
+    ids = qc.stdout.split()
+    names = [n for v in live.values() for n in v]
+    idle_ids = [i for i in dict.fromkeys(ids) if not any(i in n for n in names)]
+    prio_idle = bool(idle_ids) and "--priority" not in sys.argv
+    if prio_idle:
+        print(f"PRIORITY IDLE: no running agent for {', '.join(idle_ids)} (owner queue PRIORITY-ID). Start it first (name must contain the ID), or spawn it with --priority.")
+    sys.exit(1 if full or prio_idle or over else 0)

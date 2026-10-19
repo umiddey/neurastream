@@ -1,0 +1,312 @@
+#!/usr/bin/env python3
+"""agent-score: rank subagent workers by CORRECT work per dollar and per hour (owner 2026-10-16, AGENTS.md line 16).
+
+Points come only from work Main accepted, weighted by the plan phase's `difficulty: N` (set at plan time).
+Cost = the worker's own list cost + Main's steering cost (Main tokens spent on turns that mention the agent).
+
+  agent-score accept <Agent> --plan <plan.md> --phase P2 --commits <sha,sha|a..b> [--repo R] [--branch B] [--weight N] [--rework] [--note T]
+        commits must be ancestors of --branch (default pm/pr01-counts in /home/ukd/Work/pm-counts); --rework = needed fixes by Main/another agent
+  agent-score diagnose <Agent> --plan <plan.md> --phase P --evidence <file> [--weight N]
+        a real product bug found and recorded (no commit needed); default weight 4
+  agent-score penalty <Agent> --kind false-claim|rule-break|escaped-defect --note T [--plan <plan.md>]
+  agent-score exempt <sha,...> --note T [--repo R]          commits that are Main's own (merges, rebuilds), not a worker's
+  agent-score check [--repo R] [--branch B]                 exit 1 = commits on the branch since the base with no accept/exempt record
+  agent-score base <sha> [--repo R] [--branch B]            set where `check` starts (one-time per branch)
+  agent-score board [--days 7]                              print the ranking and write ~/.omp/agent/notes/subagent-ranking.md
+  agent-score gate <Agent-or-model>                         before a spawn: WARN when the chosen worker ranks below another worker (never blocks)
+  oc-run <Agent> -- <PLAN=... opencode run ...>             (separate wrapper) logs OpenCode runs, which agent-ledger cannot see
+"""
+import glob, json, os, re, subprocess, sys, time
+
+STATE = os.path.expanduser("~/.local/state/agent-score")
+EVENTS = f"{STATE}/events.jsonl"
+OCLOG = f"{STATE}/oc-runs.jsonl"
+BOARD = os.path.expanduser("~/.omp/agent/notes/subagent-ranking.md")
+SESS = os.path.expanduser("~/.omp/agent/sessions")
+DEF_REPO, DEF_BRANCH = "/home/ukd/Work/pm-counts", "pm/pr01-counts"
+PENALTY = {"false-claim": 5, "rule-break": 2, "escaped-defect": 8}
+os.makedirs(STATE, exist_ok=True)
+
+
+def opt(name, default=None, args=sys.argv):
+    if name in args:
+        i = args.index(name)
+        if i + 1 >= len(args):
+            sys.exit(f"{name} needs a value")
+        return args[i + 1]
+    return default
+
+
+def events():
+    if not os.path.exists(EVENTS):
+        return []
+    return [json.loads(l) for l in open(EVENTS) if l.strip()]
+
+
+def record(ev):
+    ev["ts"] = time.time()
+    with open(EVENTS, "a") as f:
+        f.write(json.dumps(ev) + "\n")
+    print("recorded:", json.dumps(ev))
+
+
+def git(repo, *a):
+    return subprocess.run(["git", "-C", repo, *a], capture_output=True, text=True)
+
+
+def expand_commits(repo, spec):
+    out = []
+    for part in spec.split(","):
+        part = part.strip()
+        if ".." in part:
+            r = git(repo, "rev-list", "--no-merges", part)
+            if r.returncode:
+                sys.exit(f"bad range {part}: {r.stderr.strip()}")
+            out += r.stdout.split()
+        else:
+            r = git(repo, "rev-parse", "--verify", part + "^{commit}")
+            if r.returncode:
+                sys.exit(f"unknown commit {part}")
+            out.append(r.stdout.strip())
+    if not out:
+        sys.exit("no commits given")
+    return out
+
+
+def phase_difficulty(plan, phase):
+    if not os.path.exists(plan):
+        sys.exit(f"plan not found: {plan}")
+    for line in open(plan):
+        if re.match(rf"^- \[[ xX]\] {re.escape(phase)}\b", line):
+            m = re.search(r"difficulty:\s*(\d+)", line)
+            return int(m.group(1)) if m else None
+    sys.exit(f"phase {phase} not found in {plan}")
+
+
+def weight_for(plan, phase, default=None):
+    w = opt("--weight")
+    if w is not None:
+        return int(w), "flag"
+    d = phase_difficulty(plan, phase)
+    if d is not None:
+        return d, "plan"
+    if default is not None:
+        return default, "default"
+    sys.exit(f"{phase} in {plan} has no `difficulty: N`; pass --weight N (1 mechanical, 2 rules, 3 new spec, 4 root-cause, 5 product fix, 8 engine)")
+
+
+# ---------- run data: omp subagent sessions + oc-run log ----------
+def omp_runs(cut):
+    runs, mains = {}, []
+    for f in glob.glob(f"{SESS}/*/*.jsonl") + glob.glob(f"{SESS}/*/*/*.jsonl"):
+        if os.path.getmtime(f) < cut:
+            continue
+        name = os.path.basename(f)[:-6]
+        is_main = name[:4].isdigit()
+        model, cost, first, last, err, exited, yielded, final = "?", 0.0, None, None, "", False, False, False
+        msgs = []
+        for line in open(f, errors="replace"):
+            try:
+                d = json.loads(line)
+            except ValueError:
+                continue
+            ts = d.get("timestamp")
+            if isinstance(ts, str):
+                try:
+                    t = time.mktime(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S")) - time.timezone
+                    first, last = first or t, t
+                except ValueError:
+                    pass
+            if d.get("customType") == "session_exit":
+                exited = True
+            m = d.get("message", d)
+            if not isinstance(m, dict):
+                continue
+            if m.get("role") == "assistant":
+                exited = yielded = False
+                texts = [c.get("text", "") for c in m.get("content", []) if isinstance(c, dict) and c.get("type") == "text"]
+                final = m.get("stopReason") in ("stop", "end_turn") and any(t.strip() for t in texts)
+            if m.get("role") == "toolResult" and m.get("toolName") == "yield" and not m.get("isError"):
+                yielded = True
+            if m.get("model") and m.get("provider"):
+                model = f'{m["provider"]}/{m["model"]}'
+            u = m.get("usage")
+            c = u.get("cost", {}).get("total", 0) if isinstance(u, dict) and isinstance(u.get("cost"), dict) else 0
+            cost += c
+            if m.get("errorMessage"):
+                err = m["errorMessage"].splitlines()[0][:80]
+            elif m.get("role") == "assistant" and m.get("stopReason") in ("stop", "end_turn", "toolUse"):
+                err = ""
+            if is_main:
+                msgs.append((m.get("role"), c, json.dumps(m.get("content", ""))[:20000]))
+        if is_main:
+            mains.append(msgs)
+            continue
+        done = yielded or final
+        running = not exited and not err and not done
+        runs[name] = {"model": model, "cost": cost, "hours": ((last or 0) - (first or 0)) / 3600,
+                      "survived": done and not err, "running": running, "end": err or ("done" if done else "no final message")}
+    if os.path.exists(OCLOG):
+        for l in open(OCLOG):
+            r = json.loads(l)
+            if r.get("end", r["start"]) < cut:
+                continue
+            runs[r["agent"]] = {"model": r["model"], "cost": 0.0, "hours": (r.get("end", time.time()) - r["start"]) / 3600,
+                                "survived": r.get("exit") == 0 and r.get("final", False), "running": "end" not in r,
+                                "end": "running" if "end" not in r else f"exit {r.get('exit')}"}
+    return runs, mains
+
+
+def steering(runs, mains):
+    """Main's cost per agent: each Main assistant turn is split over the agents named in it or in the message before it."""
+    names = sorted(runs, key=len, reverse=True)
+    out = {n: 0.0 for n in runs}
+    for msgs in mains:
+        prev = ""
+        for role, cost, text in msgs:
+            if role == "assistant" and cost:
+                hit = [n for n in names if n in text or n in prev]
+                for n in hit:
+                    out[n] += cost / len(hit)
+            if role != "assistant":
+                prev = text
+    return out
+
+
+def table(days):
+    cut = time.time() - days * 86400
+    runs, mains = omp_runs(cut)
+    steer = steering(runs, mains)
+    evs = [e for e in events() if e["ts"] >= cut]
+    agent_model = {n: r["model"] for n, r in runs.items()}
+    rows = {}
+    for n, r in runs.items():
+        m = rows.setdefault(r["model"], dict(runs=0, done=0, running=0, cost=0.0, steer=0.0, hours=0.0, pts=0, acc=0, first=0, pen=0, diag=0))
+        m["runs"] += 1
+        m["running"] += r["running"]
+        m["done"] += r["survived"]
+        m["cost"] += r["cost"]
+        m["steer"] += steer.get(n, 0)
+        m["hours"] += max(r["hours"], 0)
+    for e in evs:
+        model = e.get("model") or agent_model.get(e["agent"], "?")
+        m = rows.setdefault(model, dict(runs=0, done=0, running=0, cost=0.0, steer=0.0, hours=0.0, pts=0, acc=0, first=0, pen=0, diag=0))
+        if e["type"] in ("accept", "diagnose"):
+            m["pts"] += e["weight"]
+            m["acc"] += 1
+            m["first"] += not e.get("rework", False)
+            m["diag"] += e["type"] == "diagnose"
+        elif e["type"] == "penalty":
+            m["pen"] += PENALTY[e["kind"]]
+    out = []
+    for model, m in rows.items():
+        net = m["pts"] - m["pen"]
+        total = m["cost"] + m["steer"]
+        finished = m["runs"] - m["running"]
+        surv = m["done"] / finished if finished else None
+        out.append(dict(model=model, net=net, total=total, ppd=(net / total) if total > 0.01 else None,
+                        pph=(net / m["hours"]) if m["hours"] > 0.05 else None, surv=surv,
+                        fp=(m["first"] / m["acc"]) if m["acc"] else None, **m))
+    out.sort(key=lambda r: (-(r["ppd"] if r["ppd"] is not None else -1e9), -(r["pph"] or 0)))
+    return out, runs
+
+
+def fmt(v, f):
+    return "-" if v is None else f.format(v)
+
+
+def board(days):
+    rows, _ = table(days)
+    lines = [f"# Subagent ranking board (GENERATED by `agent-score board --days {days:g}`; do not hand-edit)",
+             f"Updated {time.strftime('%Y-%m-%d %H:%M')}. Rank = net points per $ (worker list cost + Main steering cost), then points per run-hour.",
+             "Points = accepted work x plan difficulty (1 mechanical, 2 rules, 3 new spec, 4 root-cause, 5 product fix, 8 engine) minus penalties "
+             "(false-claim 5, rule-break 2, escaped-defect 8). Survival = finished runs that ended with a final result. Steering is approximate "
+             "(Main turns naming the agent).", "",
+             "| # | Worker model | Runs (live) | Survival | Accepted (diag) | First-pass | Net pts | $ worker | $ steering | pts/$ | pts/h |",
+             "|---|---|---|---|---|---|---|---|---|---|---|"]
+    for i, r in enumerate(rows, 1):
+        lines.append(f"| {i} | {r['model']} | {r['runs']} ({r['running']}) | {fmt(r['surv'], '{:.0%}')} | {r['acc']} ({r['diag']}) | "
+                     f"{fmt(r['fp'], '{:.0%}')} | {r['net']} | {r['cost']:.2f} | {r['steer']:.2f} | {fmt(r['ppd'], '{:.1f}')} | {fmt(r['pph'], '{:.1f}')} |")
+    text = "\n".join(lines) + "\n"
+    open(BOARD, "w").write(text)
+    print(text)
+
+
+def covered(repo):
+    s = set()
+    for e in events():
+        if e.get("repo") == repo:
+            s.update(e.get("commits", []))
+    return s
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
+        print(__doc__)
+        return
+    cmd = sys.argv[1]
+    repo = opt("--repo", DEF_REPO)
+    branch = opt("--branch", DEF_BRANCH)
+    if cmd == "accept":
+        agent, plan, phase = sys.argv[2], opt("--plan"), opt("--phase")
+        if not (plan and phase and opt("--commits")):
+            sys.exit("accept needs --plan, --phase, --commits")
+        commits = expand_commits(repo, opt("--commits"))
+        bad = [c[:10] for c in commits if git(repo, "merge-base", "--is-ancestor", c, branch).returncode]
+        if bad:
+            sys.exit(f"refused: not on {branch} yet (merge first): {' '.join(bad)}")
+        w, src = weight_for(plan, phase)
+        units = int(opt("--units", "1"))
+        record(dict(type="accept", agent=agent, plan=plan, phase=phase, weight=w * units, unit_weight=w, units=units, weight_src=src,
+                    repo=repo, branch=branch, commits=commits, rework="--rework" in sys.argv, note=opt("--note", "")))
+    elif cmd == "diagnose":
+        agent, plan, phase, ev = sys.argv[2], opt("--plan"), opt("--phase"), opt("--evidence")
+        if not (plan and phase and ev and os.path.exists(ev)):
+            sys.exit("diagnose needs --plan, --phase and an existing --evidence file")
+        w, src = weight_for(plan, phase, default=4) if opt("--weight") else (4, "default")
+        record(dict(type="diagnose", agent=agent, plan=plan, phase=phase, weight=w, weight_src=src, evidence=ev, note=opt("--note", "")))
+    elif cmd == "penalty":
+        kind = opt("--kind")
+        if kind not in PENALTY or not opt("--note"):
+            sys.exit(f"penalty needs --kind {'|'.join(PENALTY)} and --note")
+        record(dict(type="penalty", agent=sys.argv[2], kind=kind, plan=opt("--plan", ""), note=opt("--note")))
+    elif cmd == "exempt":
+        if not opt("--note"):
+            sys.exit("exempt needs --note")
+        record(dict(type="exempt", agent="MAIN", repo=repo, commits=expand_commits(repo, sys.argv[2]), note=opt("--note")))
+    elif cmd == "base":
+        sha = expand_commits(repo, sys.argv[2])[0]
+        record(dict(type="base", agent="MAIN", repo=repo, branch=branch, base=sha))
+    elif cmd == "check":
+        bases = [e for e in events() if e["type"] == "base" and e["repo"] == repo and e["branch"] == branch]
+        if not bases:
+            sys.exit(f"no base for {repo} {branch}: run `agent-score base <sha> --repo {repo} --branch {branch}` once")
+        r = git(repo, "rev-list", "--no-merges", f"{bases[-1]['base']}..{branch}")
+        if r.returncode:
+            sys.exit(r.stderr.strip())
+        cov = covered(repo)
+        miss = [c for c in r.stdout.split() if c not in cov]
+        for c in miss:
+            print("UNSCORED", git(repo, "log", "-1", "--format=%h %s", c).stdout.strip())
+        print(f"{branch}: {len(r.stdout.split())} commits since base, {len(miss)} unscored")
+        sys.exit(1 if miss else 0)
+    elif cmd == "board":
+        board(float(opt("--days", "7")))
+    elif cmd == "gate":
+        who = sys.argv[2]
+        allrows, runs = table(7)
+        target = runs.get(who, {}).get("model", who)
+        rows = [r for r in allrows if r["acc"]]
+        ranked = [r["model"] for r in rows]
+        mine = next((i for i, m in enumerate(ranked) if target in m), None)
+        if mine is None:
+            print(f"gate: {target} has no accepted work in 7 days (unrated)")
+        elif mine > 0:
+            print(f"WARN gate: {ranked[mine]} ranks #{mine + 1}; better-ranked: {', '.join(ranked[:mine])}. Use one of those if available, or say why not.")
+        else:
+            print(f"gate: {ranked[mine]} ranks #1")
+    else:
+        sys.exit(f"unknown command {cmd}; see agent-score --help")
+
+
+main()

@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# main-start: Main's session-start and status preflight in ONE call (owner 2026-10-11: deterministic, not memory).
+# Prints: machine health, every agent of the last N hours with how it ended (DIED lines first),
+# unlanded work, and the queue (INDEX repos + their plans, via queue-check). Run at session start, after every wake-up from a
+# kill/abort, and before every status report.  Usage: main-start [hours=12]
+h="${1:-12}"
+echo "=== machine"; ~/.local/bin/machine-guard | tail -1; cat /proc/loadavg
+echo; echo "=== agents (last ${h}h; DIED = check its worktree, relaunch FRESH with its progress file)"
+~/.local/bin/agent-ledger --hours "$h" | awk 'NR==1 || /DIED/ {print; next} {ok[++n]=$0} END {for (i=1;i<=n;i++) print ok[i]}'
+~/.local/bin/agent-ledger --cap 2>/dev/null | grep -E "^(PRIORITY IDLE|FULL)" || true
+echo; echo "=== main thread"; ~/.local/bin/main-health
+echo; echo "=== queue"; ~/.local/bin/queue-check || true
+echo; echo "=== heavy-run lock"; cat /home/ukd/Work/.heavy-run.lock 2>/dev/null | head -2 || true

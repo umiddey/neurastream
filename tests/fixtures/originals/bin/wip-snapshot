@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+"""wip-snapshot: save every uncommitted change in every worktree as a hidden git commit.
+
+Owner 2026-10-11: "how are you ensuring unfinished work is at least committed?"
+For each worktree under ROOTS with tracked changes or new (non-ignored) files, build a commit
+from a TEMPORARY index (parent = HEAD) and store it at refs/wip/<worktree>/<stamp>.
+The working tree, the real index, HEAD and every branch stay untouched, so it is safe while
+agents work. Skips a worktree whose content equals its last snapshot. New files > MAX_MB skipped.
+Writes ~/Work/WIP-STATUS.md (wip-check output + snapshot list).
+Restore: git -C <wt> restore --source=<ref> --worktree -- <paths or .>   |   list: git for-each-ref refs/wip
+Usage: wip-snapshot [--quiet]
+"""
+import os, re, subprocess, sys, tempfile, time, shutil
+
+ROOTS = ["/home/ukd/Work", "/home/ukd/projects"]
+MAX_MB = float(os.environ.get("WIP_SNAPSHOT_MAX_MB", "5"))
+# Owner order 2026-10-11: never a password on git. New (untracked) credential files and
+# harness env/caches never enter a snapshot; git-secret-gate still scans what is pushed.
+SECRET_FILE = re.compile(r"(?i)(^|/)(\.env(\.(?!example$|sample$|template$|dist$)[\w-]+)?|[^/]*\.env|env\.json"
+                         r"|[^/]*\.(pem|p12|pfx|jks|keystore|key)|id_(rsa|dsa|ecdsa|ed25519)|credentials(\.json)?"
+                         r"|\.netrc|\.pgpass|\.htpasswd|local-run\.env)$|(^|/)\.gateforge/test-gates/")
+STATUS = "/home/ukd/Work/WIP-STATUS.md"
+stamp = time.strftime("%Y%m%d-%H%M")
+
+
+def git(cwd, *args, env=None, inp=None):
+    r = subprocess.run(["git", "-C", cwd, *args], capture_output=True, env=env, input=inp)
+    return r.returncode, r.stdout.decode(errors="replace").strip()
+
+
+repos = sorted(os.path.join(r, d) for r in ROOTS if os.path.isdir(r)
+               for d in os.listdir(r) if os.path.exists(os.path.join(r, d, ".git")))
+seen, worktrees = set(), []
+for repo in repos:
+    _, common = git(repo, "rev-parse", "--git-common-dir")
+    common = os.path.realpath(os.path.join(repo, common or "."))
+    if common in seen:
+        continue
+    seen.add(common)
+    _, out = git(repo, "worktree", "list", "--porcelain")
+    for line in out.splitlines():
+        if line.startswith("worktree ") and os.path.isdir(line[9:]):
+            worktrees.append(line[9:])
+
+saved, same, failed = [], 0, []
+for wt in worktrees:
+    rc, head = git(wt, "rev-parse", "--verify", "HEAD")
+    if rc:
+        continue
+    rc, st = git(wt, "status", "--porcelain")
+    if rc or not st:
+        continue
+    _, gitdir = git(wt, "rev-parse", "--absolute-git-dir")
+    tmpdir = tempfile.mkdtemp(prefix="wip-snap-")
+    try:
+        idx = os.path.join(tmpdir, "index")
+        if os.path.exists(os.path.join(gitdir, "index")):
+            shutil.copy(os.path.join(gitdir, "index"), idx)
+        env = dict(os.environ, GIT_INDEX_FILE=idx)
+        git(wt, "add", "-u", env=env)
+        _, untracked = git(wt, "ls-files", "-o", "--exclude-standard", "-z")
+        keep, skipped = [], 0
+        for p in filter(None, untracked.split("\0")):
+            fp = os.path.join(wt, p)
+            if SECRET_FILE.search(p) or (os.path.isfile(fp) and not os.path.islink(fp)
+                                         and os.path.getsize(fp) > MAX_MB * 2**20):
+                skipped += 1
+            else:
+                keep.append(p)
+        if keep:
+            git(wt, "add", "--pathspec-from-file=-", "--pathspec-file-nul", env=env, inp="\0".join(keep).encode())
+        rc, tree = git(wt, "write-tree", env=env)
+        if rc:
+            failed.append(wt)
+            continue
+        _, head_tree = git(wt, "rev-parse", "HEAD^{tree}")
+        if tree == head_tree:
+            continue
+        key = wt.replace("/home/ukd/", "").replace("/", "_")
+        _, last = git(wt, "for-each-ref", "--sort=-refname", "--count=1", "--format=%(objectname)", f"refs/wip/{key}/")
+        if last:
+            _, last_tree = git(wt, "rev-parse", f"{last}^{{tree}}")
+            if last_tree == tree:
+                same += 1
+                continue
+        _, branch = git(wt, "branch", "--show-current")
+        rc, commit = git(wt, "commit-tree", tree, "-p", head, "-m",
+                         f"wip-snapshot {stamp} {wt} ({branch or 'detached'}); skipped {skipped} new files > {MAX_MB}MB")
+        if rc or git(wt, "update-ref", f"refs/wip/{key}/{stamp}", commit)[0]:
+            failed.append(wt)
+            continue
+        saved.append((wt, branch or "detached", len(st.splitlines()), skipped, f"refs/wip/{key}/{stamp}"))
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+wc = subprocess.run(["wip-check"], capture_output=True, text=True).stdout
+lines = [f"# WIP status {time.strftime('%Y-%m-%d %H:%M')}", "",
+         f"Snapshot: {len(saved)} new, {same} unchanged since last, {len(failed)} failed.", "",
+         "Every uncommitted change is saved as a hidden commit (refs/wip/...); nothing in the",
+         "worktrees changed. Restore one: `git -C <worktree> restore --source=<ref> --worktree -- .`.", ""]
+for wt, br, n, sk, ref in saved:
+    lines.append(f"- {wt} [{br}] {n} changed paths -> `{ref}`" + (f" ({sk} big new files NOT saved)" if sk else ""))
+for wt in failed:
+    lines.append(f"- FAILED: {wt}")
+lines += ["", "```", wc.rstrip(), "```", ""]
+with open(STATUS, "w") as f:
+    f.write("\n".join(lines))
+if "--quiet" not in sys.argv:
+    print("\n".join(lines[:8 + len(saved) + len(failed)]))
+sys.exit(1 if failed else 0)

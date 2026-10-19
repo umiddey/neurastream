@@ -1,0 +1,13 @@
+#!/usr/bin/env python3
+r"""deny-command <regex>...: refuse shell/eval commands matching any regex (use \s for spaces).
+Example: `- deny-command test\.skip --no-verify`"""
+import os, re, sys
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from _blocker import ARGS, COMMAND, SHELL, block
+
+if not ARGS:
+    block("deny-command needs at least one regex in the plan")
+if SHELL:
+    for rx in ARGS:
+        if re.search(rx, COMMAND):
+            block(f"command matches forbidden pattern /{rx}/ (plan Forbidden list)")

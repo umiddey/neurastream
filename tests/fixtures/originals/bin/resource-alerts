@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Resource alert check (invoked by systemd timer every minute).
+# Alerts via desktop notification when CPU temp / memory PSI / IO PSI
+# exceed thresholds. Re-alerts at most once per COOLDOWN per metric.
+set -u
+
+THRESH_TEMP=90   # °C (Tctl)
+THRESH_MEM=30    # PSI mem "some" avg10 %
+THRESH_IO=40     # PSI io "full" avg10 %
+COOLDOWN=600     # seconds between repeat alerts per metric
+
+STATE_DIR="$HOME/.cache/resource-alerts"
+mkdir -p "$STATE_DIR"
+
+# Send an alert unless we alerted for this metric recently.
+alert() {  # $1: metric key, $2: summary, $3: body
+    local last now
+    last=$(cat "$STATE_DIR/$1" 2>/dev/null || echo 0)
+    now=$(date +%s)
+    if (( now - last >= COOLDOWN )); then
+        echo "$now" > "$STATE_DIR/$1"
+        notify-send -u critical -a "resource-alerts" "$2" "$3" || true
+    fi
+}
+
+temp=$(sensors -u 2>/dev/null | awk '$1=="Tctl:"{f=1} f && /temp1_input/{print int($2); exit}')
+mem=$(awk '/^some avg10/{print int($2)}' /proc/pressure/memory 2>/dev/null)
+io=$(awk '/^full avg10/{print int($2)}' /proc/pressure/io 2>/dev/null)
+
+[[ "$temp" =~ ^[0-9]+$ ]] && (( temp > THRESH_TEMP )) && \
+    alert temp "CPU overheating: ${temp}°C" "Tctl above ${THRESH_TEMP}°C — check fans/load"
+[[ "$mem"  =~ ^[0-9]+$ ]] && (( mem  > THRESH_MEM  )) && \
+    alert mem "Memory pressure: ${mem}%" "PSI some avg10 above ${THRESH_MEM}% — OOM/freeze risk"
+[[ "$io"   =~ ^[0-9]+$ ]] && (( io   > THRESH_IO   )) && \
+    alert io "IO pressure: ${io}%" "PSI full avg10 above ${THRESH_IO}% — disk stall in progress"
+
+exit 0

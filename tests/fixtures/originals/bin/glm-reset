@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# GLM (zai) 429 messages give the reset time in BEIJING time (UTC+8), NOT local time.
+# Usage: glm-reset "2026-10-09 14:03:41"   (paste the time from the 429 message)
+# Prints the reset in LOCAL time and how long from now.
+set -euo pipefail
+[[ $# -ge 1 ]] || { echo 'usage: glm-reset "YYYY-MM-DD HH:MM[:SS]" (time from the GLM 429 message)' >&2; exit 2; }
+epoch=$(TZ=Asia/Shanghai date -d "$*" +%s)
+now=$(date +%s)
+local_t=$(date -d "@$epoch" '+%Y-%m-%d %H:%M:%S %Z')
+if (( epoch <= now )); then
+  echo "GLM reset (local): $local_t — ALREADY BACK ($(( (now - epoch) / 60 )) min ago). Use GLM now."
+else
+  d=$(( epoch - now )); echo "GLM reset (local): $local_t — in $(( d / 3600 ))h $(( d % 3600 / 60 ))m"
+fi

@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""brief-lint: refuse a subagent brief that misses a rule Main keeps forgetting.
+
+Owner 2026-10-11: what can be checked deterministically is checked by a script, not by memory.
+Run on every brief file BEFORE spawning; exit 1 = fix the brief first.
+Usage: brief-lint <brief.md> [<brief.md> ...]
+"""
+import os, re, sys
+
+OUTPUT_HINT = re.compile(r"(report|progress|review|handoff|log|brief)[\w\-]*\.(md|log|txt|json)$|\.log$")
+
+
+def lint(path):
+    text = open(path, errors="replace").read()
+    low = text.lower()
+    errs, warns = [], []
+
+    def need(cond, msg):
+        if not cond:
+            errs.append(msg)
+
+    need("opus-implementer-method.md" in text, "missing: 'Read /home/ukd/projects/opus-implementer-method.md first'")
+    need(re.search(r"^#+[^\n]*(acceptance|done|report)|acceptance:|^done\s*=|^\d+\.\s*report\b", text, re.I | re.M), "missing: Acceptance/Done/Report section (observable result on the real target)")
+    need(re.search(r"never push|no push|not push|never `?git push", low), "missing: 'never push' line")
+    need("find" in low and "broken" in low, "missing: '`find` is broken: use grep/glob/read' note")
+    heavy = re.search(r"pytest|vitest|playwright|run-raw|run-batch|full suite|\bsuite\b", low)
+    if heavy:
+        need("heavy-run.sh" in text, "runs tests/suites but never names /home/ukd/Work/heavy-run.sh")
+    vitest_lines = [l for l in low.splitlines() if "vitest" in l and not re.search(r"not needed|no vitest", l)]
+    if vitest_lines and re.search(r"gateforge|witness|\bgf-", text.splitlines()[0], re.I):
+        need("typecheck" in low, "Gateforge green = vitest exit 0 AND `npm run typecheck` exit 0: typecheck missing")
+    plan_only = re.search(r"plan only|read-only review|CI fix|\bdelete\b", text.splitlines()[0], re.I)
+    if "test-map" in low and not plan_only:
+        m = re.search(r"^Probe:\s*(\S+)", text, re.M)
+        if re.search(r"^#+\s*probe first", text, re.I | re.M) and not m:
+            pass  # the agent runs the probe itself and must stop on 0 satisfied; brief says so in that section
+        elif not m:
+            errs.append("coverage batch without 'Probe: <log>' line: run ONE witnessed probe that SATISFIES its claims first (lesson 2026-10-10: 0/255)")
+        elif not os.path.exists(m.group(1)):
+            errs.append(f"Probe log does not exist: {m.group(1)}")
+        elif "satisfied" not in open(m.group(1), errors="replace").read().lower():
+            errs.append(f"Probe log shows no 'satisfied' claim: {m.group(1)}")
+    # Lesson 2026-10-14: PM red-list rounds 11-14 made tests green while gate missing rose 169->226->256.
+    # Any PM/CP coverage brief must quote the gate's own missing count and require before->after in the report.
+    if re.search(r"aetherios-property-management|pm-pr01|\bPR01\b|contractor.portal|cp-", text) and not plan_only and re.search(r"test-map|obligation|gateforge check|coverage", low):
+        need(re.search(r"^Gate before:\s*\d+\s+missing", text, re.M | re.I),
+             "PM/CP coverage brief without 'Gate before: <N> missing' line from `gateforge check` (green tests are not progress)")
+        need(re.search(r"gate missing.*before.*after|before\s*->\s*after", low),
+             "report must state gate missing before->after; a round that does not lower it stops")
+    for p in sorted(set(re.findall(r"(/home/ukd/[\w./\-]+)", text))):
+        p = p.rstrip(".,)")
+        if p.endswith(("-", "_")):
+            continue  # a filename prefix such as gf-testbed/cp-lineage-s3-*.log
+        if os.path.exists(p) or OUTPUT_HINT.search(p):
+            continue
+        if os.path.isdir(os.path.dirname(p)) and "." in os.path.basename(p):
+            warns.append(f"path not found (new file?): {p}")
+        else:
+            errs.append(f"path does not exist: {p}")
+    # Short-context rule (owner 2026-10-13, GLM quota burn): small batches, hard call budget, then a FRESH agent.
+    need(re.search(r"\b\d{1,3}\s*(tool\s*)?calls\b", low), "missing: call budget line ('stop and report within ~100 calls'); long agents reread huge contexts")
+    for p in sorted(set(re.findall(r"(/home/ukd/[\w./\-]*keys[\w.\-]*\.txt)", text))):
+        if os.path.exists(p):
+            n = sum(1 for l in open(p, errors="replace") if l.strip())
+            if n > 10:
+                errs.append(f"key batch {p} has {n} keys; max 10 per agent (split into fresh agents)")
+    if len(text) > 12000:
+        warns.append(f"brief is {len(text)} chars; long briefs cost every agent call (aim < 8000)")
+    return errs, warns
+
+
+rc = 0
+for path in sys.argv[1:] or sys.exit(__doc__):
+    errs, warns = lint(path)
+    for w in warns:
+        print(f"WARN {path}: {w}")
+    for e in errs:
+        print(f"FAIL {path}: {e}")
+    print(f"{'FAIL' if errs else 'OK  '} {path}: {len(errs)} errors, {len(warns)} warnings")
+    rc |= bool(errs)
+sys.exit(rc)

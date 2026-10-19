@@ -1,0 +1,280 @@
+#!/usr/bin/env bun
+// queue-close <plan>: the ONLY way a plan leaves the queue (model: ~/.omp/agent/queue/lib.ts).
+// main-guard runs it automatically in the background for every plan Main marked "Status: complete".
+// Checks first, nothing changes until all pass (cheap ones first, so an early attempt is harmless):
+//   1. the plan is listed in its repo INDEX.md, matches the template, says "Status: complete"
+//      (only Main writes that, after reviewing the work);
+//   2. its "## Done check" command exits 0 (run in the plan's worktree, else the repo; a pass is cached
+//      per done check + branch tip + worktree state) — if not, the plan is reopened ("Status: open" +
+//      a dated Progress line) and nothing else happens;
+//   3. its branch is merged into the remote default branch (after a fetch) — else "AWAITING merge"
+//      (exit 4): a normal state, the plan stays indexed as complete, nothing changes.
+// Then: uncommitted tracked changes in the worktree are saved as a hidden commit
+// refs/queue-archive/<plan>-<date> (restore: git stash apply <ref>; never pushed; refs older than
+// ARCHIVE_DAYS are pruned on every run), worktree removed, branch deleted, plan moved to
+// <plan dir>/archive/YYYYMM/ (committed with hooks when the plan is tracked; push stays Main's call),
+// plan line removed from <repo>/INDEX.md, empty repo index deleted and the repo line removed from
+// ~/.omp/agent/INDEX.md.
+// "Status: cancelled" (Main, with a "Cancelled by owner:" line): no landed/done checks; uncommitted
+// changes and an unmerged branch tip are saved under refs/queue-archive/ the same way, then the same
+// cleanup, and one line is appended to <repo>/docs/plans/CANCELLED.md (committed with the archive move).
+// Usage: queue-close <plan file>      (exit 0 = closed; 1 = refused, reason printed; 3 = already running; 4 = awaiting merge)
+import { spawnSync } from "node:child_process";
+import { appendFileSync, existsSync, fstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { activePlans, cancelledFile, cancelledLine, closeLog, INDEX, readIndex, readRepoIndex, REPO_INDEX, sha, STATE_DIR } from "/home/ukd/.omp/agent/queue/lib.ts";
+
+const ARCHIVE_DAYS = 30;
+
+// The queue reads a plan's state from the last result line of its close log (lib.ts lastCloseResult).
+// Auto-close already sends stderr there; a run by hand appends the line itself.
+let resultLog: string | null = null;
+function result(line: string) {
+	console.error(line);
+	if (!resultLog) return;
+	try {
+		if (existsSync(resultLog) && fstatSync(2).ino === statSync(resultLog).ino) return;
+		appendFileSync(resultLog, `--- ${new Date().toISOString()} manual run\n${line}\n`);
+	} catch {}
+}
+function die(msg: string): never {
+	result(`queue-close: REFUSED: ${msg}`);
+	process.exit(1);
+}
+function git(cwd: string, ...args: string[]): { ok: boolean; out: string } {
+	const r = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
+	return { ok: r.status === 0, out: `${r.stdout ?? ""}${r.stderr ?? ""}`.trim() };
+}
+// Squash or rebase merges put a new commit on base, so the branch tip is never an ancestor of it.
+// The branch counts as landed when (a) a commit on base carries the same combined patch as the
+// whole branch, (b) every file the branch changed is identical on base, or (c) merging the branch
+// into some first-parent commit of base since the fork point changes nothing (the release squash
+// that shipped it; later edits on base would otherwise conflict).
+function squashMerged(repo: string, ref: string, base: string): boolean {
+	const mb = git(repo, "merge-base", ref, base);
+	if (!mb.ok) return false;
+	const probe = git(repo, "commit-tree", `${ref}^{tree}`, "-p", mb.out, "-m", "queue-close squash probe");
+	if (probe.ok && git(repo, "cherry", base, probe.out).out.startsWith("-")) return true;
+	const files = git(repo, "diff", "--name-only", mb.out, ref);
+	if (!files.ok || !files.out) return false;
+	if (git(repo, "diff", "--quiet", ref, base, "--", ...files.out.split("\n")).ok) return true;
+	const since = git(repo, "rev-list", "--first-parent", "--max-count=200", `${mb.out}..${base}`);
+	return since.ok && !!since.out && since.out.split("\n").some(s => contains(repo, s, ref));
+}
+// True when commit `into` already holds everything in `from`: a clean merge of `from` into it
+// yields exactly its own tree.
+function contains(repo: string, into: string, from: string): boolean {
+	const m = git(repo, "merge-tree", "--write-tree", into, from);
+	return m.ok && m.out.split("\n")[0] === git(repo, "rev-parse", `${into}^{tree}`).out;
+}
+// (d) Stacked branches squashed together with later edits conflict in (c). The plan then names
+// the release: "Landed: <commit on base> from <pre-squash commit>". Verified, never trusted: the
+// first must be on base, the branch tip must be in the second's history, and the first must
+// already contain the second.
+function declaredLanded(repo: string, ref: string, base: string, text: string): boolean {
+	const m = text.match(/^(?:- )?Landed: ([0-9a-f]{7,40}) from ([0-9a-f]{7,40})\s*$/m);
+	if (!m) return false;
+	return git(repo, "merge-base", "--is-ancestor", m[1], base).ok &&
+		git(repo, "merge-base", "--is-ancestor", ref, m[2]).ok &&
+		contains(repo, m[1], m[2]);
+}
+function writeLines(file: string, lines: string[]) {
+	if (lines.length) writeFileSync(file, `${lines.join("\n")}\n`);
+	else rmSync(file, { force: true });
+}
+const today = new Date().toISOString().slice(0, 10);
+
+const arg = process.argv[2];
+if (!arg) die("usage: queue-close <plan file>");
+const file = path.resolve(arg);
+resultLog = closeLog(file);
+
+// One close per plan at a time (automatic runs from several sessions).
+mkdirSync(STATE_DIR, { recursive: true });
+const lock = path.join(STATE_DIR, `close-${sha(file)}.lock`);
+try {
+	const pid = Number(readFileSync(lock, "utf8"));
+	if (pid && pid !== process.pid) {
+		process.kill(pid, 0);
+		console.error(`queue-close: already running for ${file} (pid ${pid})`);
+		process.exit(3);
+	}
+} catch {}
+writeFileSync(lock, String(process.pid));
+process.on("exit", () => rmSync(lock, { force: true }));
+
+const plan = activePlans().find(p => p.file === file);
+if (!plan) die(`${file} is not listed in any repo INDEX.md of a repo in ${INDEX}`);
+if (plan.errors.length) die(`plan does not match the template: ${plan.errors.join("; ")}`);
+if (plan.status !== "complete" && plan.status !== "cancelled") die(`plan says "Status: ${plan.status}", not complete or cancelled`);
+const cancelling = plan.status === "cancelled";
+if (plan.worktree && (plan.file === plan.worktree || plan.file.startsWith(`${plan.worktree}/`)))
+	die("the indexed plan file lives inside its worktree; index the copy in the main checkout");
+
+// 2. branch state (the merge decides only at the end: a finished, unmerged plan is "awaiting merge")
+git(plan.repo, "fetch", "-q", "origin");
+const head = git(plan.repo, "symbolic-ref", "-q", "refs/remotes/origin/HEAD");
+const base = head.ok ? head.out : "refs/remotes/origin/main";
+const wtExists = !!plan.worktree && existsSync(plan.worktree);
+let branch = plan.branch;
+if (wtExists) branch ??= git(plan.worktree!, "rev-parse", "--abbrev-ref", "HEAD").out;
+const branchExists = !!branch && git(plan.repo, "rev-parse", "--verify", "-q", `refs/heads/${branch}`).ok;
+const merged = branchExists && (
+	git(plan.repo, "merge-base", "--is-ancestor", `refs/heads/${branch}`, base).ok ||
+	squashMerged(plan.repo, `refs/heads/${branch}`, base) ||
+	declaredLanded(plan.repo, `refs/heads/${branch}`, base, readFileSync(file, "utf8"))
+);
+
+// 3. done check (not for a cancelled plan). Runs before the merge check, so a wrong "complete" is
+// caught right away, not on push day. A pass is cached for the same done check + branch tip +
+// worktree state, so the periodic auto-close does not re-run it while nothing changed.
+const runIn = wtExists ? plan.worktree! : plan.repo;
+if (!cancelling) {
+	const tip = branchExists ? git(plan.repo, "rev-parse", `refs/heads/${branch}`).out : "";
+	const dirty = git(runIn, "status", "--porcelain").out;
+	const doneKey = sha(`${plan.doneCheck}\n${tip}\n${dirty}`);
+	const doneCache = path.join(STATE_DIR, `done-ok-${sha(file)}`);
+	const cached = existsSync(doneCache) && readFileSync(doneCache, "utf8").trim() === doneKey;
+	if (cached) console.log(`queue-close: done check passed before for this state (cached ${doneKey})`);
+	else {
+		console.log(`queue-close: done check in ${runIn}: ${plan.doneCheck}`);
+		const dc = spawnSync("bash", ["-lc", plan.doneCheck!], { cwd: runIn, stdio: "inherit", timeout: 3600_000 });
+		if (dc.status !== 0) {
+			rmSync(doneCache, { force: true });
+			const text = readFileSync(file, "utf8")
+				.replace(/^Status:\s*complete\s*$/m, "Status: open")
+				.replace(/^(## Progress[^\n]*\n(?:Status:[^\n]*\n)?)/m, `$1- ${today} queue-close: done check failed (exit ${dc.status ?? "timeout"}); reopened.\n`);
+			writeFileSync(file, text);
+			die(`done check failed (exit ${dc.status ?? "timeout"}); plan reopened (Status: open)`);
+		}
+		writeFileSync(doneCache, `${doneKey}\n`);
+	}
+}
+
+// 4. landed: complete + done check green but not merged = a normal state, the plan stays indexed.
+if (branchExists && !merged && !cancelling) {
+	result(`queue-close: AWAITING merge: done check green; branch ${branch} is not merged into ${base} yet, plan stays indexed until it lands`);
+	process.exit(4);
+}
+
+// Actions
+// Saved uncommitted work: prune the old, then keep this worktree's tracked changes (if any).
+const cutoff = Date.now() / 1000 - ARCHIVE_DAYS * 86400;
+for (const line of git(plan.repo, "for-each-ref", "--format=%(refname) %(creatordate:unix)", "refs/queue-archive/").out.split("\n")) {
+	const [ref, t] = line.split(" ");
+	if (ref && Number(t) < cutoff) git(plan.repo, "update-ref", "-d", ref);
+}
+if (wtExists) {
+	const saved = git(plan.worktree!, "stash", "create", `queue-close: uncommitted work of ${path.basename(file)}`).out;
+	if (saved) {
+		const ref = `refs/queue-archive/${path.basename(file, ".md")}-${today}`;
+		if (!git(plan.repo, "update-ref", ref, saved).ok || !git(plan.repo, "stash", "show", "-p", ref).out)
+			die(`could not save the worktree's uncommitted changes to ${ref}; nothing removed`);
+		console.log(`queue-close: uncommitted changes saved as ${ref} (restore: git -C ${plan.repo} stash apply ${ref}; pruned after ${ARCHIVE_DAYS} days)`);
+	}
+}
+if (branchExists && !merged) {
+	// Cancelled plan's unmerged commits: keep them as a fresh commit (dated now, so the 30-day prune
+	// counts from today) whose parent is the branch tip.
+	const tip = git(plan.repo, "rev-parse", `refs/heads/${branch}`).out;
+	const keep = git(plan.repo, "commit-tree", `${tip}^{tree}`, "-p", tip, "-m", `queue-close: branch ${branch} of cancelled ${path.basename(file)}`);
+	const ref = `refs/queue-archive/${path.basename(file, ".md")}-${today}-branch`;
+	if (!keep.ok || !git(plan.repo, "update-ref", ref, keep.out).ok) die(`could not save branch ${branch} to ${ref}; nothing removed`);
+	console.log(`queue-close: branch ${branch} saved as ${ref} (restore: git -C ${plan.repo} branch ${branch} ${ref}^; pruned after ${ARCHIVE_DAYS} days)`);
+}
+if (wtExists) {
+	let rm = git(plan.repo, "worktree", "remove", "--force", plan.worktree!);
+	if (!rm.ok && /Permission denied/.test(rm.out)) {
+		// Root-owned files from docker-based hooks/tests: hand them back, then retry.
+		spawnSync("docker", ["run", "--rm", "-v", `${plan.worktree}:/w`, "alpine", "chown", "-R", `${os.userInfo().uid}:${os.userInfo().gid}`, "/w"], { stdio: "ignore" });
+		rm = git(plan.repo, "worktree", "remove", "--force", plan.worktree!);
+		if (!rm.ok && existsSync(plan.worktree!)) {
+			rmSync(plan.worktree!, { recursive: true, force: true });
+			git(plan.repo, "worktree", "prune");
+			rm = { ok: !existsSync(plan.worktree!), out: rm.out };
+		}
+	}
+	if (!rm.ok) die(`could not remove worktree ${plan.worktree}: ${rm.out}`);
+	console.log(`queue-close: worktree ${plan.worktree} removed`);
+}
+if (branchExists) {
+	const d = git(plan.repo, "branch", "-D", branch!);
+	if (!d.ok) die(`could not delete branch ${branch}: ${d.out}`);
+	console.log(`queue-close: branch ${branch} deleted`);
+}
+
+const month = today.slice(0, 7).replace("-", "");
+const dest = path.join(path.dirname(file), "archive", month, path.basename(file));
+if (existsSync(dest)) die(`archive target already exists: ${dest}`);
+const top = git(path.dirname(file), "rev-parse", "--show-toplevel");
+const rel = top.ok ? path.relative(top.out, file) : "";
+// Bring the checkout holding the plan up to date first, so the archive commit pushes as a fast-forward.
+if (top.ok) {
+	const cur = git(top.out, "symbolic-ref", "-q", "--short", "HEAD").out;
+	const behind = git(top.out, "merge-base", "--is-ancestor", "HEAD", base).ok && git(top.out, "rev-parse", "HEAD").out !== git(top.out, "rev-parse", base).out;
+	if (cur && `refs/remotes/origin/${cur}` === base && behind) {
+		const ff = git(top.out, "merge", "-q", "--ff-only", base);
+		console.log(ff.ok ? `queue-close: ${top.out} fast-forwarded to ${base}` : `queue-close: WARNING could not fast-forward ${top.out} (${ff.out}); the archive commit may need a rebase before push`);
+	}
+}
+const tracked = top.ok && git(top.out, "ls-files", "--error-unmatch", rel).ok;
+mkdirSync(path.dirname(dest), { recursive: true });
+// Cancelled: one line in the repo's cancelled list (read by scripts only, never shown unless matched).
+const listFile = cancelledFile(plan.repo);
+const listBefore = existsSync(listFile) ? readFileSync(listFile, "utf8") : null;
+if (cancelling) {
+	mkdirSync(path.dirname(listFile), { recursive: true });
+	const header = "# Plans the owner cancelled (one line each; written by queue-close, read by queue-check/main-guard)\n";
+	writeFileSync(listFile, `${listBefore ?? header}${listBefore && !listBefore.endsWith("\n") ? "\n" : ""}${cancelledLine(file, plan.text, today)}\n`);
+	console.log(`queue-close: recorded in ${listFile}`);
+}
+const listRel = top.ok ? path.relative(top.out, listFile) : "";
+const listInside = cancelling && top.ok && !listRel.startsWith("..");
+if (tracked) {
+	const destRel = path.relative(top.out, dest);
+	const mv = git(top.out, "mv", rel, destRel);
+	if (!mv.ok) die(`git mv failed: ${mv.out}`);
+	if (listInside) git(top.out, "add", "--", listRel);
+	const msg = cancelling ? `chore(plans): cancel ${path.basename(file)} (owner)` : `chore(plans): archive ${path.basename(file)} (done check passed)`;
+	const c = spawnSync("git", ["-C", top.out, "commit", "-m", msg, "--", rel, destRel, ...(listInside ? [listRel] : [])], { stdio: "inherit" });
+	if (c.status !== 0) {
+		git(top.out, "mv", destRel, rel);
+		if (cancelling) {
+			if (listBefore === null) {
+				git(top.out, "rm", "-q", "--cached", "--ignore-unmatch", "--", listRel);
+				rmSync(listFile, { force: true });
+			} else {
+				writeFileSync(listFile, listBefore);
+				git(top.out, "reset", "-q", "--", listRel);
+			}
+		}
+		die("archive commit failed (hooks output above); plan moved back, nothing else changed");
+	}
+	console.log(`queue-close: plan archived and committed in ${top.out} (${git(top.out, "rev-parse", "--short", "HEAD").out}); push it with the usual rules`);
+} else {
+	renameSync(file, dest);
+	console.log(`queue-close: plan moved to ${dest}`);
+}
+
+const repoIndexFile = path.join(plan.repo, REPO_INDEX);
+const remaining = readRepoIndex(plan.repo).filter(p => p !== file);
+const rawLines = readFileSync(repoIndexFile, "utf8").split("\n").filter(l => l.trim());
+writeLines(
+	repoIndexFile,
+	rawLines.filter(l => path.resolve(plan.repo, l.trim().replace(/^[-*]\s+/, "").replace(/`/g, "")) !== file),
+);
+console.log(`queue-close: removed from ${repoIndexFile}${remaining.length ? ` (${remaining.length} plan(s) left)` : " (now empty: deleted)"}`);
+if (!remaining.length) {
+	const lines = readFileSync(INDEX, "utf8").split("\n").filter(l => l.trim());
+	const keep = lines.filter(l => path.resolve(l.trim().replace(/^[-*]\s+/, "").replace(/`/g, "").replace(/^~(?=\/)/, os.homedir())) !== plan.repo);
+	writeFileSync(INDEX, keep.length ? `${keep.join("\n")}\n` : "");
+	console.log(`queue-close: ${plan.repo} removed from ${INDEX} (${readIndex().length} repo(s) left)`);
+}
+try {
+	const sp = path.join(STATE_DIR, "spawns.json");
+	const s = JSON.parse(readFileSync(sp, "utf8"));
+	delete s[file];
+	writeFileSync(sp, JSON.stringify(s, null, 1));
+} catch {}
+console.log("queue-close: CLOSED");

@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+"""Push unfinished work to the PRIVATE GitHub repo umiddey/wip-backup (off this disk).
+
+Per repo under ROOTS (one per shared git dir):
+  - every local branch with commits on no remote  -> refs/heads/<repo>/<branch>
+  - newest wip-snapshot ref per worktree          -> refs/heads/wip/<worktree-key>
+Never touches worktrees, branches or the real remotes. Hooks are NOT bypassed (machine
+rule: --no-verify is banned): a repo with a pre-push hook is skipped and listed. A ref
+whose new commits fail `git-secret-gate scan` (gitleaks, owner order 2026-10-11: never a
+password on git, private repos included) is NOT pushed and is listed as skipped.
+
+Restore: git fetch git@github.com:umiddey/wip-backup-clean.git '<repo>/<branch>:<branch>'
+Usage: wip-backup [--dry-run] [--quiet]
+"""
+import os, re, subprocess, sys, time
+
+ROOTS = ["/home/ukd/Work", "/home/ukd/projects"]
+URL = "git@github.com:umiddey/wip-backup-clean.git"  # old umiddey/wip-backup held secrets (2026-10-11): emptied
+LOG = "/home/ukd/Work/WIP-BACKUP.md"
+OWNER_OK_NO_PREPUSH = ("umiddey/aetherios-property-management",)  # owner OK 2026-10-11 (backup only)
+MAX_REPO_MB = int(os.environ.get("WIP_BACKUP_MAX_REPO_MB", "1000"))  # GitHub refuses pushes > 2 GB
+DRY = "--dry-run" in sys.argv
+QUIET = "--quiet" in sys.argv
+GATE = "/home/ukd/.local/bin/git-secret-gate"
+
+
+def git(cwd, *args, check=False):
+    r = subprocess.run(["git", "-C", cwd, *args], capture_output=True)
+    if check and r.returncode:
+        raise RuntimeError(r.stderr.decode(errors="replace").strip()[-300:])
+    return r.returncode, r.stdout.decode(errors="replace").strip()
+
+
+def has_secret(repo, ref):
+    """True unless the gate proves the ref's unpushed commits clean (scanner errors count as secret)."""
+    return subprocess.run([GATE, "scan", repo, ref], capture_output=True).returncode != 0
+
+
+def key_of(path):
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", os.path.relpath(path, "/home/ukd")).strip("_")
+
+
+repos = sorted(os.path.join(r, d) for r in ROOTS if os.path.isdir(r)
+               for d in os.listdir(r) if os.path.exists(os.path.join(r, d, ".git")))
+seen, pushed, skipped, failed = set(), [], [], []
+for repo in repos:
+    _, common = git(repo, "rev-parse", "--git-common-dir")
+    common = os.path.realpath(os.path.join(repo, common or "."))
+    if common in seen:
+        continue
+    seen.add(common)
+    mb = int(subprocess.run(["du", "-sm", common], capture_output=True, text=True).stdout.split()[0])
+    if mb > MAX_REPO_MB:
+        skipped.append(f"{key_of(repo)}: whole repo ({mb} MB git dir > {MAX_REPO_MB} MB limit)")
+        continue
+    _, hooks = git(repo, "rev-parse", "--git-path", "hooks")
+    pre_push = os.path.join(repo, hooks, "pre-push")
+    _, origin = git(repo, "remote", "get-url", "origin")
+    # Owner 2026-10-11: PM may push unfinished work to this PRIVATE backup without its
+    # pre-push gate. Hooks are disabled only for the backup push, never for real remotes.
+    no_hooks = any(n in origin for n in OWNER_OK_NO_PREPUSH)
+    if os.access(pre_push, os.X_OK) and not no_hooks:
+        skipped.append(f"{key_of(repo)}: whole repo (has a pre-push gate; not bypassed)")
+        continue
+    if git(repo, "rev-parse", "--is-shallow-repository")[1] == "true":
+        skipped.append(f"{key_of(repo)}: whole repo (shallow clone; GitHub refuses it)")
+        continue
+    _, top = git(repo, "worktree", "list", "--porcelain")
+    main_wt = top.splitlines()[0][9:] if top else repo
+    rkey = key_of(main_wt)
+    specs = []
+    _, heads = git(repo, "for-each-ref", "--format=%(refname:short)", "refs/heads")
+    for b in filter(None, heads.splitlines()):
+        _, n = git(repo, "rev-list", "--count", b, "--not", "--remotes")
+        if n.isdigit() and int(n) > 0:
+            specs.append((f"refs/heads/{b}", f"refs/heads/{rkey}/{b}"))
+    _, wips = git(repo, "for-each-ref", "--sort=-refname", "--format=%(refname)", "refs/wip")
+    newest = {}
+    for r in filter(None, wips.splitlines()):
+        newest.setdefault(r.rsplit("/", 1)[0], r)
+    for prefix, r in newest.items():
+        specs.append((r, f"refs/heads/wip/{prefix.split('/', 2)[2]}"))
+    ok = []
+    for src, dst in specs:
+        if has_secret(repo, src):
+            skipped.append(f"{rkey}: {src} (secret pattern in unpushed commits)")
+        else:
+            ok.append(f"+{src}:{dst}")
+    if not ok:
+        continue
+    if DRY:
+        pushed += [f"{rkey}: {s}" for s in ok]
+        continue
+    hook_off = ["-c", "core.hooksPath=/dev/null"] if no_hooks else []
+    r = subprocess.run(["git", "-C", repo, *hook_off, "push", "--quiet", URL, *ok], capture_output=True)
+    if r.returncode:
+        failed.append(f"{rkey}: {r.stderr.decode(errors='replace').strip()[-200:]}")
+    else:
+        pushed += [f"{rkey}: {s}" for s in ok]
+
+stamp = time.strftime("%Y-%m-%d %H:%M")
+lines = [f"# WIP backup {stamp}{' (dry run)' if DRY else ''}", "",
+         f"Target: {URL} (private). Refs pushed: {len(pushed)}, skipped: {len(skipped)}, "
+         f"repos failed: {len(failed)}.", "", "Restore a branch: `git fetch " + URL +
+         " '<repo-key>/<branch>:<branch>'`", ""]
+lines += ["## Skipped"] + [f"- {s}" for s in skipped] + [""] if skipped else []
+lines += ["## Failed"] + [f"- {s}" for s in failed] + [""] if failed else []
+lines += ["## Pushed"] + [f"- {s}" for s in pushed]
+if not DRY:
+    open(LOG, "w").write("\n".join(lines) + "\n")
+print("\n".join(lines[:6] if QUIET else lines))
+sys.exit(1 if failed else 0)

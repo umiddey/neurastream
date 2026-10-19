@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+"""pm-fail-facts: every fact about a PM Playwright run's failures in ONE call.
+
+Replaces hand-grepping logs/artifacts turn by turn (owner 2026-10-11: deterministic work goes to scripts).
+For each failed test in <worktree>/test-results/e2e-junit.xml: title, file:line, error head,
+artifact dir, error-context.md head, failed-requests.log, console errors; then backend log errors.
+Usage: pm-fail-facts <worktree> [--backend-log PATH] [--lines N]
+"""
+import glob, os, re, sys
+import xml.etree.ElementTree as ET
+
+if len(sys.argv) < 2:
+    sys.exit(__doc__)
+wt = os.path.abspath(sys.argv[1])
+n = int(sys.argv[sys.argv.index("--lines") + 1]) if "--lines" in sys.argv else 25
+blog = sys.argv[sys.argv.index("--backend-log") + 1] if "--backend-log" in sys.argv else \
+    "/home/ukd/Work/gf-testbed/pm-batch-logs/backend-last.log"
+junit = os.path.join(wt, "test-results", "e2e-junit.xml")
+if not os.path.exists(junit):
+    sys.exit(f"no {junit}")
+root = ET.parse(junit).getroot()
+cases = root.iter("testcase")
+total, failed = 0, []
+for c in cases:
+    total += 1
+    f = c.find("failure")
+    if f is None:
+        f = c.find("error")
+    if f is not None:
+        failed.append((c.get("classname", ""), c.get("name", ""), (f.get("message") or "") + "\n" + (f.text or "")))
+skipped = sum(1 for c in root.iter("testcase") if c.find("skipped") is not None)
+print(f"== {junit}: {total} tests, {len(failed)} failed, {skipped} skipped")
+art_root = os.path.join(wt, "test-results", "playwright-output")
+dirs = [d for d in glob.glob(os.path.join(art_root, "*")) if os.path.isdir(d)]
+
+
+def slug(s):
+    return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
+
+
+def head(path, k):
+    try:
+        with open(path, errors="replace") as fh:
+            return "".join(fh.readlines()[:k]).rstrip()
+    except OSError:
+        return ""
+
+
+for cls, name, text in failed:
+    loc = re.search(r"(tests/[\w/.\-]+\.spec\.[jt]s):(\d+)", text)
+    print(f"\n#### FAIL {cls} :: {name}")
+    if loc:
+        print(f"at {loc.group(1)}:{loc.group(2)}")
+    err = [l for l in text.splitlines() if l.strip()][:n]
+    print("\n".join("  " + l[:220] for l in err))
+    # Playwright truncates artifact dir names; pick dirs sharing the most title words (>= 2).
+    words = [w for w in slug(cls + " " + name).split("-") if len(w) > 2]
+    scored = sorted(((sum(w in os.path.basename(d).lower() for w in words), d) for d in dirs), reverse=True)
+    match = [d for s, d in scored if s >= 2 and s == scored[0][0]]
+    for d in match[:2]:
+        print(f"-- artifacts {d}")
+        for fn in ("error-context.md", "failed-requests.log", "console-errors.log"):
+            p = os.path.join(d, fn)
+            if os.path.exists(p):
+                print(f"   [{fn}]")
+                print("\n".join("   " + l[:200] for l in head(p, n).splitlines()))
+        traces = glob.glob(os.path.join(d, "trace*.zip"))
+        if traces:
+            print(f"   trace: {traces[0]}  (npx playwright show-trace)")
+    if not match:
+        print("-- no artifact dir matched")
+
+if os.path.exists(blog):
+    pat = re.compile(r"Traceback|ERROR|CRITICAL|Exception| 5\d\d ")
+    hits = [l.rstrip() for l in open(blog, errors="replace") if pat.search(l)]
+    print(f"\n== backend log {blog}: {len(hits)} error lines (last {n})")
+    print("\n".join("  " + l[:220] for l in hits[-n:]))

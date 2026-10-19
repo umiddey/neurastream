@@ -1,0 +1,15 @@
+#!/usr/bin/env python3
+r"""deny-path <glob>...: refuse any change to matching paths (write/edit/ast_edit targets, mutating
+shell commands naming them). Globs are relative to the repo/worktree root, or absolute.
+Example: `- deny-path .gateforge/baselines/** .gateforge/waivers`"""
+import os, sys
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from _blocker import ARGS, CALL, COMMAND, MUTATING, SHELL, WRITES, block, matches, shell_paths
+
+if not ARGS:
+    block("deny-path needs at least one glob in the plan")
+if WRITES or (SHELL and MUTATING.search(COMMAND)):
+    for p in (CALL.get("paths") or []) + shell_paths():
+        for g in ARGS:
+            if matches(p, g):
+                block(f"{p} is forbidden by the plan (deny-path {g})")

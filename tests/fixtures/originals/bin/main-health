@@ -1,0 +1,47 @@
+#!/usr/bin/env python3
+"""main-health: how heavy is the OptChat main thread right now?
+Context size per call (from the main session jsonl), last user message, open work.
+Usage: main-health [session.jsonl]  (default: newest top-level session under ~/.omp/agent/sessions)"""
+import glob, json, os, subprocess, sys
+
+WARN_CTX = 150_000  # tokens per call; above this the thread is bloated
+
+if len(sys.argv) > 1:
+    f = sys.argv[1]
+else:
+    files = glob.glob(os.path.expanduser("~/.omp/agent/sessions/*/*.jsonl"))
+    f = max(files, key=os.path.getmtime)
+
+ctx, last_user = [], None
+with open(f, errors="replace") as fh:
+    for line in fh:
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        m = r.get("message") if isinstance(r, dict) else None
+        if not isinstance(m, dict):
+            continue
+        u = m.get("usage")
+        if m.get("role") == "assistant" and isinstance(u, dict):
+            ctx.append(u.get("input", 0) + u.get("cacheRead", 0) + u.get("cacheWrite", 0))
+        if m.get("role") == "user":
+            c = m.get("content")
+            text = c if isinstance(c, str) else " ".join(
+                p.get("text", "") for p in c or [] if isinstance(p, dict))
+            if text.strip() and not text.lstrip().startswith("<"):
+                last_user = (r.get("timestamp", "?"), text.strip().replace("\n", " "))
+
+print(f"session: {os.path.basename(f)}")
+if ctx:
+    tail = ctx[-50:]
+    now = ctx[-1]
+    flag = "BLOATED" if now > WARN_CTX else "ok"
+    print(f"context per call: now {now/1000:.0f}k, last-50 min {min(tail)/1000:.0f}k max {max(tail)/1000:.0f}k "
+          f"(warn > {WARN_CTX/1000:.0f}k) -> {flag}")
+if last_user:
+    print(f"last owner message: {last_user[0][:19]}  {last_user[1][:160]}")
+
+wip = subprocess.run(["wip-check"], capture_output=True, text=True)
+summary = [l for l in wip.stdout.splitlines() if l.startswith(("UNLANDED", "DIRTY"))]
+print("open work:", "; ".join(summary)[:200] or "wip-check gave no summary")

@@ -1,0 +1,8 @@
+#!/usr/bin/env python3
+r"""no-push: subagents may never push (Main pushes). Usage in a plan: `- no-push`"""
+import os, re, sys
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from _blocker import CALL, COMMAND, SHELL, block
+
+if SHELL and CALL.get("agent") != "main" and re.search(r"\bgit\b[^;&|\n]*\bpush\b|\bglab\s+mr\s+merge\b|\bgh\s+pr\s+merge\b", COMMAND):
+    block("subagents never push or merge; commit on the feature branch and report")
