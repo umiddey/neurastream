@@ -342,7 +342,11 @@ test("agent-score matches the original", () => {
 		["nope"],
 	];
 	for (const args of cases) {
-		match(runPy(oracle, args, pyEnv, pyHome), runPort("agent-score", args, portEnv, portHome));
+		const py = runPy(oracle, args, pyEnv, pyHome);
+		// The live help string hardcodes this machine. The package ships ~/Work/pm-counts.
+		const stdout = py.stdout.replaceAll("/home/ukd/Work/pm-counts", "~/Work/pm-counts");
+		const stderr = py.stderr.replaceAll("/home/ukd/Work/pm-counts", "~/Work/pm-counts");
+		match({ ...py, stdout, stderr }, runPort("agent-score", args, portEnv, portHome));
 	}
 	expect(readFileSync(join(portHome, ".local/state/agent-score/events.jsonl"), "utf8")).toBe(
 		readFileSync(join(pyHome, ".local/state/agent-score/events.jsonl"), "utf8"),

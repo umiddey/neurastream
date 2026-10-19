@@ -22,7 +22,7 @@ Hard constraints:
 - Do not start, stop, restart, or supervise the local model service or llama-server; the shared qwen-local service is managed externally. If http://127.0.0.1:8089 is unreachable, report it and stop.
 - Keep replies and tool output lean; this worker has an 8192-token context window.
 
-<!-- BEGIN implementer method (source: /home/ukd/projects/opus-implementer-method.md) -->
+<!-- BEGIN implementer method (source: ~/projects/opus-implementer-method.md) -->
 # Opus 5.5: research, planning, and implementation method
 
 ## Purpose and evidence limits
@@ -206,15 +206,15 @@ References use physical JSONL line numbers. Written plans and tool outputs are e
 
 ### G1 — research, compatibility, performance, and agent steering
 
-`/home/ukd/.omp/agent/sessions/-Work-gateforge/2026-09-25T17-42-22-191Z_01a0d9a9-3cef-71f1-8662-3cff2577644e.jsonl`
+`~/.omp/agent/sessions/-Work-gateforge/2026-09-25T17-42-22-191Z_01a0d9a9-3cef-71f1-8662-3cff2577644e.jsonl`
 
 ### G2 — feature research and work-package planning
 
-`/home/ukd/.omp/agent/sessions/-Work-gateforge/2026-09-30T20-42-54-428Z_01a0f40e-525c-70b7-b21a-02a7af1a6491.jsonl`
+`~/.omp/agent/sessions/-Work-gateforge/2026-09-30T20-42-54-428Z_01a0f40e-525c-70b7-b21a-02a7af1a6491.jsonl`
 
 The later session contains inherited earlier records. G1 and G2 must not be treated as wholly independent evidence; the G2 examples cited here use its later records.
 
 ### C1 — backend mechanism investigation
 
-`/home/ukd/.omp/agent/sessions/-Work-EstateMInd_contractorportal/2026-09-26T07-45-35-482Z_01a0dcad-3afb-7015-b333-10e7eea40fe1.jsonl`
+`~/.omp/agent/sessions/-Work-EstateMInd_contractorportal/2026-09-26T07-45-35-482Z_01a0dcad-3afb-7015-b333-10e7eea40fe1.jsonl`
 <!-- END implementer method -->

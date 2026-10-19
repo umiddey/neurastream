@@ -127,9 +127,11 @@ export function initHome(home: string, opts: { invoked?: string; env?: NodeJS.Pr
 	putFile(cfg.paths.subagents, note("subagents.md"), 0o644, created, unchanged);
 	putFile(join(cfg.paths.notes, "lessons.md"), note("lessons.md"), 0o644, created, unchanged);
 	putFile(cfg.paths.ranking_board, RANKING_STUB, 0o644, created, unchanged);
+	const queueText = readFileSync(join(PACKAGE_ROOT, "templates/queue/TEMPLATE.md"), "utf8");
+	if (!queueText.includes("{{HOME}}")) throw new Error("templates/queue/TEMPLATE.md has no {{HOME}} placeholder");
 	putFile(
 		join(cfg.paths.agent_dir, "queue", "TEMPLATE.md"),
-		readFileSync(join(PACKAGE_ROOT, "templates/queue/TEMPLATE.md"), "utf8"),
+		queueText.replaceAll("{{HOME}}", home),
 		0o644,
 		created,
 		unchanged,
