@@ -72,6 +72,7 @@ export interface Decision {
   reason: string; // empty when allow
   inject?: string; // extra context when allow (warn at call 90, edits left)
   restore?: { path: string; text: string }; // plan-edit: write this back
+  state?: { callsSinceStop: number; idleStops: number }; // next stop counters to feed back
 }
 
 export interface ToolEvent {
@@ -81,8 +82,8 @@ export interface ToolEvent {
   agent: "main" | "sub";
   agentId: string;
   calls: number; // subagent calls so far, before this one
-  paths: string[];
-  writes: string[];
+  paths: string[]; // optional: paths the harness knows about; core unions them with its own derivation
+  writes: string[]; // optional: same, for write targets
   command: string; // shell or eval text, else ""
 }
 
@@ -92,8 +93,8 @@ export interface SpawnEvent {
   brief: string; // context + task text, or the shell command for a bypass launch
 }
 
-export interface PromptEvent {
-  prompt: string;
+export interface InjectEvent {
+  inject: string; // the CLI stdin field accepts both spellings: "prompt" or "inject"
   agent: "main" | "sub";
 }
 
@@ -116,9 +117,9 @@ export interface StopEvent {
 |---|---|---|
 | `checkTool(e: ToolEvent)` | pre-tool | plan-guard `checkCall` plus the main edit limit and spawn-via-tool |
 | `checkSpawn(e: SpawnEvent)` | spawn | allow-list, task-only, plan gate |
-| `promptInject(e: PromptEvent)` | prompt-inject | queue summary + cancel flag; `{ allow: true, inject }` |
+| `checkInject(e: InjectEvent)` | prompt-inject | queue summary + cancel flag; `{ allow: true, inject }`; resets Main's edit window and the stop counters (returned in `state`) |
 | `checkPlanEdit(e: PlanEditEvent)` | plan-edit | outside `## Progress`, or a Main-only line changed: `allow: false` and `restore` |
-| `checkStop(e: StopEvent)` | stop | block while the queue is open and no live subagent, unless 3 idle stops |
+| `checkStop(e: StopEvent)` | stop | block while the queue is open and no live subagent, unless 3 idle stops; the next counters come back in `state` |
 
 `checkTool` for a subagent also runs blocker scripts. Stdin JSON (unchanged):
 
@@ -127,6 +128,8 @@ export interface StopEvent {
 ```
 
 Exit 0 allows. Exit 2 plus one stderr line refuses. Timeout is `guards.blocker_timeout_ms` (10000).
+
+The four blockers ship as executable scripts in the package (`blockers/deny-command`, `deny-path`, `deny-text`, `no-push`, shebang `bun`); the logic they share lives in `src/core/blockers.ts`. `neurastream init` copies them into `paths.blockers` so a plan's `- deny-command <regex>` line resolves (P6).
 
 Main-only lines: `Status:`, `WAITING on owner:`, `Cancelled by owner:`, `False positive:`.
 
@@ -138,7 +141,7 @@ Protected paths come from `guards.protected`. Unlock is `paths.unlock` newer tha
 neurastream guard <event> --json
 ```
 
-Events: `pre-tool`, `prompt`, `spawn`, `plan-edit`, `stop`.
+Events: `pre-tool`, `prompt` (core id `inject`), `spawn`, `plan-edit`, `stop`.
 
 Stdin is the matching event object. Stdout is one JSON `Decision`. Exit 0 when `allow` is true, exit 2 when false (same as a blocker). Extra context is the `inject` field, not a second channel.
 
@@ -173,7 +176,7 @@ Spawn names are the pin `name` field. Core checks the name against `## Allowed` 
 | runs with model, calls, dollars, status | `RunSource.listRuns` | return `[]` |
 | main context size | `RunSource.mainSession` | return null |
 | pre-tool | call `checkTool` or the CLI | |
-| prompt-inject | call `promptInject` or the CLI | |
+| prompt-inject | call `checkInject` or the CLI | |
 | spawn check | call `checkSpawn` or the CLI | |
 | plan-edit restriction | call `checkPlanEdit` or the CLI, and apply `restore` if the harness will not | |
 | stop | call `checkStop` or the CLI | |

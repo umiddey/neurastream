@@ -47,6 +47,8 @@ export interface Decision {
 	reason: string;
 	inject?: string;
 	restore?: { path: string; text: string };
+	/** Next keep-working counters for the caller to feed back into later StopEvents. */
+	state?: { callsSinceStop: number; idleStops: number };
 }
 
 export interface ToolEvent {

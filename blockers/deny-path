@@ -1,0 +1,4 @@
+#!/usr/bin/env bun
+import { denyPath, runBlockerScript } from "../src/core/blockers.ts";
+
+runBlockerScript(denyPath);

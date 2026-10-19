@@ -1,5 +1,6 @@
 import { ConfigError, configFile, loadConfig } from "../core/config.ts";
 import { applyQueueEnv } from "../core/queue/env.ts";
+import { GUARD_USAGE, runGuard } from "./guard.ts";
 import { PORTED, runPorted } from "./commands.ts";
 
 const BINS = [
@@ -31,6 +32,10 @@ export function helpText(): string {
 		"Usage:",
 		"  neurastream --help",
 		"  neurastream config [--json]   print the merged config (defaults + file + env)",
+		"  neurastream guard <event> --json",
+		"                                one guard decision: event JSON on stdin, Decision JSON on",
+		"                                stdout, exit 0 allow / 2 refuse",
+		`                                (${GUARD_USAGE.slice(GUARD_USAGE.indexOf("(") + 1, -1)})`,
 		"",
 		"Compatibility bins (same names as today; ports land in later phases):",
 		...BINS.map(b => `  ${b}`),
@@ -54,6 +59,9 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 			console.error(err instanceof ConfigError ? err.message : String(err));
 			return 1;
 		}
+	}
+	if (cmd === "guard") {
+		return runGuard(args[0] ?? "");
 	}
 	if ((PORTED as readonly string[]).includes(cmd)) {
 		try {
