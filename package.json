@@ -1,9 +1,24 @@
 {
   "name": "neurastream",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
   "description": "Harness-agnostic agent orchestration: queue, guards, blockers, scoring, ledger.",
   "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/umiddey/neurastream.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "src",
+    "bin",
+    "templates",
+    "blockers",
+    "README.md",
+    "LICENSE"
+  ],
   "bin": {
     "neurastream": "./src/cli/main.ts",
     "agent-score": "./bin/agent-score",

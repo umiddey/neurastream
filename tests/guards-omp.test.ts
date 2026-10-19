@@ -7,7 +7,7 @@
 // would load the extension: the import inside the child script is deliberately runtime-selected
 // because the adapter must load with the sandbox HOME already set.
 
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -25,6 +25,10 @@ const SUBAGENTS = join(AGENT, "notes/subagents.md");
 const UNLOCK = join(AGENT, ".guard-unlock");
 const LEDGER_OUT = join(HOME, "ledger-out.txt");
 const CLOSE_CAPTURE = join(HOME, "close-capture.txt");
+
+afterAll(() => {
+	rmSync(HOME, { recursive: true, force: true });
+});
 
 interface Decision {
 	allow: boolean;

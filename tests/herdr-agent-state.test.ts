@@ -79,8 +79,18 @@ function withSocketServer(run: (socket: string) => Promise<void>): Promise<Repor
 	server.on("error", reject);
 	server.listen(socket, () => {
 		run(socket)
-			.then(() => server.close(() => resolve(reports)))
-			.catch((err: unknown) => server.close(() => reject(err)));
+			.then(() =>
+				server.close(() => {
+					rmSync(socket, { force: true });
+					resolve(reports);
+				}),
+			)
+			.catch((err: unknown) =>
+				server.close(() => {
+					rmSync(socket, { force: true });
+					reject(err);
+				}),
+			);
 	});
 	return promise;
 }

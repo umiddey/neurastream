@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -7,6 +7,10 @@ import { loadConfig } from "../src/core/config.ts";
 import { initHome, treeHash } from "../src/cli/init.ts";
 
 const HOME = "/tmp/neurastream-home-init";
+
+afterAll(() => {
+	rmSync(HOME, { recursive: true, force: true });
+});
 
 test("init creates the layout and a second run changes nothing", () => {
 	rmSync(HOME, { recursive: true, force: true });
