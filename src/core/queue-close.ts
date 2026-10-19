@@ -27,6 +27,11 @@ export function queueClose(args: string[], cfg: Config): number {
 		const r = spawnSync("git", ["-C", cwd, ...gargs], { encoding: "utf8" });
 		return { ok: r.status === 0, out: `${r.stdout ?? ""}${r.stderr ?? ""}`.trim() };
 	}
+	// Squash or rebase merges put a new commit on base, so the branch tip is never an ancestor of it.
+	// The branch counts as landed when (a) a commit on base carries the same combined patch as the
+	// whole branch, (b) every file the branch changed is identical on base, or (c) merging the branch
+	// into some first-parent commit of base since the fork point changes nothing (the release squash
+	// that shipped it; later edits on base would otherwise conflict).
 	function squashMerged(repo: string, ref: string, base: string): boolean {
 		const mb = git(repo, "merge-base", ref, base);
 		if (!mb.ok) return false;
@@ -34,7 +39,26 @@ export function queueClose(args: string[], cfg: Config): number {
 		if (probe.ok && git(repo, "cherry", base, probe.out).out.startsWith("-")) return true;
 		const files = git(repo, "diff", "--name-only", mb.out, ref);
 		if (!files.ok || !files.out) return false;
-		return git(repo, "diff", "--quiet", ref, base, "--", ...files.out.split("\n")).ok;
+		if (git(repo, "diff", "--quiet", ref, base, "--", ...files.out.split("\n")).ok) return true;
+		const since = git(repo, "rev-list", "--first-parent", "--max-count=200", `${mb.out}..${base}`);
+		return since.ok && !!since.out && since.out.split("\n").some(s => contains(repo, s, ref));
+	}
+	// True when commit `into` already holds everything in `from`: a clean merge of `from` into it
+	// yields exactly its own tree.
+	function contains(repo: string, into: string, from: string): boolean {
+		const m = git(repo, "merge-tree", "--write-tree", into, from);
+		return m.ok && m.out.split("\n")[0] === git(repo, "rev-parse", `${into}^{tree}`).out;
+	}
+	// (d) Stacked branches squashed together with later edits conflict in (c). The plan then names
+	// the release: "Landed: <commit on base> from <pre-squash commit>". Verified, never trusted: the
+	// first must be on base, the branch tip must be in the second's history, and the first must
+	// already contain the second.
+	function declaredLanded(repo: string, ref: string, base: string, text: string): boolean {
+		const m = text.match(/^(?:- )?Landed: ([0-9a-f]{7,40}) from ([0-9a-f]{7,40})\s*$/m);
+		if (!m || !m[1] || !m[2]) return false;
+		return git(repo, "merge-base", "--is-ancestor", m[1], base).ok &&
+			git(repo, "merge-base", "--is-ancestor", ref, m[2]).ok &&
+			contains(repo, m[1], m[2]);
 	}
 	function writeLines(file: string, lines: string[]) {
 		if (lines.length) writeFileSync(file, `${lines.join("\n")}\n`);
@@ -77,7 +101,8 @@ export function queueClose(args: string[], cfg: Config): number {
 	const branchExists = !!branch && git(plan.repo, "rev-parse", "--verify", "-q", `refs/heads/${branch}`).ok;
 	const merged = branchExists && (
 		git(plan.repo, "merge-base", "--is-ancestor", `refs/heads/${branch}`, base).ok ||
-		squashMerged(plan.repo, `refs/heads/${branch}`, base)
+		squashMerged(plan.repo, `refs/heads/${branch}`, base) ||
+		declaredLanded(plan.repo, `refs/heads/${branch}`, base, readFileSync(file, "utf8"))
 	);
 
 	const runIn = wtExists ? plan.worktree! : plan.repo;

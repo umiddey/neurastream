@@ -10,10 +10,11 @@
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { CANCEL_TODO } from "../src/core/guards.ts";
 
-const REPO = "/home/ukd/projects/neurastream";
+// The port under test is the checkout these tests ship in (worktree-safe: never a hardcoded path).
+const REPO = dirname(dirname(import.meta.path));
 const ADAPTER = join(REPO, "src/adapters/omp/index.ts");
 const HOME = "/tmp/neurastream-home-omp";
 const AGENT = join(HOME, ".omp/agent");
