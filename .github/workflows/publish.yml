@@ -29,6 +29,9 @@ jobs:
           registry-url: 'https://registry.npmjs.org/'
       # Trusted publishing (OIDC-authenticated PUT) requires npm >= 11.5.
       - run: npm install -g npm@11.6.2
+      # The adapter tests run the real `omp plugin link` (no fake): install oh-my-pi.
+      - run: bun add -g @oh-my-pi/pi-coding-agent@18.11.1 && echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
+      - run: omp --version
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun test
