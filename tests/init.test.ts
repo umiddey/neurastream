@@ -7,9 +7,11 @@ import { loadConfig } from "../src/core/config.ts";
 import { initHome, treeHash } from "../src/cli/init.ts";
 
 const HOME = "/tmp/neurastream-home-init";
+const NOOMP_HOME = "/tmp/neurastream-home-init-noomp";
 
 afterAll(() => {
 	rmSync(HOME, { recursive: true, force: true });
+	rmSync(NOOMP_HOME, { recursive: true, force: true });
 });
 
 test("init creates the layout and a second run changes nothing", () => {
@@ -73,6 +75,23 @@ test("adapter install links the extension under the sandbox home and stays loada
 	expect(again.overlay).toBe("unchanged");
 	expect(again.pinsCopied).toEqual([]);
 	expect(loadConfig({ home: HOME, env: {} }).adapter?.name).toBe("omp");
+});
+
+test("adapter install: missing omp binary fails with a clear error, no plugin link", () => {
+	rmSync(NOOMP_HOME, { recursive: true, force: true });
+	initHome(NOOMP_HOME, { env: {} });
+	// installOmp resolves `omp` through the parent's PATH, so the test narrows the
+	// live process PATH to directories without an omp binary and restores it after.
+	const savedPath = process.env.PATH;
+	process.env.PATH = "/usr/bin:/bin";
+	try {
+		expect(() => installOmp(NOOMP_HOME)).toThrow(
+			"omp not found on PATH: install oh-my-pi (npm i -g @oh-my-pi/pi-coding-agent) and retry",
+		);
+	} finally {
+		process.env.PATH = savedPath;
+	}
+	expect(existsSync(join(NOOMP_HOME, ".omp/plugins"))).toBe(false);
 });
 
 test("a compatibility bin dispatches by its filename", () => {

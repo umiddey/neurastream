@@ -99,8 +99,12 @@ function linkPlugin(home: string): string {
 		env: { ...process.env, HOME: home },
 		encoding: "utf8",
 	});
+	if (r.error) {
+		throw new Error("omp not found on PATH: install oh-my-pi (npm i -g @oh-my-pi/pi-coding-agent) and retry", { cause: r.error });
+	}
 	if (r.status !== 0) {
-		throw new Error(`omp plugin link failed (exit ${r.status ?? "signal"}): ${(r.stderr || r.stdout).trim()}`);
+		const out = [r.stderr, r.stdout].find(s => typeof s === "string" && s.length > 0) ?? "";
+		throw new Error(`omp plugin link failed (exit ${r.status ?? "signal"}): ${out.trim()}`);
 	}
 	return join(home, ".omp/plugins/node_modules/neurastream");
 }
