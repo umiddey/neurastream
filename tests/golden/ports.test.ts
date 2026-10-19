@@ -6,7 +6,8 @@ import { spawnSync } from "node:child_process";
 
 // The port under test is the checkout these tests ship in (worktree-safe: never a hardcoded path).
 const REPO = dirname(dirname(dirname(import.meta.path)));
-const LIVE = "/home/ukd/.local/bin";
+// The golden oracle scripts: the frozen snapshot of the live originals (never the live machine).
+const LIVE = join(REPO, "tests/fixtures/originals/bin");
 const ROOT = "/tmp/neurastream-home-golden";
 
 afterAll(() => {

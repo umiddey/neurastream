@@ -14,8 +14,9 @@ import { spawnSync } from "node:child_process";
 
 // The port under test is the checkout these tests ship in (worktree-safe: never a hardcoded path).
 const REPO = dirname(dirname(dirname(import.meta.path)));
-const LIVE = "/home/ukd/.local/bin";
-const HEAVY_ORIG = "/home/ukd/Work/heavy-run.sh";
+// The golden oracle scripts: the frozen snapshot of the live originals (never the live machine).
+const LIVE = join(REPO, "tests/fixtures/originals/bin");
+const HEAVY_ORIG = join(REPO, "tests/fixtures/originals/Work/heavy-run.sh");
 const ROOT = "/tmp/neurastream-home-golden-p4";
 
 afterAll(() => {
@@ -184,7 +185,7 @@ function installBlockers(home: string): void {
 	const src = join(home, ".omp/agent/blockers");
 	mkdirSync(src, { recursive: true });
 	for (const f of ["no-push", "_blocker.py", "deny-command", "deny-path", "deny-text"]) {
-		copyFileSync(join("/home/ukd/.omp/agent/blockers", f), join(src, f));
+		copyFileSync(join(REPO, "tests/fixtures/originals/agent/blockers", f), join(src, f));
 		chmodSync(join(src, f), 0o755);
 	}
 }

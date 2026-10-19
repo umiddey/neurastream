@@ -6,12 +6,12 @@
 
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, copyFileSync, cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { helpText } from "../src/cli/dispatch.ts";
 import { CANCEL_TODO } from "../src/core/guards.ts";
 
-const REPO = "/home/ukd/projects/neurastream";
+const REPO = dirname(dirname(import.meta.path));
 const ORIG = "/tmp/neurastream-originals";
 const ORIG_EXT = join(ORIG, "extensions");
 const ORIG_BLOCKERS = join(ORIG, "blockers");
@@ -111,17 +111,14 @@ function envFor(): NodeJS.ProcessEnv {
 	};
 }
 
-// The parity oracle is the owner's live extension and blocker scripts, copied
-// read-only to /tmp/neurastream-originals by an earlier session. Seed the copy
-// from the live setup when it is missing so a fresh machine runs the same
-// checks, and always remove it afterwards: the tests leave no /tmp/neurastream-*
-// state behind.
+// The parity oracle is the frozen snapshot of the owner's extension and blocker
+// scripts in tests/fixtures/originals/agent. Mirror it to /tmp/neurastream-originals
+// (the tests never run the fixture in place) and always remove the mirror
+// afterwards: the tests leave no /tmp/neurastream-* state behind.
 function seedOriginals(): void {
-	if (existsSync(ORIG_EXT) && existsSync(ORIG_BLOCKERS)) return;
-	const live = "/home/ukd/.omp/agent";
 	rmSync(ORIG, { recursive: true, force: true });
 	mkdirSync(ORIG, { recursive: true });
-	for (const name of ["extensions", "queue", "blockers"]) cpSync(join(live, name), join(ORIG, name), { recursive: true });
+	for (const name of ["extensions", "queue", "blockers"]) cpSync(join(REPO, "tests/fixtures/originals/agent", name), join(ORIG, name), { recursive: true });
 }
 
 beforeAll(seedOriginals);
