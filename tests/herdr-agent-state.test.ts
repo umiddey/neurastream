@@ -18,9 +18,10 @@ import { expect, test } from "bun:test";
 import { spawn as cpSpawn } from "node:child_process";
 import net from "node:net";
 import { rmSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
-const REPO = "/home/ukd/projects/neurastream";
+// The port under test is the checkout these tests ship in (worktree-safe: never a hardcoded path).
+const REPO = dirname(dirname(import.meta.path));
 const HERDR = join(REPO, "src/adapters/omp/herdr-agent-state.ts");
 
 const REGISTER = `
@@ -78,8 +79,18 @@ function withSocketServer(run: (socket: string) => Promise<void>): Promise<Repor
 	server.on("error", reject);
 	server.listen(socket, () => {
 		run(socket)
-			.then(() => server.close(() => resolve(reports)))
-			.catch((err: unknown) => server.close(() => reject(err)));
+			.then(() =>
+				server.close(() => {
+					rmSync(socket, { force: true });
+					resolve(reports);
+				}),
+			)
+			.catch((err: unknown) =>
+				server.close(() => {
+					rmSync(socket, { force: true });
+					reject(err);
+				}),
+			);
 	});
 	return promise;
 }

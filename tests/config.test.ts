@@ -1,5 +1,5 @@
-import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { afterAll, describe, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConfigError, loadConfig, TEMPLATE_PATH } from "../src/core/config.ts";
@@ -8,8 +8,14 @@ import { toExtensionResult } from "../src/adapters/omp/index.ts";
 
 const home = "/tmp/neurastream-home-config";
 
+const cfgTmpDirs: string[] = [];
+afterAll(() => {
+	for (const dir of cfgTmpDirs) rmSync(dir, { recursive: true, force: true });
+});
+
 function withFile(yaml: string) {
 	const dir = mkdtempSync(join(tmpdir(), "neurastream-cfg-"));
+	cfgTmpDirs.push(dir);
 	const file = join(dir, "config.yml");
 	writeFileSync(file, yaml);
 	return file;

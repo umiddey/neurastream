@@ -4,16 +4,17 @@
 // from /tmp/neurastream-originals under their own env overrides (tests-only, as they document);
 // the port runs through `neurastream guard <event> --json`.
 
-import { expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { helpText } from "../src/cli/dispatch.ts";
 import { CANCEL_TODO } from "../src/core/guards.ts";
 
 const REPO = "/home/ukd/projects/neurastream";
-const ORIG_EXT = "/tmp/neurastream-originals/extensions";
-const ORIG_BLOCKERS = "/tmp/neurastream-originals/blockers";
+const ORIG = "/tmp/neurastream-originals";
+const ORIG_EXT = join(ORIG, "extensions");
+const ORIG_BLOCKERS = join(ORIG, "blockers");
 const HOME = "/tmp/neurastream-home-guard";
 const AGENT = join(HOME, ".omp/agent");
 const TOY = join(HOME, "projects/toy");
@@ -109,6 +110,26 @@ function envFor(): NodeJS.ProcessEnv {
 		QUEUE_UNLOCK: UNLOCK,
 	};
 }
+
+// The parity oracle is the owner's live extension and blocker scripts, copied
+// read-only to /tmp/neurastream-originals by an earlier session. Seed the copy
+// from the live setup when it is missing so a fresh machine runs the same
+// checks, and always remove it afterwards: the tests leave no /tmp/neurastream-*
+// state behind.
+function seedOriginals(): void {
+	if (existsSync(ORIG_EXT) && existsSync(ORIG_BLOCKERS)) return;
+	const live = "/home/ukd/.omp/agent";
+	rmSync(ORIG, { recursive: true, force: true });
+	mkdirSync(ORIG, { recursive: true });
+	for (const name of ["extensions", "queue", "blockers"]) cpSync(join(live, name), join(ORIG, name), { recursive: true });
+}
+
+beforeAll(seedOriginals);
+
+afterAll(() => {
+	rmSync(HOME, { recursive: true, force: true });
+	rmSync(ORIG, { recursive: true, force: true });
+});
 
 function guardCli(event: string, payload: unknown): { code: number; d: Decision } {
 	const r = spawnSync("bun", [join(REPO, "src/cli/main.ts"), "guard", event, "--json"], {

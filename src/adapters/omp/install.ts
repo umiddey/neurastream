@@ -8,6 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { configFile } from "../../core/config.ts";
 
+import { adapterLiveFiles } from "./doctor.ts";
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
 const OVERLAY = `adapter:
@@ -41,6 +42,13 @@ function ensureLink(link: string, target: string): void {
 	}
 	if (existsSync(link)) throw new Error(`${link} exists and is not a link to ${target}; left it alone`);
 	symlinkSync(target, link);
+}
+
+function linkInstalled(home: string): void {
+	for (const file of adapterLiveFiles(home)) {
+		if (file.live.includes("/.omp/agent/agents/")) continue;
+		ensureLink(file.live, file.source);
+	}
 }
 
 function copyPins(dest: string): { copied: string[]; kept: string[] } {
@@ -106,6 +114,7 @@ export function installOmp(home: string): InstallResult {
 	ensureLink(extension, target);
 	mkdirSync(join(home, ".omp/agent/sessions"), { recursive: true });
 	const pins = copyPins(join(home, ".omp/agent/agents"));
+	linkInstalled(home);
 	const plugin = linkPlugin(home);
 	const overlay = writeOverlay(file);
 	return { extension, plugin, pinsCopied: pins.copied, pinsKept: pins.kept, overlay };

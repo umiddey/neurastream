@@ -1,5 +1,5 @@
 # <short title>
-Worktree: /home/ukd/Work/<repo>-<topic>
+Worktree: {{HOME}}/Work/<repo>-<topic>
 Branch: <type>/<topic>
 PRIORITY-ID: <optional, e.g. PR01>
 

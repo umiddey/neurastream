@@ -19,7 +19,7 @@ You stopped three tasks early by reporting "blocked" after the FIRST failed tool
 - There is NO attempt limit. A rejected `edit` (e.g. "boundary row is required … re-issue with a range that excludes every unchanged boundary row") is a normal tool response: re-read the region, re-issue with a smaller range or one PUT per hunk, and continue. Never stop because "too many attempts" (2026-10-09: you yielded "Incomplete" 1m44s into a task, right after a successful edit, citing an attempt limit that does not exist).
 - The only run limit is the harness `[budget notice]` message (soft budget in requests). Until that message appears, keep working to the end of the brief.
 
-<!-- BEGIN implementer method (source: /home/ukd/projects/opus-implementer-method.md) -->
+<!-- BEGIN implementer method (source: ~/projects/opus-implementer-method.md) -->
 # Opus 5.5: research, planning, and implementation method
 
 ## Purpose and evidence limits
@@ -203,15 +203,15 @@ References use physical JSONL line numbers. Written plans and tool outputs are e
 
 ### G1 — research, compatibility, performance, and agent steering
 
-`/home/ukd/.omp/agent/sessions/-Work-gateforge/2026-09-25T17-42-22-191Z_01a0d9a9-3cef-71f1-8662-3cff2577644e.jsonl`
+`~/.omp/agent/sessions/-Work-gateforge/2026-09-25T17-42-22-191Z_01a0d9a9-3cef-71f1-8662-3cff2577644e.jsonl`
 
 ### G2 — feature research and work-package planning
 
-`/home/ukd/.omp/agent/sessions/-Work-gateforge/2026-09-30T20-42-54-428Z_01a0f40e-525c-70b7-b21a-02a7af1a6491.jsonl`
+`~/.omp/agent/sessions/-Work-gateforge/2026-09-30T20-42-54-428Z_01a0f40e-525c-70b7-b21a-02a7af1a6491.jsonl`
 
 The later session contains inherited earlier records. G1 and G2 must not be treated as wholly independent evidence; the G2 examples cited here use its later records.
 
 ### C1 — backend mechanism investigation
 
-`/home/ukd/.omp/agent/sessions/-Work-EstateMInd_contractorportal/2026-09-26T07-45-35-482Z_01a0dcad-3afb-7015-b333-10e7eea40fe1.jsonl`
+`~/.omp/agent/sessions/-Work-EstateMInd_contractorportal/2026-09-26T07-45-35-482Z_01a0dcad-3afb-7015-b333-10e7eea40fe1.jsonl`
 <!-- END implementer method -->

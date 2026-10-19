@@ -1,12 +1,16 @@
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { installOmp } from "../src/adapters/omp/install.ts";
 import { loadConfig } from "../src/core/config.ts";
 import { initHome, treeHash } from "../src/cli/init.ts";
 
 const HOME = "/tmp/neurastream-home-init";
+
+afterAll(() => {
+	rmSync(HOME, { recursive: true, force: true });
+});
 
 test("init creates the layout and a second run changes nothing", () => {
 	rmSync(HOME, { recursive: true, force: true });
@@ -32,6 +36,10 @@ test("init creates the layout and a second run changes nothing", () => {
 	expect(cfg.guards.protected.some(p => p.endsWith("/notes/"))).toBe(true);
 	expect(cfg.score.default_repo).toBe("");
 	expect(readFileSync(join(HOME, ".config/neurastream/notes/subagents.md"), "utf8")).toContain("- `glm`");
+	const rendered = readFileSync(join(HOME, ".config/neurastream/queue/TEMPLATE.md"), "utf8");
+	expect(rendered).toContain(`Worktree: ${HOME}/Work/<repo>-<topic>`);
+	expect(rendered).not.toContain("{{HOME}}");
+	expect(rendered).not.toContain("/home/");
 
 	const refused = spawnSync("bun", [blocker], {
 		input: JSON.stringify({
@@ -78,4 +86,35 @@ test("a compatibility bin dispatches by its filename", () => {
 	expect(ran.status).toBe(0);
 	expect(ran.stdout).toContain("Queue");
 	expect(ran.stdout).not.toContain("Usage:");
+});
+
+test("packed templates contain no /home/ path", () => {
+	const dest = join(HOME, "pack");
+	rmSync(dest, { recursive: true, force: true });
+	mkdirSync(dest, { recursive: true });
+	const packed = spawnSync("npm", ["pack", "--silent", "--pack-destination", dest], {
+		cwd: join(import.meta.dir, ".."),
+		encoding: "utf8",
+	});
+	expect(packed.status).toBe(0);
+	const names = readdirSync(dest).filter(n => n.endsWith(".tgz"));
+	expect(names).toHaveLength(1);
+	const extract = join(dest, "extract");
+	mkdirSync(extract);
+	const untar = spawnSync("tar", ["-xzf", join(dest, names[0]!), "-C", extract], { encoding: "utf8" });
+	expect(untar.status).toBe(0);
+	const hits: string[] = [];
+	const walk = (dir: string) => {
+		for (const name of readdirSync(dir)) {
+			const path = join(dir, name);
+			if (statSync(path).isDirectory()) {
+				walk(path);
+				continue;
+			}
+			if (readFileSync(path).includes(Buffer.from("/home/"))) hits.push(path);
+		}
+	};
+	walk(extract);
+	expect(hits.filter(p => p.includes("/templates/"))).toEqual([]);
+	expect(hits).toEqual([]);
 });

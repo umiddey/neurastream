@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
 import {
 	chmodSync,
 	copyFileSync,
@@ -12,10 +12,15 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 
-const REPO = "/home/ukd/projects/neurastream";
+// The port under test is the checkout these tests ship in (worktree-safe: never a hardcoded path).
+const REPO = dirname(dirname(dirname(import.meta.path)));
 const LIVE = "/home/ukd/.local/bin";
 const HEAVY_ORIG = "/home/ukd/Work/heavy-run.sh";
 const ROOT = "/tmp/neurastream-home-golden-p4";
+
+afterAll(() => {
+	rmSync(ROOT, { recursive: true, force: true });
+});
 
 function homeFor(name: string): string {
 	const home = join(ROOT, name);
@@ -384,6 +389,155 @@ test("queue-close complete plan matches the original", () => {
 	expect(stripTs(port.stdout.split(portHome).join(pyHome))).toBe(stripTs(py.stdout));
 });
 
+// P1 (2026-10-19): the live bin gained landed detection beyond `merge-base --is-ancestor`:
+// squashMerged (c) — merging the branch into a first-parent commit of base since the fork point
+// (`git merge-tree --write-tree`) changes nothing — and declaredLanded (d), a verified
+// "Landed: <commit on base> from <pre-squash commit>" plan line. Each scenario builds that
+// history in a temp repo; the oracle and the port each get their own repo and the outputs are
+// compared modulo the home path and commit SHAs (the two runs commit seconds apart, so the
+// archive commit hashes differ).
+function stripShas(s: string): string {
+	// The two runs commit seconds apart, so archive commit hashes differ; compare the lines, not the hashes.
+	return s.replace(/\b[0-9a-f]{7,40}\b/g, "SHA");
+}
+
+function landedRepo(
+	home: string,
+	env: NodeJS.ProcessEnv,
+	kind: "squash-later-edit" | "stacked" | "unmerged" | "forged",
+): string {
+	const repo = join(home, "Work/toy-landed");
+	rmSync(repo, { recursive: true, force: true });
+	mkdirSync(join(repo, "docs/plans"), { recursive: true });
+	const plan = join(repo, "docs/plans/toy-landed.md");
+	const git = (args: string[]) => {
+		const r = spawnSync("git", args, { cwd: repo, env, encoding: "utf8" });
+		if (r.status !== 0) throw new Error(r.stderr || `git ${args.join(" ")}`);
+		return r.stdout.trim();
+	};
+	const write = (rel: string, text: string) => writeFileSync(join(repo, rel), text);
+	const commitAll = (msg: string) => {
+		git(["add", "-A"]);
+		git(["commit", "-m", msg]);
+	};
+	git(["init", "-b", "main"]);
+	git(["config", "user.email", "t@example.com"]);
+	git(["config", "user.name", "t"]);
+	write(".git/info/exclude", "/INDEX.md\n");
+	write("README.md", "toy\n");
+	commitAll("init");
+	const root = git(["rev-parse", "HEAD"]);
+	let branch = "feat";
+	let landed = "";
+	if (kind === "unmerged") {
+		git(["checkout", "-b", "feat"]);
+		write("n.txt", "n1\n");
+		commitAll("feature work");
+	} else if (kind === "squash-later-edit") {
+		git(["checkout", "-b", "feat"]);
+		write("a.txt", "a1\n");
+		write("b.txt", "b1\n");
+		commitAll("feature work");
+		git(["checkout", "main"]);
+		// The release squash carries the branch's content plus a version bump, so it is not the
+		// branch's one patch: (a) misses. A later edit on base touches a file the branch changed:
+		// (b) misses; (c) still holds.
+		write("a.txt", "a1\n");
+		write("b.txt", "b1\n");
+		write("c.txt", "v0.1.0\n");
+		commitAll("release: feat squashed");
+		write("a.txt", "a2\n");
+		commitAll("later edit on base");
+	} else {
+		branch = "stacked";
+		git(["checkout", "-b", "base-w"]);
+		write("w.txt", "w1\n");
+		commitAll("base work");
+		git(["checkout", "-b", "stacked"]);
+		write("b.txt", "b1\n");
+		commitAll("stacked work");
+		const preSquash = git(["rev-parse", "stacked"]);
+		git(["checkout", "main"]);
+		write("w.txt", "w1\n");
+		write("b.txt", "b1\n");
+		write("c.txt", "v0.1.0\n");
+		commitAll("release: base-w and stacked squashed");
+		const release = git(["rev-parse", "main"]); // the squash commit itself
+		write("b.txt", "b2\n");
+		commitAll("later edit on base"); // (b) misses: a branch file differs on base
+		// (c) walks only the newest 200 first-parent commits since the fork point: 201 empty
+		// fillers push the release squash outside that window, so (a)-(c) all miss and only a
+		// verified Landed line can close the branch.
+		for (let i = 0; i < 201; i++) git(["commit", "--allow-empty", "-qm", `filler ${i}`]);
+		landed = kind === "stacked"
+			? `- Landed: ${release} from ${preSquash}\n`
+			: `Landed: ${release} from ${root}\n`; // forged: the init commit lacks the branch
+	}
+	// queue-close compares against refs/remotes/origin/main: create that remote-tracking ref
+	// directly (like a fetched checkout whose branch is local-only) — no remote, no push hooks.
+	git(["update-ref", "refs/remotes/origin/main", git(["rev-parse", "main"])]);
+	writeFileSync(plan, `# Toy landed plan
+Worktree: -
+Branch: ${branch}
+
+## Goal
+- toy
+
+## Forbidden
+- none
+
+## Blockers
+- no-push
+
+## Phases
+- [ ] P1 step — difficulty: 1 — verify: \`true\`
+
+## Done check
+\`true\`
+
+## Progress
+Status: complete
+
+## Background
+note
+${landed}`);
+	writeFileSync(join(repo, "INDEX.md"), `- ${plan}\n`);
+	mkdirSync(dirname(join(home, ".omp/agent/INDEX.md")), { recursive: true });
+	writeFileSync(join(home, ".omp/agent/INDEX.md"), `- ${repo}\n`);
+	return plan;
+}
+
+test("queue-close landed detection (squash, stacked, unmerged, forged) matches the original", () => {
+	const cases: Array<{ kind: "squash-later-edit" | "stacked" | "unmerged" | "forged"; code: number }> = [
+		{ kind: "squash-later-edit", code: 0 },
+		{ kind: "stacked", code: 0 },
+		{ kind: "unmerged", code: 4 },
+		{ kind: "forged", code: 4 },
+	];
+	for (const { kind, code } of cases) {
+		const pyHome = homeFor(`qclose-${kind}-py`);
+		const portHome = homeFor(`qclose-${kind}-port`);
+		const pyEnv = envFor(pyHome);
+		const portEnv = envFor(portHome);
+		for (const home of [pyHome, portHome]) {
+			pinOmp(home);
+			installQueueLib(home);
+			installBlockers(home);
+			installQueueBin("queue-check", home);
+			installQueueBin("queue-close", home);
+			installQueueBin("queue-cancel", home);
+		}
+		const pyPlan = landedRepo(pyHome, pyEnv, kind);
+		const portPlan = landedRepo(portHome, portEnv, kind);
+		const py = runBun(join(pyHome, ".local/bin/queue-close"), [pyPlan], pyEnv);
+		const port = runPort("queue-close", [portPlan], portEnv);
+		expect(port.code).toBe(code);
+		expect(port.code).toBe(py.code);
+		expect(port.stderr).toBe(py.stderr);
+		expect(stripShas(stripTs(port.stdout.split(portHome).join(pyHome)))).toBe(stripShas(stripTs(py.stdout)));
+	}
+}, 120_000);
+
 test("queue-cancel matches the original", () => {
 	const home = homeFor("qcancel");
 	const env = envFor(home);
@@ -445,7 +599,8 @@ test("main-start matches the original", () => {
 	chmodSync(oracle, 0o755);
 	const py = runBash(oracle, ["6"], env);
 	const port = runPort("main-start", ["6"], env);
-	expect(stripLoadavg(port.stdout)).toBe(stripLoadavg(py.stdout));
+	const portOut = port.stdout.replace(/=== doctor\n[\s\S]*$/, "");
+	expect(stripLoadavg(portOut)).toBe(stripLoadavg(py.stdout));
 	expect(port.stderr).toBe(py.stderr);
 	expect(port.code).toBe(py.code);
 });

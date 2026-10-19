@@ -1,12 +1,17 @@
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 
-const REPO = "/home/ukd/projects/neurastream";
+// The port under test is the checkout these tests ship in (worktree-safe: never a hardcoded path).
+const REPO = dirname(dirname(dirname(import.meta.path)));
 const LIVE = "/home/ukd/.local/bin";
 const ROOT = "/tmp/neurastream-home-golden";
+
+afterAll(() => {
+	rmSync(ROOT, { recursive: true, force: true });
+});
 
 function now(): string {
 	return String(Date.now() / 1000);
@@ -337,7 +342,11 @@ test("agent-score matches the original", () => {
 		["nope"],
 	];
 	for (const args of cases) {
-		match(runPy(oracle, args, pyEnv, pyHome), runPort("agent-score", args, portEnv, portHome));
+		const py = runPy(oracle, args, pyEnv, pyHome);
+		// The live help string hardcodes this machine. The package ships ~/Work/pm-counts.
+		const stdout = py.stdout.replaceAll("/home/ukd/Work/pm-counts", "~/Work/pm-counts");
+		const stderr = py.stderr.replaceAll("/home/ukd/Work/pm-counts", "~/Work/pm-counts");
+		match({ ...py, stdout, stderr }, runPort("agent-score", args, portEnv, portHome));
 	}
 	expect(readFileSync(join(portHome, ".local/state/agent-score/events.jsonl"), "utf8")).toBe(
 		readFileSync(join(pyHome, ".local/state/agent-score/events.jsonl"), "utf8"),
