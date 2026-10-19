@@ -66,3 +66,16 @@ test("adapter install links the extension under the sandbox home and stays loada
 	expect(again.pinsCopied).toEqual([]);
 	expect(loadConfig({ home: HOME, env: {} }).adapter?.name).toBe("omp");
 });
+
+test("a compatibility bin dispatches by its filename", () => {
+	rmSync(HOME, { recursive: true, force: true });
+	initHome(HOME, { env: {} });
+	const bin = join(import.meta.dir, "../bin/queue-check");
+	const ran = spawnSync(bin, [], {
+		encoding: "utf8",
+		env: { HOME, PATH: process.env.PATH ?? "/usr/bin:/bin" },
+	});
+	expect(ran.status).toBe(0);
+	expect(ran.stdout).toContain("Queue");
+	expect(ran.stdout).not.toContain("Usage:");
+});
