@@ -26,39 +26,10 @@ PRIORITY-ID:
 - deny-command npm\s+publish bun\s+publish npm\s+link git\s+tag ^(?!.*HOME=/tmp/neurastream-home).*bun\s+(link|add\s+-g) ^(?!.*HOME=/tmp/neurastream-home).*omp\s+(plugin\s+)?(install|link) --no-verify git\s+add\s+(-A|--all|\.)(\s|$)
 
 ## Phases
-- [ ] P1 Port the live changes made since the package was built. Diff every in-scope live file (list: docs/inventory.md) against its port, and port each behaviour change with a golden or unit test. Known change: /home/ukd/.local/bin/queue-close `squashMerged()` + `contains()` + `declaredLanded()` (owner-approved 2026-10-19):
-  - (c) a branch counts as landed if merging it into one of base's first-parent commits since the fork point (max 200) is clean and yields exactly that commit's tree (`git merge-tree --write-tree`);
-  - (d) a plan line `Landed: <commit on base> from <pre-squash commit>` (optionally a `- ` bullet) counts only if: the first commit is on base, the branch tip is in the second's history, and the first already contains the second.
-  - Tests, each on a temp git repo: a release squash with a later edit closes through (c); a stacked branch closes only through (d); an unmerged branch with new content fails (c) and (d); a forged Landed line whose pre-squash commit doesn't contain the branch fails.
-  - Record each live file compared and the result in your Progress bullet.
-  - difficulty: 3 — verify: `cd /home/ukd/Work/neurastream-publish && bun run typecheck && bun test`
-- [ ] P2 `neurastream doctor`. For every live file the omp adapter installs (bins, extensions, queue lib, templates), report whether it is the installed package's copy or launcher, and whether the installed version equals the latest version on npm (`npm view neurastream version`; offline = warning, not failure).
-  - Exit 1 lists each hand-edited or foreign file, plus a stale installed version.
-  - `main-start` (core port) runs doctor and prints its result.
-  - The README gets a "Changing a script" section: edit in this repo → test → Main tags → publish workflow → `neurastream update` (or `bun add -g neurastream@latest` + `neurastream adapter install omp`); live copies are never hand-edited.
-  - Tests use sandbox HOMEs: clean install → 0; one edited bin → 1 naming it; older installed version → 1.
-  - difficulty: 3 — verify: `cd /home/ukd/Work/neurastream-publish && bun run typecheck && bun test`
-- [ ] P3 Publish workflow. `.github/workflows/publish.yml` on tags `v*`:
-  1. bun install --frozen-lockfile;
-  2. typecheck + test;
-  3. fail if the tag ≠ `v` + package.json version;
-  4. `npm publish --access public --provenance` with `NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}`.
-
-  Set package.json `version` to `0.1.0`, `files` (only what the package needs: src, bin, templates, blockers, README; no docs/plans, tests, scripts unless used at runtime), `repository`, `license`, `publishConfig.access=public`. Add `.github/workflows/ci.yml` (typecheck + test on push/PR). `npm pack --dry-run` content list goes in your Progress bullet: no plans, no INDEX.md, no secrets, no `/home/ukd` paths.
-  - Sandbox smoke: tarball → `HOME=/tmp/neurastream-home-pub bun add -g ./neurastream-0.1.0.tgz` → `neurastream init` → `neurastream adapter install omp` → `queue-check` exit 0 → `neurastream doctor` exit 0.
-  - difficulty: 2 — verify: `cd /home/ukd/Work/neurastream-publish && bun run typecheck && bun test && npm pack --dry-run >/dev/null`
-- [ ] P4 Cutover scripts, tested only in sandbox HOMEs: `scripts/cutover.sh` and `scripts/rollback.sh`.
-  - **cutover.sh:**
-    1. Back up every live file it will replace into `~/.local/state/neurastream/cutover-<date>.tar` and print the path.
-    2. `bun add -g neurastream@<version>`.
-    3. `neurastream init`: keep the existing INDEX.md, notes and queue state; write config.yml with today's values.
-    4. `neurastream adapter install omp`.
-    5. Run queue-check, agent-ledger --cap, brief-lint on an open plan, and main-start, and diff their output against a capture taken before step 1.
-    6. Any difference or non-zero exit → rollback automatically.
-  - **rollback.sh:** restores the tar byte-for-byte.
-  - Sandbox test: build a fake "today" HOME from copies of the live layout (no secrets, no sessions), run cutover → same outputs; break one bin → cutover rolls back and the tree hash equals the pre-cutover hash.
-  - Main runs the real cutover after MR !197 merges.
-  - difficulty: 4 — verify: `cd /home/ukd/Work/neurastream-publish && bun test && HOME=/tmp/neurastream-home-cut bash scripts/cutover-sandbox-test.sh`
+- [ ] P1 Port the live changes made since the package was built (details: Background "P1"). Diff every in-scope live file (docs/inventory.md) against its port; port each behaviour change with a test; record every file compared + result in Progress — difficulty: 3 — verify: `cd /home/ukd/Work/neurastream-publish && bun run typecheck && bun test`
+- [ ] P2 `neurastream doctor` + "Changing a script" README section (details: Background "P2") — difficulty: 3 — verify: `cd /home/ukd/Work/neurastream-publish && bun run typecheck && bun test`
+- [ ] P3 Publish + CI workflows, package.json 0.1.0 publish fields, sandbox install smoke (details: Background "P3") — difficulty: 2 — verify: `cd /home/ukd/Work/neurastream-publish && bun run typecheck && bun test && npm pack --dry-run >/dev/null`
+- [ ] P4 `scripts/cutover.sh` + `scripts/rollback.sh` + `scripts/cutover-sandbox-test.sh`, tested only in sandbox HOMEs; Main runs the real cutover after MR !197 merges (details: Background "P4") — difficulty: 4 — verify: `cd /home/ukd/Work/neurastream-publish && bun test && HOME=/tmp/neurastream-home-cut bash scripts/cutover-sandbox-test.sh`
 
 ## Done check
 `cd /home/ukd/Work/neurastream-publish && git fetch -q origin && git merge-base --is-ancestor HEAD origin/main && bun run typecheck && bun test && test "$(npm view neurastream version)" = "$(node -p "require('./package.json').version")" && neurastream doctor`
@@ -70,3 +41,7 @@ Status: open
 ## Background
 - Previous plan (complete): docs/plans/20261018_2306_neurastream_package.md; inventory in docs/inventory.md, smoke transcript in docs/smoke.md.
 - Gateforge publishes the same way: /home/ukd/Work/gf-declared-delete/.github/workflows/publish.yml (read it for the pattern; don't copy its secrets names blindly).
+- P1: known change = /home/ukd/.local/bin/queue-close `squashMerged()` + `contains()` + `declaredLanded()` (owner-approved 2026-10-19). (c) a branch is landed if merging it into one of base's first-parent commits since the fork point (max 200) is clean and yields exactly that commit's tree (`git merge-tree --write-tree`). (d) a plan line `Landed: <commit on base> from <pre-squash commit>` (optional `- ` bullet) counts only if the first is on base, the branch tip is in the second's history, and the first already contains the second. Tests on temp git repos: release squash with a later edit closes via (c); stacked branch closes only via (d); unmerged branch with new content fails (c) and (d); forged Landed line whose pre-squash commit lacks the branch fails.
+- P2: for every live file the omp adapter installs (bins, extensions, queue lib, templates) report whether it is the installed package's copy/launcher, and whether the installed version equals `npm view neurastream version` (offline = warning). Exit 1 lists each hand-edited/foreign file and a stale version. The core `main-start` runs doctor and prints the result. README "Changing a script": edit in this repo → test → Main tags → publish workflow → `bun add -g neurastream@latest` + `neurastream adapter install omp`; live copies are never hand-edited. Tests (sandbox HOMEs): clean install → 0; one edited bin → 1 naming it; older installed version → 1.
+- P3: `.github/workflows/publish.yml` on tags `v*`: bun install --frozen-lockfile; typecheck + test; fail if tag ≠ `v`+package.json version; `npm publish --access public --provenance` with `NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}` (needs `permissions: id-token: write`). `.github/workflows/ci.yml`: typecheck + test on push/PR. package.json: version 0.1.0, `files` (runtime only: src, bin, templates, blockers, README; no docs/plans, tests, unused scripts), repository, license, publishConfig.access=public. Progress bullet lists `npm pack --dry-run` contents: no plans, INDEX.md, secrets or `/home/ukd`. Sandbox smoke: tarball → `HOME=/tmp/neurastream-home-pub bun add -g ./neurastream-0.1.0.tgz` → init → adapter install omp → queue-check 0 → doctor 0.
+- P4: cutover.sh: (1) capture outputs of queue-check, agent-ledger --cap, brief-lint <open plan>, main-start; (2) tar every live file it replaces to `~/.local/state/neurastream/cutover-<date>.tar`, print path; (3) `bun add -g neurastream@<version>`; (4) `neurastream init` keeping INDEX.md, notes, queue state, config = today's values; (5) `neurastream adapter install omp`; (6) rerun the captures and diff; any diff or non-zero exit → rollback.sh automatically. rollback.sh restores the tar byte-for-byte. cutover-sandbox-test.sh builds a fake "today" HOME from copies of the live layout (no secrets, no sessions): cutover → same outputs; a broken bin → rollback, tree hash equals the pre-cutover hash.

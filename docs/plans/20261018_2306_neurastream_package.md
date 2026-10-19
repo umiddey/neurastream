@@ -1,5 +1,5 @@
 # neurastream: the orchestration setup as a harness-agnostic npm package
-Worktree: /home/ukd/projects/neurastream
+Worktree: /home/ukd/Work/neurastream-package
 Branch: feat/package
 PRIORITY-ID:
 
@@ -37,6 +37,7 @@ PRIORITY-ID:
 
 ## Progress
 Status: complete
+- 2026-10-19 10:25 (Main): Worktree line changed from /home/ukd/projects/neurastream (the main checkout) to an unused path: queue-close refuses a plan inside its own worktree and would otherwise remove the main checkout on close. The work ran in the main checkout on feat/package, now merged.
 - 2026-10-19 10:20 (Main): owner 2026-10-19 "maybe also publish the Neura stream … we should probably use the npm version ourselves". Main committed the refreshed docs/smoke.md (316befc), fast-forwarded main to feat/package and pushed origin/main b20e0cd..316befc. Publish (GitHub Actions + NPM_TOKEN, owner's choice), script sync and the live cutover (after MR !197 merges, owner's choice) continue in docs/plans/20261019_1020_neurastream_publish_cutover.md.
 - 2026-10-19 07:40 (Main): P6 accepted. Main's own run: typecheck exit 0; bun test 57 pass / 0 fail; fresh `HOME=/tmp/neurastream-home-e2e bash scripts/smoke-e2e.sh` exit 0, ends `queue-close: CLOSED` / `SMOKE PASS`; live ~/.omp/agent/extensions unchanged (main-guard.ts, plan-guard.ts, herdr-omp-agent-state.ts only). All phases done on feat/package; not merged or pushed (owner tonight: never publish, never touch the live setup).
 - 2026-10-19 04:23 (NeurastreamGrokP6b): P6 smoke green. Kept the uncommitted init/adapter tree. heavy-run `bun run typecheck && bun test` exit 0, 56 pass / 0 fail (416 expect), commit 9adcec9 (init, adapter install, overlay, notes, tests). Installed bins all resolved to main.ts and printed help, so a queue-check exit 0 was help, not a queue summary. Fixed with one launcher per compatibility bin; heavy-run typecheck + bun test exit 0, 57 pass / 0 fail (419 expect), commit f612c4f. Smoke `HOME=/tmp/neurastream-home-e2e bash scripts/smoke-e2e.sh` via heavy-run exit 0: pack, install, init, second init hash unchanged, adapter install omp, toy plan, queue-check 0 with a Queue summary, agent-score accept + board, guard pre-tool exit 2 (no-push), close of merged feat/toy exit 0 (branch deleted, plan archived). Transcript docs/smoke.md is that run, commit 6269423. Forbidden-name scan on src/core: 0 disallowed hits. Gate missing before -> after: n/a (no gateforge). Next: Main's P6 verify.
