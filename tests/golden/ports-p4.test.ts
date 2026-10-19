@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
 import {
 	chmodSync,
 	copyFileSync,
@@ -17,6 +17,10 @@ const REPO = dirname(dirname(dirname(import.meta.path)));
 const LIVE = "/home/ukd/.local/bin";
 const HEAVY_ORIG = "/home/ukd/Work/heavy-run.sh";
 const ROOT = "/tmp/neurastream-home-golden-p4";
+
+afterAll(() => {
+	rmSync(ROOT, { recursive: true, force: true });
+});
 
 function homeFor(name: string): string {
 	const home = join(ROOT, name);

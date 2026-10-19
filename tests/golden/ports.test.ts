@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -8,6 +8,10 @@ import { spawnSync } from "node:child_process";
 const REPO = dirname(dirname(dirname(import.meta.path)));
 const LIVE = "/home/ukd/.local/bin";
 const ROOT = "/tmp/neurastream-home-golden";
+
+afterAll(() => {
+	rmSync(ROOT, { recursive: true, force: true });
+});
 
 function now(): string {
 	return String(Date.now() / 1000);
