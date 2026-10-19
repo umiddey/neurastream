@@ -87,6 +87,14 @@ function match(
 }
 
 // Goldens run the oracle and the port seconds apart: strip what the machine changes between runs.
+function stripVanished(s: string): string {
+	// rsync racing the orchestrator's transient /tmp/runc-process* files: noise on either side
+	return s
+		.split("\n")
+		.filter(l => !/file has vanished|rsync warning: some files vanished/.test(l))
+		.join("\n");
+}
+
 function stripTs(s: string): string {
 	return s.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?/g, "TS");
 }
@@ -338,7 +346,7 @@ test("tmp-snapshot matches the original", () => {
 	const py = runBash(oracle, [], env);
 	const port = runPort("tmp-snapshot", [], env);
 	expect(stripTs(port.stdout)).toBe(stripTs(py.stdout));
-	expect(port.stderr).toBe(py.stderr);
+	expect(stripVanished(port.stderr)).toBe(stripVanished(py.stderr));
 	expect(port.code).toBe(py.code);
 }, 120_000);
 
