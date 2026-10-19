@@ -40,4 +40,6 @@ jobs:
           ver="$(node -p "require('./package.json').version")"
           echo "tag=$GITHUB_REF_NAME version=v$ver"
           test "$GITHUB_REF_NAME" = "v$ver"
-      - run: npm publish --access public --provenance
+      # No --provenance: the repo is private and npm only accepts provenance
+      # bundles from public source repos (E422). Trusted publishing (OIDC) still applies.
+      - run: npm publish --access public
