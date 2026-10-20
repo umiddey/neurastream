@@ -416,3 +416,18 @@ console.log(JSON.stringify(out));
 	while (Date.now() < deadline && count() < 2) await new Promise(r => setTimeout(r, 100));
 	expect(count()).toBe(2); // session_start + the push
 });
+
+test("main reads: a grep -n line in a Main tool_result logs the existing file only", () => {
+	fresh();
+	const grepOut = "src/a.ts:1:export const a = 1;\nsrc/missing.ts:3:gone\n";
+	adapterRun(`${REGISTER}
+const ctx = ${MAIN_CTX};
+const cmd = "grep -rn export src";
+await h["tool_call"]({ toolName: "bash", input: { command: cmd }, toolCallId: "g1" }, ctx);
+await h["tool_result"]({ toolName: "bash", input: { command: cmd }, toolCallId: "g1", content: [{ type: "text", text: ${JSON.stringify(grepOut)} }], isError: false }, ctx);
+console.log(JSON.stringify([]));
+`);
+	const reads = JSON.parse(readFileSync(join(STATE, "main-reads.json"), "utf8")) as Record<string, string>;
+	expect(Object.keys(reads)).toContain(join(TOY, "src/a.ts"));
+	expect(Object.keys(reads)).not.toContain(join(TOY, "src/missing.ts"));
+});

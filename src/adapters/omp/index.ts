@@ -20,7 +20,7 @@ import { appendFileSync, mkdirSync, openSync, readFileSync, writeFileSync } from
 import { join } from "node:path";
 import type { Decision } from "../../core/adapter.ts";
 import { loadConfig, type Config } from "../../core/config.ts";
-import { checkInject, checkPlanEdit, checkStop, checkTool } from "../../core/guards.ts";
+import { checkInject, checkPlanEdit, checkStop, checkTool, recordMainResult } from "../../core/guards.ts";
 import { applyQueueEnv } from "../../core/queue/env.ts";
 import * as q from "../../core/queue/lib.ts";
 
@@ -243,6 +243,11 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		}
 		if ((!c.hasAgent || c.kind === "main") && asString(e.toolName) === "bash" && !e.isError) {
 			if (PUSH_MERGE.test(asString(asRecord(e.input).command))) autoClose(cfg);
+		}
+		if ((!c.hasAgent || c.kind === "main") && !e.isError) {
+			const content = Array.isArray(e.content) ? e.content : [];
+			const text = content.map(p => asString(asRecord(p).text)).join("\n");
+			recordMainResult(asString(e.toolName), asRecord(e.input), c.cwd ?? process.cwd(), text);
 		}
 		return undefined;
 	});

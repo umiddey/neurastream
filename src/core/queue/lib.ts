@@ -238,6 +238,19 @@ export function isOrchestrationPath(p: string, plans: Plan[] = activePlans()): b
 }
 
 const SHELL_TOOLS = new Set(["bash", "eval"]);
+// A shell command is a list of segments; each `cd` segment moves the directory for the ones after it.
+const SHELL_SEGMENT = /&&|\|\||[;|\n]/;
+const CD_SEGMENT = /^\s*cd\s+(\S+)/;
+
+/** The directory a shell command leaves in effect: `base`, moved by each `cd` segment in order. */
+export function shellCwd(command: string, base: string): string {
+	let dir = base;
+	for (const seg of command.split(SHELL_SEGMENT)) {
+		const cd = CD_SEGMENT.exec(seg);
+		if (cd) dir = path.resolve(dir, expandHome(cd[1] ?? ""));
+	}
+	return dir;
+}
 export function touchedPaths(toolName: string, input: Record<string, unknown>, cwd: string): string[] {
 	const out = new Set<string>();
 	const base = typeof input?.cwd === "string" ? path.resolve(cwd, expandHome(input.cwd)) : cwd;
@@ -258,14 +271,16 @@ export function touchedPaths(toolName: string, input: Record<string, unknown>, c
 	}
 	if (SHELL_TOOLS.has(toolName)) {
 		out.add(base);
-		const cmd = String(input?.command ?? input?.code ?? "");
 		let dir = base;
-		for (const word of cmd.split(/[\s;&|<>()'"`,=]+/)) {
-			const w = word.trim();
-			if (!w || w.startsWith("-") || w.includes("://") || !/[./]/.test(w) || /^\d+(\.\d+)*$/.test(w)) continue;
-			add(w, dir);
+		for (const seg of String(input?.command ?? input?.code ?? "").split(SHELL_SEGMENT)) {
+			for (const word of seg.split(/[\s<>()'"`,=]+/)) {
+				const w = word.trim();
+				if (!w || w.startsWith("-") || w.includes("://") || !/[./]/.test(w) || /^\d+(\.\d+)*$/.test(w)) continue;
+				add(w, dir);
+			}
+			const cd = CD_SEGMENT.exec(seg);
+			if (cd) dir = path.resolve(dir, expandHome(cd[1] ?? ""));
 		}
-		for (const m of cmd.matchAll(/(?:^|&&|;|\|\|)\s*cd\s+(\S+)/g)) dir = path.resolve(dir, expandHome(m[1] ?? ""));
 	}
 	return [...out];
 }

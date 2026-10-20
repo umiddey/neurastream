@@ -339,7 +339,12 @@ export function checkTool(e: ToolEvent, cfg: Config): Decision {
 			`plan-guard: ${hit} is a protected guard file. Only the owner changes it (unlock: \`touch ${q.UNLOCK}\` in a terminal, valid ${cfg.guards.unlock_minutes} min).`,
 		);
 	}
-	if (e.agent === "main") return mainTool(e, input, cfg);
+	if (e.agent === "main") {
+		const d = mainTool(e, input, cfg);
+		// A task brief names paths it does not read; only the other tools' paths count as reads.
+		if (d.allow && e.tool !== "task") recordMainReads(paths.filter(p => !writes.includes(p)));
+		return d;
+	}
 	const why = subRules(e, input, paths, writes, cfg);
 	if (why) {
 		log(cfg.paths.plan_guard_log, `BLOCK sub:${e.agentId} tool=${e.tool} ${why}`);
@@ -353,6 +358,46 @@ export function checkTool(e: ToolEvent, cfg: Config): Decision {
 			inject: `plan-guard: call ${n}/${cfg.guards.sub_max_calls}. Update your plan's "## Progress" now (done, verified, next); at ${cfg.guards.sub_max_calls} only that edit is allowed.`,
 		};
 	return ALLOW;
+}
+
+// --- Main's read log (`main-reads.json` in the queue state dir): files Main has read itself ---
+
+const MAIN_READ_KEEP_MS = 7 * 86_400_000;
+const GREP_LINE = /^([^\s:]+):\d+:/gm;
+/** Logs existing files as read now; entries older than 7 days are dropped on each write. */
+function recordMainReads(files: string[], now = Date.now()): void {
+	const file = path.join(q.STATE_DIR, "main-reads.json");
+	const existing = files.filter(f => {
+		try {
+			return statSync(f).isFile();
+		} catch {
+			return false;
+		}
+	});
+	if (existing.length === 0) return;
+	let reads: Record<string, string> = {};
+	try {
+		const parsed = JSON.parse(readFileSync(file, "utf8")) as unknown;
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) reads = parsed as Record<string, string>;
+	} catch {}
+	const stamp = new Date(now).toISOString();
+	for (const f of existing) reads[f] = stamp;
+	const cutoff = now - MAIN_READ_KEEP_MS;
+	for (const [f, t] of Object.entries(reads)) if (!(Date.parse(t) >= cutoff)) delete reads[f];
+	try {
+		mkdirSync(q.STATE_DIR, { recursive: true });
+		writeFileSync(file, JSON.stringify(reads, null, 2));
+	} catch {}
+}
+
+/**
+ * Main's tool result: each `path:line:` at a line start (grep -n / grep -rn output) names a file
+ * Main read. Paths resolve against the directory the call ran in (its `cwd`, then any `cd`).
+ */
+export function recordMainResult(tool: string, input: Record<string, unknown>, cwd: string, text: string): void {
+	const base = typeof input.cwd === "string" ? path.resolve(cwd, q.expandHome(input.cwd)) : cwd;
+	const dir = q.shellCwd(String(input.command ?? input.code ?? ""), base);
+	recordMainReads([...text.matchAll(GREP_LINE)].map(m => path.resolve(dir, m[1] ?? "")));
 }
 
 /**

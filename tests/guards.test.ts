@@ -10,6 +10,7 @@ import { chmodSync, copyFileSync, cpSync, mkdirSync, readFileSync, rmSync, write
 import { dirname, join } from "node:path";
 import { helpText } from "../src/cli/dispatch.ts";
 import { CANCEL_TODO } from "../src/core/guards.ts";
+import { touchedPaths } from "../src/core/queue/lib.ts";
 
 const REPO = dirname(dirname(import.meta.path));
 const ORIG = "/tmp/neurastream-originals";
@@ -397,5 +398,21 @@ test("guard CLI surface: unknown event and bad JSON exit 2", () => {
 	expect(bad.stderr).toContain("unknown guard event");
 	const notJson = spawnSync("bun", [join(REPO, "src/cli/main.ts"), "guard", "pre-tool", "--json"], { input: "nope", encoding: "utf8", env: envFor() });
 	expect(notJson.status).toBe(2);
+});
+
+test("touchedPaths resolves each shell word against the cd in effect at that point", () => {
+	const paths = touchedPaths("bash", { command: "cd /repo && sed -n 1,5p src/x.ts" }, "/elsewhere");
+	expect(paths).toContain("/repo/src/x.ts");
+	expect(paths).not.toContain("/elsewhere/src/x.ts");
+});
+
+test("main reads: an allowed call logs its existing files; entries older than 7 days are dropped", () => {
+	fresh();
+	const old = new Date(Date.now() - 8 * 86_400_000).toISOString();
+	writeFileSync(join(STATE, "main-reads.json"), JSON.stringify({ [join(TOY, "src/old.ts")]: old }));
+	expect(guardCli("pre-tool", toolEvent("bash", { command: `cd ${TOY} && sed -n 1,5p src/a.ts` }, "main")).code).toBe(0);
+	const reads = JSON.parse(readFileSync(join(STATE, "main-reads.json"), "utf8")) as Record<string, string>;
+	expect(Object.keys(reads)).toEqual([join(TOY, "src/a.ts")]);
+	expect(Number.isNaN(Date.parse(reads[join(TOY, "src/a.ts")] ?? ""))).toBe(false);
 });
 
