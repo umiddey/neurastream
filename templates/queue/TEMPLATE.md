@@ -22,6 +22,10 @@ PRIORITY-ID: <optional, e.g. PR01>
 ## Done check
 `<one command, run in the worktree; exit 0 = the Goal is met and the work is landed>`
 
+## Code read by Main
+<!-- Main lists each file it read to write this plan's code claims, as backticked paths. Required for plans stamped 20261021_0100 or later. -->
+- `<path/to/file.ts>`
+
 ## Progress
 Status: open
 <!-- The implementer may only append dated entries here: what was done, what was verified (command +

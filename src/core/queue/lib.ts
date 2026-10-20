@@ -29,6 +29,8 @@ export const BACKGROUND_MAX_LINES = 40;
 export const SUB_WARN_CALLS = 90;
 export const SUB_MAX_CALLS = 100;
 const REQUIRED = ["goal", "forbidden", "blockers", "phases", "done check", "progress"] as const;
+// Plans stamped at or after this must carry a "## Code read by Main" section; older plans are grandfathered.
+const READ_CUTOVER = "20261021_0100";
 
 export interface Blocker {
 	script: string;
@@ -136,7 +138,10 @@ export function parsePlan(repo: string, file: string, text: string | null, block
 		if (s === "progress" ? !secs.has(s) : !items(secs.get(s) ?? "").length)
 			errors.push(`missing or empty "## ${s.replace(/^\w/, c => c.toUpperCase())}" section (template: ${agentDir()}/queue/TEMPLATE.md)`);
 	}
-	const known = new Set([...REQUIRED, "applies to", "background"]);
+	const stamp = /^(\d{8}_\d{4})/.exec(path.basename(file))?.[1] ?? "";
+	if (stamp >= READ_CUTOVER && !items(secs.get("code read by main") ?? "").length)
+		errors.push(`missing or empty "## Code read by Main" section (plans stamped ${READ_CUTOVER} or later list each file they cite)`);
+	const known = new Set([...REQUIRED, "applies to", "background", "code read by main"]);
 	for (const s of secs.keys()) if (!known.has(s)) errors.push(`unknown section "## ${s}" (allowed: ${[...known].join(", ")})`);
 	const status = statusOf(text);
 	if (!status) errors.push('"## Progress" must start with a line "Status: open", "Status: complete" or "Status: cancelled"');
