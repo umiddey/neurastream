@@ -342,11 +342,16 @@ test("agent-score matches the original", () => {
 		["exempt", sha1, "--note", "main own", "--repo", repo],
 		["nope"],
 	];
-	// The port is ahead of the frozen oracle by the specced `validate` feature: the board column is
-	// `Accepted (diag/val)` with cell `N (d/v)` (oracle: `Accepted (diag)`, cell `N (d)`). Fold the
-	// port side back so every other number and line still compares exactly.
+	// The port is ahead of the frozen oracle by the specced `validate` feature: `--help` carries a
+	// validate entry and the board column is `Accepted (diag/val)` with cell `N (d/v)` (oracle:
+	// `Accepted (diag)`, cell `N (d)`). Fold the port side back so every other number and line still
+	// compares exactly.
 	const toOracle = (s: string): string =>
-		s.replaceAll("Accepted (diag/val)", "Accepted (diag)").replace(/\((\d+)\/(\d+)\)/g, "($1)");
+		s.split("\n")
+			.filter(l => !l.startsWith("  agent-score validate") && !l.startsWith("        validation phase with proof"))
+			.join("\n")
+			.replaceAll("Accepted (diag/val)", "Accepted (diag)")
+			.replace(/\((\d+)\/(\d+)\)/g, "($1)");
 	for (const args of cases) {
 		const py = runPy(oracle, args, pyEnv, pyHome);
 		// The live help string hardcodes this machine. The package ships ~/Work/pm-counts.

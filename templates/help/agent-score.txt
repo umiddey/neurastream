@@ -7,6 +7,8 @@ Cost = the worker's own list cost + Main's steering cost (Main tokens spent on t
         commits must be ancestors of --branch (default pm/pr01-counts in ~/Work/pm-counts); --rework = needed fixes by Main/another agent
   agent-score diagnose <Agent> --plan <plan.md> --phase P --evidence <file> [--weight N]
         a real product bug found and recorded (no commit needed); default weight 4
+  agent-score validate <Agent> --plan <plan.md> --phase P --evidence <report.md> --section "## Heading" [--weight N] [--rework] [--note T]
+        validation phase with proof, no commits: phase ticked in the plan, the section body cites a heavy-run label run by <Agent>
   agent-score penalty <Agent> --kind false-claim|rule-break|escaped-defect --note T [--plan <plan.md>]
   agent-score exempt <sha,...> --note T [--repo R]          commits that are Main's own (merges, rebuilds), not a worker's
   agent-score check [--repo R] [--branch B]                 exit 1 = commits on the branch since the base with no accept/exempt record

@@ -29,6 +29,7 @@ Ranks workers by accepted points per dollar, then per hour.
 |---|---|
 | `--help` / `-h` / no args | 0, prints docstring |
 | `accept` / `diagnose` / `penalty` / `exempt` / `base` | 0 after one jsonl line, or 1 with a reason |
+| `validate` | 0 after one jsonl line, or 1 with a reason |
 | `check` | 1 if any commit since base is unscored, else 0 |
 | `board` | 0; also overwrites the ranking file |
 | `gate` | 0 always (warns, never blocks) |
@@ -48,6 +49,8 @@ Ranks workers by accepted points per dollar, then per hour.
 | pts/$ hidden when total ≤ 0.01; pts/h hidden when hours ≤ 0.05 | `score.min_dollars`, `score.min_hours` |
 
 Harness-specific: jsonl fields `customType == session_exit`, `toolName == yield`, `stopReason` in `stop|end_turn`, usage `cost.total`, model `provider/model`. A main session is a file whose stem starts with 4 digits. That parser is the omp session reader, not core. Steering cost (splitting main assistant turns that name an agent) is core and uses `Run.messages` from the adapter. OpenCode runs are merged from `oc-runs.jsonl` with cost forced to 0; that log is core state, not a session file.
+
+`validate` is a port addition (not in the 312-line original): it scores a validation phase with proof instead of commits. It records `{type: "validate", agent, plan, phase, weight, weight_src, evidence, section, labels, rework, note}` only when the plan's phase line is ticked `- [x]` (weight = that line's `difficulty: N` via `weightFor`; `--weight` overrides), the evidence heading starts with `--section` with the prefix ending at end-of-line, space or `(` and a non-blank body up to the next same-or-higher heading, the body cites verbatim a `paths.heavy_log` `END   <Agent> | <label> | exit <n>` label run by that agent (cited labels recorded), and no earlier accept/validate covers the same agent+plan+phase. Board column `Accepted (diag)` → `Accepted (diag/val)`, cell `N (d/v)`.
 
 ### agent-ledger — 128 lines
 
