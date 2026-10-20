@@ -342,17 +342,23 @@ test("agent-score matches the original", () => {
 		["exempt", sha1, "--note", "main own", "--repo", repo],
 		["nope"],
 	];
+	// The port is ahead of the frozen oracle by the specced `validate` feature: the board column is
+	// `Accepted (diag/val)` with cell `N (d/v)` (oracle: `Accepted (diag)`, cell `N (d)`). Fold the
+	// port side back so every other number and line still compares exactly.
+	const toOracle = (s: string): string =>
+		s.replaceAll("Accepted (diag/val)", "Accepted (diag)").replace(/\((\d+)\/(\d+)\)/g, "($1)");
 	for (const args of cases) {
 		const py = runPy(oracle, args, pyEnv, pyHome);
 		// The live help string hardcodes this machine. The package ships ~/Work/pm-counts.
 		const stdout = py.stdout.replaceAll("/home/ukd/Work/pm-counts", "~/Work/pm-counts");
 		const stderr = py.stderr.replaceAll("/home/ukd/Work/pm-counts", "~/Work/pm-counts");
-		match({ ...py, stdout, stderr }, runPort("agent-score", args, portEnv, portHome));
+		const port = runPort("agent-score", args, portEnv, portHome);
+		match({ ...py, stdout, stderr }, { code: port.code, stdout: toOracle(port.stdout), stderr: toOracle(port.stderr) });
 	}
 	expect(readFileSync(join(portHome, ".local/state/agent-score/events.jsonl"), "utf8")).toBe(
 		readFileSync(join(pyHome, ".local/state/agent-score/events.jsonl"), "utf8"),
 	);
-	expect(readFileSync(join(portHome, ".omp/agent/notes/subagent-ranking.md"), "utf8")).toBe(
+	expect(toOracle(readFileSync(join(portHome, ".omp/agent/notes/subagent-ranking.md"), "utf8"))).toBe(
 		readFileSync(join(pyHome, ".omp/agent/notes/subagent-ranking.md"), "utf8"),
 	);
 });

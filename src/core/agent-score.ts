@@ -88,6 +88,55 @@ function phaseDifficulty(plan: string, phase: string): number | null {
 	throw new Error("stop");
 }
 
+/** True when the plan's phase line exists and is ticked `- [x]`/`- [X]` (ticking = reviewed by Main). */
+function phaseTicked(plan: string, phase: string): boolean {
+	if (!existsSync(plan)) {
+		exitText(`plan not found: ${plan}`);
+		throw new Error("stop");
+	}
+	const re = new RegExp(`^- \\[[ xX]\\] ${phase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`);
+	for (const line of readFileSync(plan, "utf8").split("\n")) {
+		if (re.test(line)) return /^- \[[xX]\]/.test(line);
+	}
+	return false;
+}
+
+/**
+ * Body of the first heading whose text starts with `section` and ends at end-of-line, space or `(`,
+ * so `## CP` matches `## CP (P5, ...)` but not `## CPX`. The body runs to the next heading of the
+ * same or higher level. Null when no heading matches.
+ */
+function sectionBody(text: string, section: string): string | null {
+	const lines = text.split("\n");
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i]!;
+		if (!/^#{1,6} /.test(line)) continue;
+		if (!(line === section || line.startsWith(`${section} `) || line.startsWith(`${section}(`))) continue;
+		const level = (line.match(/^#+/) ?? ["#"])[0]!.length;
+		const body: string[] = [];
+		for (let j = i + 1; j < lines.length; j++) {
+			const next = lines[j]!;
+			const m = next.match(/^#+(?= )/);
+			if (m && m[0].length <= level) break;
+			body.push(next);
+		}
+		return body.join("\n");
+	}
+	return null;
+}
+
+/** Labels from the heavy-run log's `END   <agent> | <label> | exit <n>` lines (START lines never match). */
+function heavyEndLabels(log: string, agent: string): string[] {
+	if (!existsSync(log)) return [];
+	const re = new RegExp(`END\\s+${agent.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\| (.*) \\| exit \\d+$`);
+	const out: string[] = [];
+	for (const line of readFileSync(log, "utf8").split("\n")) {
+		const m = line.match(re);
+		if (m) out.push(m[1]!);
+	}
+	return out;
+}
+
 function weightFor(args: string[], plan: string, phase: string, cfg: Config, fallback: number | null): { w: number; src: string } {
 	if (args.includes("--weight")) return { w: Number(needOpt(args, "--weight")), src: "flag" };
 	const d = phaseDifficulty(plan, phase);
@@ -110,6 +159,7 @@ interface Row {
 	first: number;
 	pen: number;
 	diag: number;
+	val: number;
 	net: number;
 	total: number;
 	ppd: number | null;
@@ -183,7 +233,7 @@ function table(days: number, cfg: Config, source: RunSource): { rows: Row[]; byA
 	for (const [n, r] of byAgent) agentModel.set(n, r.model);
 	const rows = new Map<string, Row>();
 	const blank = (model: string): Row => ({
-		model, runs: 0, done: 0, running: 0, cost: 0, steer: 0, hours: 0, pts: 0, acc: 0, first: 0, pen: 0, diag: 0,
+		model, runs: 0, done: 0, running: 0, cost: 0, steer: 0, hours: 0, pts: 0, acc: 0, first: 0, pen: 0, diag: 0, val: 0,
 		net: 0, total: 0, ppd: null, pph: null, surv: null, fp: null,
 	});
 	for (const r of byAgent.values()) {
@@ -203,11 +253,12 @@ function table(days: number, cfg: Config, source: RunSource): { rows: Row[]; byA
 		const agent = String(e.agent ?? "");
 		const model = (typeof e.model === "string" && e.model) || agentModel.get(agent) || "?";
 		const m = rows.get(model) ?? blank(model);
-		if (e.type === "accept" || e.type === "diagnose") {
+		if (e.type === "accept" || e.type === "diagnose" || e.type === "validate") {
 			m.pts += Number(e.weight);
 			m.acc += 1;
 			m.first += e.rework ? 0 : 1;
 			m.diag += e.type === "diagnose" ? 1 : 0;
+			m.val += e.type === "validate" ? 1 : 0;
 		} else if (e.type === "penalty") {
 			m.pen += cfg.score.penalties[String(e.kind)] ?? 0;
 		}
@@ -247,12 +298,12 @@ function board(days: number, cfg: Config, source: RunSource): void {
 			+ "(false-claim 5, rule-break 2, escaped-defect 8). Survival = finished runs that ended with a final result. Steering is approximate "
 			+ "(Main turns naming the agent).",
 		"",
-		"| # | Worker model | Runs (live) | Survival | Accepted (diag) | First-pass | Net pts | $ worker | $ steering | pts/$ | pts/h |",
+		"| # | Worker model | Runs (live) | Survival | Accepted (diag/val) | First-pass | Net pts | $ worker | $ steering | pts/$ | pts/h |",
 		"|---|---|---|---|---|---|---|---|---|---|---|",
 	];
 	rows.forEach((r, i) => {
 		lines.push(
-			`| ${i + 1} | ${r.model} | ${r.runs} (${r.running}) | ${fmt(r.surv, "pct")} | ${r.acc} (${r.diag}) | ${fmt(r.fp, "pct")} | ${r.net} | ${pyFixed(r.cost, 2)} | ${pyFixed(r.steer, 2)} | ${fmt(r.ppd, "1f")} | ${fmt(r.pph, "1f")} |`,
+			`| ${i + 1} | ${r.model} | ${r.runs} (${r.running}) | ${fmt(r.surv, "pct")} | ${r.acc} (${r.diag}/${r.val}) | ${fmt(r.fp, "pct")} | ${r.net} | ${pyFixed(r.cost, 2)} | ${pyFixed(r.steer, 2)} | ${fmt(r.ppd, "1f")} | ${fmt(r.pph, "1f")} |`,
 		);
 	});
 	const text = `${lines.join("\n")}\n`;
@@ -298,6 +349,29 @@ export function agentScore(args: string[], cfg: Config, source: RunSource): numb
 			const weighted = rest.includes("--weight") ? weightFor(rest, plan, phase, cfg, cfg.score.diagnose_weight) : { w: cfg.score.diagnose_weight, src: "default" };
 			record({
 				type: "diagnose", agent, plan, phase, weight: weighted.w, weight_src: weighted.src, evidence: ev, note: opt(rest, "--note") ?? "",
+			}, cfg);
+			return 0;
+		}
+		if (cmd === "validate") {
+			const agent = rest[0];
+			const plan = opt(rest, "--plan");
+			const phase = opt(rest, "--phase");
+			const ev = opt(rest, "--evidence");
+			const section = opt(rest, "--section");
+			if (!agent || !plan || !phase || !ev || !section) return exitText("validate needs --plan, --phase, --evidence and --section");
+			if (!phaseTicked(plan, phase)) return exitText(`refused: ${phase} not ticked in ${plan}`);
+			const { w, src } = weightFor(rest, plan, phase, cfg, null);
+			if (!existsSync(ev)) return exitText(`refused: evidence file not found: ${ev}`);
+			const body = sectionBody(readFileSync(ev, "utf8"), section);
+			if (body === null) return exitText(`refused: no heading starting with ${section} in ${ev}`);
+			if (!body.split("\n").some(l => l.trim())) return exitText(`refused: section ${section} has no body in ${ev}`);
+			const labels = heavyEndLabels(cfg.paths.heavy_log, agent).filter(l => body.includes(l));
+			if (labels.length === 0) return exitText(`refused: section cites no heavy-run label run by ${agent}`);
+			const scored = readEvents(cfg).some(e => (e.type === "accept" || e.type === "validate") && e.agent === agent && e.plan === plan && e.phase === phase);
+			if (scored) return exitText("refused: already scored");
+			record({
+				type: "validate", agent, plan, phase, weight: w, weight_src: src, evidence: ev, section,
+				labels, rework: rest.includes("--rework"), note: opt(rest, "--note") ?? "",
 			}, cfg);
 			return 0;
 		}
