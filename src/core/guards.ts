@@ -478,7 +478,7 @@ function mainOnlyLines(text: string): string {
  * write (the original restored the file itself before reporting).
  */
 export function checkPlanEdit(e: PlanEditEvent, cfg: Config): Decision {
-	if (e.agent === "main") return ALLOW;
+	if (e.agent === "main") return checkMainPlan(e, cfg);
 	if (q.outsideProgress(e.after) !== q.outsideProgress(e.before) || mainOnlyLines(e.after) !== mainOnlyLines(e.before)) {
 		log(cfg.paths.plan_guard_log, `RESTORE ${e.path}`);
 		return {
@@ -488,6 +488,74 @@ export function checkPlanEdit(e: PlanEditEvent, cfg: Config): Decision {
 		};
 	}
 	return ALLOW;
+}
+
+// Main's plan text outside "## Progress" must rest on files Main read itself (planReadProblems).
+// An empty `before` means the plan file did not exist yet; a refusal then deletes it.
+function checkMainPlan(e: PlanEditEvent, cfg: Config): Decision {
+	if (q.outsideProgress(e.after) === q.outsideProgress(e.before)) return ALLOW;
+	const problems = planReadProblems(e.after, e.path, cfg);
+	if (!problems.length) return ALLOW;
+	log(cfg.paths.plan_guard_log, `REFUSE-READ ${e.path}: ${problems.join("; ")}`);
+	return {
+		allow: false,
+		reason: `plan-guard: ${e.path} cites code Main has not read for this plan:\n- ${problems.join("\n- ")}\nRead each file (read or grep it), list it under "## Code read by Main", then edit again. ${e.before ? "The file was restored." : "The new file was removed."}`,
+		restore: { path: e.path, text: e.before || null },
+	};
+}
+
+const READ_SECTION = /^## Code read by Main[^\n]*\n([\s\S]*?)(?=^## |(?![\s\S]))/m;
+const LISTED_PATH = /`([^`\s]+)`/g;
+const CITED_PATH = /((?:~\/|\/|\.{1,2}\/)?[\w@.-]+(?:\/[\w@.-]+)*\.[A-Za-z0-9]+):\d+/g;
+
+/** Read evidence behind a plan edit: section present, each listed path read within the window, no unlisted cited path. */
+function planReadProblems(text: string, planPath: string, cfg: Config): string[] {
+	const section = READ_SECTION.exec(text)?.[1] ?? "";
+	const listed = [...section.matchAll(LISTED_PATH)].map(m => (m[1] ?? "").replace(/:[\d,+\- ]+$/, ""));
+	if (!listed.length) return [`no "## Code read by Main" section lists a file (list each file you read for this plan as a backticked path)`];
+	const reads = readMainReads();
+	const maxMs = cfg.guards.plan_read_max_hours * 3_600_000;
+	const problems: string[] = [];
+	const named = new Set<string>();
+	for (const p of listed) {
+		const abs = planFile(p, planPath, text);
+		named.add(abs);
+		if (!isFile(abs)) problems.push(`${p} does not exist`);
+		else if (!(Date.parse(reads[abs] ?? "") >= Date.now() - maxMs)) problems.push(`${p} was not read by Main within ${cfg.guards.plan_read_max_hours} h`);
+	}
+	for (const [, cited = ""] of text.matchAll(CITED_PATH)) {
+		const abs = planFile(cited, planPath, text);
+		if (abs.includes("/docs/plans/") || named.has(abs) || !isFile(abs)) continue;
+		problems.push(`${cited} is cited but not listed under "## Code read by Main"`);
+	}
+	return problems;
+}
+
+/** A plan-cited path: absolute, else under the plan's Worktree (when set) or its repo root. */
+function planFile(p: string, planPath: string, text: string): string {
+	const home = q.expandHome(p);
+	if (path.isAbsolute(home)) return home;
+	const wt = /^Worktree:\s*(\S+)/m.exec(text)?.[1];
+	const repo = path.dirname(path.dirname(path.dirname(planPath)));
+	const roots = wt && wt !== "-" ? [wt, repo] : [repo];
+	const root = roots.find(r => isFile(path.join(r, home))) ?? repo;
+	return path.join(root, home);
+}
+
+function isFile(file: string): boolean {
+	try {
+		return statSync(file).isFile();
+	} catch {
+		return false;
+	}
+}
+
+function readMainReads(): Record<string, string> {
+	try {
+		return JSON.parse(readFileSync(path.join(q.STATE_DIR, "main-reads.json"), "utf8")) as Record<string, string>;
+	} catch {
+		return {};
+	}
 }
 
 // Plans still responsible for: open plans (parked "WAITING on owner" excluded) plus queue problems.

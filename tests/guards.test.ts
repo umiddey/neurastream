@@ -28,7 +28,7 @@ interface Decision {
 	allow: boolean;
 	reason: string;
 	inject?: string;
-	restore?: { path: string; text: string };
+	restore?: { path: string; text: string | null };
 	state?: { callsSinceStop: number; idleStops: number };
 }
 
@@ -235,6 +235,79 @@ console.log(JSON.stringify(out));
 	const progressOnly = guardCli("plan-edit", { path: PLAN, before, after: before.replace("- Started the toy work.", "- Started the toy work.\n- Did the thing."), agent: "sub" });
 	expect(progressOnly.code).toBe(0);
 	expect(guardCli("plan-edit", { path: PLAN, before, after: statusFlip, agent: "main" }).code).toBe(0);
+});
+
+// P2: Main may author plan text only when a "## Code read by Main" section lists read files.
+function cite(p: string): string {
+	return "- `" + p + ":1`";
+}
+function mainBody(section: string | null, extra = ""): string {
+	const head = section === null ? "" : "## Code read by Main\n" + section + "\n\n";
+	return TOY_PLAN.replace("## Progress", "## Background\n- Reads show X." + extra + "\n\n" + head + "## Progress");
+}
+function readLog(entries: Record<string, string>): void {
+	writeFileSync(join(STATE, "main-reads.json"), JSON.stringify(entries));
+}
+
+test("Main plan text without a Code read by Main section is refused and restored", () => {
+	fresh();
+	const d = guardCli("plan-edit", { path: PLAN, before: TOY_PLAN, after: mainBody(null), agent: "main" });
+	expect(d.code).toBe(2);
+	expect(d.d.reason).toContain("## Code read by Main");
+	expect(d.d.restore).toEqual({ path: PLAN, text: TOY_PLAN });
+});
+
+test("a new plan file written by Main without the section is deleted on refusal", () => {
+	fresh();
+	const d = guardCli("plan-edit", { path: PLAN, before: null, after: mainBody(null), agent: "main" });
+	expect(d.code).toBe(2);
+	expect(d.d.restore).toEqual({ path: PLAN, text: null });
+});
+
+test("a listed path missing from the read log is refused, and the refusal names it", () => {
+	fresh();
+	const src = join(TOY, "src/read.ts");
+	writeFileSync(src, "export const a = 1;\n");
+	readLog({});
+	const d = guardCli("plan-edit", { path: PLAN, before: TOY_PLAN, after: mainBody(cite(src)), agent: "main" });
+	expect(d.code).toBe(2);
+	expect(d.d.reason).toContain(src);
+});
+
+test("a read older than plan_read_max_hours (24 h) does not count", () => {
+	fresh();
+	const src = join(TOY, "src/read.ts");
+	writeFileSync(src, "export const a = 1;\n");
+	readLog({ [src]: new Date(Date.now() - 48 * 3600_000).toISOString() });
+	const d = guardCli("plan-edit", { path: PLAN, before: TOY_PLAN, after: mainBody(cite(src)), agent: "main" });
+	expect(d.code).toBe(2);
+	expect(d.d.reason).toContain(src);
+});
+
+test("a cited path outside docs/plans that the section does not list is refused", () => {
+	fresh();
+	const src = join(TOY, "src/read.ts");
+	const extra = join(TOY, "src/extra.ts");
+	writeFileSync(src, "export const a = 1;\n");
+	writeFileSync(extra, "export const b = 2;\n");
+	readLog({ [src]: new Date().toISOString() });
+	const d = guardCli("plan-edit", { path: PLAN, before: TOY_PLAN, after: mainBody(cite(src), " See " + extra + ":2."), agent: "main" });
+	expect(d.code).toBe(2);
+	expect(d.d.reason).toContain(extra);
+});
+
+test("Main plan text is allowed once every listed path was read in time", () => {
+	fresh();
+	const src = join(TOY, "src/read.ts");
+	writeFileSync(src, "export const a = 1;\n");
+	readLog({ [src]: new Date().toISOString() });
+	expect(guardCli("plan-edit", { path: PLAN, before: TOY_PLAN, after: mainBody(cite(src)), agent: "main" }).code).toBe(0);
+});
+
+test("a Main Progress-only edit needs no Code read by Main section", () => {
+	fresh();
+	const after = TOY_PLAN.replace("- Started the toy work.", "- Started the toy work.\n- Main note.");
+	expect(guardCli("plan-edit", { path: PLAN, before: TOY_PLAN, after, agent: "main" }).code).toBe(0);
 });
 
 test("spawn gates: same refusals as the original task-tool gate; a valid spawn records and then demands new progress", () => {

@@ -46,7 +46,7 @@ export interface Decision {
 	allow: boolean;
 	reason: string;
 	inject?: string;
-	restore?: { path: string; text: string };
+	restore?: { path: string; text: string | null }; // null: the file did not exist before; delete it
 	/** Next keep-working counters for the caller to feed back into later StopEvents. */
 	state?: { callsSinceStop: number; idleStops: number };
 }

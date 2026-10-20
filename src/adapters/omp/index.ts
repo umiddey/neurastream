@@ -16,7 +16,7 @@
 // Harness payloads are untyped at the boundary: every field read goes through a runtime check.
 
 import { execFileSync, spawn } from "node:child_process";
-import { appendFileSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Decision } from "../../core/adapter.ts";
 import { loadConfig, type Config } from "../../core/config.ts";
@@ -130,11 +130,22 @@ function ledgerText(cfg: Config): string {
 
 // Plan files a subagent write/edit may touch: snapshot before the call so tool_result can verify
 // and restore (the original snapshotted inside checkCall; core returns pure decisions now).
-function snapshotPlans(tool: string, input: Record<string, unknown>, cwd: string, snap: Map<string, string>): void {
+const MAIN_PLAN = /\/docs\/plans\/(?!archive\/)[^/]+\.md$/;
+function snapshotPlans(tool: string, input: Record<string, unknown>, cwd: string, snap: Map<string, string>, main: boolean): void {
 	if (tool !== "write" && tool !== "edit") return;
 	const plans = q.activePlans();
 	for (const p of q.writeTargets(tool, input, cwd)) {
 		if (snap.has(p)) continue;
+		if (main) {
+			// Main's own plan text is checked too; a plan that did not exist yet snapshots as "".
+			if (!MAIN_PLAN.test(p)) continue;
+			try {
+				snap.set(p, readFileSync(p, "utf8"));
+			} catch {
+				snap.set(p, "");
+			}
+			continue;
+		}
 		if (!q.isOrchestrationPath(p, plans) || !q.planAt(p, plans)) continue;
 		try {
 			snap.set(p, readFileSync(p, "utf8"));
@@ -208,7 +219,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		if (!isSub) callsSinceStop++;
 		const cwd = c.cwd ?? process.cwd();
 		const snap = new Map<string, string>();
-		if (isSub) snapshotPlans(tool, input, cwd, snap);
+		snapshotPlans(tool, input, cwd, snap, !isSub);
 		const d = checkTool(
 			{ tool, input, cwd, agent, agentId: id, calls: n - 1, paths: [], writes: [], command: asString(input.command) },
 			cfg,
@@ -232,10 +243,11 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 				try {
 					after = readFileSync(file, "utf8");
 				} catch {}
-				const d = checkPlanEdit({ path: file, before, after, agent: "sub" }, cfg);
+				const d = checkPlanEdit({ path: file, before, after, agent: c.kind === "sub" ? "sub" : "main" }, cfg);
 				if (!d.allow && d.restore) {
 					try {
-						writeFileSync(d.restore.path, d.restore.text);
+						if (d.restore.text === null) rmSync(d.restore.path, { force: true });
+						else writeFileSync(d.restore.path, d.restore.text);
 					} catch {}
 					return { isError: true, content: [{ type: "text", text: d.reason }] };
 				}
