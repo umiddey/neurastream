@@ -1,12 +1,18 @@
 {
   "name": "neurastream",
-  "version": "0.1.8",
-  "description": "Harness-agnostic agent orchestration: queue, guards, blockers, scoring, ledger.",
+  "version": "0.1.9",
+  "description": "Guardrails for running many AI coding agents at once: plan queue, blockers, call budgets, provider caps, scoring, merge-verified close.",
+  "keywords": ["ai-agents", "coding-agents", "orchestration", "guardrails", "omp", "bun", "cli"],
+  "homepage": "https://github.com/umiddey/neurastream#readme",
+  "bugs": "https://github.com/umiddey/neurastream/issues",
   "type": "module",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/umiddey/neurastream.git"
+  },
+  "engines": {
+    "bun": ">=1.0"
   },
   "publishConfig": {
     "access": "public"

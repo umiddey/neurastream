@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.9
+### Changed
+- README rewritten for a public audience (what it is, what each part enforces, requirements, install, develop); package metadata adds keywords, homepage, bugs and `engines.bun`. No code changes.
+
 ## 0.1.8
 ### Fixed
 - Session rollover froze omp for about 90 s: `main-rollover` ran the six `main-start` children with `spawnSync` on omp's only thread. The command now shows a notice at once and gathers main-start asynchronously; the `main-start` CLI output is unchanged.

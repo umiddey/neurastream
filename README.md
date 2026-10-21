@@ -1,19 +1,54 @@
 # neurastream
 
-Agent orchestration (queue, guards, blockers, scoring, ledger) as one installable package. The core does not name a harness. Adapters translate harness events into core calls. The first adapter is omp.
+Guardrails for running many AI coding agents at once.
+
+One "main" agent plans the work and reviews it; cheaper "helper" agents do the coding. neurastream is the set of checks between them. It keeps a queue of written plans, refuses helper actions a plan forbids, limits how many helpers run per provider, scores each helper by accepted work per dollar, and only lets a plan leave the queue once its branch is really merged.
+
+The core does not depend on one agent tool. Adapters translate a tool's events into core calls. The first adapter is [omp](https://github.com/can1357/oh-my-pi).
+
+```mermaid
+flowchart LR
+  O[Owner message] --> P[Plan file in docs/plans]
+  P --> Q[queue-check]
+  Q --> S[Spawn checks<br/>ledger cap, score gate, brief-lint]
+  S --> H[Helper agent<br/>blockers + call budget]
+  H --> R[Main review<br/>agent-score accept]
+  R --> M[Merge to main]
+  M --> C[queue-close<br/>merged proof + done check]
+```
+
+## What it does
+
+| Part | What it enforces |
+|---|---|
+| Queue (`queue-check`, `queue-close`, `queue-cancel`) | Every open plan is listed in an index and follows a template. A plan leaves the queue only when its branch is merged into remote main and its done check passes; a failing check reopens it. A cancelled plan's unmerged work is saved under `refs/queue-archive/`. |
+| Blockers | Each plan's phase 0 lists what helpers may not do: push, touch a path, run a command, or write a text. The guard refuses those calls. |
+| Guards | Helpers may only edit their plan's `## Progress`; they get a warning at call 90 and are stopped at call 100. Protected files need an owner unlock (a file the owner touches, valid 30 minutes). |
+| Ledger (`agent-ledger`) | Tokens, cost, state and exit reason per agent; `--cap` refuses a spawn when a provider already runs 2. |
+| Scoring (`agent-score`) | Points only for work Main accepted by commit, times the phase difficulty. Ranked per dollar and per hour. |
+| Brief lint (`brief-lint`) | Refuses a helper brief that misses a required rule (acceptance, stop condition, no push, call budget). |
+| Machine health (`machine-guard`, `main-start`, `heavy-run`) | Load, free memory, disk and `/tmp` limits; one heavy test run at a time. |
+| Unlanded work (`wip-check`, `wip-snapshot`, `wip-backup`) | Lists branches on no remote and dirty worktrees; snapshots them as hidden commits; can push them to a backup repo. |
+| Session rollover | When the main session file passes 10 MB, the next owner message starts a fresh session from a handoff note. |
+
+## Requirements
+
+- [Bun](https://bun.sh) 1.x
+- git
+- omp, for the guards and rollover (the command-line tools work without it)
 
 ## Install
 
-Do not install into the real home while this package is still being built. Use a sandbox home.
-
 ```sh
-export HOME=/tmp/neurastream-home-dev
 bun add -g neurastream
 neurastream init
 neurastream adapter install omp
+neurastream doctor
 ```
 
-`init` writes `~/.config/neurastream/config.yml` from the defaults in `docs/config.md`, plus an empty index, notes, the queue template, blocker wrappers, and the state directories. A second run changes nothing. `adapter install omp` links the extension under that same home (`~/.omp/agent/extensions` and `omp plugin link`). Neither command touches `~/.omp` or `~/.local` of the real user.
+`init` writes `~/.config/neurastream/config.yml` from the defaults in [docs/config.md](docs/config.md), plus an empty index, notes, the queue template, blocker wrappers, and the state directories. A second run changes nothing. `adapter install omp` links the extension (`~/.omp/agent/extensions` and `omp plugin link`). `doctor` exits 0 when the install matches the package.
+
+The defaults are the author's setup (paths, the backup repo, provider names). Edit `config.yml` before relying on them. To try it without touching your real home, set `HOME=/tmp/neurastream-home-dev` first.
 
 Check the merged result:
 
@@ -21,11 +56,21 @@ Check the merged result:
 neurastream config --json
 ```
 
-Compatibility bins keep today's names (`agent-score`, `agent-ledger`, `brief-lint`, `oc-run`, `wip-check`, `wip-backup`, `wip-snapshot`, `pm-fail-facts`, `main-health`, `queue-check`, `queue-close`, `queue-cancel`, `main-start`, `machine-guard`, `glm-reset`, `priority-watch`, `resource-alerts`, `tmp-snapshot`, `heavy-run`). They are the same program, selected by the bin name.
+Every tool is one program, selected by the name it was called with: `agent-score`, `agent-ledger`, `brief-lint`, `oc-run`, `wip-check`, `wip-backup`, `wip-snapshot`, `pm-fail-facts`, `main-health`, `queue-check`, `queue-close`, `queue-cancel`, `main-start`, `machine-guard`, `glm-reset`, `priority-watch`, `resource-alerts`, `tmp-snapshot`, `heavy-run`.
 
-Scoring: `agent-score accept` records accepted work by commit; `agent-score validate <Agent> --plan <plan.md> --phase <P> --evidence <report.md> --section "<heading prefix>"` records a validation phase (checks/tests ran, report section written, no commits) with proof Main cannot fake by typing: the plan line must be ticked `- [x]`, the cited section body must name a heavy-run label run by that agent (from `paths.heavy_log`), and the phase must not be scored already. The ranking board counts it in `Accepted (diag/val)` as `N (d/v)`.
+## Develop
 
-Green is `bun run typecheck` and `bun test`, both exit 0.
+```sh
+bun install
+bun run typecheck
+bun test
+```
+
+Green is both exiting 0.
+
+## Scoring details
+
+`agent-score accept` records accepted work by commit; `agent-score validate <Agent> --plan <plan.md> --phase <P> --evidence <report.md> --section "<heading prefix>"` records a validation phase (checks/tests ran, report section written, no commits) with proof Main cannot fake by typing: the plan line must be ticked `- [x]`, the cited section body must name a heavy-run label run by that agent (from `paths.heavy_log`), and the phase must not be scored already. The ranking board counts it in `Accepted (diag/val)` as `N (d/v)`.
 
 ## Main reads the code for its plans
 
@@ -64,3 +109,7 @@ neurastream adapter install omp
 ```
 
 Live copies are never hand-edited. `neurastream doctor` names each hand-edited or foreign installed file, and a stale install (the installed version is not `npm view neurastream version`). If the registry cannot be reached, that check is a warning, not a failure.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
