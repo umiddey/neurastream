@@ -48,6 +48,7 @@ export interface Plan {
 	branch: string | null;
 	appliesTo: string[];
 	waiting: boolean;
+	waitingLine: string | null;
 	priorityId: string | null;
 	errors: string[];
 }
@@ -130,7 +131,7 @@ function headerField(text: string, name: string): string | null {
 }
 
 export function parsePlan(repo: string, file: string, text: string | null, blockersDir = blockersDirPath()): Plan {
-	const empty = { repo, file, text: "", status: null, blockers: [], doneCheck: null, worktree: null, branch: null, appliesTo: [], waiting: false, priorityId: null };
+	const empty = { repo, file, text: "", status: null, blockers: [], doneCheck: null, worktree: null, branch: null, appliesTo: [], waiting: false, waitingLine: null, priorityId: null };
 	if (text === null) return { ...empty, errors: ["plan file listed in INDEX.md does not exist"] };
 	const errors: string[] = [];
 	const secs = sections(text);
@@ -174,6 +175,7 @@ export function parsePlan(repo: string, file: string, text: string | null, block
 		branch: headerField(text, "Branch")?.replace(/^-$/, "") || null,
 		appliesTo: items(secs.get("applies to") ?? "").map(p => path.resolve(repo, expandHome(p.replace(/`/g, "")))),
 		waiting: /^WAITING on owner:/m.test(text),
+		waitingLine: text.match(/^WAITING on owner:[ \t]*(.*)$/m)?.[1] ?? null,
 		priorityId: text.match(/^PRIORITY-ID:\s*`?([A-Z]{2}[0-9]{2})`?/m)?.[1] ?? null,
 		errors,
 	};
@@ -572,7 +574,8 @@ export function queueSummary(index = INDEX): string {
 		lines.push(`- ${repo}${nCancelled ? ` (${nCancelled} cancelled)` : ""}`);
 		for (const p of readPlans(repo)) {
 			const status = awaitingMerge(p) ? "complete, awaiting merge" : (p.status ?? "INVALID");
-			const flags = [status, p.waiting ? "WAITING on owner" : "", p.priorityId ?? ""].filter(Boolean).join(", ");
+			const hold = p.waiting ? `WAITING on owner: ${(p.waitingLine ?? "").slice(0, 80)}` : "";
+			const flags = [status, hold, p.priorityId ?? ""].filter(Boolean).join(", ");
 			const goal = items(sections(p.text).get("goal") ?? "")[0]?.slice(0, 100) ?? "";
 			lines.push(`  - ${p.file} [${flags}] ${goal}`);
 		}
