@@ -46,7 +46,7 @@ const ECO = {
         { id: 'owner', type: 'person', x: 230, y: 60, label: 'the owner' },
         { id: 'msg', type: 'chip', x: 230, y: 300, w: 620, who: 'example message', text: 'example: "add a validate step to agent-score"' },
         { id: 'adapter', type: 'file', x: 960, y: 40, w: 460, name: 'guards.ts, checkInject', who: 'real code',
-          lines: ['if (!continuation)', '  writeWindow({ used: [], windowStart: 0 });'] },
+          lines: ['if (!continuation)', '  writeWindow({ used: [],', '    windowStart: 0 });'] },
         { id: 'win', type: 'chip', x: 960, y: 300, w: 460, text: "Main's edit count: 5 allowed per 15 min" },
         { id: 'cancel', type: 'chip', x: 960, y: 430, w: 460, color: '#f59e0b', text: 'no cancel word seen yet' },
         { id: 'start', type: 'checklist', x: 230, y: 40, w: 600, title: 'main-start, in this order', items: ['=== machine', '=== main thread', '=== queue'] },
@@ -167,7 +167,7 @@ const ECO = {
       actors: [
         { id: 'dc', type: 'checklist', x: 230, y: 40, w: 600, title: "done check from the plan's ## Done check", items: ['every done-check item ticked'] },
         { id: 'proofs', type: 'checklist', x: 230, y: 40, w: 600, title: 'merged means one of these proofs', items: ['branch tip is an ancestor of the base branch', 'a base commit carries the same patch (squash merge)', 'plan line: Landed: <sha> from <sha>, verified'] },
-        { id: 'cache', type: 'chip', x: 230, y: 40, w: 600, color: '#16a34a', text: 'done check passed before for this state (cached …)' },
+        { id: 'cache', type: 'chip', x: 230, y: 40, w: 600, color: '#16a34a', text: 'done check already passed for this exact state (cached)' },
         { id: 'reopen', type: 'chip', x: 230, y: 40, w: 600, color: '#dc2626', text: 'queue-close: done check failed (exit N); reopened.' },
         { id: 'reopen2', type: 'chip', x: 230, y: 200, w: 600, color: '#dc2626', text: 'the plan header is set back to Status: open' },
         { id: 'await', type: 'chip', x: 230, y: 330, w: 600, color: '#f59e0b', text: 'AWAITING merge: done check green, branch not merged yet' },
