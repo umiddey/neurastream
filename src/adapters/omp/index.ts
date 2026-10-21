@@ -20,7 +20,7 @@ import { appendFileSync, mkdirSync, openSync, readFileSync, rmSync, statSync, wr
 import { join } from "node:path";
 import type { Decision } from "../../core/adapter.ts";
 import { loadConfig, type Config } from "../../core/config.ts";
-import { checkInject, checkPlanEdit, checkStop, checkTool, recordMainResult } from "../../core/guards.ts";
+import { checkInject, checkPlanEdit, checkStop, checkTool, MAIN_PLAN_FILE, recordMainResult } from "../../core/guards.ts";
 import { applyQueueEnv } from "../../core/queue/env.ts";
 import { mainStartText } from "../../core/main-start.ts";
 import { buildHandoff, holdsBlock, notePath, noteRequest, type RolloverState, rolloverState } from "../../core/rollover.ts";
@@ -139,7 +139,6 @@ function ledgerText(cfg: Config): string {
 
 // Plan files a subagent write/edit may touch: snapshot before the call so tool_result can verify
 // and restore (the original snapshotted inside checkCall; core returns pure decisions now).
-const MAIN_PLAN = /\/docs\/plans\/(?!archive\/)[^/]+\.md$/;
 function snapshotPlans(tool: string, input: Record<string, unknown>, cwd: string, snap: Map<string, string>, main: boolean): void {
 	if (tool !== "write" && tool !== "edit") return;
 	const plans = q.activePlans();
@@ -147,7 +146,7 @@ function snapshotPlans(tool: string, input: Record<string, unknown>, cwd: string
 		if (snap.has(p)) continue;
 		if (main) {
 			// Main's own plan text is checked too; a plan that did not exist yet snapshots as "".
-			if (!MAIN_PLAN.test(p)) continue;
+			if (!MAIN_PLAN_FILE.test(p)) continue;
 			try {
 				snap.set(p, readFileSync(p, "utf8"));
 			} catch {

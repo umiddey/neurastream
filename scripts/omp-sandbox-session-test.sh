@@ -75,9 +75,10 @@ snap_real_home() {
 	# RUNNING omp session: their mtime/size change every second regardless of
 	# this script. They are filtered; any new/deleted/renamed entry still fails.
 	{
-		ls -la "$LIVE_AGENT" | grep -vE ' agent\.db-(shm|wal)$'
+		# "total" sums block sizes, including the live sessions/db this agent writes every second.
+		ls -la "$LIVE_AGENT" | grep -vE ' agent\.db-(shm|wal)$|^total '
 		echo "=== .local/bin"
-		ls -la /home/ukd/.local/bin
+		ls -la /home/ukd/.local/bin | grep -v '^total '
 		echo "=== git -C $LIVE_AGENT status"
 		git -C "$LIVE_AGENT" status --porcelain 2>&1 || echo "(not a git repo)"
 		echo "=== /home/ukd/.bun/bin neurastream entries"
@@ -296,7 +297,10 @@ run_session() { # name prompt-file [max-time]
 	local name="$1" pfile="$2" mt="${3:-300}"
 	set +e
 	if [ -f "$LOGDIR/STOP" ]; then echo 137 >"$LOGDIR/$name.rc"; set -e; return; fi
-	( cd "$REPO" && omp "${OMP_FLAGS[@]/--max-time=300/--max-time=$mt}" "$(cat "$pfile")" ) >"$LOGDIR/$name.json" 2>"$LOGDIR/$name.err"
+	# The model's shell must not reach the owner's live tools (/home/ukd/.local/bin holds the live
+	# queue-close and friends); the sandbox package's own bin dir comes first.
+	( cd "$REPO" && PATH="$BUN_INSTALL/bin:$(tr ':' '\n' <<<"$PATH" | grep -vx '/home/ukd/.local/bin' | paste -sd:)" \
+		omp "${OMP_FLAGS[@]/--max-time=300/--max-time=$mt}" "$(cat "$pfile")" ) >"$LOGDIR/$name.json" 2>"$LOGDIR/$name.err"
 	echo $? >"$LOGDIR/$name.rc"
 	set -e
 	reap_sandbox_omp

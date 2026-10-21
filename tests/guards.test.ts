@@ -263,6 +263,19 @@ test("Main plan text without a Code read by Main section is refused and restored
 	expect(d.d.restore).toEqual({ path: PLAN, text: TOY_PLAN });
 });
 
+test("Main cannot rewrite a plan through the shell (that route skips the plan-text checks); edit/write still go through", () => {
+	fresh();
+	for (const command of [`cat > ${PLAN} <<'EOF'\nrewritten\nEOF`, `echo rewritten > ${PLAN}`, `sed -i s/open/complete/ ${PLAN}`]) {
+		const d = guardCli("pre-tool", toolEvent("bash", { command }, "main"));
+		expect(d.code).toBe(2);
+		expect(d.d.reason).toContain("is a plan file");
+	}
+	expect(guardCli("pre-tool", toolEvent("bash", { command: `cat ${PLAN}` }, "main")).code).toBe(0);
+	expect(guardCli("pre-tool", toolEvent("write", { path: PLAN, content: "x" }, "main")).code).toBe(0);
+	const archived = join(TOY, "docs/plans/archive/202610/old.md");
+	expect(guardCli("pre-tool", toolEvent("bash", { command: `echo x > ${archived}` }, "main")).code).toBe(0);
+});
+
 test("a new plan file written by Main without the section is deleted on refusal", () => {
 	fresh();
 	const d = guardCli("plan-edit", { path: PLAN, before: null, after: mainBody(null), agent: "main" });

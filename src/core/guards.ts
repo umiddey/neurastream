@@ -338,6 +338,9 @@ function mainTool(e: ToolEvent, input: Record<string, unknown>, cfg: Config): De
 	return editWindow(e, input, cfg);
 }
 
+/** A live plan file (archived plans excluded); Main's plan-text checks run on these. */
+export const MAIN_PLAN_FILE = /\/docs\/plans\/(?!archive\/)[^/]+\.md$/;
+
 /**
  * pre-tool: plan-guard checkCall for subs (protected files, budget, plan-edit rules, blockers)
  * plus, for Main, the spawn gates and the project-file edit window.
@@ -358,6 +361,13 @@ export function checkTool(e: ToolEvent, cfg: Config): Decision {
 		);
 	}
 	if (e.agent === "main") {
+		// The plan-text checks (checkPlanEdit) see only edit/write results; a shell redirect,
+		// sed -i or heredoc into a plan would skip them, so plans change through edit/write only.
+		const shellPlan = e.tool !== "write" && e.tool !== "edit" ? writes.find(p => MAIN_PLAN_FILE.test(p)) : undefined;
+		if (shellPlan) {
+			log(cfg.paths.plan_guard_log, `BLOCK main tool=${e.tool} shell write to plan ${shellPlan}`);
+			return deny(`plan-guard: ${shellPlan} is a plan file: change it with the edit or write tool (close or cancel it with queue-close / queue-cancel).`);
+		}
 		const d = mainTool(e, input, cfg);
 		// A task brief names paths it does not read; only the other tools' paths count as reads.
 		if (d.allow && e.tool !== "task") recordMainReads(paths.filter(p => !writes.includes(p)));
