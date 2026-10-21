@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import type { Config } from "./config.ts";
 import { nowSec } from "./clock.ts";
 import { printText } from "./help.ts";
@@ -31,7 +31,8 @@ export function wipCheck(args: string[], cfg: Config): number {
 	for (const repo of repos(cfg.paths.work_roots)) {
 		if (!statSync(repo).isDirectory()) continue;
 		const commonRaw = gitText(repo, ["rev-parse", "--git-common-dir"]) || ".";
-		const common = realpathSync(join(repo, commonRaw));
+		// resolve, not join: a linked worktree's common dir comes back absolute (os.path.join keeps it).
+		const common = realpathSync(resolve(repo, commonRaw));
 		if (seen.has(common)) continue;
 		seen.add(common);
 		const url = gitText(repo, ["config", "remote.origin.url"]);
@@ -59,7 +60,9 @@ export function wipCheck(args: string[], cfg: Config): number {
 		}
 	}
 
-	unlanded.sort((a, b) => b.ts - a.ts);
+	// Python sorts (ts, name, br, sha, n) tuples descending; ties on ts fall through to the next field.
+	const cmp = (x: string | number, y: string | number): number => (x < y ? -1 : x > y ? 1 : 0);
+	unlanded.sort((a, b) => cmp(b.ts, a.ts) || cmp(b.name, a.name) || cmp(b.br, a.br) || cmp(b.sha, a.sha) || cmp(b.n, a.n));
 	printText(`UNLANDED branches (commits on no remote): ${unlanded.length}  limit ${limit}`);
 	for (const row of unlanded) {
 		const age = pyFixedWidth((now - row.ts) / 3600, 1, 6);

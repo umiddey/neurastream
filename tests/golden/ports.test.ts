@@ -171,6 +171,8 @@ test("wip-check matches the original", () => {
 	spawnSync("git", ["add", "a.txt"], { cwd: repo });
 	spawnSync("git", ["commit", "-m", "init"], { cwd: repo, env: { ...env, GIT_AUTHOR_DATE: "2026-10-18T00:00:00", GIT_COMMITTER_DATE: "2026-10-18T00:00:00" } });
 	writeFileSync(join(repo, "a.txt"), "b\n");
+	// A linked worktree next to its repo: git prints its common dir as an absolute path.
+	spawnSync("git", ["worktree", "add", "-q", "-b", "wt", join(home, "Work/demo-wt")], { cwd: repo });
 	const oracle = join(home, "wip-check.py");
 	rewrite("wip-check", oracle, home);
 	match(runPy(oracle, [], env), runPort("wip-check", [], env));

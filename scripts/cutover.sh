@@ -30,7 +30,9 @@ export PATH="$HOME_DIR/.local/bin:${PATH:-/usr/bin:/bin}"
 
 # Volatile machine numbers, stripped the same way the golden tests strip them
 # before comparing oracle and port: timestamps, load average, memory and disk
-# sizes. Both captures pass through this, so only behaviour survives the diff.
+# sizes, idle minutes, finished sessions that age out of agent-ledger's 12 h
+# window during the run, and the owner-hold reason the port adds to the queue
+# summary (intended, P3 rollover). Both captures pass through this.
 normalize() {
 	sed -E \
 		-e 's/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.,][0-9]+)?(Z|[+-][0-9]{2}:?[0-9]{2})?/TS/g' \
@@ -42,7 +44,10 @@ normalize() {
 		-e 's/MemAvailable [0-9]+MB < [0-9]+MB/MemAvailable NMB < NMB/g' \
 		-e 's|/home free [0-9]+G < [0-9]+G|/home free NG < NG|g' \
 		-e 's|/tmp \(RAM tmpfs\) [0-9]+MB > [0-9]+MB|/tmp (RAM tmpfs) NMB > NMB|g' \
-		-e 's/\(idle [0-9]+m\)/(idle Nm)/g'
+		-e 's/\(idle [0-9]+m\)/(idle Nm)/g' \
+		-e 's/(WAITING on owner): [^]]*\]/\1]/' \
+		-e '/ [0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} (done|DIED: .*)$/d' \
+		-e 's/^TOTAL .* list: /TOTAL N list: /'
 }
 
 capture() {
@@ -56,7 +61,7 @@ capture() {
 	plan=""
 	while IFS= read -r repo; do
 		[ -f "$repo/INDEX.md" ] || continue
-		plan="$(sed -n '/[^[:space:]]/{p;q}' "$repo/INDEX.md")"
+		plan="$(sed -n '/[^[:space:]]/{p;q;}' "$repo/INDEX.md")"
 		[ -n "$plan" ] || continue
 		case "$plan" in /*) ;; *) plan="$repo/$plan" ;; esac
 		break
