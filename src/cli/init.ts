@@ -53,19 +53,24 @@ export function installedBins(home: string, invoked: string): string[] {
 	return [...new Set(out)];
 }
 
-function configText(home: string, invoked: string): string {
+// The path keys that sit under the agent dir (same derivation as the queue library's agentDir()).
+const AGENT_DIR_KEYS = /^(  (?:agent_dir|queue_index|blockers|notes|ranking_board|subagents|cancelled|unlock): )"~\/\.config\/neurastream/gm;
+
+function configText(home: string, invoked: string, agentDir?: string): string {
 	let text = readFileSync(TEMPLATE_PATH, "utf8");
 	if (!text.endsWith("\n")) text += "\n";
 	if (existsSync(join(home, "Work", "pm-counts"))) {
 		if (!text.includes('default_repo: ""')) throw new Error("templates/config.yml has no default_repo placeholder");
 		text = text.replace('default_repo: ""', 'default_repo: "~/Work/pm-counts"');
 	}
-	const protectedPaths = [
-		...installedBins(home, invoked),
-		"~/.config/neurastream/notes/",
-		"~/.config/neurastream/blockers/",
-		"~/.config/neurastream/queue/",
-	];
+	// An existing machine keeps its index, notes, blockers and unlock where they are today.
+	const agent = agentDir ? tilde(home, resolve(home, agentDir.replace(/^~(?=\/|$)/, home))) : "~/.config/neurastream";
+	if (agentDir) {
+		const hits = text.match(AGENT_DIR_KEYS)?.length ?? 0;
+		if (hits !== 8) throw new Error(`templates/config.yml: expected 8 agent-dir path keys, found ${hits}`);
+		text = text.replace(AGENT_DIR_KEYS, (_m, key: string) => `${key}${yamlQuote(agent).slice(0, -1)}`);
+	}
+	const protectedPaths = [...installedBins(home, invoked), `${agent}/notes/`, `${agent}/blockers/`, `${agent}/queue/`];
 	const list = ["  protected:", ...protectedPaths.map(p => `    - ${yamlQuote(p)}`)].join("\n");
 	if (!text.includes("  protected: []")) throw new Error("templates/config.yml has no protected placeholder");
 	return text.replace("  protected: []", list);
@@ -101,12 +106,12 @@ Empty until \`agent-score board\` writes this file. Do not hand-edit after that.
 `;
 
 /** Create the layout. Existing files are left byte-for-byte alone. */
-export function initHome(home: string, opts: { invoked?: string; env?: NodeJS.ProcessEnv } = {}): InitResult {
+export function initHome(home: string, opts: { invoked?: string; env?: NodeJS.ProcessEnv; agentDir?: string } = {}): InitResult {
 	const created: string[] = [];
 	const unchanged: string[] = [];
 	const invoked = opts.invoked ?? "";
 	const cfgPath = configFile(home);
-	putFile(cfgPath, configText(home, invoked), 0o644, created, unchanged);
+	putFile(cfgPath, configText(home, invoked, opts.agentDir), 0o644, created, unchanged);
 
 	const cfg: Config = loadConfig({ home, env: opts.env ?? {} });
 	putDir(cfg.paths.config_dir);
@@ -127,15 +132,13 @@ export function initHome(home: string, opts: { invoked?: string; env?: NodeJS.Pr
 	putFile(cfg.paths.subagents, note("subagents.md"), 0o644, created, unchanged);
 	putFile(join(cfg.paths.notes, "lessons.md"), note("lessons.md"), 0o644, created, unchanged);
 	putFile(cfg.paths.ranking_board, RANKING_STUB, 0o644, created, unchanged);
-	const queueText = readFileSync(join(PACKAGE_ROOT, "templates/queue/TEMPLATE.md"), "utf8");
-	if (!queueText.includes("{{HOME}}")) throw new Error("templates/queue/TEMPLATE.md has no {{HOME}} placeholder");
-	putFile(
-		join(cfg.paths.agent_dir, "queue", "TEMPLATE.md"),
-		queueText.replaceAll("{{HOME}}", home),
-		0o644,
-		created,
-		unchanged,
-	);
+	// An adopted agent dir (--agent-dir) keeps queue/ for the harness adapter, which links its own
+	// queue/lib.ts and queue/TEMPLATE.md there; two writers for one slot would collide.
+	if (!opts.agentDir) {
+		const queueText = readFileSync(join(PACKAGE_ROOT, "templates/queue/TEMPLATE.md"), "utf8");
+		if (!queueText.includes("{{HOME}}")) throw new Error("templates/queue/TEMPLATE.md has no {{HOME}} placeholder");
+		putFile(join(cfg.paths.agent_dir, "queue", "TEMPLATE.md"), queueText.replaceAll("{{HOME}}", home), 0o644, created, unchanged);
+	}
 	for (const b of BLOCKERS) {
 		putFile(join(cfg.paths.blockers, b.name), blockerWrapper(b.fn), 0o755, created, unchanged);
 	}
@@ -152,9 +155,12 @@ export function printInit(result: InitResult): void {
 	if (result.unchanged.length) console.log(`neurastream init: left ${result.unchanged.length} existing file(s) alone`);
 }
 
-export function runInit(): number {
+export function runInit(args: string[] = []): number {
 	try {
-		printInit(initHome(homedir(), { invoked: process.argv[1] ?? "", env: process.env }));
+		const i = args.indexOf("--agent-dir");
+		const agentDir = i >= 0 ? args[i + 1] : undefined;
+		if (i >= 0 && !agentDir) throw new Error("usage: neurastream init [--agent-dir <dir>]");
+		printInit(initHome(homedir(), { invoked: process.argv[1] ?? "", env: process.env, agentDir }));
 		return 0;
 	} catch (err) {
 		console.error(err instanceof Error ? err.message : String(err));

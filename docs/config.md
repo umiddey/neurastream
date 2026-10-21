@@ -191,7 +191,7 @@ adapter:
   extensions: "~/.omp/agent/extensions"
 ```
 
-`paths.agent_dir`, `paths.queue_index`, `paths.blockers`, `paths.ranking_board`, `paths.subagents`, `paths.cancelled`, and `paths.unlock` stay at the portable defaults unless the owner points them at the live files at cutover. Cutover is Main's job.
+`paths.agent_dir`, `paths.queue_index`, `paths.blockers`, `paths.notes`, `paths.ranking_board`, `paths.subagents`, `paths.cancelled`, and `paths.unlock` stay at the portable defaults unless init is told to keep an existing layout: `neurastream init --agent-dir <dir>` writes all eight under `<dir>` (and protects `<dir>/notes/`, `<dir>/blockers/`, `<dir>/queue/`). Existing files there are left alone; missing index, notes and blockers are created there. `<dir>/queue/` is left to the harness adapter (the omp adapter links `queue/lib.ts` and `queue/TEMPLATE.md`). `scripts/cutover.sh` passes `--agent-dir ~/.omp/agent` when `~/.omp/agent/INDEX.md` exists.
 
 The harness `config.yml` (models, theme) is not read and not copied.
 

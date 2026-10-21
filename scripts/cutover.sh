@@ -41,14 +41,26 @@ normalize() {
 		-e 's/load [0-9.]+ > [0-9]+/load N > N/g' \
 		-e 's/MemAvailable [0-9]+MB < [0-9]+MB/MemAvailable NMB < NMB/g' \
 		-e 's|/home free [0-9]+G < [0-9]+G|/home free NG < NG|g' \
-		-e 's|/tmp \(RAM tmpfs\) [0-9]+MB > [0-9]+MB|/tmp (RAM tmpfs) NMB > NMB|g'
+		-e 's|/tmp \(RAM tmpfs\) [0-9]+MB > [0-9]+MB|/tmp (RAM tmpfs) NMB > NMB|g' \
+		-e 's/\(idle [0-9]+m\)/(idle Nm)/g'
 }
 
 capture() {
 	local out="$1"
 	local plan cap="$STATE/cap"
 	mkdir -p "$cap"
-	plan="$(find "$HOME_DIR/Work" "$HOME_DIR/projects" -path '*/docs/plans/*.md' -type f 2>/dev/null | head -1 || true)"
+	# The first plan an indexed repo lists (the main index is wherever this machine keeps it today):
+	# a stray or empty file under docs/plans is not an open plan.
+	local idx="$HOME_DIR/.omp/agent/INDEX.md"
+	[ -f "$idx" ] || idx="$HOME_DIR/.config/neurastream/INDEX.md"
+	plan=""
+	while IFS= read -r repo; do
+		[ -f "$repo/INDEX.md" ] || continue
+		plan="$(sed -n '/[^[:space:]]/{p;q}' "$repo/INDEX.md")"
+		[ -n "$plan" ] || continue
+		case "$plan" in /*) ;; *) plan="$repo/$plan" ;; esac
+		break
+	done < <(grep -v '^[[:space:]]*$' "$idx" 2>/dev/null || true)
 	{
 		echo "=== queue-check exit=$(queue-check >"$cap/qc.out" 2>"$cap/qc.err"; echo $?)"
 		normalize <"$cap/qc.out"
@@ -149,7 +161,11 @@ if [ ! -x "$GLOBAL_BIN/neurastream" ]; then
 	exit 1
 fi
 export PATH="$GLOBAL_BIN:$PATH"
-if ! HOME="$HOME_DIR" BUN_INSTALL="$BUN_INSTALL" "$GLOBAL_BIN/neurastream" init; then
+# Today's machine keeps its main index, notes, blockers, CANCELLED and unlock under
+# ~/.omp/agent; the new config points there instead of the portable default.
+init_args=()
+if [ -f "$HOME_DIR/.omp/agent/INDEX.md" ]; then init_args=(--agent-dir "~/.omp/agent"); fi
+if ! HOME="$HOME_DIR" BUN_INSTALL="$BUN_INSTALL" "$GLOBAL_BIN/neurastream" init "${init_args[@]}"; then
 	echo "cutover: neurastream init failed; rolling back" >&2
 	rollback
 	strip_tmp

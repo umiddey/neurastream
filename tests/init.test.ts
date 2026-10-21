@@ -14,6 +14,25 @@ afterAll(() => {
 	rmSync(NOOMP_HOME, { recursive: true, force: true });
 });
 
+test("init on a machine with an existing agent dir keeps its index, notes and unlock there", () => {
+	rmSync(HOME, { recursive: true, force: true });
+	const live = join(HOME, ".omp/agent");
+	mkdirSync(join(live, "notes"), { recursive: true });
+	writeFileSync(join(live, "INDEX.md"), "/home/x/Work/repo\n");
+	writeFileSync(join(live, "notes/subagents.md"), "## Allowed\n- `glm`\n");
+	initHome(HOME, { env: {}, agentDir: "~/.omp/agent" });
+	const p = loadConfig({ home: HOME, env: {} }).paths;
+	expect(p.agent_dir).toBe(live);
+	expect(p.queue_index).toBe(join(live, "INDEX.md"));
+	expect(p.subagents).toBe(join(live, "notes/subagents.md"));
+	expect(p.unlock).toBe(join(live, ".guard-unlock"));
+	expect(p.config_dir).toBe(join(HOME, ".config/neurastream"));
+	expect(readFileSync(join(live, "INDEX.md"), "utf8")).toBe("/home/x/Work/repo\n");
+	expect(readFileSync(join(live, "notes/subagents.md"), "utf8")).toBe("## Allowed\n- `glm`\n");
+	expect(existsSync(join(live, "blockers/no-push"))).toBe(true); // missing pieces are created where the live layout keeps them
+	expect(readdirSync(join(HOME, ".config/neurastream"))).toEqual(["config.yml"]);
+});
+
 test("init creates the layout and a second run changes nothing", () => {
 	rmSync(HOME, { recursive: true, force: true });
 	const first = initHome(HOME, { env: {} });

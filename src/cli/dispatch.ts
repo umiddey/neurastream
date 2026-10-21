@@ -34,7 +34,9 @@ export function helpText(): string {
 		"",
 		"Usage:",
 		"  neurastream --help",
-		"  neurastream init              create config, index, notes, blockers, queue template, state dirs",
+		"  neurastream init [--agent-dir <dir>]",
+		"                                create config, index, notes, blockers, queue template, state dirs",
+		"                                (--agent-dir: keep an existing index/notes/blockers dir)",
 		"  neurastream adapter install omp",
 		"                                link the omp extension under this HOME",
 		"  neurastream doctor            report hand-edited live files and a stale install",
@@ -55,7 +57,7 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 		console.log(helpText());
 		return 0;
 	}
-	if (cmd === "init") return runInit();
+	if (cmd === "init") return runInit(args);
 	if (cmd === "adapter") return runAdapterInstall(args);
 	if (cmd === "config") {
 		try {
