@@ -36,9 +36,13 @@ export function adapterLiveFiles(home: string, root: string = PACKAGE_ROOT): Liv
 	for (const bin of packageBins(root)) {
 		files.push({ live: join(home, ".local/bin", bin.name), source: bin.source });
 	}
+	// P9: the extension symlink is gone (ONE load route — the plugin below);
+	// what the adapter installs under the agent dir is the omp plugin link,
+	// whose realpath is an installed neurastream package root. `omp plugin
+	// link` owns this file; install must never ensureLink it.
 	files.push({
-		live: join(home, ".omp/agent/extensions/neurastream.ts"),
-		source: join(root, "src/adapters/omp/index.ts"),
+		live: join(home, ".omp/plugins/node_modules/neurastream"),
+		source: root,
 	});
 	files.push({
 		live: join(home, ".omp/agent/queue/lib.ts"),
@@ -68,8 +72,10 @@ function bunLiveFiles(home: string, root: string): LiveFile[] {
 }
 
 function packageRootOf(file: string): string | null {
-	let dir = dirname(file);
-	for (let i = 0; i < 8; i++) {
+	// `file` itself may be the package root (the omp plugin link's realpath is
+	// an installed neurastream root), so the self dir is checked first.
+	let dir = file;
+	for (let i = 0; i < 9; i++) {
 		const manifest = join(dir, "package.json");
 		if (existsSync(manifest)) {
 			try {

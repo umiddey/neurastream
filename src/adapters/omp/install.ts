@@ -2,7 +2,7 @@
 // Does not read or write the real user's agent directory: every path is under `home`.
 
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,8 +26,8 @@ const OVERLAY = `adapter:
 const PROTECTED = ["~/.omp/agent/agents/", "~/.omp/agent/extensions/", "~/.omp/plugins/"];
 
 export interface InstallResult {
-	extension: string;
 	plugin: string;
+	removedStaleLink: string | null;
 	pinsCopied: string[];
 	pinsKept: string[];
 	overlay: "written" | "unchanged";
@@ -51,7 +51,9 @@ function ensureLink(link: string, target: string): void {
 
 function linkInstalled(home: string): void {
 	for (const file of adapterLiveFiles(home)) {
-		if (file.live.includes("/.omp/agent/agents/")) continue;
+		// agents/ are copied, not linked; the plugin link is `omp plugin link`'s
+		// own output (linkPlugin below), never ours to ensureLink.
+		if (file.live.includes("/.omp/agent/agents/") || file.live.includes("/.omp/plugins/")) continue;
 		ensureLink(file.live, file.source);
 	}
 }
@@ -114,24 +116,37 @@ function linkPlugin(home: string): string {
 	return join(home, ".omp/plugins/node_modules/neurastream");
 }
 
-/** Link the extension, copy missing pins, write the overlay. HOME is the sandbox or the caller's home. */
+/** Link the plugin, copy missing pins, write the overlay. HOME is the sandbox or the caller's home. */
 export function installOmp(home: string): InstallResult {
 	const file = configFile(home);
 	if (!existsSync(file)) throw new Error(`no config at ${file}; run neurastream init first`);
+	// P9: ONE load route. omp loads extensions-dir files AND a plugin package's
+	// package.json#omp.extensions, so an extensions/neurastream.ts link beside
+	// `omp plugin link` runs every hook twice. Only the plugin route remains —
+	// the one guard parity locks (~/.omp/plugins/ + the package root). A stale
+	// link an older install made is removed, but only when it is a symlink: a
+	// real file there is never ours to delete.
 	const extension = join(home, ".omp/agent/extensions/neurastream.ts");
-	const target = join(PACKAGE_ROOT, "src/adapters/omp/index.ts");
-	ensureLink(extension, target);
+	let removedStaleLink: string | null = null;
+	try {
+		if (lstatSync(extension).isSymbolicLink()) {
+			unlinkSync(extension);
+			removedStaleLink = extension;
+		}
+	} catch {
+		// absent: nothing stale to remove
+	}
 	mkdirSync(join(home, ".omp/agent/sessions"), { recursive: true });
 	const pins = copyPins(join(home, ".omp/agent/agents"));
 	linkInstalled(home);
 	const plugin = linkPlugin(home);
 	const overlay = writeOverlay(file);
-	return { extension, plugin, pinsCopied: pins.copied, pinsKept: pins.kept, overlay };
+	return { plugin, removedStaleLink, pinsCopied: pins.copied, pinsKept: pins.kept, overlay };
 }
 
 export function printInstall(result: InstallResult): void {
-	console.log(`neurastream adapter install omp: linked ${result.extension}`);
 	console.log(`neurastream adapter install omp: plugin ${result.plugin}`);
+	if (result.removedStaleLink) console.log(`neurastream adapter install omp: removed stale extension link ${result.removedStaleLink}`);
 	console.log(
 		`neurastream adapter install omp: pins copied ${result.pinsCopied.length}, kept ${result.pinsKept.length}; overlay ${result.overlay}`,
 	);

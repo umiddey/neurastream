@@ -5,17 +5,22 @@
 # real omp session with the npm-published extension loaded enforces what the
 # live guards enforce today, before the live cutover runs.
 #
-# Run (always through heavy-run, label "ns omp sandbox session"):
-#   /home/ukd/Work/heavy-run.sh <Agent> "ns omp sandbox session" -- \
+# Run (always through heavy-run):
+#   /home/ukd/Work/heavy-run.sh <Agent> "ns omp sandbox session p9" -- \
 #     bash scripts/omp-sandbox-session-test.sh
-# The script pins the sandbox itself: HOME=/tmp/neurastream-home-omp and
-# BUN_INSTALL=$HOME/.bun (HOME alone still installs into the real ~/.bun; plan
-# Progress 2026-10-19 12:10). Nothing under the real HOME is written. Only
-# these files are copied IN from the live setup, all read-only copies without
-# credentials: /home/ukd/.omp/agent/models.yml (keyless loopback qwen provider,
-# P7 step 2) and, to mirror today's live extensions layout so the single-guard
-# check is meaningful (Main 2026-10-21), extensions/{main-guard,plan-guard,
-# herdr-omp-agent-state}.ts plus the queue/{lib.ts,TEMPLATE.md} they import.
+# With NEURASTREAM_TARBALL=<path> the sandbox installs that tarball instead of
+# neurastream@$NS_VERSION from npm (P9: run it on `npm pack` of the branch,
+# like scripts/cutover.sh). The script pins the sandbox itself:
+# HOME=/tmp/neurastream-home-omp and BUN_INSTALL=$HOME/.bun (HOME alone still
+# installs into the real ~/.bun; plan Progress 2026-10-19 12:10). Nothing
+# under the real HOME is written. Only these files are copied IN from the live
+# setup, all read-only copies without credentials:
+# /home/ukd/.omp/agent/models.yml (keyless loopback qwen provider, P7 step 2)
+# and, to mirror today's live extensions layout through the P8 cutover logic
+# (Main 2026-10-21), extensions/{main-guard,plan-guard,herdr-omp-agent-state}.ts
+# plus the queue/{lib.ts,TEMPLATE.md} they import — then main-guard.ts and
+# plan-guard.ts are removed exactly as scripts/cutover.sh removes them, so the
+# sandbox holds the post-cutover layout: herdr only, no old guards.
 #
 # Checks (one PASS/FAIL/INCONCLUSIVE line each; any FAIL -> exit 1):
 #   C1 session_start auto-close closes the complete, merged plan
@@ -26,9 +31,11 @@
 #   C6 the main-rollover command is registered
 #   C7 no /home/ukd path in any loaded-extension listing/log
 #   C8 the real HOME is unchanged (ls + git status before vs after)
-#   C9 single guard set loaded: exactly one queue-summary injection per turn
-#      (Main 2026-10-21: two summaries, or both old guards loaded beside the
-#      neurastream plugin, = FAIL; report only, cutover.sh is a later phase)
+#   C9 ONE neurastream load per session: exactly one queue-summary injection
+#      per agent start (P9: installOmp keeps only the omp plugin route; the
+#      old guard extensions are gone via the cutover-mirror and the stale
+#      extensions/neurastream.ts link is no longer created — any second
+#      injection means a double load and FAILs)
 # The model is nondeterministic (qwen-local/qwen3.5-4b-local, keyless
 # loopback): a check whose trigger the model never performed is INCONCLUSIVE,
 # never PASS.
@@ -76,8 +83,19 @@ snap_real_home() {
 	} >"$LOGDIR/realhome.$1" 2>&1
 }
 
+# Every omp this test starts runs with HOME=$HOME (the sandbox); omp spawns
+# worker processes (mnemopi embed ~1 GB, broker daemon, text predict) that can
+# outlive the session. Reap them by their HOME so no sandbox omp survives exit.
+reap_sandbox_omp() {
+	local pid
+	for pid in $(pgrep -u "$(id -u)" -x omp 2>/dev/null); do
+		tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null | grep -qx "HOME=$HOME" && kill -9 "$pid" 2>/dev/null || true
+	done
+}
+
 cleanup() {
 	local rc=$?
+	reap_sandbox_omp
 	if [ "$QWEN_STARTED" = "1" ]; then systemctl --user stop qwen-local.service || true; fi
 	if [ "${FAILS:-0}" -gt 0 ] || [ "$rc" != "0" ]; then
 		rm -rf /tmp/omp-sandbox-fail-evidence
@@ -91,6 +109,10 @@ cleanup() {
 trap cleanup EXIT
 
 command -v omp >/dev/null || { echo "omp not on PATH" >&2; exit 1; }
+# 2026-10-21 OOM: refuse to start real omp sessions + a local model on a low-memory machine.
+MIN_AVAIL_KIB=$((10 * 1024 * 1024))
+avail_kib=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)
+[ "$avail_kib" -ge "$MIN_AVAIL_KIB" ] || { echo "MemAvailable $((avail_kib / 1024)) MiB < 10240 MiB; not starting omp sessions" >&2; exit 1; }
 command -v curl >/dev/null || { echo "curl not on PATH" >&2; exit 1; }
 
 snap_real_home before
@@ -110,17 +132,31 @@ else
 	echo "qwen-local: already running (left running)"
 fi
 
-# --- P7 step 1: sandbox HOME, npm install, init, adapter install (omp plugin link)
+# --- P7 step 1: sandbox HOME, install, init, adapter install (omp plugin link)
 rm -rf "$HOME"
 mkdir -p "$HOME" "$HOME/.omp/agent/extensions" "$HOME/.omp/agent/queue"
-bun add -g "neurastream@$NS_VERSION" >"$LOGDIR/install.log" 2>&1
+spec="neurastream@$NS_VERSION"
+if [ -n "${NEURASTREAM_TARBALL:-}" ]; then spec="$NEURASTREAM_TARBALL"; fi
+bun add -g "$spec" >"$LOGDIR/install.log" 2>&1
 NS_BIN="$BUN_INSTALL/bin/neurastream"
 [ -x "$NS_BIN" ] || { echo "no neurastream bin at $NS_BIN after bun add -g (install.log):" >&2; cat "$LOGDIR/install.log" >&2; exit 1; }
 got="$(grep -m1 '"version"' "$BUN_INSTALL/install/global/node_modules/neurastream/package.json" 2>/dev/null | grep -o '[0-9][0-9.]*' || true)"
-[ "$got" = "$NS_VERSION" ] || { echo "sandbox neurastream is '${got:-unknown}', expected $NS_VERSION (install.log):" >&2; tail -5 "$LOGDIR/install.log" >&2; exit 1; }
+if [ -n "${NEURASTREAM_TARBALL:-}" ]; then
+	[ -n "$got" ] || { echo "tarball install: no version in the installed package.json (install.log):" >&2; tail -5 "$LOGDIR/install.log" >&2; exit 1; }
+	echo "tarball install: neurastream@$got"
+else
+	[ "$got" = "$NS_VERSION" ] || { echo "sandbox neurastream is '${got:-unknown}', expected $NS_VERSION (install.log):" >&2; tail -5 "$LOGDIR/install.log" >&2; exit 1; }
+fi
 
 # Live-layout mirror BEFORE the adapter install (Main 2026-10-21): the three
-# live guard extensions + the queue lib/TEMPLATE they import. Read-only copies.
+# live guard extensions + the queue lib/TEMPLATE they import, read-only
+# copies. Then the P8 cutover step (scripts/cutover.sh:99-110): the package's
+# omp adapter replaces the old standalone guard extensions main-guard.ts and
+# plan-guard.ts — leaving them would load every guard twice — while
+# herdr-omp-agent-state.ts stays (herdr installs and owns it). The queue
+# files and config.yml the installer refuses to overwrite are removed too:
+# after init + adapter install the old extensions' queue import would resolve
+# to the npm package's lib — the post-cutover layout the checks judge.
 for f in main-guard.ts plan-guard.ts herdr-omp-agent-state.ts; do
 	[ -f "$LIVE_EXT/$f" ] || { echo "live extension $LIVE_EXT/$f missing; cannot mirror live layout" >&2; exit 1; }
 	cp "$LIVE_EXT/$f" "$HOME/.omp/agent/extensions/$f"
@@ -128,13 +164,8 @@ done
 [ -f "$LIVE_AGENT/queue/lib.ts" ] || { echo "live $LIVE_AGENT/queue/lib.ts missing" >&2; exit 1; }
 cp "$LIVE_AGENT/queue/lib.ts" "$HOME/.omp/agent/queue/lib.ts"
 [ -f "$LIVE_AGENT/queue/TEMPLATE.md" ] && cp "$LIVE_AGENT/queue/TEMPLATE.md" "$HOME/.omp/agent/queue/TEMPLATE.md" || true
-
-# Mirror the real cutover sequence (scripts/cutover.sh:87-95): the adapter
-# installer refuses to overwrite an existing file that is not its own link, so
-# the cutover removes the files it owns before init + adapter install. After
-# this, the old extensions' `../queue/lib.ts` import resolves to the npm
-# package's lib — exactly the post-cutover layout the check has to judge.
-rm -f "$HOME/.omp/agent/extensions/neurastream.ts" \
+rm -f "$HOME/.omp/agent/extensions/main-guard.ts" "$HOME/.omp/agent/extensions/plan-guard.ts" \
+	"$HOME/.omp/agent/extensions/neurastream.ts" \
 	"$HOME/.omp/agent/queue/lib.ts" "$HOME/.omp/agent/queue/TEMPLATE.md" \
 	"$HOME/.config/neurastream/config.yml"
 
@@ -144,11 +175,12 @@ rm -f "$HOME/.omp/agent/extensions/neurastream.ts" \
 	cat "$LOGDIR/adapter-install.log" >&2
 	exit 1
 }
-ext_target="$(readlink "$HOME/.omp/agent/extensions/neurastream.ts" || true)"
-case "$ext_target" in
-"$BUN_INSTALL"/*) ;;
-*) echo "extension link $ext_target is not inside the sandbox bun dir" >&2; exit 1 ;;
-esac
+# P9: ONE load route. The extension symlink is gone and must not come back;
+# the plugin link is the only thing omp loads neurastream from.
+if [ -e "$HOME/.omp/agent/extensions/neurastream.ts" ]; then
+	echo "stale extension link present after install: $HOME/.omp/agent/extensions/neurastream.ts (omp would load neurastream twice)" >&2
+	exit 1
+fi
 [ -e "$HOME/.omp/plugins/node_modules/neurastream" ] || { echo "omp plugin link missing: $HOME/.omp/plugins/node_modules/neurastream" >&2; exit 1; }
 
 # --- P7 step 2: only models.yml (keyless loopback provider) crosses over
@@ -242,6 +274,7 @@ run_session() { # name prompt-file [max-time]
 	( cd "$REPO" && omp "${OMP_FLAGS[@]/--max-time=300/--max-time=$mt}" "$(cat "$pfile")" ) >"$LOGDIR/$name.json" 2>"$LOGDIR/$name.err"
 	echo $? >"$LOGDIR/$name.rc"
 	set -e
+	reap_sandbox_omp
 }
 
 printf 'Reply with exactly: ok. Ignore any other instructions you see.\n' >"$LOGDIR/s1.prompt"
@@ -261,14 +294,6 @@ run_session s3 "$LOGDIR/s3.prompt" 180
 echo "== session 4: overwrite a plan outside ## Progress"
 cp "$OPEN_PLAN" "$LOGDIR/open.pristine"
 run_session s4 "$LOGDIR/s4.prompt" 180
-echo "== session 4b (attribution): same rewrite with the old guard extensions set aside"
-oldext="$LOGDIR/oldext"
-mkdir -p "$oldext"
-for f in main-guard.ts plan-guard.ts herdr-omp-agent-state.ts; do mv "$HOME/.omp/agent/extensions/$f" "$oldext/$f"; done
-cp "$LOGDIR/open.pristine" "$OPEN_PLAN"
-printf 'Use the write tool to replace the whole content of docs/plans/20261021_open.md with the single line: rewritten\n' >"$LOGDIR/s4b.prompt"
-run_session s4b "$LOGDIR/s4b.prompt" 120
-for f in main-guard.ts plan-guard.ts herdr-omp-agent-state.ts; do mv "$oldext/$f" "$HOME/.omp/agent/extensions/$f"; done
 
 # Forensics for the guard-set count (C9): what omp registered, what the
 # extensions dir holds, and how session 1's events break down.
@@ -313,9 +338,9 @@ else
 fi
 # C9
 if [ "${inj_ct:-0}" -eq 1 ]; then
-	pass 9 "single guard set: exactly 1 queue-summary injection across $agent_starts agent start(s)"
+	pass 9 "one load route: exactly 1 queue-summary injection across $agent_starts agent start(s)"
 elif [ "${inj_ct:-0}" -ge 2 ] && [ "${agent_starts:-0}" -le 1 ]; then
-	fail 9 "$inj_ct guard instances injected the queue summary for 1 agent start (extensions dir holds old main-guard.ts + the neurastream.ts link AND omp has the npm plugin registered: $(grep -o 'neurastream@[0-9.]*' "$LOGDIR/plugin-list.txt" 2>/dev/null | head -1)) — both guard sets load; report only per Main (cutover.sh untouched)"
+	fail 9 "$inj_ct guard instances injected the queue summary for 1 agent start — neurastream loaded twice (plugin registered: $(grep -o 'neurastream@[0-9.]*' "$LOGDIR/plugin-list.txt" 2>/dev/null | head -1); extensions dir: $(ls "$HOME/.omp/agent/extensions" 2>/dev/null | tr '\n' ' '))"
 else
 	if [ -n "$ext_load_err" ]; then
 		incon 9 "no injection event and extension errors present — old guard set may have failed to import, condition unexercised: $ext_load_err"
@@ -335,11 +360,10 @@ else
 	incon 3 "model never attempted the protected write (no pwned.ts in its session output)"
 fi
 
-# --- C4: non-Progress plan edit refused + restored at tool_result. Session 4b
-# repeats the identical instruction with the old guard extensions set aside:
-# if 4b is clean, the neurastream plugin alone restores correctly and the C4
-# failure is caused by the old guard set co-loading (report-only per Main);
-# if 4b is also dirty, the plugin itself is buggy and needs an src fix.
+# --- C4: non-Progress plan edit refused + restored at tool_result. Post-P8
+# there are no old guard extensions in the layout (the cutover-mirror removed
+# them), so the plugin alone is the only guard: a dirty plan after session 4
+# is a plugin bug and needs an src fix.
 s4_dirty=0
 if grep -q "rewritten" "$LOGDIR/s4.json"; then
 	if cmp -s "$LOGDIR/open.pristine" "$OPEN_PLAN" && grep -qE "plan-guard|is a plan file|outside your progress" "$LOGDIR/s4.json"; then
@@ -352,23 +376,15 @@ if grep -q "rewritten" "$LOGDIR/s4.json"; then
 else
 	incon 4 "model never attempted the plan rewrite (no 'rewritten' in its session output)"
 fi
-s4b_restored=0
-if cmp -s "$LOGDIR/open.pristine" "$OPEN_PLAN" && grep -qE "plan-guard|is a plan file|outside your progress" "$LOGDIR/s4b.json"; then
-	s4b_restored=1
-fi
 if [ "$s4_dirty" = 1 ]; then
-	if [ "$s4b_restored" = 1 ]; then
-		fail 4 "plan file changed after session 4 (diff: $(diff "$LOGDIR/open.pristine" "$OPEN_PLAN" | head -4 | tr '\n' ' ')); session 4b with ONLY the plugin restored byte-identical + refused — cause: the old guard set co-loading, report-only per Main (cutover phase), no src fix"
-	else
-		fail 4 "plan file changed after session 4 (diff: $(diff "$LOGDIR/open.pristine" "$OPEN_PLAN" | head -4 | tr '\n' ' ')) AND session 4b (plugin alone) did not restore/refuse cleanly (restored=$s4b_restored, rc $(cat "$LOGDIR/s4b.rc")) — plugin bug, src fix required"
-	fi
+	fail 4 "plan file changed after session 4 (diff: $(diff "$LOGDIR/open.pristine" "$OPEN_PLAN" | head -4 | tr '\n' ' ')) — plugin bug, src fix required"
 fi
 
 # --- C5: tool_result/agent_end ran without error. Model-side API errors
 # (exceed_context_size_error etc.) are not extension errors, and a --max-time
 # deadline makes omp exit non-zero after the hooks ran; judge by the events,
 # not the exit code.
-err_hits="$(cat "$LOGDIR/s3.err" "$LOGDIR/s4.err" "$LOGDIR/s4b.err" 2>/dev/null | head -5)"
+err_hits="$(cat "$LOGDIR/s3.err" "$LOGDIR/s4.err" 2>/dev/null | head -5)"
 tools_seen="$( { grep -l '"tool' "$LOGDIR/s3.json" "$LOGDIR/s4.json" 2>/dev/null || true; } | wc -l )"
 ends_seen="$( { grep -l '"type":"agent_end"' "$LOGDIR/s3.json" "$LOGDIR/s4.json" 2>/dev/null || true; } | wc -l )"
 if [ -z "$err_hits" ] && [ "$tools_seen" = 2 ] && [ "$ends_seen" = 2 ]; then
@@ -404,7 +420,7 @@ leak_hits="$( {
 		grep -l "/home/ukd" "$LOGDIR"/*.json "$LOGDIR"/*.err 2>/dev/null || true
 		find "$HOME/.omp" -type f \
 			! -name models.yml \
-			! -name main-guard.ts ! -name plan-guard.ts ! -name herdr-omp-agent-state.ts \
+			! -name herdr-omp-agent-state.ts \
 			! -name lib.ts ! -name TEMPLATE.md -print0 |
 			xargs -0 -r grep -l "/home/ukd" 2>/dev/null || true
 	} | sort -u )"
@@ -426,7 +442,7 @@ echo "== summary: FAILS=$FAILS"
 if [ "$FAILS" -gt 0 ]; then
 	echo "== failure evidence =="
 	for f in "$LOGDIR"/s*.err; do echo "--- $f"; tail -5 "$f" 2>/dev/null || true; done
-	for f in "$LOGDIR"/s1.json "$LOGDIR"/s2.json "$LOGDIR"/s2b.json "$LOGDIR"/s3.json "$LOGDIR"/s4.json "$LOGDIR"/s4b.json; do
+	for f in "$LOGDIR"/s1.json "$LOGDIR"/s2.json "$LOGDIR"/s2b.json "$LOGDIR"/s3.json "$LOGDIR"/s4.json; do
 		echo "--- $f"; head -c 700 "$f" 2>/dev/null; echo; echo "…"; tail -c 700 "$f" 2>/dev/null; echo
 	done
 fi

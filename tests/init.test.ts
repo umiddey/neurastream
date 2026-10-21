@@ -1,6 +1,6 @@
 import { afterAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { installOmp } from "../src/adapters/omp/install.ts";
 import { loadConfig } from "../src/core/config.ts";
@@ -59,11 +59,15 @@ test("init creates the layout and a second run changes nothing", () => {
 	expect(refused.stderr).toContain("subagents never push");
 });
 
-test("adapter install links the extension under the sandbox home and stays loadable", () => {
+test("adapter install keeps one omp load route: no extension link, stale symlink removed, plugin linked", () => {
 	rmSync(HOME, { recursive: true, force: true });
 	initHome(HOME, { env: {} });
+	const extension = join(HOME, ".omp/agent/extensions/neurastream.ts");
 	const installed = installOmp(HOME);
-	expect(existsSync(installed.extension)).toBe(true);
+	// P9: omp loads extensions-dir files AND the plugin package's
+	// package.json#omp.extensions, so a link here loads every hook twice.
+	// The plugin route is the only one; it is what guard parity locks.
+	expect(existsSync(extension)).toBe(false);
 	expect(existsSync(installed.plugin)).toBe(true);
 	expect(installed.pinsCopied.length).toBe(17);
 	const cfg = loadConfig({ home: HOME, env: {} });
@@ -71,6 +75,20 @@ test("adapter install links the extension under the sandbox home and stays loada
 	expect(cfg.adapter?.extensions).toBe(join(HOME, ".omp/agent/extensions"));
 	expect(cfg.adapter?.pins).toBe(join(HOME, ".omp/agent/agents"));
 	expect(cfg.guards.protected.some(p => p.endsWith("/extensions/"))).toBe(true);
+	// A stale link from an older install is removed; a file someone else put
+	// there is never ours to delete. The dir is created here because an old
+	// install is the only thing that would have made it (current install
+	// doesn't; omp's loader treats a missing extensions dir as empty).
+	mkdirSync(join(HOME, ".omp/agent/extensions"), { recursive: true });
+	symlinkSync(join(HOME, "gone-target"), extension);
+	const second = installOmp(HOME);
+	expect(second.removedStaleLink).toBe(extension);
+	expect(existsSync(extension)).toBe(false);
+	writeFileSync(extension, "// not neurastream's\n");
+	const third = installOmp(HOME);
+	expect(third.removedStaleLink).toBeNull();
+	expect(readFileSync(extension, "utf8")).toBe("// not neurastream's\n");
+	rmSync(extension);
 	const again = installOmp(HOME);
 	expect(again.overlay).toBe("unchanged");
 	expect(again.pinsCopied).toEqual([]);

@@ -82,9 +82,8 @@ echo "idempotent: tree hash unchanged"
 echo
 echo "## neurastream adapter install omp"
 run neurastream adapter install omp || fail "adapter install"
-test -L "$HOME_DIR/.omp/agent/extensions/neurastream.ts" || fail "extension link missing"
 test -L "$HOME_DIR/.omp/plugins/node_modules/neurastream" || fail "plugin link missing"
-echo "extension -> $(readlink "$HOME_DIR/.omp/agent/extensions/neurastream.ts")"
+test ! -e "$HOME_DIR/.omp/agent/extensions/neurastream.ts" || fail "stale extension link present (omp would load neurastream twice)"
 echo "plugin -> $(readlink "$HOME_DIR/.omp/plugins/node_modules/neurastream")"
 run neurastream config --json | grep -q '"name": "omp"' || fail "overlay not loaded"
 
