@@ -99,10 +99,16 @@ guards:
 	spawnSync("git", ["init", "-q"], { cwd: TOY });
 }
 
+// Inherited QUEUE_* would override the sandbox config in the child (env beats config.yml).
+function envWithoutQueue(): NodeJS.ProcessEnv {
+	return Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("QUEUE_")));
+}
+
 function envFor(): NodeJS.ProcessEnv {
 	return {
-		...process.env,
+		...envWithoutQueue(),
 		HOME,
+		QUEUE_AGENT: AGENT,
 		QUEUE_INDEX: join(AGENT, "INDEX.md"),
 		QUEUE_BLOCKERS: join(AGENT, "blockers"),
 		QUEUE_STATE: STATE,
@@ -437,6 +443,23 @@ console.log(JSON.stringify(mod.checkCall("write", { path: ${JSON.stringify(targe
 	const closer = guardCli("pre-tool", toolEvent("bash", { command: "bun run queue-close docs/plans/x.md" }, "sub"));
 	expect(closer.code).toBe(2);
 	expect(closer.d.reason).toBe(`plan-guard: queue-close and queue-cancel are Main's; report in your plan's "## Progress" instead.`);
+});
+
+// An in-process adapter in an earlier test file (createOmpAdapter -> applyQueueEnv) leaves
+// QUEUE_* in this process's env; bun's file order differs per machine, so CI saw it here.
+test("protected guard files: a QUEUE_* env leaked by an earlier in-process adapter does not unprotect them", () => {
+	fresh();
+	const leaked = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("QUEUE_")));
+	process.env.QUEUE_AGENT = "/nonexistent/neurastream-leaked-agent";
+	process.env.QUEUE_UNLOCK = "/nonexistent/neurastream-leaked-agent/.guard-unlock";
+	try {
+		const refused = guardCli("pre-tool", toolEvent("write", { path: join(AGENT, "AGENTS.md"), content: "x" }, "sub"));
+		expect(refused.code).toBe(2);
+		expect(refused.d.reason).toContain("is a protected guard file");
+	} finally {
+		for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
+		Object.assign(process.env, leaked);
+	}
 });
 
 test("bypass launch: same plan gate as the original", () => {

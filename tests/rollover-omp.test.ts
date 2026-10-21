@@ -90,6 +90,9 @@ const SESSION_ID = `rollover-test-${process.pid}-${Date.now()}`;
 const NOTE = notePath(SESSION_ID);
 const BIG = "x".repeat(4096);
 
+// createOmpAdapter runs in-process here and applyQueueEnv writes QUEUE_* into process.env;
+// restore them so later test files' guard children see their own sandbox paths.
+const queueEnvBefore = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("QUEUE_")));
 const baseCfg: Config = loadConfig();
 const overCfg: Config = { ...baseCfg, rollover: { enabled: true, max_session_mb: 0.000001 } };
 const belowCfg: Config = { ...baseCfg, rollover: { enabled: true, max_session_mb: 1024 } };
@@ -97,6 +100,8 @@ const belowCfg: Config = { ...baseCfg, rollover: { enabled: true, max_session_mb
 afterAll(() => {
 	rmSync(TMP, { recursive: true, force: true });
 	rmSync(NOTE, { force: true });
+	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
+	Object.assign(process.env, queueEnvBefore);
 });
 
 const newSessions: Array<{ parentSession?: string } | undefined> = [];

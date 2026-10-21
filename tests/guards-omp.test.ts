@@ -117,8 +117,11 @@ queue:
 	spawnSync("git", ["init", "-q"], { cwd: TOY });
 }
 
+// Inherited QUEUE_* (left by an in-process adapter in another test file) would override the
+// sandbox config.yml in the child: env beats config.
 function envFor(): NodeJS.ProcessEnv {
-	return { ...process.env, HOME, QUEUE_CLOSE_BIN: join(HOME, "close-stub") };
+	const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("QUEUE_")));
+	return { ...env, HOME, QUEUE_CLOSE_BIN: join(HOME, "close-stub") };
 }
 
 // Result readers: handler returns are untyped at the boundary (fake host in the child), so the
