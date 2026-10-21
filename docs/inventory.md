@@ -285,6 +285,9 @@ Loaded today because they sit in the agent extensions directory. The package dec
 |---|---|
 | `session_start` (main only) | start the auto-close timer |
 | `before_agent_start` | `promptInject` (queue summary + cancel flag); also resets the edit window |
+| `session.compacting` (main only) | owner-hold lines in the compaction context (`ownerHolds`) |
+| `agent_end` (main only) | rollover size check; asks for the handoff note once per session file |
+| `input` (main only) | in the ready state, the owner's plain message becomes `/main-rollover <message>` |
 | `before_subagent_spawn` | `checkSpawn` (allow-list, and invocation kind must be `task`) |
 | `tool_call` | `checkTool` (edit limit, task plan gate, bypass-spawn plan gate) |
 | `tool_result` on a push or merge | schedule close |

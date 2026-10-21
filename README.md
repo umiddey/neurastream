@@ -37,6 +37,22 @@ Owner rule: never write a plan when another agent is doing the research or readi
 - Retention: entries older than 7 days are dropped on each write.
 - Spawn briefs: a brief must name an unticked phase id of the plan (for example `P4`). A brief that asks for research for a plan to be written is refused, quoting the owner rule.
 
+## Queue holds
+
+A plan parked for the owner has one line: `WAITING on owner: <what>`. That line is the only hold, and only Main writes it (plan-guard refuses subagents). The queue summary shows it as a flag on the plan, cut at 80 characters. Compaction and the rollover handoff read the same lines through `ownerHolds`: the compaction context lists each `<plan file>: WAITING on owner: <text>` line (or `none`) and says any other "needs the owner" or "paused" claim is unverified; the handoff's generated state carries the same lines. Main does not keep holds in a handoff note.
+
+## Session rollover
+
+Main's session file grows with every turn. When it reaches `rollover.max_session_mb` (default 10, `docs/config.md`), Main is asked once per session file to write a handoff note to `<queue_state>/rollover/<session id>.md`. The note covers the work in progress and its state, the decisions made and why, the next step, and the files involved.
+
+The switch is never automatic:
+
+- A note counts only if it was written after the threshold was crossed and is at most one hour old.
+- The owner's next plain message then closes the session and starts a fresh one. The fresh session opens with the note verbatim, the generated `main-start` state (including the owner holds), and then the owner's message. The previous session file stays where it is.
+- While own jobs (subagents included) are still running, the switch waits: a rollover would cancel them, so the owner's message stays in the current session until they finish.
+- `/main-rollover <message>` does the same by hand. It refuses below the threshold, without a fresh note, or while jobs run.
+- `rollover.enabled: false` turns the feature off.
+
 ## Changing a script
 
 Edit the script in this repo. Green is `bun run typecheck` and `bun test`, both exit 0. Main tags the release. The publish workflow puts that tag on npm. Then:

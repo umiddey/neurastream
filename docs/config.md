@@ -47,6 +47,10 @@ score:
   min_dollars: 0.01
   min_hours: 0.05
 
+rollover:
+  enabled: true
+  max_session_mb: 10
+
 ledger:
   default_hours: 24
   idle_show_min: 5
