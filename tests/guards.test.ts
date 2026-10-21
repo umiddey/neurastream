@@ -492,6 +492,16 @@ console.log(JSON.stringify(mod.flagCancel("please cancel that plan")));
 	expect(spawn.d.reason).toBe(`main-guard: ${CANCEL_TODO} Flagged: "please cancel that plan"`);
 });
 
+test("inject: the guard's own stop continuation keeps the idle streak (no endless re-prompt)", () => {
+	fresh();
+	const owner = guardCli("inject", { prompt: "continue", agent: "main" });
+	expect(owner.d.state).toEqual({ callsSinceStop: 0, idleStops: 0 });
+	const nudge = guardCli("inject", { prompt: "main-guard: the queue has 3 open items and no subagent is running to wake you.", agent: "main" });
+	expect(nudge.code).toBe(0);
+	expect(nudge.d.inject).toContain("main-guard: read");
+	expect(nudge.d.state).toBeUndefined();
+});
+
 test("stop: keep working while the queue is open; live sub or idle stops allow; sub stop always allowed", () => {
 	fresh();
 	const stop = (p: Record<string, unknown>) => guardCli("stop", p);

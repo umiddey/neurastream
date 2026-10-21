@@ -462,23 +462,28 @@ export function flagCancel(text: string, cfg: Config): string {
 
 /**
  * prompt/owner message: inject the queue summary, flag cancel wording, reset Main's edit window
- * and the stop counters (the original resets them at every user message).
+ * and the stop counters (the original resets them at every user message). A turn the harness
+ * starts from this guard's own stop continuation ("main-guard: …") is not an owner message: it
+ * keeps the counters and the edit window, else every continuation reset the idle streak and a
+ * model that only answers text was nudged again forever (2026-10-21 OOM: ~205 agent starts in one
+ * non-interactive session).
  */
 export function checkInject(e: InjectEvent, cfg: Config): Decision {
 	if (e.agent !== "main") return ALLOW;
-	writeWindow({ used: [], windowStart: 0 });
+	const continuation = e.inject.trimStart().startsWith("main-guard:");
+	if (!continuation) writeWindow({ used: [], windowStart: 0 });
 	let summary: string;
 	try {
 		summary = q.queueSummary();
 	} catch (err) {
 		summary = `Queue unreadable (${q.INDEX}): ${err}`;
 	}
-	const cancel = flagCancel(e.inject, cfg);
+	const cancel = continuation ? "" : flagCancel(e.inject, cfg);
 	return {
 		allow: true,
 		reason: "",
 		inject: `${summary}\n(main-guard: read ${q.INDEX} and the listed repo INDEX.md files are summarised above; work the open plans, close finished ones with queue-close.)${cancel}`,
-		state: { callsSinceStop: 0, idleStops: 0 },
+		...(continuation ? {} : { state: { callsSinceStop: 0, idleStops: 0 } }),
 	};
 }
 

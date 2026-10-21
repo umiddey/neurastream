@@ -36,9 +36,11 @@
 #      old guard extensions are gone via the cutover-mirror and the stale
 #      extensions/neurastream.ts link is no longer created — any second
 #      injection means a double load and FAILs)
-# The model is nondeterministic (qwen-local/qwen3.5-4b-local, keyless
-# loopback): a check whose trigger the model never performed is INCONCLUSIVE,
-# never PASS.
+# The model is a cloud model (owner 2026-10-21: no local model, qwen-local
+# runs crashed the machine twice): openrouter/$MODEL with OPENROUTER_API_KEY
+# from the caller's environment (never written into the sandbox). It is
+# nondeterministic: a check whose trigger the model never performed is
+# INCONCLUSIVE, never PASS.
 #
 # No `git push` is used anywhere: the fixture's origin/main is faked with
 # `git update-ref refs/remotes/origin/main` (a local bare repo is configured as
@@ -48,7 +50,7 @@ set -euo pipefail
 LIVE_AGENT=/home/ukd/.omp/agent
 LIVE_EXT="$LIVE_AGENT/extensions"
 NS_VERSION=0.1.4
-MODEL=qwen-local/qwen3.5-4b-local
+MODEL="${NS_TEST_MODEL:-openrouter/deepseek/deepseek-v4.1-flash-1017}"
 
 : "${HOME:?HOME is required}"
 # Pin the sandbox: every run uses this exact throwaway HOME (P7), whatever the
@@ -61,7 +63,7 @@ REPO="$HOME/Work/toy"
 OPEN_PLAN="$REPO/docs/plans/20261021_open.md"
 DONE_PLAN="$REPO/docs/plans/20261021_done.md"
 NS_BIN=""
-QWEN_STARTED=0
+WATCHDOG_PID=""
 FAILS=0
 
 fail() { echo "C$1: FAIL — $2"; FAILS=$((FAILS + 1)); }
@@ -93,10 +95,37 @@ reap_sandbox_omp() {
 	done
 }
 
+# Spawn-storm watchdog: two runs (2026-10-21 12:47 and 16:13) ended in a global
+# OOM with ~175 omp processes of ~150 MB each born during the run. Every 2 s:
+# more than 20 sandbox omp processes, or MemAvailable under 6 GiB, dumps their
+# command lines + parents to $LOGDIR/watchdog.txt, kills them all and aborts.
+watchdog() {
+	local pids n avail
+	while sleep 2; do
+		pids=""
+		for pid in $(pgrep -u "$(id -u)" -x omp 2>/dev/null); do
+			tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null | grep -qx "HOME=$HOME" && pids="$pids $pid"
+		done
+		n=$(wc -w <<<"$pids")
+		avail=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)
+		if [ "$n" -gt 20 ] || [ "$avail" -lt $((6 * 1024 * 1024)) ]; then
+			{
+				echo "WATCHDOG $(date '+%F %T'): $n sandbox omp processes, MemAvailable $((avail / 1024)) MiB"
+				# shellcheck disable=SC2086
+				ps -o pid=,ppid=,etimes=,rss=,args= -p ${pids// /,} 2>/dev/null | cut -c1-300
+			} >>"$LOGDIR/watchdog.txt"
+			reap_sandbox_omp
+			kill -TERM $$ 2>/dev/null
+			return
+		fi
+	done
+}
+
 cleanup() {
 	local rc=$?
+	[ -n "$WATCHDOG_PID" ] && kill "$WATCHDOG_PID" 2>/dev/null || true
 	reap_sandbox_omp
-	if [ "$QWEN_STARTED" = "1" ]; then systemctl --user stop qwen-local.service || true; fi
+	[ -f "$LOGDIR/watchdog.txt" ] && { cat "$LOGDIR/watchdog.txt"; [ "$rc" != "0" ] || rc=1; }
 	if [ "${FAILS:-0}" -gt 0 ] || [ "$rc" != "0" ]; then
 		rm -rf /tmp/omp-sandbox-fail-evidence
 		cp -r "$LOGDIR" /tmp/omp-sandbox-fail-evidence 2>/dev/null || true
@@ -107,6 +136,7 @@ cleanup() {
 	exit "$rc"
 }
 trap cleanup EXIT
+trap 'exit 143' TERM
 
 command -v omp >/dev/null || { echo "omp not on PATH" >&2; exit 1; }
 # 2026-10-21 OOM: refuse to start real omp sessions + a local model on a low-memory machine.
@@ -114,23 +144,12 @@ MIN_AVAIL_KIB=$((10 * 1024 * 1024))
 avail_kib=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)
 [ "$avail_kib" -ge "$MIN_AVAIL_KIB" ] || { echo "MemAvailable $((avail_kib / 1024)) MiB < 10240 MiB; not starting omp sessions" >&2; exit 1; }
 command -v curl >/dev/null || { echo "curl not on PATH" >&2; exit 1; }
+: "${OPENROUTER_API_KEY:?OPENROUTER_API_KEY is required (cloud model $MODEL; no local model)}"
 
 snap_real_home before
 
-# --- qwen-local service (P7 step 2): start only if down; stop only if started
-if ! curl -s --max-time 3 http://127.0.0.1:8089/v1/models >/dev/null 2>&1; then
-	systemctl --user start qwen-local.service
-	QWEN_STARTED=1
-	ok=0
-	for _ in $(seq 1 120); do
-		if curl -s --max-time 2 http://127.0.0.1:8089/v1/models >/dev/null 2>&1; then ok=1; break; fi
-		sleep 1
-	done
-	[ "$ok" = 1 ] || { echo "qwen-local.service did not come up on 127.0.0.1:8089" >&2; exit 1; }
-	echo "qwen-local: started (will stop at exit)"
-else
-	echo "qwen-local: already running (left running)"
-fi
+watchdog &
+WATCHDOG_PID=$!
 
 # --- P7 step 1: sandbox HOME, install, init, adapter install (omp plugin link)
 rm -rf "$HOME"
