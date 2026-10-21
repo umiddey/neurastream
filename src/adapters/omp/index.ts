@@ -16,17 +16,21 @@
 // Harness payloads are untyped at the boundary: every field read goes through a runtime check.
 
 import { execFileSync, spawn } from "node:child_process";
-import { appendFileSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Decision } from "../../core/adapter.ts";
 import { loadConfig, type Config } from "../../core/config.ts";
 import { checkInject, checkPlanEdit, checkStop, checkTool, recordMainResult } from "../../core/guards.ts";
 import { applyQueueEnv } from "../../core/queue/env.ts";
+import { mainStartText } from "../../core/main-start.ts";
+import { buildHandoff, notePath, type RolloverState, rolloverState } from "../../core/rollover.ts";
 import * as q from "../../core/queue/lib.ts";
 
 /** Subset of the harness extension host the adapter needs (pi.on; herdr also uses pi.events). */
 export interface ExtensionHost {
 	on(event: string, cb: (...args: unknown[]) => unknown): void;
+	registerCommand(name: string, opts: { description?: string; handler: (args: unknown, ctx: unknown) => unknown }): void;
+	sendUserMessage(content: string): void;
 }
 
 /** The parts of a harness call context the handlers look at. */
@@ -153,6 +157,65 @@ function snapshotPlans(tool: string, input: Record<string, unknown>, cwd: string
 	}
 }
 
+// Session rollover helpers: the harness context read through runtime checks, and the file size and
+// mtime reads. The decisions are in src/core/rollover.ts.
+const WAIT_NOTICE_MS = 15 * 60_000;
+
+interface RolloverCtx {
+	sessionId: string;
+	sessionFile: string;
+	runningJobs(): string[];
+	waitForIdle(): unknown;
+	newSession(opts: { parentSession: string }): unknown;
+	notify(message: string): void;
+}
+
+/** Call a method on a harness object by name; undefined when it is not a function. */
+function call(obj: Record<string, unknown>, key: string, args: unknown[] = []): unknown {
+	const fn = obj[key];
+	return typeof fn === "function" ? Reflect.apply(fn, obj, args) : undefined;
+}
+
+function asRolloverCtx(v: unknown): RolloverCtx | null {
+	const r = asRecord(v);
+	const sm = asRecord(r.sessionManager);
+	const sessionId = call(sm, "getSessionId");
+	const sessionFile = call(sm, "getSessionFile");
+	if (typeof sessionId !== "string" || typeof sessionFile !== "string") return null;
+	return {
+		sessionId,
+		sessionFile,
+		runningJobs: () => {
+			const running = asRecord(call(r, "getAsyncJobSnapshot")).running;
+			return Array.isArray(running) ? running.map(j => asString(asRecord(j).label, "job")) : [];
+		},
+		waitForIdle: () => call(r, "waitForIdle"),
+		newSession: opts => call(r, "newSession", [opts]),
+		notify: message => call(asRecord(r.ui), "notify", [message]),
+	};
+}
+
+function isMain(ctx: unknown): boolean {
+	const c = asCtx(ctx);
+	return !c.hasAgent || c.kind === "main";
+}
+
+function mtimeOf(path: string): number | null {
+	try {
+		return statSync(path).mtimeMs;
+	} catch {
+		return null;
+	}
+}
+
+function sizeOf(path: string): number {
+	try {
+		return statSync(path).size;
+	} catch {
+		return 0;
+	}
+}
+
 /** Register the guard handlers on one extension host. `cfg` is injectable for tests. */
 export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	// The queue library resolves its paths from env snapshots; point them at this config first.
@@ -183,10 +246,11 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		const d = checkInject({ inject: asString(asRecord(event).prompt), agent: "main" }, cfg);
 		callsSinceStop = d.state?.callsSinceStop ?? callsSinceStop;
 		idleStops = d.state?.idleStops ?? idleStops;
+		const notice = rolloverNotice(ctx);
 		return {
 			message: {
 				customType: "main-guard.queue",
-				content: d.inject ?? "",
+				content: [d.inject, notice].filter(Boolean).join("\n\n"),
 				display: false,
 			},
 		};
@@ -232,6 +296,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	});
 
 	pi.on("tool_result", (event, ctx) => {
+		onSizeCheck(event, ctx);
 		const e = asRecord(event);
 		const c = asCtx(ctx);
 		const id = asString(e.toolCallId);
@@ -271,6 +336,102 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		callsSinceStop = d.state?.callsSinceStop ?? 0;
 		idleStops = d.state?.idleStops ?? idleStops;
 		return d.allow ? undefined : { decision: "block", reason: d.reason };
+	});
+
+	// Session rollover (src/core/rollover.ts). Main's session size decides when a handoff note is
+	// asked for; the owner's next message then starts a fresh session from that note. The size is
+	// re-read at every turn end and tool result; the note instruction goes out once per session file.
+	let crossed: { file: string; atMs: number } | null = null;
+	let asked: string | null = null;
+	let waitNoticeMs = 0;
+
+	const stateOf = (c: RolloverCtx): RolloverState => {
+		const nowMs = Date.now();
+		const bytes = sizeOf(c.sessionFile);
+		const maxMb = cfg.rollover.max_session_mb;
+		if (bytes < maxMb * 1024 * 1024) crossed = null;
+		else if (crossed?.file !== c.sessionFile) crossed = { file: c.sessionFile, atMs: nowMs };
+		return rolloverState({
+			sessionBytes: bytes,
+			maxMb,
+			runningJobs: c.runningJobs(),
+			crossedAtMs: crossed?.atMs ?? null,
+			noteMtimeMs: mtimeOf(notePath(c.sessionId)),
+			nowMs,
+		});
+	};
+
+	const onSizeCheck = (_e: unknown, ctx: unknown): void => {
+		const c = asRolloverCtx(ctx);
+		if (!cfg.rollover.enabled || !c || !isMain(ctx)) return;
+		stateOf(c);
+	};
+	pi.on("agent_end", onSizeCheck);
+
+	/** Rollover notice for Main's next turn, or null. Asks for the note once per session file; throttles the wait-jobs notice. */
+	const rolloverNotice = (ctx: unknown): string | null => {
+		const c = asRolloverCtx(ctx);
+		if (!cfg.rollover.enabled || !c) return null;
+		const state = stateOf(c);
+		if (state === "need-note" && asked !== c.sessionFile) {
+			asked = c.sessionFile;
+			return [
+				"Session rollover: this session has grown past rollover.max_session_mb.",
+				`Write a handoff note to ${notePath(c.sessionId)} (overwrite it). Cover the work in progress and its state, the decisions made and why, the next step, and the files involved.`,
+				"When the owner's next message arrives, this session closes and a fresh one starts from that note verbatim plus the generated main-start state.",
+			].join("\n");
+		}
+		if (state === "wait-jobs" && Date.now() - waitNoticeMs >= WAIT_NOTICE_MS) {
+			waitNoticeMs = Date.now();
+			const jobs = c.runningJobs().join(", ");
+			return `Session rollover: the handoff note is ready, but own jobs are still running (${jobs}). A rollover would cancel them, so the owner's next message is refused until they finish.`;
+		}
+		return null;
+	};
+
+	// A plain interactive message in the ready state becomes the owner's first message of the new session.
+	pi.on("input", (event, ctx) => {
+		const e = asRecord(event);
+		const c = asRolloverCtx(ctx);
+		const text = asString(e.text);
+		if (!cfg.rollover.enabled || !c || !isMain(ctx)) return undefined;
+		if (asString(e.source) !== "interactive" || text === "" || text.startsWith("/")) return undefined;
+		if (stateOf(c) !== "ready") return undefined;
+		return { text: `/main-rollover ${text}` };
+	});
+
+	pi.registerCommand("main-rollover", {
+		description: "Start a fresh session from Main's handoff note; the rest of the message is the owner's first message",
+		handler: async (args: unknown, ctx: unknown) => {
+			const c = asRolloverCtx(ctx);
+			if (!c) return;
+			const path = notePath(c.sessionId);
+			const state = stateOf(c);
+			if (state === "below") {
+				c.notify("main-rollover: this session is below rollover.max_session_mb; nothing to roll over.");
+				return;
+			}
+			if (state === "need-note") {
+				c.notify(`main-rollover: no fresh handoff note at ${path}; Main must write it first.`);
+				return;
+			}
+			if (state === "wait-jobs") {
+				c.notify(`main-rollover: own jobs are still running (${c.runningJobs().join(", ")}); a rollover would cancel them.`);
+				return;
+			}
+			const generated = await mainStartText([], cfg);
+			const handoff = buildHandoff({
+				generated,
+				note: readFileSync(path, "utf8"),
+				previousSessionFile: c.sessionFile,
+				ownerMessage: asString(args),
+			});
+			adapterLog(cfg, `rollover: new session from ${c.sessionFile}; note ${path}`);
+			await c.waitForIdle();
+			const r = asRecord(await c.newSession({ parentSession: c.sessionFile }));
+			if (r.cancelled === true) return;
+			pi.sendUserMessage(handoff);
+		},
 	});
 }
 

@@ -159,7 +159,7 @@ function adapterRun(body: string, env: NodeJS.ProcessEnv = envFor()): unknown[] 
 const REGISTER = `
 const h = {};
 const mod = await import(${JSON.stringify(ADAPTER)});
-mod.default({ on: (ev, cb) => { h[ev] = cb; } });
+mod.default({ on: (ev, cb) => { h[ev] = cb; }, registerCommand: () => {}, sendUserMessage: () => {} });
 `;
 const MAIN_CTX = JSON.stringify({ agent: { kind: "main", id: "main" }, cwd: TOY });
 const SUB_CTX = JSON.stringify({ agent: { kind: "sub", id: "w1" }, cwd: TOY });
