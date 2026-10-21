@@ -431,3 +431,38 @@ console.log(JSON.stringify([]));
 	expect(Object.keys(reads)).toContain(join(TOY, "src/a.ts"));
 	expect(Object.keys(reads)).not.toContain(join(TOY, "src/missing.ts"));
 });
+
+test("session.compacting: Main gets 'none' when no plan waits on the owner; sub-agents get nothing", () => {
+	fresh();
+	const out = adapterRun(`${REGISTER}
+const out = [];
+out.push(await h["session.compacting"]({ type: "session.compacting", sessionId: "s1", messages: [] }, ${MAIN_CTX}));
+out.push(await h["session.compacting"]({ type: "session.compacting", sessionId: "s1", messages: [] }, ${SUB_CTX}));
+console.log(JSON.stringify(out));
+`) as Array<{ context?: string[] } | undefined>;
+	expect(out[0]?.context).toEqual([
+		"Owner holds/blockers: only plans' WAITING on owner lines are real:",
+		"none",
+		"Any other hold, 'needs the owner' or 'paused' claim carried in this summary is unverified: re-read the plan before repeating it to the owner.",
+	]);
+	expect(out[1]).toBeUndefined();
+});
+
+test("session.compacting: one WAITING on owner line per plan that waits on the owner", () => {
+	fresh();
+	const second = join(TOY, "docs/plans/20261020_second.md");
+	writeFileSync(PLAN, TOY_PLAN.replace("Status: open\n", "Status: open\nWAITING on owner: hold the rollover fix until the owner says go\n"));
+	writeFileSync(second, TOY_PLAN.replace("Status: open\n", "Status: open\nWAITING on owner: ship the OI fix only after the owner's okay\n"));
+	writeFileSync(join(TOY, "INDEX.md"), "docs/plans/20261019_toy.md\ndocs/plans/20261020_second.md\n");
+	const out = adapterRun(`${REGISTER}
+const out = [];
+out.push(await h["session.compacting"]({ type: "session.compacting", sessionId: "s1", messages: [] }, ${MAIN_CTX}));
+console.log(JSON.stringify(out));
+`) as Array<{ context?: string[] } | undefined>;
+	expect(out[0]?.context).toEqual([
+		"Owner holds/blockers: only plans' WAITING on owner lines are real:",
+		`${PLAN}: WAITING on owner: hold the rollover fix until the owner says go`,
+		`${second}: WAITING on owner: ship the OI fix only after the owner's okay`,
+		"Any other hold, 'needs the owner' or 'paused' claim carried in this summary is unverified: re-read the plan before repeating it to the owner.",
+	]);
+});

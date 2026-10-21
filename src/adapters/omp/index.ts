@@ -23,7 +23,7 @@ import { loadConfig, type Config } from "../../core/config.ts";
 import { checkInject, checkPlanEdit, checkStop, checkTool, recordMainResult } from "../../core/guards.ts";
 import { applyQueueEnv } from "../../core/queue/env.ts";
 import { mainStartText } from "../../core/main-start.ts";
-import { buildHandoff, notePath, type RolloverState, rolloverState } from "../../core/rollover.ts";
+import { buildHandoff, holdsBlock, notePath, noteRequest, type RolloverState, rolloverState } from "../../core/rollover.ts";
 import * as q from "../../core/queue/lib.ts";
 
 /** Subset of the harness extension host the adapter needs (pi.on; herdr also uses pi.events). */
@@ -368,6 +368,19 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	};
 	pi.on("agent_end", onSizeCheck);
 
+	// Compaction keeps the owner's holds true: a summary may state a hold only as a plans' WAITING on owner line says it.
+	pi.on("session.compacting", (_e, ctx) => {
+		if (!isMain(ctx)) return undefined;
+		const holds = q.ownerHolds();
+		return {
+			context: [
+				"Owner holds/blockers: only plans' WAITING on owner lines are real:",
+				...(holds.length > 0 ? holds : ["none"]),
+				"Any other hold, 'needs the owner' or 'paused' claim carried in this summary is unverified: re-read the plan before repeating it to the owner.",
+			],
+		};
+	});
+
 	/** Rollover notice for Main's next turn, or null. Asks for the note once per session file; throttles the wait-jobs notice. */
 	const rolloverNotice = (ctx: unknown): string | null => {
 		const c = asRolloverCtx(ctx);
@@ -375,11 +388,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		const state = stateOf(c);
 		if (state === "need-note" && asked !== c.sessionFile) {
 			asked = c.sessionFile;
-			return [
-				"Session rollover: this session has grown past rollover.max_session_mb.",
-				`Write a handoff note to ${notePath(c.sessionId)} (overwrite it). Cover the work in progress and its state, the decisions made and why, the next step, and the files involved.`,
-				"When the owner's next message arrives, this session closes and a fresh one starts from that note verbatim plus the generated main-start state.",
-			].join("\n");
+			return noteRequest(notePath(c.sessionId));
 		}
 		if (state === "wait-jobs" && Date.now() - waitNoticeMs >= WAIT_NOTICE_MS) {
 			waitNoticeMs = Date.now();
@@ -419,7 +428,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 				c.notify(`main-rollover: own jobs are still running (${c.runningJobs().join(", ")}); a rollover would cancel them.`);
 				return;
 			}
-			const generated = await mainStartText([], cfg);
+			const generated = [await mainStartText([], cfg), holdsBlock(q.ownerHolds())].join("\n");
 			const handoff = buildHandoff({
 				generated,
 				note: readFileSync(path, "utf8"),

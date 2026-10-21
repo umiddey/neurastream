@@ -65,6 +65,21 @@ export function buildHandoff(p: HandoffInput): string {
 	].join("\n");
 }
 
+/** The owner-holds part of the generated state: each WAITING on owner line verbatim, or none. */
+export function holdsBlock(holds: readonly string[]): string {
+	return ["=== owner holds (plans' WAITING on owner lines)", ...(holds.length > 0 ? holds : ["none"]), ""].join("\n");
+}
+
+/** The one-time note instruction for Main's next turn. */
+export function noteRequest(path: string): string {
+	return [
+		"Session rollover: this session has grown past rollover.max_session_mb.",
+		`Write a handoff note to ${path} (overwrite it). Cover the work in progress and its state, the decisions made and why, the next step, and the files involved.`,
+		"Do not list holds or owner blockers in the note; they come from the plans' WAITING on owner lines.",
+		"When the owner's next message arrives, this session closes and a fresh one starts from that note verbatim plus the generated main-start state.",
+	].join("\n");
+}
+
 /** Where Main writes the handoff note for one session. */
 export function notePath(sessionId: string, stateDir = stateDirPath()): string {
 	return join(stateDir, "rollover", `${sessionId}.md`);

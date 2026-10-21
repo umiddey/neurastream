@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { loadConfig } from "../src/core/config.ts";
-import { buildHandoff, MAX_NOTE_AGE_MS, notePath, rolloverState } from "../src/core/rollover.ts";
+import { buildHandoff, holdsBlock, MAX_NOTE_AGE_MS, noteRequest, notePath, rolloverState } from "../src/core/rollover.ts";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -94,6 +94,31 @@ describe("buildHandoff", () => {
 		const message = "/main-rollover is not the text; keep `this` * exactly";
 		const text = buildHandoff({ generated: "g", note: "n", previousSessionFile: "/p", ownerMessage: message });
 		expect(text.endsWith(`Owner's message:\n${message}`)).toBe(true);
+	});
+});
+
+describe("holdsBlock", () => {
+	test("lists the WAITING on owner lines verbatim under the holds header", () => {
+		const lines = ["/p/a.md: WAITING on owner: hold A", "/p/b.md: WAITING on owner: hold B"];
+		expect(holdsBlock(lines)).toBe(["=== owner holds (plans' WAITING on owner lines)", ...lines, ""].join("\n"));
+	});
+
+	test("says none when no plan waits on the owner", () => {
+		expect(holdsBlock([])).toBe(["=== owner holds (plans' WAITING on owner lines)", "none", ""].join("\n"));
+	});
+
+	test("the handoff's generated state carries the same WAITING lines", () => {
+		const lines = ["/p/a.md: WAITING on owner: hold A"];
+		const text = buildHandoff({ generated: holdsBlock(lines), note: "n", previousSessionFile: "/p", ownerMessage: "m" });
+		expect(text).toContain(`## Generated state (main-start)\n=== owner holds (plans' WAITING on owner lines)\n${lines[0]}\n`);
+	});
+});
+
+describe("noteRequest", () => {
+	test("asks for the note at the path and forbids listing holds in it", () => {
+		const text = noteRequest("/s/n.md");
+		expect(text).toContain("Write a handoff note to /s/n.md (overwrite it).");
+		expect(text).toContain("Do not list holds or owner blockers in the note; they come from the plans' WAITING on owner lines.");
 	});
 });
 

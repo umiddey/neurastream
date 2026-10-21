@@ -195,6 +195,11 @@ export function activePlans(index = indexPath(), blockersDir = blockersDirPath()
 	return readIndex(index).flatMap(r => readPlans(r, blockersDir));
 }
 
+/** Owner holds: one line per plan with a WAITING on owner line. The only real holds; the summary, the compaction context and the handoff all read them here. */
+export function ownerHolds(index = INDEX): string[] {
+	return readIndex(index).flatMap(r => readPlans(r)).filter(p => p.waiting).map(p => `${p.file}: WAITING on owner: ${p.waitingLine ?? ""}`);
+}
+
 export function gitTop(p: string): { top: string; repo: string } | null {
 	let dir = path.resolve(p);
 	for (;;) {
