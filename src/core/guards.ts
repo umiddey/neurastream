@@ -157,6 +157,15 @@ export function bypassRegExp(entry: string): RegExp {
 	return new RegExp(`\\b${head}\\b[^\\n]*\\b${tail}\\b`);
 }
 
+const RESEARCH_ASK = /\b(research|investigate|find where|map the code|read the code for)\b/i;
+const PLAN_WRITE = /\b(write|writing|draft|drafting|author)\b[^\n]*\bplan\b/i;
+
+// Phase ids (P1, P2 ...) in the plan's Phases section that are not ticked yet.
+function unticked(p: Plan): string[] {
+	const phases = q.sections(p.text).get("phases") ?? "";
+	return [...phases.matchAll(/^\s*[-*]\s+\[ \]\s+(P\d+)\b/gm)].map(m => m[1]!);
+}
+
 // Plans an implementer brief may run on; returns [reason, null] or [null, plan files].
 export function planGate(text: string, label: string): [string | null, string[]] {
 	const plans = q.activePlans();
@@ -172,6 +181,11 @@ export function planGate(text: string, label: string): [string | null, string[]]
 			`${label}: an implementer needs an open plan. Name the plan's absolute path in the brief; the plan must be listed in <repo>/INDEX.md and the repo in ${q.INDEX}.`,
 			[],
 		];
+	if (RESEARCH_ASK.test(text) && PLAN_WRITE.test(text))
+		return [
+			`${label}: a brief must not ask for research for a plan to be written. Please never ever ever write a plan when another agent is doing the research or reading for you. Main reads the code for its plans itself.`,
+			[],
+		];
 	const spawns = readSpawns();
 	for (const p of named) {
 		if (p.errors.length) return [`${label}: plan ${p.file} is not ready (${p.errors.join("; ")}).`, []];
@@ -185,6 +199,10 @@ export function planGate(text: string, label: string): [string | null, string[]]
 				`${label}: plan ${p.file} has no new "## Progress" entry since the last agent ran on it. Write that run's progress (from its report) into the plan first.`,
 				[],
 			];
+		const open = unticked(p);
+		if (!open.length) return [`${label}: plan ${p.file} has no unticked phase left.`, []];
+		if (!open.some(id => new RegExp(`\\b${id}\\b`).test(text)))
+			return [`${label}: the brief must name an unticked phase of ${p.file} (${open.join(", ")}).`, []];
 	}
 	return [null, named.map(p => p.file)];
 }

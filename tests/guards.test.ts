@@ -312,7 +312,7 @@ test("a Main Progress-only edit needs no Code read by Main section", () => {
 
 test("spawn gates: same refusals as the original task-tool gate; a valid spawn records and then demands new progress", () => {
 	fresh();
-	const brief = `Work ${PLAN} now.`;
+	const brief = `Work ${PLAN} P1 now.`;
 	const orig = origRun(`
 const mod = await import(${JSON.stringify(join(ORIG_EXT, "main-guard.ts"))});
 const h = {};
@@ -340,6 +340,31 @@ console.log(JSON.stringify(out));
 	expect(guardCli("spawn", { agent: "toy-worker", invocationKind: "task", brief }).code).toBe(0);
 	writeFileSync(PLAN, TOY_PLAN.replace("Status: open\n", "Status: open\nWAITING on owner: feedback\n"));
 	expect(guardCli("spawn", { agent: "toy-worker", invocationKind: "task", brief }).d.reason).toContain('parked "WAITING on owner"');
+});
+
+// P4: a brief names an unticked phase of the plan it runs on, and never asks for research for a plan.
+test("spawn brief must name an unticked phase of the plan", () => {
+	fresh();
+	writeFileSync(PLAN, TOY_PLAN.replace("- [ ] P1 do the thing — verify: \`test -f src/a.ts\`", "- [x] P1 do the thing — verify: \`test -f src/a.ts\`\n- [ ] P2 do the next thing — verify: \`test -f src/a.ts\`"));
+	const onlyTicked = guardCli("spawn", { agent: "toy-worker", invocationKind: "task", brief: `Work ${PLAN} P1 now.` });
+	expect(onlyTicked.code).toBe(2);
+	expect(onlyTicked.d.reason).toContain("must name an unticked phase");
+	expect(onlyTicked.d.reason).toContain("P2");
+	const noPhase = guardCli("spawn", { agent: "toy-worker", invocationKind: "task", brief: `Work ${PLAN} now.` });
+	expect(noPhase.code).toBe(2);
+	expect(noPhase.d.reason).toContain("must name an unticked phase");
+	expect(guardCli("spawn", { agent: "toy-worker", invocationKind: "task", brief: `Work ${PLAN} P2 now.` }).code).toBe(0);
+});
+
+test("spawn brief that asks for research for a plan to be written is refused, quoting the owner rule", () => {
+	fresh();
+	for (const ask of ["Research the code under src/", "Investigate src/a.ts", "Find where src/a.ts is used", "Map the code under src/", "Read the code for src/a.ts"]) {
+		const d = guardCli("spawn", { agent: "toy-worker", invocationKind: "task", brief: `${ask} so Main can write the plan. ${PLAN} P1.` });
+		expect(d.code).toBe(2);
+		expect(d.d.reason).toContain("never ever ever write a plan when another agent is doing the research or reading for you");
+	}
+	// the same words without the plan are not a plan-research ask
+	expect(guardCli("spawn", { agent: "toy-worker", invocationKind: "task", brief: `Investigate src/a.ts, then do ${PLAN} P1.` }).code).toBe(0);
 });
 
 test("6th counted change in the window: same block as the original; .md writes stay free; an owner message resets", () => {
