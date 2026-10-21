@@ -6,6 +6,8 @@ One "main" agent plans the work and reviews it; cheaper "helper" agents do the c
 
 The core does not depend on one agent tool. Adapters translate a tool's events into core calls. The first adapter is [omp](https://github.com/can1357/oh-my-pi).
 
+A step-by-step visual walkthrough (50 steps, plain language) is in [docs/visual/neurastream-deck.html](docs/visual/neurastream-deck.html). Download it and open it in a browser.
+
 ```mermaid
 flowchart LR
   O[Owner message] --> P[Plan file in docs/plans]
