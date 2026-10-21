@@ -64,13 +64,21 @@ export function agentLedger(args: string[], cfg: Config, source: RunSource): num
 
 	if (!args.includes("--cap")) return 0;
 	const live: Record<string, string[]> = {};
+	const notLive: string[] = [];
 	for (const r of rows) {
 		if ((r.statusDetail.startsWith("RUNNING") || r.statusDetail.startsWith("WAITING")) && !r.id.startsWith("MAIN")) {
+			if ((nowSec() - r.lastWriteAt) / 60 >= cfg.ledger.idle_not_live_min) {
+				notLive.push(r.id);
+				continue;
+			}
 			const provider = r.model.split("/")[0] ?? "";
 			(live[provider] ??= []).push(r.id);
 		}
 	}
 	process.stdout.write(`running per provider: ${pyDictInt(Object.fromEntries(Object.entries(live).map(([k, v]) => [k, v.length])))}\n`);
+	if (notLive.length) {
+		process.stdout.write(`NOT LIVE (no write for ≥ ${cfg.ledger.idle_not_live_min}m, not counted): ${notLive.join(", ")}\n`);
+	}
 	let full = Object.entries(live).filter(([, v]) => v.length >= cfg.ledger.max_running_per_provider).map(([k]) => k);
 	for (const k of full) process.stdout.write(`FULL ${k}: ${live[k]!.join(", ")}\n`);
 	const over = rows.filter(r => r.statusDetail.includes("OVER-BUDGET")).map(r => r.id);

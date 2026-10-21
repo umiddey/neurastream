@@ -4,6 +4,7 @@
 ### Fixed
 - Session rollover froze omp for about 90 s: `main-rollover` ran the six `main-start` children with `spawnSync` on omp's only thread. The command now shows a notice at once and gathers main-start asynchronously; the `main-start` CLI output is unchanged.
 - `agent-ledger` parsed every session file under the sessions dir before filtering by age (about 45 s for `--hours 12` on a 12 GB sessions dir). Files older than the window are now skipped unread.
+- `agent-ledger --cap` counted every RUNNING or WAITING agent as using a provider slot, so agents whose sessions had been dead for hours could make a provider FULL (zai: 2 ghost slots live). An agent with no write for `ledger.idle_not_live_min` minutes (default 60) is now left out of the count and listed on a `NOT LIVE` line.
 
 ## 0.1.7
 ### Fixed

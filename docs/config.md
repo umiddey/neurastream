@@ -175,6 +175,8 @@ snapshot:
 
 `ledger.providers` is today's allow-list. It is data. Core checks membership and does not know the names.
 
+`ledger.idle_not_live_min` is the idle time, in minutes, after which `agent-ledger --cap` stops counting a RUNNING or WAITING agent as using a provider slot. Such agents are listed on a `NOT LIVE` line; their session has been dead or stalled that long. Default 60.
+
 `guards.protected` starts empty. Init and adapter install append the paths they own (package bins, notes, blockers, and, for the omp adapter, the pin dir and extension dir). Core does not hardcode those paths.
 
 `score.default_branch` is today's branch name. It is config, not a core literal. When `score.default_repo` is empty the branch is unused and `accept` / `check` require `--repo` and `--branch`.
