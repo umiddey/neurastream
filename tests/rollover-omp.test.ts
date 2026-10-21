@@ -253,9 +253,26 @@ test("main-rollover keeps the event loop running while main-start gathers state"
 		clearInterval(timer);
 	}
 	expect(ticks).toBeGreaterThanOrEqual(10);
-	expect(notes.some(n => n.includes("gathering main-start state"))).toBe(true);
+	expect(notes.some(n => n.includes("collecting main-start state"))).toBe(true);
 	expect(newSessions).toEqual([{ parentSession: SESSION_FILE }]);
 	const handoff = host.sent[0] ?? "";
 	expect(handoff).toContain("## Main's handoff note (verbatim)\n## In progress\nstep");
 	expect(handoff.endsWith("Owner's message:\nowner msg")).toBe(true);
+}, 60_000);
+
+test("agent host: a child's stderr is appended to the handoff text, right after its stdout", async () => {
+	resetState();
+	const bin = join(TMP, "home", ".local", "bin");
+	mkdirSync(bin, { recursive: true });
+	const check = join(bin, "queue-check");
+	writeFileSync(check, "#!/bin/sh\necho QC-OUT\necho QC-ERR 1>&2\n");
+	chmodSync(check, 0o755);
+	const host = fakeHost();
+	createOmpAdapter(host, overCfg);
+	const ctx = mainCtx();
+	await armReady(host, ctx, "## In progress\nstep");
+	await host.commands.get("main-rollover")?.("owner msg", ctx);
+	const handoff = host.sent[0] ?? "";
+	expect(handoff).toContain("QC-ERR");
+	expect(handoff.indexOf("QC-OUT")).toBeLessThan(handoff.indexOf("QC-ERR"));
 }, 60_000);

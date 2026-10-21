@@ -51,11 +51,14 @@ function run(file: string, args: string[], opts: RunOpts = {}): Promise<RunResul
 // collected in order, so the printed output matches the original script line for line.
 // inheritStdin: the CLI passes its terminal to the children that ask the operator something;
 // an agent host passes false, because its stdin is the session's input.
+// stderr: the CLI lets a child's stderr reach the terminal. An agent host captures it and appends it
+// after that child's stdout, because a write to the terminal would draw over the session's UI.
 export async function mainStartText(args: string[], cfg: Config, opts: { inheritStdin: boolean }): Promise<string> {
 	const out: string[] = [];
 	const say = (line: string) => out.push(`${line}\n`);
 	const h = args[0] ?? String(cfg.health.default_hours);
 	const childStdin = opts.inheritStdin ? "inherit" : "ignore";
+	const childStderr = opts.inheritStdin ? "inherit" : "pipe";
 	say("=== machine");
 	const mg = await run(bin("machine-guard", cfg), [], { stderr: "ignore" });
 	const mgLines = mg.stdout.trim().split("\n");
@@ -76,12 +79,12 @@ export async function mainStartText(args: string[], cfg: Config, opts: { inherit
 	}
 	say("");
 	say("=== main thread");
-	const health = await run(bin("main-health", cfg), [], { stdin: childStdin, stderr: "inherit" });
-	out.push(health.stdout);
+	const health = await run(bin("main-health", cfg), [], { stdin: childStdin, stderr: childStderr });
+	out.push(health.stdout + health.stderr);
 	say("");
 	say("=== queue");
-	const check = await run(bin("queue-check", cfg), [], { stdin: childStdin, stderr: "inherit" });
-	out.push(check.stdout);
+	const check = await run(bin("queue-check", cfg), [], { stdin: childStdin, stderr: childStderr });
+	out.push(check.stdout + check.stderr);
 	say("");
 	say("=== heavy-run lock");
 	try {
