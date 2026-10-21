@@ -25,6 +25,8 @@ import { applyQueueEnv } from "../../core/queue/env.ts";
 import { mainStartText } from "../../core/main-start.ts";
 import { buildHandoff, holdsBlock, notePath, noteRequest, type RolloverState, rolloverState } from "../../core/rollover.ts";
 import * as q from "../../core/queue/lib.ts";
+// Registers the plugin-command matcher into core's writeTargets (side effect).
+import "./package-ops.ts";
 
 /** Subset of the harness extension host the adapter needs (pi.on; herdr also uses pi.events). */
 export interface ExtensionHost {

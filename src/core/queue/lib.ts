@@ -1,7 +1,7 @@
 // Queue model: main index, repo INDEX.md, plan shape (templates/queue/TEMPLATE.md).
 
 import { createHash } from "node:crypto";
-import { accessSync, constants, existsSync, readFileSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -306,6 +306,60 @@ export function changesFiles(toolName: string, input: Record<string, unknown>): 
 	return SHELL_TOOLS.has(toolName) && MUTATING.test(String(input?.command ?? input?.code ?? ""));
 }
 
+// P8: package-manager and cutover commands change the running guard package.
+// Their write target is the protected root they touch, so the ordinary
+// protected-path check refuses them without the owner's unlock. Matched per
+// shell segment, with leading KEY=VALUE assignments stripped; the cutover
+// scripts stay free when the same segment pins HOME to /tmp (how every sandbox
+// test and the P9 session test run them). Harness-owned command shapes are NOT
+// matched here: the adapter registers them through registerPackageOpTarget,
+// because core never names a harness.
+function isNeurastreamSpec(t: string): boolean {
+	const base = t.replace(/^["']|["']$/g, "").replace(/^\.?\//, "").replace(/^.*\//, "");
+	return base === "neurastream" || base.startsWith("neurastream@") || /^neurastream-[^/]*\.tgz$/.test(base);
+}
+
+// Adapter-registered matcher for harness package operations (plugin install,
+// link, ...). Returns the protected root the command writes, or null.
+export type PackageOpMatcher = (code: string) => string | null;
+export let packageOpMatcher: PackageOpMatcher | null = null;
+
+export function registerPackageOpTarget(fn: PackageOpMatcher): void {
+	packageOpMatcher = fn;
+}
+
+function packageOpTarget(code: string): string | null {
+	for (const seg of code.split(/&&|\|\||;|\n|\|/)) {
+		const toks = seg.trim().split(/\s+/).filter(Boolean);
+		let i = 0;
+		while (i < toks.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[i] ?? "")) i++;
+		const cmd = (toks[i] ?? "").replace(/^["']|["']$/g, "").replace(/^.*\//, "");
+		const rest = toks.slice(i + 1).map(t => t.replace(/^["']+|["']+$/g, ""));
+		const sub = rest[0] ?? "";
+		const hasGlobal = rest.some(t => t === "-g" || t === "--global");
+		const names = rest.slice(1).filter(t => !t.startsWith("-"));
+		if (cmd === "bun" && ["add", "install", "remove", "rm", "update", "link", "unlink"].includes(sub) && hasGlobal) {
+			if (!names.length || names.some(isNeurastreamSpec)) return `${bunGlobalRoot()}/install/global/node_modules/neurastream`;
+			continue;
+		}
+		if (cmd === "npm" && ["install", "i", "uninstall", "update", "link"].includes(sub) && hasGlobal) {
+			if (!names.length || names.some(isNeurastreamSpec)) return `${bunGlobalRoot()}/install/global/node_modules/neurastream`;
+			continue;
+		}
+		if (cmd === "neurastream" && sub === "adapter" && ["install", "uninstall"].includes(rest[1] ?? ""))
+			return `${bunGlobalRoot()}/install/global/node_modules/neurastream`;
+		if ((cmd === "bash" || cmd === "sh") && rest.some(t => {
+			const base = t.replace(/^.*\//, "");
+			return base === "cutover.sh" || base === "rollback.sh";
+		})) {
+			const envHome = toks.slice(0, i).find(t => t.startsWith("HOME="));
+			if (envHome && envHome.slice("HOME=".length).replace(/^["']|["']$/g, "").startsWith("/tmp/")) continue;
+			return `${agentDir()}/extensions/`;
+		}
+	}
+	return packageOpMatcher?.(code) ?? null;
+}
+
 export function writeTargets(toolName: string, input: Record<string, unknown>, cwd: string): string[] {
 	const out = new Set<string>();
 	const add = (raw: string, from: string) => {
@@ -334,7 +388,10 @@ export function writeTargets(toolName: string, input: Record<string, unknown>, c
 	}
 	if (!SHELL_TOOLS.has(toolName)) return [];
 	const code = String(input?.command ?? input?.code ?? "");
-	if (!MUTATING.test(code)) return [];
+	// A package/plugin/cutover command is a write even though none of the
+	// generic mutating heuristics fire on its text.
+	const pkgOp = packageOpTarget(code);
+	if (!MUTATING.test(code) && !pkgOp) return [];
 	let dir = typeof input?.cwd === "string" ? path.resolve(cwd, expandHome(input.cwd)) : cwd;
 	for (const seg of code.split(/&&|\|\||;|\n|\|/)) {
 		const s = seg.trim();
@@ -364,6 +421,7 @@ export function writeTargets(toolName: string, input: Record<string, unknown>, c
 		/\bshutil\.\w+\(\s*["'][^"']+["']\s*,\s*(["'][^"']+["'])/g,
 	])
 		for (const m of code.matchAll(re)) add((m[1] ?? "").replace(/`/g, ""), dir);
+	if (pkgOp) out.add(pkgOp);
 	return [...out];
 }
 
@@ -372,9 +430,29 @@ export function unlockPath(): string {
 }
 export let UNLOCK = unlockPath();
 export const UNLOCK_MINUTES = 30;
+// P8 (2026-10-21): after the npm cutover the running guards load from the
+// installed package, so the package itself is guard surface. The package root
+// is only claimed when this file really is part of a published neurastream
+// package (package.json name check): the pre-cutover standalone copy under
+// <agent>/queue/ has no package.json above it and must not protect the home.
+function packageManifest(): { root: string; bins: string[] } | null {
+	try {
+		const root = realpathSync(path.resolve(path.dirname(import.meta.path), "..", "..", ".."));
+		const pkg = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")) as { name?: string; bin?: Record<string, string> };
+		if (pkg.name !== "neurastream") return null;
+		return { root, bins: Object.keys(pkg.bin ?? {}) };
+	} catch {
+		return null;
+	}
+}
+
+function bunGlobalRoot(): string {
+	return process.env.BUN_INSTALL ? path.resolve(expandHome(process.env.BUN_INSTALL)) : `${HOME}/.bun`;
+}
+
 function protectedPaths(): string[] {
 	const agent = agentDir();
-	return [
+	const paths = [
 		`${agent}/extensions/`,
 		`${agent}/queue/`,
 		`${agent}/blockers/`,
@@ -395,7 +473,18 @@ function protectedPaths(): string[] {
 		`${HOME}/.local/bin/git`,
 		`${HOME}/.local/bin/git-secret-gate`,
 		`${HOME}/.config/git-secret-gate/`,
+		// Where `bun add -g neurastream` lands; writeTargets points package
+		// operations here so they need the owner's unlock like any guard edit.
+		// The plugin dir is adapter surface: the installer lists it in the
+		// config's guards.protected (core never names a harness path).
+		`${bunGlobalRoot()}/install/global/node_modules/neurastream/`,
 	];
+	const pkg = packageManifest();
+	if (pkg) {
+		paths.push(`${pkg.root}/`);
+		for (const name of pkg.bins) paths.push(`${HOME}/.bun/bin/${name}`);
+	}
+	return paths;
 }
 export let PROTECTED = protectedPaths();
 

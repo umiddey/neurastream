@@ -88,11 +88,16 @@ capture "$STATE/before-$STAMP.txt"
 # link). config.yml is backed up so a failed overlay can be restored, but it
 # is not removed: neurastream init leaves an existing config, INDEX, notes and
 # queue state byte-for-byte alone, and today's values must survive.
+# P8: the package's omp adapter replaces the old standalone guard extensions
+# main-guard.ts and plan-guard.ts (both guards' rules ship inside the package
+# extension, docs/inventory.md) — leaving them would load every guard twice.
+# herdr-omp-agent-state.ts stays: herdr installs and owns it, the adapter
+# never touches it (docs/inventory.md).
 files=()
 while IFS= read -r name; do
 	files+=(".local/bin/$name")
 done < <(bun -e 'const p = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); for (const n of Object.keys(p.bin ?? {})) console.log(n)' "$ROOT/package.json")
-files+=(".omp/agent/extensions/neurastream.ts" ".omp/agent/queue/lib.ts" ".omp/agent/queue/TEMPLATE.md" ".config/neurastream/config.yml")
+files+=(".omp/agent/extensions/neurastream.ts" ".omp/agent/extensions/main-guard.ts" ".omp/agent/extensions/plan-guard.ts" ".omp/agent/queue/lib.ts" ".omp/agent/queue/TEMPLATE.md" ".config/neurastream/config.yml")
 exist=()
 for f in "${files[@]}"; do
 	if [ -e "$f" ] || [ -L "$f" ]; then exist+=("$f"); fi

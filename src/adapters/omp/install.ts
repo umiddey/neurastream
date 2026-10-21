@@ -9,6 +9,8 @@ import { fileURLToPath } from "node:url";
 import { configFile } from "../../core/config.ts";
 
 import { adapterLiveFiles } from "./doctor.ts";
+// Registers the plugin-command matcher into core's writeTargets (side effect).
+import "./package-ops.ts";
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
 const OVERLAY = `adapter:
@@ -18,7 +20,10 @@ const OVERLAY = `adapter:
   extensions: "~/.omp/agent/extensions"
 `;
 
-const PROTECTED = ["~/.omp/agent/agents/", "~/.omp/agent/extensions/"];
+// P8: the plugin dir is adapter surface and lands in the config's
+// guards.protected, so core's protected check covers it without naming a
+// harness path. installOmp writes it via the same overlay pass.
+const PROTECTED = ["~/.omp/agent/agents/", "~/.omp/agent/extensions/", "~/.omp/plugins/"];
 
 export interface InstallResult {
 	extension: string;

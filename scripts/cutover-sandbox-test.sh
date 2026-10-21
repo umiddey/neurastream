@@ -21,6 +21,10 @@ case "$HOME" in
 	;;
 esac
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# The frozen copies of today's three live extension files (P8): the sandbox
+# seeds their NAMES from here, and case 2 proves rollback restores them
+# byte-identically against them.
+FIX_EXT="$ROOT/tests/fixtures/originals/agent/extensions"
 # Logs stay out of HOME: the case-2 hash is the tree before cutover, and a log
 # created by this script is not part of that tree.
 LOGDIR="$(mktemp -d)"
@@ -51,9 +55,14 @@ build_home() {
 	for f in "$OLD"/bin/*; do
 		ln -s "$f" "$HOME/.local/bin/$(basename "$f")"
 	done
-	# omp-side live files as today's layout has them.
+	# omp-side live files as today's real layout has them (P8): main-guard.ts,
+	# plan-guard.ts, herdr-omp-agent-state.ts — content from the frozen fixture
+	# — and NO neurastream.ts (the cutover's install creates that, today's live
+	# dir does not hold it).
 	mkdir -p "$HOME/.omp/agent/extensions" "$HOME/.omp/agent/queue" "$HOME/.omp/agent/agents" "$HOME/.omp/agent/sessions"
-	cp "$OLD/src/adapters/omp/index.ts" "$HOME/.omp/agent/extensions/neurastream.ts"
+	for f in main-guard.ts plan-guard.ts herdr-omp-agent-state.ts; do
+		cp "$FIX_EXT/$f" "$HOME/.omp/agent/extensions/$f"
+	done
 	cp "$OLD/src/core/queue/lib.ts" "$HOME/.omp/agent/queue/lib.ts"
 	cp "$OLD/templates/queue/TEMPLATE.md" "$HOME/.omp/agent/queue/TEMPLATE.md"
 	cp "$OLD"/templates/agents/*.md "$HOME/.omp/agent/agents/"
@@ -154,6 +163,21 @@ case "$gbin" in
 esac
 test -x "$gbin/neurastream"
 HOME="$HOME" BUN_INSTALL="$HOME/.bun" "$gbin/neurastream" doctor >/dev/null
+# P8: exactly one guard set survives the cutover. The old standalone guard
+# extensions are backed up and removed (the package's adapter replaces them,
+# docs/inventory.md), herdr's file stays (herdr owns it; the adapter never
+# touches it), and the package's own extension is present.
+for f in main-guard.ts plan-guard.ts; do
+	[ ! -e "$HOME/.omp/agent/extensions/$f" ] || { echo "cutover-sandbox-test: $f survived the cutover; both guard sets would load" >&2; exit 1; }
+done
+test -f "$HOME/.omp/agent/extensions/herdr-omp-agent-state.ts" || {
+	echo "cutover-sandbox-test: herdr-omp-agent-state.ts removed though the package does not replace it" >&2
+	exit 1
+}
+[ -e "$HOME/.omp/agent/extensions/neurastream.ts" ] || [ -e "$HOME/.omp/plugins/node_modules/neurastream" ] || {
+	echo "cutover-sandbox-test: no package extension after the cutover" >&2
+	exit 1
+}
 kept || {
 	echo "cutover-sandbox-test: case 1 dropped INDEX, notes, config or queue state" >&2
 	exit 1
@@ -175,6 +199,13 @@ grep -q "rolling back" "$log2" || {
 	exit 1
 }
 post="$(tree_hash "$HOME")"
+# P8: the three live extension files are back byte-identical from the tar.
+for f in main-guard.ts plan-guard.ts herdr-omp-agent-state.ts; do
+	cmp -s "$FIX_EXT/$f" "$HOME/.omp/agent/extensions/$f" || {
+		echo "cutover-sandbox-test: case 2 did not restore $f byte-identical" >&2
+		exit 1
+	}
+done
 if [ "$pre2" != "$post" ]; then
 	echo "cutover-sandbox-test: case 2 tree hash differs after rollback" >&2
 	echo "pre:  $pre2" >&2
