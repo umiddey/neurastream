@@ -294,6 +294,8 @@ Rules that move into core as pure functions: 5 changes per 15 minutes (`MAIN_GUA
 
 A shell launch that skips the spawn hook (today: `opencode run`) is a core rule. The command text is config `guards.bypass_spawn`, default `["opencode run"]`, not an import.
 
+Main's read log (`main-reads.json` in the queue state dir): Main's allowed non-`task` calls log the paths they touch, and a `grep -n` result logs each file it names. The plan gate checks a plan's `## Code read by Main` against `guards.plan_read_max_hours` (default 24, `docs/config.md`). Plans stamped `20261021_0100` or later must carry that section. The spawn gate also requires a brief to name an unticked phase id of the plan, and refuses a brief that asks for research for a plan to be written.
+
 ### plan-guard.ts — 166 lines
 
 | Extension event | Core call |
