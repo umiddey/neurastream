@@ -1,6 +1,6 @@
 {
   "name": "neurastream",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Harness-agnostic agent orchestration: queue, guards, blockers, scoring, ledger.",
   "type": "module",
   "license": "MIT",
