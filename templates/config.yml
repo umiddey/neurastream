@@ -114,6 +114,10 @@ guards:
   protected: []
   ledger_command: "agent-ledger --hours 12"
 
+rollover:
+  enabled: true
+  max_session_mb: 10
+
 machine:
   load_over_cores: 4
   load_max: 0

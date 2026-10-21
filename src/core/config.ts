@@ -111,6 +111,7 @@ export interface Config {
 		protected: string[];
 		ledger_command: string;
 	};
+	rollover: { enabled: boolean; max_session_mb: number };
 	machine: {
 		load_over_cores: number;
 		load_max: number;
@@ -258,6 +259,7 @@ function check(cfg: Config): void {
 	if (cfg.guards.sub_warn_calls > cfg.guards.sub_max_calls) {
 		throw new ConfigError("guards.sub_warn_calls must be <= guards.sub_max_calls");
 	}
+	if (!(cfg.rollover.max_session_mb > 0)) throw new ConfigError("rollover.max_session_mb must be > 0");
 	for (const [key, value] of Object.entries(cfg.paths)) {
 		if (key === "work_roots") {
 			if (!Array.isArray(value) || value.some(v => typeof v !== "string")) {
