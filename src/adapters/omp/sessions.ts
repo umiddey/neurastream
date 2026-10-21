@@ -54,17 +54,10 @@ function costOf(m: Record<string, unknown>): number {
 	return c && typeof c.total === "number" ? c.total : 0;
 }
 
-interface Built {
-	run: Run;
-	mtime: number;
-}
-
-function build(file: string, cfg: Config): Built | null {
+function build(file: string, cfg: Config, mtime: number): Run | null {
 	let text: string;
-	let mtime: number;
 	try {
 		text = readFileSync(file, "utf8");
-		mtime = statSync(file).mtimeMs / 1000;
 	} catch {
 		return null;
 	}
@@ -202,7 +195,7 @@ function build(file: string, cfg: Config): Built | null {
 		scoreSurvived: done && !scoreErr,
 		scoreEnd: scoreErr || (done ? "done" : "no final message"),
 	};
-	return { run, mtime };
+	return run;
 }
 
 function readMain(file: string): MainSession {
@@ -253,9 +246,15 @@ export function ompRunSource(root: string, cfg: Config): RunSource {
 			const files = [...jsonlAt(root, 1), ...jsonlAt(root, 2)];
 			const runs: Run[] = [];
 			for (const file of files) {
-				const built = build(file, cfg);
-				if (!built || built.mtime < since) continue;
-				runs.push(built.run);
+				let mtime: number;
+				try {
+					mtime = statSync(file).mtimeMs / 1000;
+				} catch {
+					continue;
+				}
+				if (mtime < since) continue;
+				const run = build(file, cfg, mtime);
+				if (run) runs.push(run);
 			}
 			return runs;
 		},
