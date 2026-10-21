@@ -93,7 +93,8 @@ test("adapter install keeps one omp load route: no extension link, stale symlink
 	expect(again.overlay).toBe("unchanged");
 	expect(again.pinsCopied).toEqual([]);
 	expect(loadConfig({ home: HOME, env: {} }).adapter?.name).toBe("omp");
-});
+	// four installs, each running the real `omp plugin link` (~1-2 s apiece on CI runners)
+}, 60_000);
 
 test("adapter install: missing omp binary fails with a clear error, no plugin link", () => {
 	rmSync(NOOMP_HOME, { recursive: true, force: true });
