@@ -23,8 +23,8 @@ interface RunResult {
 }
 
 // Runs a child without blocking the caller's event loop. Resolves once the child has closed its
-// streams, or immediately when it fails to start. The handoff runs inside an omp host, which must
-// keep handling events while Main's state is gathered.
+// streams, or immediately when it fails to start. The handoff runs inside a live agent session,
+// which must keep handling events while Main's state is gathered.
 function run(file: string, args: string[], opts: RunOpts = {}): Promise<RunResult> {
 	const { promise, resolve } = Promise.withResolvers<RunResult>();
 	const child = spawn(file, args, {
@@ -32,7 +32,7 @@ function run(file: string, args: string[], opts: RunOpts = {}): Promise<RunResul
 	});
 	let stdout = "";
 	let stderr = "";
-	child.stdout.setEncoding("utf8").on("data", chunk => {
+	child.stdout?.setEncoding("utf8").on("data", chunk => {
 		stdout += chunk;
 	});
 	child.stderr?.setEncoding("utf8").on("data", chunk => {
@@ -50,7 +50,7 @@ function run(file: string, args: string[], opts: RunOpts = {}): Promise<RunResul
 // (src/core/rollover.ts) carries the same text into the new session. Children's stdout is
 // collected in order, so the printed output matches the original script line for line.
 // inheritStdin: the CLI passes its terminal to the children that ask the operator something;
-// an omp host passes false, because its stdin is the session's input.
+// an agent host passes false, because its stdin is the session's input.
 export async function mainStartText(args: string[], cfg: Config, opts: { inheritStdin: boolean }): Promise<string> {
 	const out: string[] = [];
 	const say = (line: string) => out.push(`${line}\n`);

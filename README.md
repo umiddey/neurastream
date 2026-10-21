@@ -51,6 +51,7 @@ The switch is never automatic:
 - The owner's next plain message then closes the session and starts a fresh one. The fresh session opens with the note verbatim, the generated `main-start` state (including the owner holds), and then the owner's message. The previous session file stays where it is.
 - While own jobs (subagents included) are still running, the switch waits: a rollover would cancel them, so the owner's message stays in the current session until they finish.
 - `/main-rollover <message>` does the same by hand. It refuses below the threshold, without a fresh note, or while jobs run.
+- `/main-rollover` shows a notice at once and gathers `main-start` in the background, so omp keeps repainting and reading keys until the new session opens.
 - `rollover.enabled: false` turns the feature off.
 
 ## Changing a script
