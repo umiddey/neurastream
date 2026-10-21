@@ -95,28 +95,30 @@ reap_sandbox_omp() {
 	done
 }
 
-# Spawn-storm watchdog: two runs (2026-10-21 12:47 and 16:13) ended in a global
-# OOM with ~175 omp processes of ~150 MB each born during the run. Every 2 s:
-# more than 20 sandbox omp processes, or MemAvailable under 6 GiB, dumps their
-# command lines + parents to $LOGDIR/watchdog.txt, kills them all and aborts.
+# Spawn-storm watchdog (safety net only; the cause, the package spawning the
+# host binary, is fixed in src): more than 12 sandbox omp processes, or
+# MemAvailable under 6 GiB, dumps their command lines + parents to
+# $LOGDIR/watchdog.txt, writes $LOGDIR/STOP (run_session refuses to start
+# another session) and keeps killing sandbox omp until the script exits.
 watchdog() {
 	local pids n avail
-	while sleep 2; do
+	while sleep 1; do
 		pids=""
 		for pid in $(pgrep -u "$(id -u)" -x omp 2>/dev/null); do
-			tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null | grep -qx "HOME=$HOME" && pids="$pids $pid"
+			tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null | grep -qx "HOME=$HOME" && pids="$pids,$pid"
 		done
-		n=$(wc -w <<<"$pids")
+		pids="${pids#,}"
+		n=$(tr ',' '\n' <<<"$pids" | grep -c . || true)
 		avail=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)
-		if [ "$n" -gt 20 ] || [ "$avail" -lt $((6 * 1024 * 1024)) ]; then
-			{
-				echo "WATCHDOG $(date '+%F %T'): $n sandbox omp processes, MemAvailable $((avail / 1024)) MiB"
-				# shellcheck disable=SC2086
-				ps -o pid=,ppid=,etimes=,rss=,args= -p ${pids// /,} 2>/dev/null | cut -c1-300
-			} >>"$LOGDIR/watchdog.txt"
+		if [ -f "$LOGDIR/STOP" ] || [ "$n" -gt 12 ] || [ "$avail" -lt $((6 * 1024 * 1024)) ]; then
+			if [ ! -f "$LOGDIR/STOP" ]; then
+				{
+					echo "WATCHDOG $(date '+%F %T'): $n sandbox omp processes, MemAvailable $((avail / 1024)) MiB"
+					[ -n "$pids" ] && ps -o pid=,ppid=,etimes=,rss=,args= -p "$pids" 2>/dev/null | cut -c1-300
+				} >>"$LOGDIR/watchdog.txt"
+				: >"$LOGDIR/STOP"
+			fi
 			reap_sandbox_omp
-			kill -TERM $$ 2>/dev/null
-			return
 		fi
 	done
 }
@@ -144,7 +146,10 @@ MIN_AVAIL_KIB=$((10 * 1024 * 1024))
 avail_kib=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)
 [ "$avail_kib" -ge "$MIN_AVAIL_KIB" ] || { echo "MemAvailable $((avail_kib / 1024)) MiB < 10240 MiB; not starting omp sessions" >&2; exit 1; }
 command -v curl >/dev/null || { echo "curl not on PATH" >&2; exit 1; }
-: "${OPENROUTER_API_KEY:?OPENROUTER_API_KEY is required (cloud model $MODEL; no local model)}"
+case "$MODEL" in
+openrouter/*) : "${OPENROUTER_API_KEY:?OPENROUTER_API_KEY is required for $MODEL}" ;;
+qwen-local/*) curl -s --max-time 3 http://127.0.0.1:8089/v1/models >/dev/null || { echo "qwen-local is not running on 127.0.0.1:8089 (the caller starts and stops it)" >&2; exit 1; } ;;
+esac
 
 snap_real_home before
 
@@ -290,6 +295,7 @@ OMP_FLAGS=(--mode=json --no-session --auto-approve --max-time=300 --model "$MODE
 run_session() { # name prompt-file [max-time]
 	local name="$1" pfile="$2" mt="${3:-300}"
 	set +e
+	if [ -f "$LOGDIR/STOP" ]; then echo 137 >"$LOGDIR/$name.rc"; set -e; return; fi
 	( cd "$REPO" && omp "${OMP_FLAGS[@]/--max-time=300/--max-time=$mt}" "$(cat "$pfile")" ) >"$LOGDIR/$name.json" 2>"$LOGDIR/$name.err"
 	echo $? >"$LOGDIR/$name.rc"
 	set -e

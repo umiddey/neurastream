@@ -88,11 +88,14 @@ function adapterLog(cfg: Config, line: string): void {
 // Background queue-close for every plan Main marked complete (owner 2026-10-15). Ported from the
 // original autoClose: same filter, same "--- auto-close attempt" log line, detached child with
 // stdio on the per-plan close log. QUEUE_CLOSE_BIN overrides the binary (tests); without it the
-// package's own CLI runs via the current bun binary, so no PATH lookup is needed.
+// package's own executable bin/queue-close runs (its `#!/usr/bin/env bun` shebang picks bun).
+// Never process.execPath: inside the harness that is the harness binary itself, so the child was
+// a new agent session that loaded this plugin and auto-closed again — a process fork bomb
+// (2026-10-21 OOMs, ~175 processes).
 function closeChildArgs(plan: string): [string, string[]] {
 	const bin = process.env.QUEUE_CLOSE_BIN;
 	if (bin) return [bin, [plan]];
-	return [process.execPath, [join(import.meta.dir, "..", "..", "cli", "main.ts"), "queue-close", plan]];
+	return [join(import.meta.dir, "..", "..", "..", "bin", "queue-close"), [plan]];
 }
 
 export function autoClose(cfg: Config): string[] {

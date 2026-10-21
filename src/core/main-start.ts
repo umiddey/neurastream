@@ -49,8 +49,10 @@ export function mainStartText(args: string[], cfg: Config): string {
 		if (lines.length) say(lines.join("\n"));
 	} catch {}
 	say("=== doctor");
+	// The CLI file itself (shebang `#!/usr/bin/env bun`), never process.execPath: inside a host
+	// harness that is the harness binary, which would start a new agent session instead.
 	const cli = join(dirname(fileURLToPath(import.meta.url)), "../cli/main.ts");
-	const doctor = spawnSync(process.execPath, [cli, "doctor"], { encoding: "utf8", env: process.env });
+	const doctor = spawnSync(cli, ["doctor"], { encoding: "utf8", env: process.env });
 	const text = `${doctor.stdout ?? ""}${doctor.stderr ?? ""}`;
 	out.push(text.endsWith("\n") || text === "" ? text : `${text}\n`);
 	if (doctor.error) say(doctor.error.message);

@@ -352,6 +352,25 @@ console.log(JSON.stringify(out));
 	expect(out[5]).toBeUndefined(); // third idle stop in a row passes
 });
 
+test("stop continuation turns keep the spin guard: the third idle stop passes despite the guard's own nudges", () => {
+	fresh();
+	const out = adapterRun(`${REGISTER}
+const ctx = ${MAIN_CTX};
+const out = [];
+await h["before_agent_start"]({ prompt: "owner says hi" }, ctx);
+for (let i = 0; i < 3; i++) {
+	const d = await h["session_stop"]({}, ctx);
+	out.push(d);
+	// the harness starts the next turn from the block reason (session-stop continuation)
+	if (d) await h["before_agent_start"]({ prompt: d.reason }, ctx);
+}
+console.log(JSON.stringify(out));
+`);
+	expect(reasonOf(out[0])).toContain("keep working while the queue has items");
+	expect(reasonOf(out[1])).toContain("keep working while the queue has items");
+	expect(out[2]).toBeUndefined();
+});
+
 test("protected files and Main-only tools: adapter refuses like the CLI until the owner unlocks", () => {
 	fresh();
 	const target = join(AGENT, "AGENTS.md");
@@ -418,6 +437,33 @@ console.log(JSON.stringify(out));
 		existsSync(CLOSE_CAPTURE) ? readFileSync(CLOSE_CAPTURE, "utf8").trim().split("\n").filter(Boolean).length : 0;
 	while (Date.now() < deadline && count() < 2) await new Promise(r => setTimeout(r, 100));
 	expect(count()).toBe(2); // session_start + the push
+});
+
+test("auto-close never re-runs the host binary: inside a harness process.execPath is the harness", async () => {
+	fresh();
+	writeFileSync(PLAN, TOY_PLAN.replace("Status: open", "Status: complete"));
+	const hostMark = join(HOME, "host-invoked.txt");
+	const host = join(HOME, "fake-host");
+	writeFileSync(host, `#!/bin/sh\necho "$@" >> ${JSON.stringify(hostMark)}\n`);
+	chmodSync(host, 0o755);
+	const { QUEUE_CLOSE_BIN: _unset, ...env } = envFor();
+	adapterRun(
+		`process.execPath = ${JSON.stringify(host)};
+${REGISTER}
+await h["session_start"]({}, ${MAIN_CTX});
+console.log("[]");
+`,
+		env,
+	);
+	const closeLines = () =>
+		spawnSync("sh", ["-c", `cat ${JSON.stringify(STATE)}/close-*.log 2>/dev/null`], { encoding: "utf8" }).stdout.split("\n").filter(Boolean);
+	// The queue-close child is detached by design (no handle to await): poll its log against the
+	// real clock, like the auto-close test above.
+	const deadline = Date.now() + 20000;
+	while (Date.now() < deadline && closeLines().length < 2) await Bun.sleep(100);
+	expect(existsSync(hostMark)).toBe(false);
+	// the package's own queue-close ran and wrote past the "auto-close attempt" header line
+	expect(closeLines().length).toBeGreaterThan(1);
 });
 
 test("main reads: a grep -n line in a Main tool_result logs the existing file only", () => {
