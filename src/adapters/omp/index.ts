@@ -393,7 +393,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		if (state === "wait-jobs" && Date.now() - waitNoticeMs >= WAIT_NOTICE_MS) {
 			waitNoticeMs = Date.now();
 			const jobs = c.runningJobs().join(", ");
-			return `Session rollover: the handoff note is ready, but own jobs are still running (${jobs}). A rollover would cancel them, so the owner's next message is refused until they finish.`;
+			return `Session rollover: the handoff note is ready, but own jobs are still running (${jobs}). A rollover would cancel them, so the owner's messages stay in this session until they finish.`;
 		}
 		return null;
 	};
