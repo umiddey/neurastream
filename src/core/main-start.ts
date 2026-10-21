@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Config } from "./config.ts";
@@ -8,39 +8,80 @@ function bin(name: string, cfg: Config): string {
 	return join(cfg.paths.home, ".local/bin", name);
 }
 
+interface RunOpts {
+	stdin?: "inherit" | "ignore" | "pipe";
+	/** Written to the child's stdin when stdin is "pipe". */
+	input?: string;
+	stderr?: "inherit" | "pipe" | "ignore";
+}
+
+interface RunResult {
+	stdout: string;
+	stderr: string;
+	/** Set when the child could not start (e.g. ENOENT). */
+	error?: Error;
+}
+
+// Runs a child without blocking the caller's event loop. Resolves once the child has closed its
+// streams, or immediately when it fails to start. The handoff runs inside an omp host, which must
+// keep handling events while Main's state is gathered.
+function run(file: string, args: string[], opts: RunOpts = {}): Promise<RunResult> {
+	const { promise, resolve } = Promise.withResolvers<RunResult>();
+	const child = spawn(file, args, {
+		stdio: [opts.stdin ?? "ignore", "pipe", opts.stderr ?? "pipe"],
+	});
+	let stdout = "";
+	let stderr = "";
+	child.stdout.setEncoding("utf8").on("data", chunk => {
+		stdout += chunk;
+	});
+	child.stderr?.setEncoding("utf8").on("data", chunk => {
+		stderr += chunk;
+	});
+	// A filter such as awk may exit before it has read all its input.
+	child.stdin?.on("error", () => {});
+	if (opts.stdin === "pipe") child.stdin?.end(opts.input ?? "");
+	child.on("error", error => resolve({ stdout, stderr, error }));
+	child.on("close", () => resolve({ stdout, stderr }));
+	return promise;
+}
+
 // Main's session-start preflight as one text. The CLI prints it; the session rollover handoff
 // (src/core/rollover.ts) carries the same text into the new session. Children's stdout is
 // collected in order, so the printed output matches the original script line for line.
-export function mainStartText(args: string[], cfg: Config): string {
+// inheritStdin: the CLI passes its terminal to the children that ask the operator something;
+// an omp host passes false, because its stdin is the session's input.
+export async function mainStartText(args: string[], cfg: Config, opts: { inheritStdin: boolean }): Promise<string> {
 	const out: string[] = [];
 	const say = (line: string) => out.push(`${line}\n`);
 	const h = args[0] ?? String(cfg.health.default_hours);
+	const childStdin = opts.inheritStdin ? "inherit" : "ignore";
 	say("=== machine");
-	const mg = spawnSync(bin("machine-guard", cfg), [], { encoding: "utf8", env: process.env });
-	const mgLines = (mg.stdout ?? "").trim().split("\n");
+	const mg = await run(bin("machine-guard", cfg), [], { stderr: "ignore" });
+	const mgLines = mg.stdout.trim().split("\n");
 	say(mgLines.at(-1) ?? "");
 	say(readFileSync("/proc/loadavg", "utf8").trim());
 	say("");
 	say(`=== agents (last ${h}h; DIED = check its worktree, relaunch FRESH with its progress file)`);
-	const ledger = spawnSync(bin("agent-ledger", cfg), ["--hours", h], { encoding: "utf8", env: process.env });
-	const awk = spawnSync(
+	const ledger = await run(bin("agent-ledger", cfg), ["--hours", h], { stderr: "ignore" });
+	const awk = await run(
 		"awk",
 		["NR==1 || /DIED/ {print; next} {ok[++n]=$0} END {for (i=1;i<=n;i++) print ok[i]}"],
-		{ input: ledger.stdout ?? "", encoding: "utf8" },
+		{ stdin: "pipe", input: ledger.stdout, stderr: "ignore" },
 	);
-	out.push(awk.stdout ?? "");
-	const cap = spawnSync(bin("agent-ledger", cfg), ["--cap"], { encoding: "utf8", env: process.env, stdio: ["ignore", "pipe", "ignore"] });
-	for (const line of (cap.stdout ?? "").split("\n")) {
+	out.push(awk.stdout);
+	const cap = await run(bin("agent-ledger", cfg), ["--cap"], { stderr: "ignore" });
+	for (const line of cap.stdout.split("\n")) {
 		if (/^(PRIORITY IDLE|FULL)/.test(line)) say(line);
 	}
 	say("");
 	say("=== main thread");
-	const health = spawnSync(bin("main-health", cfg), [], { encoding: "utf8", env: process.env, stdio: ["inherit", "pipe", "inherit"] });
-	out.push(health.stdout ?? "");
+	const health = await run(bin("main-health", cfg), [], { stdin: childStdin, stderr: "inherit" });
+	out.push(health.stdout);
 	say("");
 	say("=== queue");
-	const check = spawnSync(bin("queue-check", cfg), [], { encoding: "utf8", env: process.env, stdio: ["inherit", "pipe", "inherit"] });
-	out.push(check.stdout ?? "");
+	const check = await run(bin("queue-check", cfg), [], { stdin: childStdin, stderr: "inherit" });
+	out.push(check.stdout);
 	say("");
 	say("=== heavy-run lock");
 	try {
@@ -52,14 +93,14 @@ export function mainStartText(args: string[], cfg: Config): string {
 	// The CLI file itself (shebang `#!/usr/bin/env bun`), never process.execPath: inside a host
 	// harness that is the harness binary, which would start a new agent session instead.
 	const cli = join(dirname(fileURLToPath(import.meta.url)), "../cli/main.ts");
-	const doctor = spawnSync(cli, ["doctor"], { encoding: "utf8", env: process.env });
-	const text = `${doctor.stdout ?? ""}${doctor.stderr ?? ""}`;
+	const doctor = await run(cli, ["doctor"]);
+	const text = `${doctor.stdout}${doctor.stderr}`;
 	out.push(text.endsWith("\n") || text === "" ? text : `${text}\n`);
 	if (doctor.error) say(doctor.error.message);
 	return out.join("");
 }
 
-export function mainStart(args: string[], cfg: Config): number {
-	process.stdout.write(mainStartText(args, cfg));
+export async function mainStart(args: string[], cfg: Config): Promise<number> {
+	process.stdout.write(await mainStartText(args, cfg, { inheritStdin: true }));
 	return 0;
 }

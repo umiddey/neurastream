@@ -4,7 +4,7 @@
 // a unique session id and removed afterwards.
 
 import { afterAll, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createOmpAdapter } from "../src/adapters/omp/index.ts";
@@ -225,6 +225,36 @@ test("ready: new session with the session as parent; handoff carries note and ow
 	await host.commands.get("main-rollover")?.("owner msg", ctx);
 	expect(newSessions).toEqual([{ parentSession: SESSION_FILE }]);
 	expect(host.sent.length).toBe(1);
+	const handoff = host.sent[0] ?? "";
+	expect(handoff).toContain("## Main's handoff note (verbatim)\n## In progress\nstep");
+	expect(handoff.endsWith("Owner's message:\nowner msg")).toBe(true);
+}, 60_000);
+
+test("main-rollover keeps the event loop running while main-start gathers state", async () => {
+	resetState();
+	const bin = join(TMP, "home", ".local", "bin");
+	mkdirSync(bin, { recursive: true });
+	const guard = join(bin, "machine-guard");
+	writeFileSync(guard, "#!/bin/sh\nsleep 2\necho OK\n");
+	chmodSync(guard, 0o755);
+	const host = fakeHost();
+	createOmpAdapter(host, overCfg);
+	const ctx = mainCtx();
+	await armReady(host, ctx, "## In progress\nstep");
+	// Real-clock exception: the claim under test is that the event loop keeps turning while a child
+	// runs. A blocking spawn starves this interval; fake timers cannot observe that.
+	let ticks = 0;
+	const timer = setInterval(() => {
+		ticks++;
+	}, 50);
+	try {
+		await host.commands.get("main-rollover")?.("owner msg", ctx);
+	} finally {
+		clearInterval(timer);
+	}
+	expect(ticks).toBeGreaterThanOrEqual(10);
+	expect(notes.some(n => n.includes("gathering main-start state"))).toBe(true);
+	expect(newSessions).toEqual([{ parentSession: SESSION_FILE }]);
 	const handoff = host.sent[0] ?? "";
 	expect(handoff).toContain("## Main's handoff note (verbatim)\n## In progress\nstep");
 	expect(handoff.endsWith("Owner's message:\nowner msg")).toBe(true);

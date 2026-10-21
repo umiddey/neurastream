@@ -432,7 +432,8 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 				c.notify(`main-rollover: own jobs are still running (${c.runningJobs().join(", ")}); a rollover would cancel them.`);
 				return;
 			}
-			const generated = [await mainStartText([], cfg), holdsBlock(q.ownerHolds())].join("\n");
+			c.notify("main-rollover: gathering main-start state for the handoff (this can take a few seconds)…");
+			const generated = [await mainStartText([], cfg, { inheritStdin: false }), holdsBlock(q.ownerHolds())].join("\n");
 			const handoff = buildHandoff({
 				generated,
 				note: readFileSync(path, "utf8"),
