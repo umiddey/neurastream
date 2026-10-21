@@ -36,7 +36,7 @@ trap 'rm -rf "$LOGDIR"' EXIT
 tree_hash() {
 	(
 		cd "$1" && find . -mindepth 1 \
-			\( -path ./.local/state/neurastream -o -path ./.npm \) -prune -o \
+			\( -path ./.local/state/neurastream -o -path ./.npm -o ! -readable \) -prune -o \
 			-type f -printf 'f %p ' -exec sha256sum {} \; \
 			-o -type l -printf 'l %p -> ' -exec readlink {} \; \
 			-o -type d -printf 'd %p/\n' | LC_ALL=C sort | sha256sum | cut -d' ' -f1
@@ -45,10 +45,15 @@ tree_hash() {
 
 build_home() {
 	cd /
+	[ -d "$HOME" ] && chmod -R u+rwx "$HOME" 2>/dev/null
 	rm -rf "$HOME"
 	mkdir -p "$HOME"
 	OLD="$HOME/opt/neurastream-old"
 	mkdir -p "$OLD" "$HOME/.local/bin" "$HOME/projects" "$HOME/Work/toy/docs/plans"
+	# A real HOME holds dirs its owner cannot read (rootless podman storage owned by a
+	# subuid); the 2026-10-21 live cutover aborted on find's "Permission denied" there.
+	mkdir -p "$HOME/.local/share/containers/storage/overlay/x/diff/home/runner"
+	chmod 000 "$HOME/.local/share/containers/storage/overlay/x/diff/home"
 	cp -r "$ROOT/src" "$ROOT/bin" "$ROOT/templates" "$OLD/"
 	cp "$ROOT/package.json" "$OLD/package.json"
 	# Today's live bins are links into the installed copy; same shape here.

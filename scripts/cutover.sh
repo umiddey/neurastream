@@ -80,7 +80,10 @@ cd "$HOME_DIR"
 # Pre-image before any capture. Captures write machine state (for example
 # .cache/resource-alerts) that was not in the tree the caller hashed; rollback
 # must delete those paths too, not only the install.
-find . -mindepth 1 -print | sed 's|^\./||' | LC_ALL=C sort >"$PRE"
+# Dirs the owner cannot read (rootless container storage owned by a subuid) are
+# pruned: the cutover cannot create anything inside them, and find's
+# "Permission denied" would abort the run under pipefail.
+find . -mindepth 1 ! -readable -prune -o -print | sed 's|^\./||' | LC_ALL=C sort >"$PRE"
 capture "$STATE/before-$STAMP.txt"
 
 # Back up every live file this cutover replaces. Free only the slots the

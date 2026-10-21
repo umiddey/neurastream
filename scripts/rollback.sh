@@ -12,7 +12,7 @@ HOME_DIR="${HOME:?HOME is required}"
 cd "$HOME_DIR"
 tar -xf "$TAR"
 current="$(mktemp)"
-find . -mindepth 1 -print | sed 's|^\./||' | LC_ALL=C sort >"$current"
+find . -mindepth 1 ! -readable -prune -o -print | sed 's|^\./||' | LC_ALL=C sort >"$current" # same listing rule as cutover.sh
 LC_ALL=C comm -13 "$PRE" "$current" | LC_ALL=C sort -r | while IFS= read -r path; do
 	case "$path" in
 	.local/state/neurastream | .local/state/neurastream/*) continue ;;
