@@ -10,6 +10,7 @@ import { dirname, join } from "node:path";
 import { createOmpAdapter } from "../src/adapters/omp/index.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { notePath } from "../src/core/rollover.ts";
+import { applyQueueEnv } from "../src/core/queue/env.ts";
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
 type CommandHandler = (args: string, ctx: MainCtx) => unknown;
@@ -85,17 +86,19 @@ function rolloverMessages(results: unknown[]): RolloverMessage[] {
 }
 
 const TMP = mkdtempSync(join(tmpdir(), "rollover-omp-"));
+// createOmpAdapter runs in-process here and applyQueueEnv writes QUEUE_* into process.env;
+// restore them so later test files' guard children see their own sandbox paths.
+const queueEnvBefore = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("QUEUE_")));
+// A throwaway home: the real ~/.config/neurastream/config.yml points main-start at the live queue
+// and every live repo, and the note would land in the live queue state dir.
+const baseCfg: Config = loadConfig({ home: join(TMP, "home") });
+applyQueueEnv(baseCfg);
+const overCfg: Config = { ...baseCfg, rollover: { enabled: true, max_session_mb: 0.000001 } };
+const belowCfg: Config = { ...baseCfg, rollover: { enabled: true, max_session_mb: 1024 } };
 const SESSION_FILE = join(TMP, "session.jsonl");
 const SESSION_ID = `rollover-test-${process.pid}-${Date.now()}`;
 const NOTE = notePath(SESSION_ID);
 const BIG = "x".repeat(4096);
-
-// createOmpAdapter runs in-process here and applyQueueEnv writes QUEUE_* into process.env;
-// restore them so later test files' guard children see their own sandbox paths.
-const queueEnvBefore = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("QUEUE_")));
-const baseCfg: Config = loadConfig();
-const overCfg: Config = { ...baseCfg, rollover: { enabled: true, max_session_mb: 0.000001 } };
-const belowCfg: Config = { ...baseCfg, rollover: { enabled: true, max_session_mb: 1024 } };
 
 afterAll(() => {
 	rmSync(TMP, { recursive: true, force: true });
