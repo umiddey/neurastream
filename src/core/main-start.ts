@@ -1,12 +1,16 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RunSource } from "./adapter.ts";
+import { readEvents } from "./agent-score.ts";
 import type { Config } from "./config.ts";
-import { nowSec } from "./clock.ts";
+import { nowSec, strftime } from "./clock.ts";
 import { runDetectors, type TaskResult } from "./incident-detectors.ts";
+import { addIncident, type IncidentView } from "./incidents.ts";
 import { log as logGuard } from "./guards.ts";
+import { dailyChecks, readBlocks, readMetricEvents, worseThanMean } from "./metrics.ts";
+import { buildReport } from "./report.ts";
 
 function bin(name: string, cfg: Config): string {
 	return join(cfg.paths.home, ".local/bin", name);
@@ -82,9 +86,27 @@ export async function mainStartText(args: string[], cfg: Config, opts: { inherit
 	const h = args[0] ?? String(cfg.health.default_hours);
 	const childStdin = opts.inheritStdin ? "inherit" : "ignore";
 	const childStderr = opts.inheritStdin ? "inherit" : "pipe";
-	// Weekly self-metrics: nudge the owner's report when notes/metrics.md is missing or older than the window.
-	const due = metricsDueLine(cfg, Date.now());
-	if (due) say(due);
+	// Daily metrics check and the forced weekly report (plan 20261022_2330 P4): best effort, each
+	// failure logged, never thrown — the preflight must print even when a check fails.
+	if (deps.source) {
+		try {
+			for (const i of runDailyCheck(cfg, deps.source, nowSec())) say(`incident ${i.id} [daily/${i.kind}]: ${i.summary}`);
+		} catch (err) {
+			logGuard(cfg.paths.guard_log, `daily check failed: ${err instanceof Error ? err.message : String(err)}`);
+		}
+		try {
+			const weekly = runWeeklyCheck(cfg, deps.source, nowSec());
+			if (weekly) say(weekly);
+		} catch (err) {
+			logGuard(cfg.paths.guard_log, `weekly check failed: ${err instanceof Error ? err.message : String(err)}`);
+			const due = metricsDueLine(cfg, Date.now());
+			if (due) say(due);
+		}
+	} else {
+		// Weekly self-metrics: nudge the owner's report when notes/metrics.md is missing or older than the window.
+		const due = metricsDueLine(cfg, Date.now());
+		if (due) say(due);
+	}
 	say("=== machine");
 	const mg = await run(bin("machine-guard", cfg), [], { stderr: "ignore" });
 	const mgLines = mg.stdout.trim().split("\n");
@@ -140,5 +162,97 @@ export function metricsDueLine(cfg: Config, nowMs: number): string | null {
 	const stamp = existsSync(reportFile) ? statSync(reportFile).mtime : null;
 	if (stamp && nowMs - stamp.getTime() <= cfg.metrics.report_days * 86400 * 1000) return null;
 	const last = stamp ? stamp.toISOString().slice(0, 10) : "never";
-	return `metrics: report due (last: ${last}) — run neurastream metrics report, then propose ONE rule change to the owner`;
+	return `metrics: report due (last: ${last}) — neurastream writes the report itself and the worst metric becomes an incident; plan or dismiss that incident`;
+}
+
+// ---- daily and weekly, forced (plan 20261022_2330 P4) ----
+
+const DAY = 86400;
+
+function dailyStateFile(cfg: Config): string {
+	return join(cfg.paths.queue_state, "incidents-daily.json");
+}
+
+function fmtMetric(v: number | null): string {
+	return v === null ? "n/a" : v >= 10 ? String(Math.round(v)) : v.toFixed(2);
+}
+
+/**
+ * Once per calendar day (state file in queue_state), at the first main-start or Main
+ * before_agent_start: M1-M5 for the last 24h against the mean of the 7 days before; each metric
+ * worse by ≥ incidents.daily_worse_pct and above its floor opens a daily incident. Returns the
+ * incidents opened; [] when today is already checked. The day is marked only after the check
+ * ran, so a failed check is retried at the next event.
+ */
+export function runDailyCheck(cfg: Config, source: RunSource, now: number): IncidentView[] {
+	const today = strftime(now, "%Y-%m-%d");
+	const file = dailyStateFile(cfg);
+	try {
+		const st = JSON.parse(readFileSync(file, "utf8")) as { date?: string };
+		if (st.date === today) return [];
+	} catch {}
+	const inp = {
+		runs: source.listRuns(now - 8 * DAY),
+		events: [...readEvents(cfg), ...readMetricEvents(cfg)],
+	};
+	const out: IncidentView[] = [];
+	for (const c of dailyChecks(cfg, inp, readBlocks(cfg), now)) {
+		if (!worseThanMean(c, cfg.incidents.daily_worse_pct)) continue;
+		const { incident } = addIncident(
+			cfg,
+			{
+				source: "daily",
+				kind: "daily-regression",
+				summary: `${c.label} regressed: ${fmtMetric(c.cur)} last 24h vs ${fmtMetric(c.mean)}/day over the 7 days before (floor ${fmtMetric(c.floor)})`,
+				evidence: `${c.label}: last 24h ${fmtMetric(c.cur)} vs 7-day daily mean ${fmtMetric(c.mean)}`,
+				fingerprint: `daily:${c.key}:${today}`,
+			},
+			now,
+		);
+		logGuard(cfg.paths.guard_log, `incident ${incident.id} [daily/${incident.kind}] opened: ${incident.summary}`);
+		out.push(incident);
+	}
+	mkdirSync(dirname(file), { recursive: true });
+	writeFileSync(file, `${JSON.stringify({ date: today })}\n`);
+	return out;
+}
+
+/**
+ * When the weekly report is due, the code writes notes/metrics.md itself (as `metrics report`
+ * does) and the worst ranked metric becomes an incident (source "weekly"). Returns the due line
+ * for the main-start text — the incident id where "propose ONE rule change" used to be — and ""
+ * while the report is fresh. Best effort: a failed write returns the plain due line.
+ */
+export function runWeeklyCheck(cfg: Config, source: RunSource, now: number): string {
+	const due = metricsDueLine(cfg, now * 1000);
+	if (!due) return "";
+	const last = /\(last: ([^)]+)\)/.exec(due)?.[1] ?? "never";
+	try {
+		const rep = buildReport(cfg, source, cfg.metrics.report_days, now);
+		mkdirSync(cfg.paths.notes, { recursive: true });
+		writeFileSync(join(cfg.paths.notes, "metrics.md"), rep.md);
+		const w = rep.worst;
+		if (!w || w.change === null) {
+			return `metrics: report due (last: ${last}) — wrote ${join(cfg.paths.notes, "metrics.md")}; no ranked metric moved this window`;
+		}
+		const pct = `${w.change >= 0 ? "+" : ""}${w.change.toFixed(1)}%`;
+		const { incident } = addIncident(
+			cfg,
+			{
+				source: "weekly",
+				kind: "weekly-regression",
+				summary: `${w.name} is the worst mover this report: ${pct} (${fmtMetric(w.cur)} vs ${fmtMetric(w.prev)})`,
+				evidence: `${w.name}: ${fmtMetric(w.cur)} this window vs ${fmtMetric(w.prev)} the window before (${pct})`,
+				fingerprint: `weekly:${w.key}:${strftime(now, "%Y%m%d")}`,
+			},
+			now,
+		);
+		logGuard(cfg.paths.guard_log, `incident ${incident.id} [weekly/${incident.kind}] opened: ${incident.summary}`);
+		return (
+			`metrics: report due (last: ${last}) — wrote ${join(cfg.paths.notes, "metrics.md")}; worst metric ${w.name} is incident ${incident.id}: ` +
+			`plan it (\`neurastream incident plan ${incident.id} <plan.md>\`) or dismiss it (\`neurastream incident dismiss ${incident.id} --why "<text>"\`)`
+		);
+	} catch (err) {
+		return `metrics: report due (last: ${last}) — the report write failed: ${err instanceof Error ? err.message : String(err)}`;
+	}
 }

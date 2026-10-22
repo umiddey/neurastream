@@ -54,6 +54,8 @@ function snap(cfg: Config, source: RunSource, events: Ev[], blocks: GuardBlock[]
 }
 
 interface Row {
+	/** Stable metric key (m1, m2, m3, m4_corrections, m4_questions, m4_users, m5). */
+	key: string;
 	name: string;
 	cur: number | null;
 	prev: number | null;
@@ -67,13 +69,13 @@ function rowsOf(c: Snap, p: Snap): Row[] {
 	const num = (v: number | null) => (v === null ? "n/a" : String(v));
 	const mean = (v: number | null) => (v === null ? "n/a" : v.toFixed(2));
 	return [
-		{ name: "M1 cost per merge", cur: c.m1.perMerge, prev: p.m1.perMerge, fmt: usd, rank: true },
-		{ name: "M2 idle calls", cur: c.m2.calls, prev: p.m2.calls, fmt: num, rank: true },
-		{ name: "M3 mean CI tries", cur: c.m3.mean, prev: p.m3.mean, fmt: mean, rank: true },
-		{ name: "M4 owner corrections", cur: c.m4.corrections, prev: p.m4.corrections, fmt: num, rank: true },
-		{ name: "M4 Main questions", cur: c.m4.questions, prev: p.m4.questions, fmt: num, rank: true },
-		{ name: "M4 owner messages", cur: c.m4.users, prev: p.m4.users, fmt: num, rank: false },
-		{ name: "M5 guard blocks", cur: c.m5.blocks, prev: p.m5.blocks, fmt: num, rank: true },
+		{ key: "m1", name: "M1 cost per merge", cur: c.m1.perMerge, prev: p.m1.perMerge, fmt: usd, rank: true },
+		{ key: "m2", name: "M2 idle calls", cur: c.m2.calls, prev: p.m2.calls, fmt: num, rank: true },
+		{ key: "m3", name: "M3 mean CI tries", cur: c.m3.mean, prev: p.m3.mean, fmt: mean, rank: true },
+		{ key: "m4_corrections", name: "M4 owner corrections", cur: c.m4.corrections, prev: p.m4.corrections, fmt: num, rank: true },
+		{ key: "m4_questions", name: "M4 Main questions", cur: c.m4.questions, prev: p.m4.questions, fmt: num, rank: true },
+		{ key: "m4_users", name: "M4 owner messages", cur: c.m4.users, prev: p.m4.users, fmt: num, rank: false },
+		{ key: "m5", name: "M5 guard blocks", cur: c.m5.blocks, prev: p.m5.blocks, fmt: num, rank: true },
 	];
 }
 
@@ -128,6 +130,8 @@ export interface Report {
 	md: string;
 	/** The same content without the generated header, for stdout. */
 	text: string;
+	/** The ranked row with the biggest percent increase; null when nothing ranked moved. */
+	worst: { key: string; name: string; cur: number | null; prev: number | null; change: number | null } | null;
 }
 
 export function buildReport(cfg: Config, source: RunSource, days: number, now: number): Report {
@@ -175,5 +179,9 @@ export function buildReport(cfg: Config, source: RunSource, days: number, now: n
 		body,
 		"",
 	].join("\n");
-	return { md, text: body };
+	return {
+		md,
+		text: body,
+		worst: worst ? { key: worst.key, name: worst.name, cur: worst.cur, prev: worst.prev, change: change(worst) } : null,
+	};
 }

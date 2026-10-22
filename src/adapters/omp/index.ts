@@ -25,7 +25,7 @@ import { nowSec } from "../../core/clock.ts";
 import { runDetectors } from "../../core/incident-detectors.ts";
 import { checkInject, checkPlanEdit, checkStop, checkTool, MAIN_PLAN_FILE, recordMainResult } from "../../core/guards.ts";
 import { applyQueueEnv } from "../../core/queue/env.ts";
-import { mainStartText } from "../../core/main-start.ts";
+import { mainStartText, runDailyCheck } from "../../core/main-start.ts";
 import { buildHandoff, holdsBlock, notePath, noteRequest, relaunchPath, rolloverState, spawnRefusal, type RolloverState } from "../../core/rollover.ts";
 import { defaultCompletedResults, defaultRunSource } from "./sessions.ts";
 import * as q from "../../core/queue/lib.ts";
@@ -108,13 +108,15 @@ export function adapterLog(cfg: Config, line: string): void {
 
 /**
  * Real-time incident detectors (plan 20261022_2330 P3) at Main's prompt and after each Main bash
- * result. The omp-shaped inputs — Main's session file for D1, the run source for the ledger —
- * are gathered here, core decides. Best effort: a failed detector is logged, never thrown.
+ * result, plus the once-per-day metrics check (P4, retried until it marks the day). The
+ * omp-shaped inputs — Main's session file for D1, the run source for the ledger — are gathered
+ * here, core decides. Best effort: a failed check is logged, never thrown.
  */
 function mainDetectors(cfg: Config, extra: { prompt?: string; bash?: { command: string; output: string } }): void {
 	try {
 		const source = defaultRunSource(cfg);
 		runDetectors(cfg, { ...extra, results: defaultCompletedResults(cfg), runs: source.listRuns(nowSec() - 2 * 86400) });
+		runDailyCheck(cfg, source, nowSec());
 	} catch (err) {
 		adapterLog(cfg, `incident detectors failed: ${err instanceof Error ? err.message : String(err)}`);
 	}
