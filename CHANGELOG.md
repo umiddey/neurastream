@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+### Fixed
+- A `neurastream main` relaunch ran on the default model and wrote its session outside `--session-dir`: it got only the handoff, not the first run's flags. A relaunch now keeps the first run's flags and drops only the first message and the session-picking or one-shot flags (`-r`, `-c`, `--restore`, `--goal`, `-p`, …).
+
 ## 0.1.10
 ### Changed
 - Rollover threshold default `rollover.max_session_mb` is 5 MB (was 10). Existing config files keep their own value.

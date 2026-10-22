@@ -6,7 +6,7 @@ import { afterAll, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { runMainLauncher } from "../src/adapters/omp/launch.ts";
+import { carriedArgs, runMainLauncher } from "../src/adapters/omp/launch.ts";
 import { loadConfig } from "../src/core/config.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { notePath, relaunchPath } from "../src/core/rollover.ts";
@@ -99,15 +99,41 @@ test("the sandbox config keeps the note and the relaunch request under TMP, what
 	expect(relaunchPath().startsWith(TMP)).toBe(true);
 });
 
-test("a relaunch request starts a second run whose only argument is the handoff", async () => {
+test("carriedArgs drops the first message and session-picking flags, keeps the rest", () => {
+	expect(carriedArgs(["--session-dir", "/s", "-r", "/s/a.jsonl", "--model", "haiku", "continue"])).toEqual([
+		"--session-dir",
+		"/s",
+		"--model",
+		"haiku",
+	]);
+});
+
+test("carriedArgs keeps --flag=value as one argument", () => {
+	expect(carriedArgs(["--model=haiku", "--no-lsp", "hi"])).toEqual(["--model=haiku", "--no-lsp"]);
+});
+
+test("carriedArgs drops -c and keeps the next flag with its value", () => {
+	expect(carriedArgs(["-c", "--thinking", "high"])).toEqual(["--thinking", "high"]);
+});
+
+test("carriedArgs: -r takes a value only when the next argument is not a flag", () => {
+	expect(carriedArgs(["-r", "--model", "x"])).toEqual(["--model", "x"]);
+});
+
+test("carriedArgs: everything after a bare -- is positional", () => {
+	expect(carriedArgs(["--", "--model"])).toEqual([]);
+});
+
+test("a relaunch request starts a second run: the owner's flags, then the handoff", async () => {
 	const dir = newCase();
-	const code = await launch(["--flag"], dir);
+	const code = await launch(["--model", "m", "-r", "old", "hi"], dir);
 	const runs = runsOf(dir);
 	expect(runs.length).toBe(2);
 	expect(runs.map(r => r.flag)).toEqual(["1", "1"]);
-	expect(runs[0]?.argv).toEqual(["--flag"]);
-	expect(runs[1]?.argv.length).toBe(1);
-	const handoff = runs[1]?.argv[0] ?? "";
+	expect(runs[0]?.argv).toEqual(["--model", "m", "-r", "old", "hi"]);
+	expect(runs[1]?.argv.slice(0, 2)).toEqual(["--model", "m"]);
+	expect(runs[1]?.argv.length).toBe(3);
+	const handoff = runs[1]?.argv[2] ?? "";
 	expect(handoff).toContain("Note: continue the parser work");
 	expect(handoff).toContain("Owner away");
 	expect(handoff).toContain("Owner's unsent draft: half typed");
