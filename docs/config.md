@@ -51,6 +51,11 @@ rollover:
   enabled: true
   max_session_mb: 5
 
+metrics:
+  report_days: 7
+  correction_patterns: ['\bno\b', 'wrong', 'why did', 'properly', 'not what', 'stop', 'bullshit', 'fuck']
+  ci_pipelines_cmd: ""   # run in the repo dir with {mr} replaced (shell-quoted); stdout must be a JSON array; tries = its length; "" = not set
+
 ledger:
   default_hours: 24
   idle_show_min: 5
@@ -206,6 +211,7 @@ The loader rejects:
 - `ledger.max_slots` below 1
 - `guards.sub_warn_calls` greater than `guards.sub_max_calls`
 - a `paths.*` value that is not a string
+- `metrics.report_days` below 1, or a `metrics.correction_patterns` entry that does not compile as a case-insensitive regex
 - YAML that does not parse
 
 Missing keys are filled from the defaults above. A present key replaces the default. Objects merge one level (`score.penalties` merges per kind; an omitted kind keeps the default). Arrays replace.
