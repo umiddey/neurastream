@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.13
 ### Security
 - GitHub Actions in `ci.yml` and `publish.yml` are pinned to full commit SHAs (tags kept as trailing comments) and a new `bunfig.toml` sets a 7-day `minimumReleaseAge` install cooldown: a moved tag or a fresh malicious release can no longer reach the `id-token: write` publish job or a local install.
 ### Added
