@@ -31,7 +31,7 @@ flowchart LR
 | Brief lint (`brief-lint`) | Refuses a helper brief that misses a required rule (acceptance, stop condition, no push, call budget). |
 | Machine health (`machine-guard`, `main-start`, `heavy-run`) | Load, free memory, disk and `/tmp` limits; one heavy test run at a time. |
 | Unlanded work (`wip-check`, `wip-snapshot`, `wip-backup`) | Lists branches on no remote and dirty worktrees; snapshots them as hidden commits; can push them to a backup repo. |
-| Session rollover | When the main session file passes 10 MB, the next owner message starts a fresh session from a handoff note. |
+| Session rollover | When the main session file passes 5 MB, the next owner message starts a fresh session from a handoff note. |
 
 ## Requirements
 
@@ -90,7 +90,7 @@ A plan parked for the owner has one line: `WAITING on owner: <what>`. That line 
 
 ## Session rollover
 
-Main's session file grows with every turn. When it reaches `rollover.max_session_mb` (default 10, `docs/config.md`), Main is asked once per session file to write a handoff note to `<queue_state>/rollover/<session id>.md`. The note covers the work in progress and its state, the decisions made and why, the next step, and the files involved.
+Main's session file grows with every turn. When it reaches `rollover.max_session_mb` (default 5, `docs/config.md`), Main is asked once per session file to write a handoff note to `<queue_state>/rollover/<session id>.md`. The note covers the work in progress and its state, the decisions made and why, the next step, and the files involved.
 
 The switch is never automatic:
 

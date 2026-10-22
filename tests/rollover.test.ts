@@ -129,10 +129,10 @@ describe("notePath", () => {
 });
 
 describe("rollover config", () => {
-	test("defaults: enabled, 10 MB", () => {
+	test("defaults: enabled, 5 MB", () => {
 		const cfg = loadConfig({ file: "/tmp/neurastream-home-rollover/missing.yml", home: "/tmp/neurastream-home-rollover", env: {} });
 		expect(cfg.rollover.enabled).toBe(true);
-		expect(cfg.rollover.max_session_mb).toBe(10);
+		expect(cfg.rollover.max_session_mb).toBe(5);
 	});
 
 	test("overrides come from config.yml", () => {

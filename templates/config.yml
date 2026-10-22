@@ -116,7 +116,7 @@ guards:
 
 rollover:
   enabled: true
-  max_session_mb: 10
+  max_session_mb: 5
 
 machine:
   load_over_cores: 4

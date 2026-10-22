@@ -49,7 +49,7 @@ score:
 
 rollover:
   enabled: true
-  max_session_mb: 10
+  max_session_mb: 5
 
 ledger:
   default_hours: 24

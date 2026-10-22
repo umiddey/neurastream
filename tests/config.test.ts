@@ -41,6 +41,12 @@ describe("loadConfig", () => {
 		expect(cfg.ledger.providers.length).toBe(7);
 	});
 
+	test("rollover defaults to 5 MB when the user file has no rollover key", () => {
+		const cfg = loadConfig({ file: withFile("wip:\n  limit: 3\n"), home, env: {} });
+		expect(cfg.rollover.max_session_mb).toBe(5);
+		expect(cfg.rollover.enabled).toBe(true);
+	});
+
 	test("user file merges one object level and replaces arrays", () => {
 		const file = withFile("score:\n  penalties:\n    false-claim: 9\nledger:\n  providers: [one]\n");
 		const cfg = loadConfig({ file, home, env: {} });
