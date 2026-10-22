@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.15
 ### Fixed
 - agent-ledger: a helper whose session ends on a final answer (last assistant message `stop`/`end_turn` with text, no `yield`) shows `done` instead of staying `RUNNING`, so it no longer trips `agent-ledger --cap` with a phantom `OVER-BUDGET`; `MAIN` sessions keep today's rule.
 
