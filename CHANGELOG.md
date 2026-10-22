@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.14
 ### Fixed
 - Main rolls over even when the running plugin is older than the installed package: at every turn end the adapter re-reads the `package.json` it was loaded from, a different or unreadable version counts as over the rollover threshold, and the note request names both versions.
 - A handoff note that is no longer fresh (it expired while own jobs ran) is asked for again — exactly once per expired note — instead of leaving the rollover stuck.
