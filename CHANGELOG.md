@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.16
 ### Added
 - Incidents: bugs this system finds in itself are written to `<paths.queue_state>/incidents.jsonl` and the guards push Main until each open incident has a plan or a recorded dismissal. Sources: real-time detectors (D1 ledger contradiction, D2 tool crash, D3 guard-block loop, D4 owner correction) at Main's prompt and after each Main bash result — D2/D4 on every event, D1/D3 at most once per `incidents.scan_interval_sec` (default 120) — a once-a-day M1-M5 regression check (`incidents.daily_worse_pct`, `incidents.daily_floor`), the weekly report's worst metric, and `neurastream incident add`. While incidents are open, every Main prompt lists them, spawns and bypass launches are refused unless the brief names a plan citing `INCIDENT <id>`, and the stop is gated. `neurastream incident plan/dismiss` records the resolution; a plan citing `INCIDENT <id>` must have a fail-before phase (its regression test has to fail on the old code), and closing such a plan records `fixed` for each id. `neurastream metrics report` gained M6: incidents opened / planned / dismissed / fixed and the median hours from open to fixed. Detectors read Main `wait` toolResults as finished results too.
 
