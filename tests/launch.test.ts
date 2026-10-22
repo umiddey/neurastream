@@ -12,9 +12,17 @@ import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { notePath, relaunchPath } from "../src/core/rollover.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "nsar-launch-"));
-afterAll(() => rmSync(TMP, { recursive: true, force: true }));
+// applyQueueEnv() writes QUEUE_* into process.env; save what the parent exported and restore it.
+const QUEUE_ENV_BEFORE = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("QUEUE_")));
+afterAll(() => {
+	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
+	Object.assign(process.env, QUEUE_ENV_BEFORE);
+	rmSync(TMP, { recursive: true, force: true });
+});
 
-const cfg = loadConfig({ home: join(TMP, "home") });
+// loadConfig lets env beat the config file, and a live omp session exports QUEUE_STATE (the real
+// state dir). Load with an empty env so only the sandbox home decides the paths.
+const cfg = loadConfig({ home: join(TMP, "home"), env: {} });
 applyQueueEnv(cfg); // relaunchPath() and notePath() resolve into the sandbox state dir
 const SESSION_ID = "sess-launch";
 const SESSION_FILE = join(TMP, "prev.jsonl");
@@ -85,6 +93,11 @@ function runsOf(dir: string): Run[] {
 	const text = readFileSync(join(dir, "runs.log"), "utf8").trim();
 	return text === "" ? [] : text.split("\n").map(line => JSON.parse(line) as Run);
 }
+
+test("the sandbox config keeps the note and the relaunch request under TMP, whatever QUEUE_* the parent env holds", () => {
+	expect(NOTE.startsWith(TMP)).toBe(true);
+	expect(relaunchPath().startsWith(TMP)).toBe(true);
+});
 
 test("a relaunch request starts a second run whose only argument is the handoff", async () => {
 	const dir = newCase();

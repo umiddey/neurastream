@@ -475,6 +475,27 @@ test("protected guard files: a QUEUE_* env leaked by an earlier in-process adapt
 	}
 });
 
+// The rollover note turn runs with nobody typing, so Main itself writes <state>/rollover/<id>.md.
+// Only those notes (directly in that folder, .md) are open to Main; relaunch.json, other state
+// files and subagents stay protected.
+test("rollover notes: Main may write <state>/rollover/<id>.md, the rest of the state dir stays protected", () => {
+	fresh();
+	const note = join(STATE, "rollover", "sess-1.md");
+	expect(guardCli("pre-tool", toolEvent("write", { path: note, content: "x" }, "main")).code).toBe(0);
+	const relaunch = guardCli("pre-tool", toolEvent("write", { path: join(STATE, "rollover", "relaunch.json"), content: "{}" }, "main"));
+	expect(relaunch.code).toBe(2);
+	expect(relaunch.d.reason).toContain("is a protected guard file");
+	const other = guardCli("pre-tool", toolEvent("write", { path: join(STATE, "other.md"), content: "x" }, "main"));
+	expect(other.code).toBe(2);
+	expect(other.d.reason).toContain("is a protected guard file");
+	const nested = guardCli("pre-tool", toolEvent("write", { path: join(STATE, "rollover", "sub", "x.md"), content: "x" }, "main"));
+	expect(nested.code).toBe(2);
+	expect(nested.d.reason).toContain("is a protected guard file");
+	const sub = guardCli("pre-tool", toolEvent("write", { path: note, content: "x" }, "sub"));
+	expect(sub.code).toBe(2);
+	expect(sub.d.reason).toContain("is a protected guard file");
+});
+
 test("bypass launch: same plan gate as the original", () => {
 	fresh();
 	const orig = origRun(`

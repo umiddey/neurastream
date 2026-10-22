@@ -353,7 +353,14 @@ export function checkTool(e: ToolEvent, cfg: Config): Decision {
 	for (const p of [...(e.paths ?? []), ...q.touchedPaths(e.tool, input, e.cwd)]) if (!paths.includes(p)) paths.push(p);
 	const writes: string[] = [];
 	for (const p of [...(e.writes ?? []), ...q.writeTargets(e.tool, input, e.cwd)]) if (!writes.includes(p)) writes.push(p);
-	const hit = protectedHit(writes, cfg);
+	// Main writes its own rollover note unattended (the note turn has nobody to ask). Only a Write
+	// of a .md directly in <state>/rollover/ is exempt; shell writes, subagents and relaunch.json stay refused.
+	const rolloverDir = path.join(q.stateDirPath(), "rollover");
+	const openWrites =
+		e.agent === "main" && e.tool === "write"
+			? writes.filter(p => !(path.extname(p) === ".md" && path.dirname(path.resolve(p)) === rolloverDir))
+			: writes;
+	const hit = protectedHit(openWrites, cfg);
 	if (hit && !unlocked(cfg)) {
 		log(cfg.paths.plan_guard_log, `BLOCK ${e.agent}:${e.agentId} tool=${e.tool} protected: ${hit}`);
 		return deny(
