@@ -1,10 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.1.10
 ### Changed
 - Rollover threshold default `rollover.max_session_mb` is 5 MB (was 10). Existing config files keep their own value.
 ### Added
 - `neurastream main` runs omp under a launcher: a session over the rollover threshold rolls over automatically once its handoff note is written and no own jobs are running. The launcher starts a fresh omp with the handoff as its first message; nobody has to type. Plain `omp` keeps the owner-message path. Handoffs over 100000 bytes are written to a file the first message points at.
+### Fixed
+- The rollover note sat in the protected queue state dir, so Main could not write it without the owner's unlock. Main may now `write` a `.md` directly in `<state>/rollover/`; subagents, shell writes and every other state file stay protected.
+- The note request reached Main only on turns started by a prompt; turns started by a finished job never saw it. The request is now sent at turn end and starts a turn itself.
 
 ## 0.1.9
 ### Changed
