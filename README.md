@@ -90,15 +90,20 @@ A plan parked for the owner has one line: `WAITING on owner: <what>`. That line 
 
 ## Session rollover
 
-Main's session file grows with every turn. When it reaches `rollover.max_session_mb` (default 5, `docs/config.md`), Main is asked once per session file to write a handoff note to `<queue_state>/rollover/<session id>.md`. The note covers the work in progress and its state, the decisions made and why, the next step, and the files involved.
+Main's session file grows with every turn. When it reaches `rollover.max_session_mb` (default 5, `docs/config.md`), Main writes a handoff note to `<queue_state>/rollover/<session id>.md`. The note covers the work in progress and its state, the decisions made and why, the next step, and the files involved. Main is asked for it once per session file, when a turn ends.
 
-The switch is never automatic:
+There are two modes:
+
+- Under `neurastream main` (the launcher) the rollover is automatic. Once the note is written and no own jobs (subagents included) are still running, omp writes `relaunch.json` and exits. The launcher starts a fresh omp whose first message is the handoff: the note verbatim, the generated `main-start` state (including the owner holds), the owner's unsent draft if there is one, and a line that the owner is away. Nobody types anything. A handoff over 100000 bytes goes to `<queue_state>/rollover/<session id>.handoff.md`, and the first message points at that file.
+- Under plain `omp` the switch is never automatic. The owner's next plain message closes the session and starts a fresh one; the fresh session opens with the note verbatim, the generated state, and then the owner's message.
+
+In both modes:
 
 - A note counts only if it was written after the threshold was crossed and is at most one hour old.
-- The owner's next plain message then closes the session and starts a fresh one. The fresh session opens with the note verbatim, the generated `main-start` state (including the owner holds), and then the owner's message. The previous session file stays where it is.
-- While own jobs (subagents included) are still running, the switch waits: a rollover would cancel them, so the owner's message stays in the current session until they finish.
+- While own jobs (subagents included) are still running, the switch waits: a rollover would cancel them.
 - `/main-rollover <message>` does the same by hand. It refuses below the threshold, without a fresh note, or while jobs run.
 - `/main-rollover` shows a notice at once and gathers `main-start` in the background, so omp keeps repainting and reading keys until the new session opens.
+- The previous session file stays where it is.
 - `rollover.enabled: false` turns the feature off.
 
 ## Changing a script

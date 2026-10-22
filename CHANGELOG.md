@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+### Changed
+- Rollover threshold default `rollover.max_session_mb` is 5 MB (was 10). Existing config files keep their own value.
+### Added
+- `neurastream main` runs omp under a launcher: a session over the rollover threshold rolls over automatically once its handoff note is written and no own jobs are running. The launcher starts a fresh omp with the handoff as its first message; nobody has to type. Plain `omp` keeps the owner-message path. Handoffs over 100000 bytes are written to a file the first message points at.
+
 ## 0.1.9
 ### Changed
 - README rewritten for a public audience (what it is, what each part enforces, requirements, install, develop); package metadata adds keywords, homepage, bugs and `engines.bun`. No code changes.

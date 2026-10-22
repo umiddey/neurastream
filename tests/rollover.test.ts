@@ -122,7 +122,7 @@ describe("noteRequest", () => {
 	});
 	test("auto mode says the note starts a relaunch instead of waiting for the owner", () => {
 		const text = noteRequest("/s/n.md", true);
-		expect(text).toContain("As soon as this note is written and no own jobs run, omp restarts into a fresh session that starts from this note verbatim plus the generated main-start state.");
+		expect(text).toContain("As soon as this note is written and no own jobs run, this session restarts into a fresh one that starts from this note verbatim plus the generated main-start state.");
 		expect(text).not.toContain("When the owner's next message arrives");
 	});
 });

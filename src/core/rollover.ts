@@ -78,7 +78,7 @@ export function noteRequest(path: string, auto = false): string {
 		`Write a handoff note to ${path} (overwrite it). Cover the work in progress and its state, the decisions made and why, the next step, and the files involved.`,
 		"Do not list holds or owner blockers in the note; they come from the plans' WAITING on owner lines.",
 		auto
-			? "As soon as this note is written and no own jobs run, omp restarts into a fresh session that starts from this note verbatim plus the generated main-start state."
+			? "As soon as this note is written and no own jobs run, this session restarts into a fresh one that starts from this note verbatim plus the generated main-start state."
 			: "When the owner's next message arrives, this session closes and a fresh one starts from that note verbatim plus the generated main-start state.",
 	].join("\n");
 }
@@ -88,7 +88,7 @@ export function notePath(sessionId: string, stateDir = stateDirPath()): string {
 	return join(stateDir, "rollover", `${sessionId}.md`);
 }
 
-/** The launcher's relaunch request file: written by omp just before it exits under `neurastream main`. */
+/** The launcher's relaunch request file: written by the harness just before it exits under `neurastream main`. */
 export function relaunchPath(stateDir = stateDirPath()): string {
 	return join(stateDir, "rollover", "relaunch.json");
 }
