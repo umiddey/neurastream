@@ -102,6 +102,8 @@ A relaunch keeps the flags of the first run (`--model`, `--session-dir`, …) an
 In both modes:
 
 - A note counts only if it was written after the threshold was crossed and is at most one hour old.
+- The running plugin going stale counts as over the threshold too: at every check the adapter re-reads the `package.json` it was loaded from, and a different (or unreadable) version asks for the handoff note even below `rollover.max_session_mb`, naming both versions (`NEURASTREAM_PACKAGE_JSON` overrides the path it watches).
+- While a rollover is pending (no fresh note, or own jobs still running), Main cannot start new subagents: a `task` call is refused until the running jobs finish and the session rolls over.
 - While own jobs (subagents included) are still running, the switch waits: a rollover would cancel them.
 - `/main-rollover <message>` does the same by hand. It refuses below the threshold, without a fresh note, or while jobs run.
 - `/main-rollover` shows a notice at once and gathers `main-start` in the background, so omp keeps repainting and reading keys until the new session opens.
