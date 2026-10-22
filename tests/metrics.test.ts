@@ -23,7 +23,15 @@ import { buildReport } from "../src/core/report.ts";
 import { metricsDueLine } from "../src/core/main-start.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "metrics-"));
-afterAll(() => rmSync(TMP, { recursive: true, force: true }));
+// Inherited QUEUE_* (the caller's live session, or an in-process adapter in an earlier test
+// file) beats the sandbox config in loadConfig below; save and delete them before it runs;
+// afterAll restores them.
+const queueEnvBefore = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("QUEUE_")));
+afterAll(() => {
+	for (const k of Object.keys(queueEnvBefore)) delete process.env[k];
+	Object.assign(process.env, queueEnvBefore);
+	rmSync(TMP, { recursive: true, force: true });
+});
 
 const DAY = 86400;
 const NOW = 1_000_000_000;

@@ -94,9 +94,12 @@ function rolloverMessages(results: unknown[]): RolloverMessage[] {
 }
 
 const TMP = mkdtempSync(join(tmpdir(), "rollover-omp-"));
-// createOmpAdapter runs in-process here and applyQueueEnv writes QUEUE_* into process.env;
-// restore them so later test files' guard children see their own sandbox paths.
+// The caller's shell may export live QUEUE_* (omp's plugin does, to every child); save and
+// delete them before loadConfig so every path resolves under the sandbox home — including
+// notePath(), which reads QUEUE_STATE. createOmpAdapter runs in-process here and applyQueueEnv
+// writes QUEUE_* back into process.env; afterAll restores what the parent had.
 const queueEnvBefore = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("QUEUE_")));
+for (const k of Object.keys(queueEnvBefore)) delete process.env[k];
 // A throwaway home: the real ~/.config/neurastream/config.yml points main-start at the live queue
 // and every live repo, and the note would land in the live queue state dir.
 const baseCfg: Config = loadConfig({ home: join(TMP, "home") });
