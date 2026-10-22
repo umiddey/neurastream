@@ -1,0 +1,5 @@
+# Supply-chain cooldown (SC-6): bun refuses to install any npm release
+# younger than 7 days (604800 s), so a freshly hijacked release cannot
+# reach `bun install` in CI, the publish job, or a local install.
+[install]
+minimumReleaseAge = 604800
