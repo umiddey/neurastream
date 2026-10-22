@@ -385,6 +385,9 @@ test("queue-close complete plan matches the original", () => {
 	const portPlan = setupQueue(portHome, portEnv, "complete");
 	const py = runBun(join(pyHome, ".local/bin/queue-close"), [pyPlan], pyEnv);
 	const port = runPort("queue-close", [portPlan], portEnv);
+	// The toy plan has "Branch: -" (no commits): a complete plan with no branch closes on the done check alone.
+	expect(port.code).toBe(0);
+	expect(port.stdout).toContain("queue-close: CLOSED");
 	expect(port.code).toBe(py.code);
 	expect(port.stderr).toBe(py.stderr);
 	expect(stripTs(port.stdout.split(portHome).join(pyHome))).toBe(stripTs(py.stdout));
