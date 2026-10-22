@@ -2,10 +2,14 @@
 // metrics.jsonl (see src/core/metrics.ts). Each record* function takes the config and the
 // clock as arguments so tests run against a temp home.
 
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { ConfigError, loadConfig, type Config } from "../core/config.ts";
 import { appendMetric } from "../core/metrics.ts";
 import { nowSec } from "../core/clock.ts";
+import type { RunSource } from "../core/adapter.ts";
+import { buildReport } from "../core/report.ts";
+import { defaultRunSource } from "../adapters/omp/sessions.ts";
 
 export const METRICS_USAGE = [
 	"usage: neurastream metrics ci <repo-dir> <mr-id>",
@@ -85,6 +89,21 @@ export function recordRule(cfg: Config, text: string, decision: "approved" | "re
 	return 0;
 }
 
+/** Writes notes/metrics.md and prints the same report: this window against the previous one. */
+export function reportCmd(cfg: Config, source: RunSource, args: string[], now: number): number {
+	const raw = flagValue(args, "--days");
+	const days = raw === undefined ? cfg.metrics.report_days : Number(raw);
+	if (!Number.isInteger(days) || days < 1) {
+		console.error(METRICS_USAGE);
+		return 2;
+	}
+	const { md, text } = buildReport(cfg, source, days, now);
+	mkdirSync(cfg.paths.notes, { recursive: true });
+	writeFileSync(join(cfg.paths.notes, "metrics.md"), md);
+	console.log(text);
+	return 0;
+}
+
 export async function runMetrics(args: string[]): Promise<number> {
 	let cfg: Config;
 	try {
@@ -96,6 +115,7 @@ export async function runMetrics(args: string[]): Promise<number> {
 	const [sub = "", ...rest] = args;
 	const now = nowSec();
 	if (sub === "ci") return recordCi(cfg, rest[0] ?? "", rest[1] ?? "", now);
+	if (sub === "report") return reportCmd(cfg, defaultRunSource(cfg), rest, now);
 	if (sub === "false-alarm") return recordFalseAlarm(cfg, rest[0] ?? "", flagValue(rest, "--why") ?? "", now);
 	if (sub === "rule") {
 		const approved = rest.includes("--approved");

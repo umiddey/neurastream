@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -59,6 +59,13 @@ export async function mainStartText(args: string[], cfg: Config, opts: { inherit
 	const h = args[0] ?? String(cfg.health.default_hours);
 	const childStdin = opts.inheritStdin ? "inherit" : "ignore";
 	const childStderr = opts.inheritStdin ? "inherit" : "pipe";
+	// Weekly self-metrics: nudge the owner's report when notes/metrics.md is missing or older than the window.
+	const reportFile = join(cfg.paths.notes, "metrics.md");
+	const stamp = existsSync(reportFile) ? statSync(reportFile).mtime : null;
+	if (!stamp || Date.now() - stamp.getTime() > cfg.metrics.report_days * 86400 * 1000) {
+		const last = stamp ? stamp.toISOString().slice(0, 10) : "never";
+		say(`metrics: report due (last: ${last}) — run neurastream metrics report, then propose ONE rule change to the owner`);
+	}
 	say("=== machine");
 	const mg = await run(bin("machine-guard", cfg), [], { stderr: "ignore" });
 	const mgLines = mg.stdout.trim().split("\n");

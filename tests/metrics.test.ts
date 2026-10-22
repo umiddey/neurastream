@@ -18,7 +18,8 @@ import {
 	windows,
 	type Inputs,
 } from "../src/core/metrics.ts";
-import { recordCi, recordFalseAlarm, recordRule } from "../src/cli/metrics.ts";
+import { recordCi, recordFalseAlarm, recordRule, reportCmd } from "../src/cli/metrics.ts";
+import { buildReport } from "../src/core/report.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "metrics-"));
 afterAll(() => rmSync(TMP, { recursive: true, force: true }));
@@ -199,4 +200,49 @@ test("appendMetric creates the state dir and writes one JSON object per line", (
 	appendMetric(cfg, { type: "ci", mr: "1", tries: 1, ts: NOW });
 	appendMetric(cfg, { type: "ci", mr: "2", tries: 2, ts: NOW });
 	expect(readMetricEvents(cfg).map((e) => e.mr)).toEqual(["1", "2"]);
+});
+
+test("report compares this window with the previous one, marks the worst change, and gates approved rules", () => {
+	const cfg = cfgWith(join(TMP, "home-report"), "");
+	cfg.metrics.correction_patterns = ["\\bno\\b"];
+	cfg.metrics.report_days = DAYS;
+	mkdirSync(cfg.paths.score_state, { recursive: true });
+	writeFileSync(
+		join(cfg.paths.score_state, "events.jsonl"),
+		[
+			{ type: "accept", agent: "cur", ts: NOW - 50 },
+			{ type: "accept", agent: "prev", ts: NOW - 8 * DAY },
+		]
+			.map((e) => JSON.stringify(e))
+			.join("\n") + "\n",
+	);
+	appendMetric(cfg, { type: "rule", text: "recent rule", decision: "approved", ts: NOW - 2 * DAY });
+	appendMetric(cfg, { type: "rule", text: "old rule", decision: "approved", ts: NOW - 20 * DAY });
+	const runs = [
+		run({ id: "cur", kind: "sub", lastWriteAt: NOW - 100, cost: 2, calls: 1 }),
+		run({ id: "prev", kind: "sub", lastWriteAt: NOW - 8 * DAY, cost: 1, calls: 1 }),
+	];
+	const source = {
+		listRuns: (since: number) => runs.filter((r) => r.lastWriteAt >= since),
+		mainSession: () => null,
+	} as unknown as RunSource;
+
+	const r = buildReport(cfg, source, DAYS, NOW);
+	expect(r.text).toContain("| M1 cost per merge | $2.00 | $1.00 | +100.0% ◀ worst |");
+	expect(r.text.match(/◀ worst/g)?.length).toBe(1);
+	expect(r.text).toContain("| M4 owner messages | 0 | 0 | n/a |");
+	expect(r.text).toContain("recent rule (approved");
+	expect(r.text).toContain("): measuring");
+	expect(r.text).toContain("- old rule (approved");
+	expect(r.text).toContain("→");
+	expect(r.md).toContain("GENERATED");
+});
+
+test("metrics report writes notes/metrics.md and exits 0; a bad --days exits 2", () => {
+	const cfg = cfgWith(join(TMP, "home-write"), "");
+	const source = { listRuns: () => [], mainSession: () => null } as unknown as RunSource;
+	expect(reportCmd(cfg, source, ["--days", "0"], NOW)).toBe(2);
+	expect(reportCmd(cfg, source, ["--days", "7"], NOW)).toBe(0);
+	const written = Bun.file(join(cfg.paths.notes, "metrics.md"));
+	expect(written.size).toBeGreaterThan(0);
 });
