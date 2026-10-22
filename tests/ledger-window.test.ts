@@ -10,9 +10,18 @@ import { ompRunSource } from "../src/adapters/omp/sessions.ts";
 import { loadConfig } from "../src/core/config.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "ledger-window-"));
-afterAll(() => rmSync(TMP, { recursive: true, force: true }));
+// Inherited QUEUE_* (the caller's live session, or an in-process adapter in an earlier test
+// file) beats the sandbox config in loadConfig below; save and delete them before it runs;
+// afterAll restores them.
+const queueEnvBefore = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("QUEUE_")));
+afterAll(() => {
+	for (const k of Object.keys(queueEnvBefore)) delete process.env[k];
+	Object.assign(process.env, queueEnvBefore);
+	rmSync(TMP, { recursive: true, force: true });
+});
 
 // A throwaway home, as in tests/rollover-omp.test.ts: the live config must not be read here.
+for (const k of Object.keys(queueEnvBefore)) delete process.env[k];
 const cfg = loadConfig({ home: join(TMP, "home") });
 const SESSIONS = join(TMP, "sessions");
 const PROJECT = join(SESSIONS, "-projects");

@@ -12,6 +12,10 @@ import { loadConfig } from "../src/core/config.ts";
 const TMP = mkdtempSync(join(tmpdir(), "ledger-not-live-"));
 
 // A throwaway home, as in tests/rollover-omp.test.ts: the live config must not be read here.
+// Inherited QUEUE_* (the caller's live session) beats the sandbox config, so save and delete
+// them before loadConfig; afterAll restores them.
+const queueEnvBefore = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("QUEUE_")));
+for (const k of Object.keys(queueEnvBefore)) delete process.env[k];
 const cfg = loadConfig({ home: join(TMP, "home") });
 
 // nowSec() reads NEURASTREAM_NOW, so idle minutes are exact.
@@ -29,6 +33,8 @@ chmodSync(queueCheck, 0o755);
 afterAll(() => {
 	if (savedNow === undefined) delete process.env.NEURASTREAM_NOW;
 	else process.env.NEURASTREAM_NOW = savedNow;
+	for (const k of Object.keys(queueEnvBefore)) delete process.env[k];
+	Object.assign(process.env, queueEnvBefore);
 	rmSync(TMP, { recursive: true, force: true });
 });
 
