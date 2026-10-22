@@ -77,6 +77,8 @@ const fakeSource = (runs: Run[]): RunSource => ({ listRuns: () => runs, mainSess
 
 // The trimmed real line: Main's session announced the agent completed; the ledger kept it RUNNING.
 const FIXTURE_LINE = JSON.parse(readFileSync(join(REPO, "tests/fixtures/incidents/async-result-line.json"), "utf8")) as Record<string, unknown>;
+// Same story through Main's wait tool (P3 fix B): the wait result text holds the task-result.
+const WAIT_LINE = JSON.parse(readFileSync(join(REPO, "tests/fixtures/incidents/wait-toolresult-line.json"), "utf8")) as Record<string, unknown>;
 const fixtureResults = (ts: number): TaskResult[] => [{ agent: "AmiiirP9RunGlm", ts }];
 
 test("D1 fixture parses: the async-result line names the agent and a timestamp", () => {
@@ -86,6 +88,28 @@ test("D1 fixture parses: the async-result line names the agent and a timestamp",
 	// A non-async line and one without a readable timestamp are skipped.
 	const partial = JSON.stringify({ ...FIXTURE_LINE, timestamp: "nope" });
 	expect(completedResults(`${partial}\n${JSON.stringify({ type: "message" })}\n`)).toEqual([]);
+});
+
+test("D1 fixture parses: a wait toolResult naming a completed agent counts too", () => {
+	const results = completedResults(`${JSON.stringify(WAIT_LINE)}\n`);
+	expect(results).toEqual([{ agent: "NsRolloverDrainGlm", ts: expect.any(Number) }]);
+	// A wait result with no completed task-result inside, and one without a readable timestamp, are skipped.
+	const plain = {
+		...WAIT_LINE,
+		message: { ...(WAIT_LINE.message as Record<string, unknown>), content: [{ type: "text", text: "## Completed (0)\n\nnothing yet" }] },
+	};
+	const noTs = { ...WAIT_LINE, timestamp: "nope" };
+	expect(completedResults(`${JSON.stringify(plain)}\n${JSON.stringify(noTs)}\n`)).toEqual([]);
+});
+
+test("D1 through wait results: the ledger contradicts an agent finished via wait", () => {
+	const c = cfg();
+	const wait = completedResults(`${JSON.stringify(WAIT_LINE)}\n`);
+	expect(wait).toHaveLength(1);
+	// The fixture's real timestamp is fixed; look 10 minutes after it, past the 3-minute grace.
+	const seen = runDetectors(c, { results: wait, runs: [run("NsRolloverDrainGlm", "running")] }, wait[0]!.ts + 600);
+	expect(seen).toHaveLength(1);
+	expect(readIncidents(c)[0]).toMatchObject({ source: "realtime", kind: "ledger-contradiction" });
 });
 
 test("D1 positive: the ledger still shows the agent RUNNING past the grace", () => {
