@@ -19,6 +19,7 @@ import { wipCheck } from "../core/wip-check.ts";
 import { wipSnapshot } from "../core/wip-snapshot.ts";
 import { runtime } from "./runtime.ts";
 import { runMainLauncher } from "../adapters/omp/launch.ts";
+import { defaultCompletedResults, defaultRunSource } from "../adapters/omp/sessions.ts";
 
 export const PORTED = [
 	"agent-score",
@@ -74,7 +75,7 @@ export async function runPorted(cmd: string, args: string[]): Promise<number> {
 		case "queue-cancel":
 			return queueCancel(args, rt.cfg);
 		case "main-start":
-			return mainStart(args, rt.cfg);
+			return mainStart(args, rt.cfg, { source: defaultRunSource(rt.cfg), results: defaultCompletedResults(rt.cfg) });
 		case "machine-guard":
 			return machineGuard(args, rt.cfg);
 		case "glm-reset":

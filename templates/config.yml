@@ -123,6 +123,19 @@ metrics:
   correction_patterns: ['\bno\b', 'wrong', 'why did', 'properly', 'not what', 'stop', 'bullshit', 'fuck']
   ci_pipelines_cmd: ""   # command run in the repo dir with {mr} replaced; stdout must be a JSON array; "" = not set
 
+incidents:
+  contradiction_grace_min: 3   # minutes after a finished task-result before a RUNNING/WAITING ledger row is a contradiction
+  block_repeat: 20             # same guard BLOCK reason within 60 minutes that means a block loop
+  scan_interval_sec: 120       # seconds between scans of the expensive detectors (D1 ledger, D3 block loop); the cheap ones run on every event
+  daily_worse_pct: 25          # a daily metric must be worse than the 7-day mean by at least this percent
+  daily_floor:                 # per-metric daily floors: a regression below the floor is noise
+    m1: 0.5                    # $ per merge
+    m2: 50                     # idle calls/day
+    m3: 1.5                    # mean CI tries
+    m4_corrections: 1          # owner corrections/day
+    m4_questions: 3            # Main questions/day
+    m5: 50                     # guard blocks/day
+
 machine:
   load_over_cores: 4
   load_max: 0

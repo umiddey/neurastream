@@ -283,3 +283,59 @@ export function defaultRunSource(cfg: Config): RunSource {
 	const root = cfg.adapter?.sessions || join(cfg.paths.home, ".omp", "agent", "sessions");
 	return ompRunSource(root, cfg);
 }
+
+/**
+ * Completed subagent task-results announced in one Main session file. Two carriers:
+ * `custom_message` lines of `customType` "async-result" whose content carries
+ * `<task-result id="X" … status="completed">` (trimmed real case:
+ * tests/fixtures/incidents/async-result-line.json), and `wait` toolResults — Main's `wait`
+ * returns the finished jobs' `<task-result …>` blocks in its text (trimmed real case:
+ * tests/fixtures/incidents/wait-toolresult-line.json; P3 fix B: results Main receives through
+ * wait were invisible here, so D1 never saw them). A line without a readable timestamp is
+ * skipped — without one the contradiction grace cannot be aged.
+ */
+export function completedResults(text: string): { agent: string; ts: number }[] {
+	const out: { agent: string; ts: number }[] = [];
+	for (const line of text.split("\n")) {
+		const isAsync = line.includes('"async-result"');
+		const isWait = line.includes('"toolName":"wait"');
+		if (!isAsync && !isWait) continue;
+		let d: Record<string, unknown> | null = null;
+		try {
+			d = asObj(JSON.parse(line) as unknown);
+		} catch {
+			d = null;
+		}
+		if (!d) continue;
+		const ts = typeof d.timestamp === "string" ? parseTs(d.timestamp) : null;
+		if (ts === null) continue;
+		if (isAsync) {
+			if (d.type !== "custom_message" || d.customType !== "async-result") continue;
+			const content = typeof d.content === "string" ? d.content : "";
+			const m = /<task-result\s+id="([^"]+)"[^>]*\bstatus="completed"/.exec(content);
+			if (m) out.push({ agent: m[1]!, ts });
+			continue;
+		}
+		const m = asObj(d.message);
+		if (!m || m.role !== "toolResult" || m.toolName !== "wait") continue;
+		const content = Array.isArray(m.content)
+			? m.content.map((p) => asObj(p)?.text).filter((t): t is string => typeof t === "string").join("\n")
+			: typeof m.content === "string"
+				? m.content
+				: "";
+		for (const hit of content.matchAll(/<task-result\s+id="([^"]+)"[^>]*\bstatus="completed"/g)) {
+			out.push({ agent: hit[1]!, ts });
+		}
+	}
+	return out;
+}
+
+/** `completedResults` of the newest Main session file (the one `mainSession()` picks). */
+export function defaultCompletedResults(cfg: Config): { agent: string; ts: number }[] {
+	try {
+		const s = defaultRunSource(cfg).mainSession();
+		return s ? completedResults(readFileSync(s.file, "utf8")) : [];
+	} catch {
+		return [];
+	}
+}

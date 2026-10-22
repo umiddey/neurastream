@@ -113,6 +113,19 @@ export interface Config {
 	};
 	rollover: { enabled: boolean; max_session_mb: number };
 	metrics: { report_days: number; correction_patterns: string[]; ci_pipelines_cmd: string };
+	/** Incident detectors (src/core/incident-detectors.ts): when a sighting becomes an incident. */
+	incidents: {
+		/** Minutes after a finished task-result before a RUNNING/WAITING ledger row contradicts it. */
+		contradiction_grace_min: number;
+		/** Same guard BLOCK reason within one hour that means a block loop. */
+		block_repeat: number;
+		/** Seconds between scans of the expensive detectors (D1 ledger, D3 block loop). */
+		scan_interval_sec: number;
+		/** A daily metric must be worse than the 7-day mean by at least this percent. */
+		daily_worse_pct: number;
+		/** Per-metric daily floors (keys: m1, m2, m3, m4_corrections, m4_questions, m5): a regression below the floor is noise. */
+		daily_floor: Record<string, number>;
+	};
 	machine: {
 		load_over_cores: number;
 		load_max: number;

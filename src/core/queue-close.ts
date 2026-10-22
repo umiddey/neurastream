@@ -5,6 +5,7 @@ import path from "node:path";
 import type { Config } from "./config.ts";
 import { applyQueueEnv } from "./queue/env.ts";
 import { activePlans, cancelledFile, cancelledLine, closeLog, INDEX, readIndex, readRepoIndex, REPO_INDEX, sha, STATE_DIR } from "./queue/lib.ts";
+import { fixedIncident } from "./incidents.ts";
 
 export function queueClose(args: string[], cfg: Config): number {
 	applyQueueEnv(cfg);
@@ -245,6 +246,19 @@ export function queueClose(args: string[], cfg: Config): number {
 		delete s[file];
 		writeFileSync(sp, JSON.stringify(s, null, 1));
 	} catch {}
+	// Incidents this plan fixes (plan P5): each INCIDENT <id> in a closing plan gets a fixed
+	// record, so the guards stop pushing a bug whose fix just shipped. Cancelled plans did not
+	// ship their fix — the owner records a dismissal instead. A refusal (unknown id, already
+	// resolved) is logged into the close log and never fails the close.
+	if (!cancelling) {
+		const recorded: string[] = [];
+		for (const m of plan.text.matchAll(/\bINCIDENT\s+(I-\d{8}-\d+)\b/g)) {
+			const why = fixedIncident(cfg, m[1]!, file);
+			if (why) result(`queue-close: not recording fixed for ${m[1]}: ${why}`);
+			else recorded.push(m[1]!);
+		}
+		if (recorded.length) console.log(`queue-close: recorded fixed for ${recorded.join(", ")}`);
+	}
 	console.log("queue-close: CLOSED");
 	return 0;
 }

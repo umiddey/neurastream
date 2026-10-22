@@ -4,6 +4,7 @@
 
 import type { Config } from "./config.ts";
 import type { RunSource } from "./adapter.ts";
+import { readIncidents, type IncidentView } from "./incidents.ts";
 import {
 	m1,
 	m2,
@@ -35,13 +36,14 @@ interface Snap {
 	m3: M3;
 	m4: M4;
 	m5: M5;
+	m6: M6;
 }
 
 function day(t: number): string {
 	return new Date(t * 1000).toISOString().slice(0, 10);
 }
 
-function snap(cfg: Config, source: RunSource, events: Ev[], blocks: GuardBlock[], w: Window): Snap {
+function snap(cfg: Config, source: RunSource, events: Ev[], blocks: GuardBlock[], incidents: IncidentView[], w: Window): Snap {
 	const runs = source.listRuns(w.from);
 	const patterns = cfg.metrics.correction_patterns.map((p) => new RegExp(p, "i"));
 	return {
@@ -50,10 +52,46 @@ function snap(cfg: Config, source: RunSource, events: Ev[], blocks: GuardBlock[]
 		m3: m3(events, w),
 		m4: m4(runs, w, patterns),
 		m5: m5(blocks, events, w),
+		m6: m6(incidents, w),
 	};
 }
 
+export interface M6 {
+	/** Incidents opened in the window. */
+	opened: number;
+	/** Of those, how many stories ended in each resolution. */
+	planned: number;
+	dismissed: number;
+	fixed: number;
+	/** Median hours from opened to fixed among them; null without a fixed record's timestamp. */
+	medianHours: number | null;
+}
+
+/** When the incident was fixed, or null while it is open / resolved otherwise / fixed by an old
+ * record without a timestamp. */
+function fixedAt(i: IncidentView): number | null {
+	const r = i.resolution;
+	return r !== null && r.type === "fixed" && typeof r.ts === "number" ? r.ts : null;
+}
+
+/** M6 (plan P5): the incident loop's own numbers for one window. Incidents opened before the
+ * window belong to that window even if they were fixed inside this one. */
+export function m6(incidents: IncidentView[], w: Window): M6 {
+	const inW = incidents.filter((i) => i.ts >= w.from && i.ts < w.to);
+	const byType = (type: string) => inW.filter((i) => i.resolution?.type === type).length;
+	const hours = inW
+		.map((i) => ({ opened: i.ts, at: fixedAt(i) }))
+		.filter((x): x is { opened: number; at: number } => x.at !== null)
+		.map((x) => (x.at - x.opened) / 3600)
+		.sort((a, b) => a - b);
+	const mid = Math.floor(hours.length / 2);
+	const median = hours.length === 0 ? null : hours.length % 2 ? hours[mid]! : (hours[mid - 1]! + hours[mid]!) / 2;
+	return { opened: inW.length, planned: byType("plan"), dismissed: byType("dismiss"), fixed: byType("fixed"), medianHours: median };
+}
+
 interface Row {
+	/** Stable metric key (m1, m2, m3, m4_corrections, m4_questions, m4_users, m5). */
+	key: string;
 	name: string;
 	cur: number | null;
 	prev: number | null;
@@ -67,13 +105,13 @@ function rowsOf(c: Snap, p: Snap): Row[] {
 	const num = (v: number | null) => (v === null ? "n/a" : String(v));
 	const mean = (v: number | null) => (v === null ? "n/a" : v.toFixed(2));
 	return [
-		{ name: "M1 cost per merge", cur: c.m1.perMerge, prev: p.m1.perMerge, fmt: usd, rank: true },
-		{ name: "M2 idle calls", cur: c.m2.calls, prev: p.m2.calls, fmt: num, rank: true },
-		{ name: "M3 mean CI tries", cur: c.m3.mean, prev: p.m3.mean, fmt: mean, rank: true },
-		{ name: "M4 owner corrections", cur: c.m4.corrections, prev: p.m4.corrections, fmt: num, rank: true },
-		{ name: "M4 Main questions", cur: c.m4.questions, prev: p.m4.questions, fmt: num, rank: true },
-		{ name: "M4 owner messages", cur: c.m4.users, prev: p.m4.users, fmt: num, rank: false },
-		{ name: "M5 guard blocks", cur: c.m5.blocks, prev: p.m5.blocks, fmt: num, rank: true },
+		{ key: "m1", name: "M1 cost per merge", cur: c.m1.perMerge, prev: p.m1.perMerge, fmt: usd, rank: true },
+		{ key: "m2", name: "M2 idle calls", cur: c.m2.calls, prev: p.m2.calls, fmt: num, rank: true },
+		{ key: "m3", name: "M3 mean CI tries", cur: c.m3.mean, prev: p.m3.mean, fmt: mean, rank: true },
+		{ key: "m4_corrections", name: "M4 owner corrections", cur: c.m4.corrections, prev: p.m4.corrections, fmt: num, rank: true },
+		{ key: "m4_questions", name: "M4 Main questions", cur: c.m4.questions, prev: p.m4.questions, fmt: num, rank: true },
+		{ key: "m4_users", name: "M4 owner messages", cur: c.m4.users, prev: p.m4.users, fmt: num, rank: false },
+		{ key: "m5", name: "M5 guard blocks", cur: c.m5.blocks, prev: p.m5.blocks, fmt: num, rank: true },
 	];
 }
 
@@ -91,17 +129,19 @@ function signed(d: number | null): string {
 function detail(c: Snap): string[] {
 	const top2 = c.m2.top.map((t) => `${t.id} ${t.calls}`).join(", ") || "none";
 	const reasons = c.m5.top.map((t) => `${t.count}× ${t.reason}`).join("; ") || "none";
+	const median = c.m6.medianHours === null ? "n/a" : `${c.m6.medianHours.toFixed(1)}h`;
 	return [
 		`M1 worker $${c.m1.worker.toFixed(2)}, main $${c.m1.main.toFixed(2)}, accepts ${c.m1.accepts}`,
 		`M2 top idle runs: ${top2}`,
 		`M3 CI runs ${c.m3.n}; MRs at 3+ tries: ${c.m3.big.join(", ") || "none"}`,
 		`M4 owner messages ${c.m4.users}, corrections ${c.m4.corrections}, Main questions ${c.m4.questions}`,
 		`M5 guard blocks ${c.m5.blocks}, false alarms ${c.m5.falseAlarms}; top reasons: ${reasons}`,
+		`M6 incidents ${c.m6.opened} opened, ${c.m6.planned} planned, ${c.m6.dismissed} dismissed, ${c.m6.fixed} fixed; median open→fixed ${median}`,
 	];
 }
 
 /** Before/after per approved rule. A rule younger than one window reads "measuring". */
-function ruleLines(cfg: Config, source: RunSource, events: Ev[], blocks: GuardBlock[], days: number, now: number): string[] {
+function ruleLines(cfg: Config, source: RunSource, events: Ev[], blocks: GuardBlock[], incidents: IncidentView[], days: number, now: number): string[] {
 	const out: string[] = [];
 	for (const e of events) {
 		if (e.type !== "rule" || e.decision !== "approved") continue;
@@ -111,8 +151,8 @@ function ruleLines(cfg: Config, source: RunSource, events: Ev[], blocks: GuardBl
 			out.push(`${head}: measuring`);
 			continue;
 		}
-		const before = snap(cfg, source, events, blocks, { from: ts - days * DAY, to: ts });
-		const after = snap(cfg, source, events, blocks, { from: ts, to: ts + days * DAY });
+		const before = snap(cfg, source, events, blocks, incidents, { from: ts - days * DAY, to: ts });
+		const after = snap(cfg, source, events, blocks, incidents, { from: ts, to: ts + days * DAY });
 		const perMerge = (s: Snap) => (s.m1.perMerge === null ? "n/a" : `$${s.m1.perMerge.toFixed(2)}`);
 		const tries = (s: Snap) => (s.m3.mean === null ? "n/a" : s.m3.mean.toFixed(2));
 		out.push(
@@ -128,15 +168,18 @@ export interface Report {
 	md: string;
 	/** The same content without the generated header, for stdout. */
 	text: string;
+	/** The ranked row with the biggest percent increase; null when nothing ranked moved. */
+	worst: { key: string; name: string; cur: number | null; prev: number | null; change: number | null } | null;
 }
 
 export function buildReport(cfg: Config, source: RunSource, days: number, now: number): Report {
 	const inp = loadInputs(cfg, source, now, days);
 	const events = [...inp.events, ...readMetricEvents(cfg)];
 	const blocks = readBlocks(cfg);
+	const incidents = readIncidents(cfg);
 	const { cur, prev } = windows(now, days);
-	const c = snap(cfg, source, events, blocks, cur);
-	const p = snap(cfg, source, events, blocks, prev);
+	const c = snap(cfg, source, events, blocks, incidents, cur);
+	const p = snap(cfg, source, events, blocks, incidents, prev);
 
 	const rows = rowsOf(c, p);
 	let worst: Row | null = null;
@@ -164,7 +207,7 @@ export function buildReport(cfg: Config, source: RunSource, days: number, now: n
 		...detail(c),
 		"",
 		"Approved rules, before vs after:",
-		...ruleLines(cfg, source, events, blocks, days, now),
+		...ruleLines(cfg, source, events, blocks, incidents, days, now),
 	].join("\n");
 
 	const md = [
@@ -175,5 +218,9 @@ export function buildReport(cfg: Config, source: RunSource, days: number, now: n
 		body,
 		"",
 	].join("\n");
-	return { md, text: body };
+	return {
+		md,
+		text: body,
+		worst: worst ? { key: worst.key, name: worst.name, cur: worst.cur, prev: worst.prev, change: change(worst) } : null,
+	};
 }

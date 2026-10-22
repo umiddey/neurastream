@@ -87,6 +87,12 @@ function lint(path: string, cfg: Config): { errs: string[]; warns: string[] } {
 		"missing: call budget line ('stop and report within ~100 calls'); long agents reread huge contexts",
 	);
 
+	// An incident fix plan (plan 20261022_2330 P5) must ship its regression test fail-before:
+	// some phase's text has to say the test failed on the old code.
+	if (/\bINCIDENT\s+I-\d{8}-\d+\b/.test(text)) {
+		need(/fail-before/i.test(low), "plan cites INCIDENT <id> but no phase says 'fail-before': its regression test must fail on the old code");
+	}
+
 	const keys = new Set<string>();
 	for (const prefix of cfg.brief.path_prefixes) {
 		const re = new RegExp(`(${escapeReg(prefix)}[\\w./\\-]*keys[\\w.\\-]*\\.txt)`, "g");

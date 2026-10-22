@@ -267,3 +267,61 @@ export function m5(blocks: GuardBlock[], events: Ev[], w: Window): M5 {
 		top,
 	};
 }
+
+// ---- daily check: last 24h against the mean of the 7 days before (plan 20261022_2330 P4) ----
+
+export interface DailyCheck {
+	/** Stable metric key; names the daily incident's fingerprint. */
+	key: string;
+	/** Human name, as the report spells it. */
+	label: string;
+	/** Last-24h value; null when undefined in this window (no merges, no CI runs). */
+	cur: number | null;
+	/** Daily mean over the 7 days before; null likewise. */
+	mean: number | null;
+	/** A regression below this floor is noise (incidents.daily_floor per metric). */
+	floor: number;
+}
+
+/**
+ * The ranked daily numbers: M1-M5 for the last 24h against the 7 days before. Count metrics
+ * become daily means (÷7); M1 per merge and M3 mean tries are averages already.
+ */
+export function dailyChecks(cfg: Config, inp: Inputs, blocks: GuardBlock[], now: number): DailyCheck[] {
+	const cur = windows(now, 1).cur;
+	const before = { from: now - 8 * DAY, to: now - DAY };
+	const patterns = cfg.metrics.correction_patterns.map(p => new RegExp(p, "i"));
+	const a = {
+		m1: m1(inp, cur),
+		m2: m2(inp, cur),
+		m3: m3(inp.events, cur),
+		m4: m4(inp.runs, cur, patterns),
+		m5: m5(blocks, inp.events, cur),
+	};
+	const b = {
+		m1: m1(inp, before),
+		m2: m2(inp, before),
+		m3: m3(inp.events, before),
+		m4: m4(inp.runs, before, patterns),
+		m5: m5(blocks, inp.events, before),
+	};
+	const perDay = (v: number) => v / 7;
+	const floor = (key: string) => cfg.incidents.daily_floor[key] ?? 0;
+	return [
+		{ key: "m1", label: "M1 cost per merge", cur: a.m1.perMerge, mean: b.m1.perMerge, floor: floor("m1") },
+		{ key: "m2", label: "M2 idle calls", cur: a.m2.calls, mean: perDay(b.m2.calls), floor: floor("m2") },
+		{ key: "m3", label: "M3 mean CI tries", cur: a.m3.mean, mean: b.m3.mean, floor: floor("m3") },
+		{ key: "m4_corrections", label: "M4 owner corrections", cur: a.m4.corrections, mean: perDay(b.m4.corrections), floor: floor("m4_corrections") },
+		{ key: "m4_questions", label: "M4 Main questions", cur: a.m4.questions, mean: perDay(b.m4.questions), floor: floor("m4_questions") },
+		{ key: "m5", label: "M5 guard blocks", cur: a.m5.blocks, mean: perDay(b.m5.blocks), floor: floor("m5") },
+	];
+}
+
+/**
+ * A daily incident: the value is above its floor and worse than the 7-day mean by at least
+ * `worsePct` percent. Null on either side (no merges, no CI runs) never fires.
+ */
+export function worseThanMean(c: DailyCheck, worsePct: number): boolean {
+	if (c.cur === null || c.mean === null) return false;
+	return c.cur > c.floor && c.cur - c.mean >= (c.mean * worsePct) / 100;
+}

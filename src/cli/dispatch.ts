@@ -6,6 +6,7 @@ import { GUARD_USAGE, runGuard } from "./guard.ts";
 import { runInit } from "./init.ts";
 import { PORTED, runMain, runPorted } from "./commands.ts";
 import { runMetrics } from "./metrics.ts";
+import { runIncident } from "./incident.ts";
 
 const BINS = [
 	"agent-score",
@@ -46,6 +47,7 @@ export function helpText(): string {
 		`                                (${GUARD_USAGE.slice(GUARD_USAGE.indexOf("(") + 1, -1)})`,
 		"  neurastream main [args]       run omp under the launcher (automatic session rollover)",
 		"  neurastream metrics <cmd>     self-metrics: report, ci, false-alarm, rule (see README)",
+		"  neurastream incident <cmd>    incidents Main must act on: list, add, plan, dismiss (see README)",
 		"",
 		"Compatibility bins (same names as today; ports land in later phases):",
 		...BINS.map(b => `  ${b}`),
@@ -63,6 +65,7 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 	if (cmd === "main") return runMain(args);
 	if (cmd === "init") return runInit(args);
 	if (cmd === "metrics") return runMetrics(args);
+	if (cmd === "incident") return runIncident(args);
 	if (cmd === "adapter") return runAdapterInstall(args);
 	if (cmd === "config") {
 		try {

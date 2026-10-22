@@ -19,7 +19,8 @@ import {
 	type Inputs,
 } from "../src/core/metrics.ts";
 import { recordCi, recordFalseAlarm, recordRule, reportCmd } from "../src/cli/metrics.ts";
-import { buildReport } from "../src/core/report.ts";
+import { buildReport, m6 } from "../src/core/report.ts";
+import type { IncidentView } from "../src/core/incidents.ts";
 import { metricsDueLine } from "../src/core/main-start.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "metrics-"));
@@ -252,6 +253,7 @@ test("report compares this window with the previous one, marks the worst change,
 	expect(r.text.match(/◀ worst/g)?.length).toBe(1);
 	expect(r.text).toContain("| M4 owner messages | 0 | 0 | n/a |");
 	expect(r.text).toContain("recent rule (approved");
+	expect(r.text).toContain("M6 incidents 0 opened, 0 planned, 0 dismissed, 0 fixed; median open→fixed n/a");
 	expect(r.text).toContain("): measuring");
 	expect(r.text).toContain("- old rule (approved");
 	expect(r.text).toContain("→");
@@ -279,4 +281,29 @@ test("metricsDueLine: missing report says never, an 8-day-old report is due, a 1
 	expect(metricsDueLine(cfg, nowMs)).toContain("report due");
 	utimesSync(file, new Date(nowMs - DAY * 1000), new Date(nowMs - DAY * 1000));
 	expect(metricsDueLine(cfg, nowMs)).toBeNull();
+});
+
+function incident(id: string, ts: number, resolution: IncidentView["resolution"]): IncidentView {
+	return { id, fingerprint: id, source: "realtime", kind: "k", summary: id, evidence: "", ts, count: 1, lastSeen: ts, resolution };
+}
+
+test("M6 counts the window's incident stories and the median hours from open to fixed", () => {
+	const w = { from: NOW, to: NOW + DAY };
+	const view = m6(
+		[
+			incident("I-1", NOW + 100, { type: "fixed", id: "I-1", plan: "p", ts: NOW + 100 + 3600 }),
+			incident("I-2", NOW + 200, { type: "fixed", id: "I-2", plan: "p", ts: NOW + 200 + 3 * 3600 }),
+			// A fixed record without a timestamp (old shape) counts as fixed but not in the median.
+			incident("I-3", NOW + 300, { type: "fixed", id: "I-3", plan: "p" }),
+			incident("I-4", NOW + 400, { type: "plan", id: "I-4", plan: "p" }),
+			incident("I-5", NOW + 500, { type: "dismiss", id: "I-5", why: "not a bug" }),
+			incident("I-6", NOW + 600, null),
+			// Opened before the window, fixed inside it: its story is the older window's.
+			incident("I-0", NOW - DAY, { type: "fixed", id: "I-0", plan: "p", ts: NOW + 700 }),
+		],
+		w,
+	);
+	expect(view).toEqual({ opened: 6, planned: 1, dismissed: 1, fixed: 3, medianHours: 2 });
+	// An empty window reads zeros with no median, and the numbers land in the report text.
+	expect(m6([], w)).toEqual({ opened: 0, planned: 0, dismissed: 0, fixed: 0, medianHours: null });
 });
