@@ -159,7 +159,7 @@ function build(file: string, cfg: Config, mtime: number): Run | null {
 
 	const done = yielded || final;
 	let state: string;
-	if (yielded && !id.startsWith("MAIN")) state = "done";
+	if (!id.startsWith("MAIN") && (yielded || final)) state = "done";
 	else if (!exited && !err) {
 		const idle = Math.floor((nowSec() - mtime) / 60);
 		state = (waiting || "RUNNING") + (idle >= cfg.ledger.idle_show_min ? ` (idle ${idle}m)` : "");
