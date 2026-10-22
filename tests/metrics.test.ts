@@ -167,6 +167,17 @@ test("M5 counts BLOCK lines in the window, groups reasons, and counts in-window 
 	]);
 });
 
+test("M5 groups every open: <plan list> block reason into one key", () => {
+	const logText = [
+		`${iso(NOW - 100)} BLOCK stop; open: /a/x.md`,
+		`${iso(NOW - 200)} BLOCK stop; open: /a/x.md | /b/y.md`,
+		`${iso(NOW - 300)} BLOCK stop; open: /a/x.md`,
+	].join("\n");
+	const r = m5(parseBlocks(logText), [], cur);
+	expect(r.blocks).toBe(3);
+	expect(r.top).toEqual([{ reason: "stop; open: <list>", count: 3 }]);
+});
+
 function cfgWith(home: string, ciCmd: string) {
 	const cfg = loadConfig({ home });
 	cfg.metrics.ci_pipelines_cmd = ciCmd;
