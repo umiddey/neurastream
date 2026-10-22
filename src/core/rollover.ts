@@ -17,20 +17,24 @@ export interface RolloverInput {
 	maxMb: number;
 	/** Labels of the own async jobs (subagents included) that are still running. */
 	runningJobs: readonly string[];
-	/** When the session file was first seen at or over the threshold; null if never. */
+	/** When the session file was first seen at or over the threshold (or stale); null if never. */
 	crossedAtMs: number | null;
 	/** Mtime of the handoff note; null when the note does not exist. */
 	noteMtimeMs: number | null;
+	/** The running plugin differs from the installed package (or its version is unreadable). */
+	stale: boolean;
 	nowMs: number;
 }
 
 /**
- * below: under the threshold. need-note: over it and no fresh note (written after the crossing,
- * at most MAX_NOTE_AGE_MS old). wait-jobs: note is fresh but own jobs still run (rolling over
- * would cancel them). ready: the next owner message may roll over.
+ * below: under the threshold and not stale. need-note: over the threshold (or stale) with no fresh
+ * note (written after the crossing, at most MAX_NOTE_AGE_MS old). wait-jobs: note is fresh but own
+ * jobs still run (rolling over would cancel them). ready: the next owner message may roll over.
+ * A stale session counts like a crossed size threshold: even a small session rolls over, because
+ * the running plugin is not the code the owner installed.
  */
 export function rolloverState(p: RolloverInput): RolloverState {
-	if (p.sessionBytes < p.maxMb * 1024 * 1024) return "below";
+	if (p.sessionBytes < p.maxMb * 1024 * 1024 && !p.stale) return "below";
 	const noteFresh =
 		p.noteMtimeMs !== null &&
 		p.crossedAtMs !== null &&
@@ -38,6 +42,16 @@ export function rolloverState(p: RolloverInput): RolloverState {
 		p.nowMs - p.noteMtimeMs <= MAX_NOTE_AGE_MS;
 	if (!noteFresh) return "need-note";
 	return p.runningJobs.length > 0 ? "wait-jobs" : "ready";
+}
+
+/**
+ * Drain: while a rollover is pending (need-note or wait-jobs) Main must not start new subagents —
+ * a rollover would cancel them, or they would outlive the handoff. Returns the refusal text, or
+ * null when the spawn may proceed (below, ready).
+ */
+export function spawnRefusal(state: RolloverState, runningJobs: readonly string[]): string | null {
+	if (state !== "need-note" && state !== "wait-jobs") return null;
+	return `main-guard: rollover pending (${state}); no new subagents until the session rolls over. Running: ${runningJobs.join(", ")}.`;
 }
 
 export interface HandoffInput {
@@ -71,10 +85,11 @@ export function holdsBlock(holds: readonly string[]): string {
 	return ["=== owner holds (plans' WAITING on owner lines)", ...(holds.length > 0 ? holds : ["none"]), ""].join("\n");
 }
 
-/** The one-time note instruction for Main's next turn. */
-export function noteRequest(path: string, auto = false): string {
+/** The one-time note instruction for Main's next turn. `reason` (a stale install) names both versions. */
+export function noteRequest(path: string, auto = false, reason = ""): string {
 	return [
 		"Session rollover: this session has grown past rollover.max_session_mb.",
+		...(reason ? [reason] : []),
 		`Write a handoff note to ${path} (overwrite it). Cover the work in progress and its state, the decisions made and why, the next step, and the files involved.`,
 		"Do not list holds or owner blockers in the note; they come from the plans' WAITING on owner lines.",
 		auto

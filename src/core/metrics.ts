@@ -218,9 +218,12 @@ export interface GuardBlock {
 	reason: string;
 }
 
-/** Groups reasons by shape: paths cut to 40 chars, then digit runs collapsed to N. */
+/** Groups reasons by shape: paths cut to 40 chars, digit runs collapsed to N, and every
+ * `open: <plan list>` tail collapsed to one key: the lists differ per plan set, the reason is one. */
 function reasonKey(text: string): string {
-	return text.replace(/\S*\/\S*/g, (p) => (p.length > 40 ? `${p.slice(0, 40)}…` : p)).replace(/\d+/g, "N");
+	const shaped = text.replace(/\S*\/\S*/g, (p) => (p.length > 40 ? `${p.slice(0, 40)}…` : p)).replace(/\d+/g, "N");
+	const at = shaped.indexOf("open: ");
+	return at === -1 ? shaped : `${shaped.slice(0, at)}open: <list>`;
 }
 
 /** BLOCK lines of one guard log, each `<ISO UTC> BLOCK <reason>`. Other lines are ignored. */

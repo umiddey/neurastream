@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+### Fixed
+- Main rolls over even when the running plugin is older than the installed package: at every turn end the adapter re-reads the `package.json` it was loaded from, a different or unreadable version counts as over the rollover threshold, and the note request names both versions.
+- A handoff note that is no longer fresh (it expired while own jobs ran) is asked for again — exactly once per expired note — instead of leaving the rollover stuck.
+### Added
+- While a rollover is pending (no fresh note, or own jobs still running), Main's `task` spawns are refused until the running jobs finish and the session rolls over.
+### Changed
+- `neurastream metrics report` groups every `open: <plan list>` guard-block reason into one `open: <list>` key instead of one key per list.
+
 ## 0.1.13
 ### Security
 - GitHub Actions in `ci.yml` and `publish.yml` are pinned to full commit SHAs (tags kept as trailing comments) and a new `bunfig.toml` sets a 7-day `minimumReleaseAge` install cooldown: a moved tag or a fresh malicious release can no longer reach the `id-token: write` publish job or a local install.

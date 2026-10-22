@@ -17,13 +17,14 @@
 
 import { execFileSync, spawn } from "node:child_process";
 import { appendFileSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Decision } from "../../core/adapter.ts";
 import { loadConfig, type Config } from "../../core/config.ts";
 import { checkInject, checkPlanEdit, checkStop, checkTool, MAIN_PLAN_FILE, recordMainResult } from "../../core/guards.ts";
 import { applyQueueEnv } from "../../core/queue/env.ts";
 import { mainStartText } from "../../core/main-start.ts";
-import { buildHandoff, holdsBlock, notePath, noteRequest, relaunchPath, type RolloverState, rolloverState } from "../../core/rollover.ts";
+import { buildHandoff, holdsBlock, notePath, noteRequest, relaunchPath, rolloverState, spawnRefusal, type RolloverState } from "../../core/rollover.ts";
 import * as q from "../../core/queue/lib.ts";
 // Registers the plugin-command matcher into core's writeTargets (side effect).
 import "./package-ops.ts";
@@ -79,6 +80,22 @@ export function toExtensionResult(d: Decision): Record<string, unknown> {
 
 // A push or merge by Main may have landed a completed plan: try closing right away.
 const PUSH_MERGE = /\bgit\b[^\n;|&]*\bpush\b|\b(glab\s+mr|gh\s+pr)\s+merge\b/;
+
+// The installed copy this plugin comes from (computed as in doctor.ts) and the package.json whose
+// version decides staleness. omp never reloads a plugin, so the version is read once at adapter
+// start (the code actually running) and re-read at every rollover check; a different or unreadable
+// version means the running plugin is stale. NEURASTREAM_PACKAGE_JSON overrides the path (tests
+// and the sandbox smoke point it at a copy whose version changes mid-run), like QUEUE_CLOSE_BIN.
+const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+
+function packageVersion(packageJson: string): string | null {
+	try {
+		const version = asRecord(JSON.parse(readFileSync(packageJson, "utf8"))).version;
+		return typeof version === "string" ? version : null;
+	} catch {
+		return null;
+	}
+}
 
 export function adapterLog(cfg: Config, line: string): void {
 	try {
@@ -298,6 +315,19 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		const cwd = c.cwd ?? process.cwd();
 		const snap = new Map<string, string>();
 		snapshotPlans(tool, input, cwd, snap, !isSub);
+		// Drain (src/core/rollover.ts): while a rollover is pending no new subagent starts; the
+		// running ones finish first. Subagents' own tool calls are unaffected.
+		if (!isSub && tool === "task" && cfg.rollover.enabled) {
+			const rc = asRolloverCtx(ctx);
+			if (rc) {
+				const why = spawnRefusal(rolloverSnapshot(rc).state, rc.runningJobs());
+				if (why) {
+					const tasks = Array.isArray(input.tasks) ? input.tasks : [];
+					adapterLog(cfg, `BLOCK spawn ${String(asRecord(tasks[0]).agent ?? "task")}: rollover pending`);
+					return { block: true, reason: why };
+				}
+			}
+		}
 		const d = checkTool(
 			{ tool, input, cwd, agent, agentId: id, calls: n - 1, paths: [], writes: [], command: asString(input.command) },
 			cfg,
@@ -355,25 +385,44 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	// Session rollover (src/core/rollover.ts). Main's session size decides when a handoff note is
 	// asked for at turn end (a sendMessage that triggers Main's next turn). The owner's next message
 	// then starts a fresh session from that note; under `neurastream main` the launcher starts it at
-	// once. The size is re-read at every turn end and tool result; the note request goes out once per session file.
+	// once. The size and the installed version are re-read at every turn end and tool result; the
+	// note request goes out once per session file and note state.
+	// The version this process loaded at start: the plugin code that is actually running.
+	const loadedVersion = packageVersion(process.env.NEURASTREAM_PACKAGE_JSON ?? join(PACKAGE_ROOT, "package.json"));
 	let crossed: { file: string; atMs: number } | null = null;
+	// The note request already sent, keyed by session file + note mtime at send time ("none" when
+	// no note exists): a note that expires while jobs run falls back to need-note with a key no
+	// request was sent for, so it gets exactly one new request and never a loop.
 	let asked: string | null = null;
 	let waitNoticeMs = 0;
 
-	const stateOf = (c: RolloverCtx): RolloverState => {
+	const rolloverSnapshot = (c: RolloverCtx): { state: RolloverState; noteMtimeMs: number | null; stale: boolean; liveVersion: string | null } => {
 		const nowMs = Date.now();
 		const bytes = sizeOf(c.sessionFile);
 		const maxMb = cfg.rollover.max_session_mb;
-		if (bytes < maxMb * 1024 * 1024) crossed = null;
+		const noteMtimeMs = mtimeOf(notePath(c.sessionId));
+		const liveVersion = packageVersion(process.env.NEURASTREAM_PACKAGE_JSON ?? join(PACKAGE_ROOT, "package.json"));
+		const stale = liveVersion === null || loadedVersion === null || liveVersion !== loadedVersion;
+		if (stale) {
+			// Note freshness is measured against the crossing: a stale session counts as crossed
+			// from the first check that saw it, whatever its size.
+			if (crossed?.file !== c.sessionFile) crossed = { file: c.sessionFile, atMs: nowMs };
+		} else if (bytes < maxMb * 1024 * 1024) crossed = null;
 		else if (crossed?.file !== c.sessionFile) crossed = { file: c.sessionFile, atMs: nowMs };
-		return rolloverState({
-			sessionBytes: bytes,
-			maxMb,
-			runningJobs: c.runningJobs(),
-			crossedAtMs: crossed?.atMs ?? null,
-			noteMtimeMs: mtimeOf(notePath(c.sessionId)),
-			nowMs,
-		});
+		return {
+			state: rolloverState({
+				sessionBytes: bytes,
+				maxMb,
+				runningJobs: c.runningJobs(),
+				crossedAtMs: crossed?.atMs ?? null,
+				noteMtimeMs,
+				nowMs,
+				stale,
+			}),
+			noteMtimeMs,
+			stale,
+			liveVersion,
+		};
 	};
 
 	let relaunched = false;
@@ -398,14 +447,19 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	const onSizeCheck = (_e: unknown, ctx: unknown): void => {
 		const c = asRolloverCtx(ctx);
 		if (!cfg.rollover.enabled || !c || !isMain(ctx)) return;
-		const state = stateOf(c);
-		if (state === "need-note" && asked !== c.sessionFile) {
-			asked = c.sessionFile;
+		const snap = rolloverSnapshot(c);
+		const key = `${c.sessionFile}:${snap.noteMtimeMs ?? "none"}`;
+		if (snap.state === "need-note" && asked !== key) {
+			asked = key;
+			// A stale install says so: the request names the version on disk and the one running.
+			const reason = snap.stale
+				? `neurastream on disk is ${snap.liveVersion ?? "unknown"}, this session runs ${loadedVersion ?? "unknown"}`
+				: undefined;
 			pi.sendMessage(
-				{ customType: "main-guard.rollover", content: noteRequest(notePath(c.sessionId), process.env.NEURASTREAM_MAIN_LAUNCHER === "1"), display: false },
+				{ customType: "main-guard.rollover", content: noteRequest(notePath(c.sessionId), process.env.NEURASTREAM_MAIN_LAUNCHER === "1", reason), display: false },
 				{ triggerTurn: true, deliverAs: "nextTurn" },
 			);
-		} else if (state === "ready" && process.env.NEURASTREAM_MAIN_LAUNCHER === "1" && !relaunched) {
+		} else if (snap.state === "ready" && process.env.NEURASTREAM_MAIN_LAUNCHER === "1" && !relaunched) {
 			requestRelaunch(c, notePath(c.sessionId));
 		}
 	};
@@ -428,7 +482,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	const rolloverNotice = (ctx: unknown): string | null => {
 		const c = asRolloverCtx(ctx);
 		if (!cfg.rollover.enabled || !c) return null;
-		const state = stateOf(c);
+		const state = rolloverSnapshot(c).state;
 		if (state === "wait-jobs" && Date.now() - waitNoticeMs >= WAIT_NOTICE_MS) {
 			waitNoticeMs = Date.now();
 			const jobs = c.runningJobs().join(", ");
@@ -444,7 +498,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		const text = asString(e.text);
 		if (!cfg.rollover.enabled || !c || !isMain(ctx)) return undefined;
 		if (asString(e.source) !== "interactive" || text === "" || text.startsWith("/")) return undefined;
-		if (stateOf(c) !== "ready") return undefined;
+		if (rolloverSnapshot(c).state !== "ready") return undefined;
 		return { text: `/main-rollover ${text}` };
 	});
 
@@ -454,7 +508,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 			const c = asRolloverCtx(ctx);
 			if (!c) return;
 			const path = notePath(c.sessionId);
-			const state = stateOf(c);
+			const state = rolloverSnapshot(c).state;
 			if (state === "below") {
 				c.notify("main-rollover: this session is below rollover.max_session_mb; nothing to roll over.");
 				return;

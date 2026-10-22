@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { loadConfig } from "../src/core/config.ts";
-import { buildHandoff, holdsBlock, MAX_NOTE_AGE_MS, noteRequest, notePath, rolloverState } from "../src/core/rollover.ts";
+import { buildHandoff, holdsBlock, MAX_NOTE_AGE_MS, noteRequest, notePath, rolloverState, spawnRefusal } from "../src/core/rollover.ts";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,6 +18,7 @@ function input(over: Partial<Parameters<typeof rolloverState>[0]> = {}) {
 		runningJobs: [] as string[],
 		crossedAtMs: CROSSED,
 		noteMtimeMs: null as number | null,
+		stale: false,
 		nowMs: CROSSED + 1_000,
 		...over,
 	};
@@ -61,6 +62,38 @@ describe("rolloverState", () => {
 
 	test("the max age is 60 minutes", () => {
 		expect(MAX_NOTE_AGE_MS).toBe(60 * 60_000);
+	});
+
+	test("a small session that is not stale stays below", () => {
+		expect(rolloverState(input({ sessionBytes: 10 * MB - 1 }))).toBe("below");
+	});
+
+	test("a small but stale session asks for the note", () => {
+		expect(rolloverState(input({ sessionBytes: 10 * MB - 1, stale: true, crossedAtMs: null }))).toBe("need-note");
+	});
+
+	test("a stale session with a fresh note and running jobs waits for the jobs", () => {
+		expect(rolloverState(input({ sessionBytes: 10 * MB - 1, stale: true, noteMtimeMs: CROSSED + 1, runningJobs: ["sub-1"] }))).toBe("wait-jobs");
+	});
+
+	test("a stale session with a fresh note and no jobs is ready", () => {
+		expect(rolloverState(input({ sessionBytes: 10 * MB - 1, stale: true, noteMtimeMs: CROSSED + 1 }))).toBe("ready");
+	});
+});
+
+describe("spawnRefusal", () => {
+	test("a pending rollover refuses the spawn and names the running jobs", () => {
+		expect(spawnRefusal("need-note", [])).toBe(
+			"main-guard: rollover pending (need-note); no new subagents until the session rolls over. Running: .",
+		);
+		expect(spawnRefusal("wait-jobs", ["sub-1", "sub-2"])).toBe(
+			"main-guard: rollover pending (wait-jobs); no new subagents until the session rolls over. Running: sub-1, sub-2.",
+		);
+	});
+
+	test("below and ready allow the spawn", () => {
+		expect(spawnRefusal("below", ["sub-1"])).toBe(null);
+		expect(spawnRefusal("ready", [])).toBe(null);
 	});
 });
 
@@ -124,6 +157,11 @@ describe("noteRequest", () => {
 		const text = noteRequest("/s/n.md", true);
 		expect(text).toContain("As soon as this note is written and no own jobs run, this session restarts into a fresh one that starts from this note verbatim plus the generated main-start state.");
 		expect(text).not.toContain("When the owner's next message arrives");
+	});
+	test("a stale install names the version on disk and the one running", () => {
+		const text = noteRequest("/s/n.md", false, "neurastream on disk is 0.2.0, this session runs 0.1.13");
+		expect(text).toContain("neurastream on disk is 0.2.0, this session runs 0.1.13");
+		expect(text).toContain("Write a handoff note to /s/n.md (overwrite it).");
 	});
 });
 
