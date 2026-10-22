@@ -80,7 +80,7 @@ export function toExtensionResult(d: Decision): Record<string, unknown> {
 // A push or merge by Main may have landed a completed plan: try closing right away.
 const PUSH_MERGE = /\bgit\b[^\n;|&]*\bpush\b|\b(glab\s+mr|gh\s+pr)\s+merge\b/;
 
-function adapterLog(cfg: Config, line: string): void {
+export function adapterLog(cfg: Config, line: string): void {
 	try {
 		appendFileSync(cfg.paths.guard_log, `${new Date().toISOString()} ${line}\n`);
 	} catch {}

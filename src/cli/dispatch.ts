@@ -4,7 +4,7 @@ import { runAdapterInstall } from "../adapters/omp/install.ts";
 import { runDoctor } from "../adapters/omp/doctor.ts";
 import { GUARD_USAGE, runGuard } from "./guard.ts";
 import { runInit } from "./init.ts";
-import { PORTED, runPorted } from "./commands.ts";
+import { PORTED, runMain, runPorted } from "./commands.ts";
 
 const BINS = [
 	"agent-score",
@@ -43,6 +43,7 @@ export function helpText(): string {
 		"  neurastream config [--json]   print the merged config (defaults + file + env)",
 		"  neurastream guard <event> --json",
 		`                                (${GUARD_USAGE.slice(GUARD_USAGE.indexOf("(") + 1, -1)})`,
+		"  neurastream main [args]       run omp under the launcher (automatic session rollover)",
 		"",
 		"Compatibility bins (same names as today; ports land in later phases):",
 		...BINS.map(b => `  ${b}`),
@@ -57,6 +58,7 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 		console.log(helpText());
 		return 0;
 	}
+	if (cmd === "main") return runMain(args);
 	if (cmd === "init") return runInit(args);
 	if (cmd === "adapter") return runAdapterInstall(args);
 	if (cmd === "config") {

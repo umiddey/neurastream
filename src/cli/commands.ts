@@ -18,6 +18,7 @@ import { wipBackup } from "../core/wip-backup.ts";
 import { wipCheck } from "../core/wip-check.ts";
 import { wipSnapshot } from "../core/wip-snapshot.ts";
 import { runtime } from "./runtime.ts";
+import { runMainLauncher } from "../adapters/omp/launch.ts";
 
 export const PORTED = [
 	"agent-score",
@@ -40,6 +41,10 @@ export const PORTED = [
 	"tmp-snapshot",
 	"heavy-run",
 ] as const;
+
+export async function runMain(args: string[]): Promise<number> {
+	return runMainLauncher(args, runtime().cfg);
+}
 
 export async function runPorted(cmd: string, args: string[]): Promise<number> {
 	const rt = runtime();
