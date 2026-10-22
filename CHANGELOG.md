@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.12
 ### Fixed
 - Fixed: blockers judged words, not actions. `no-push` refused any command containing "push" (commit messages included), `deny-path` treated every word of a shell command as a path (`git diff uv.lock` was refused), and `deny-command` matched heredoc bodies and quoted text. Blockers now judge the command that runs and the files it writes; `git push`, `rm uv.lock` and `echo y > uv.lock` stay refused.
 
