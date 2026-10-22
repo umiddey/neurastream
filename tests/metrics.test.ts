@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Run, RunSource } from "../src/core/adapter.ts";
@@ -20,6 +20,7 @@ import {
 } from "../src/core/metrics.ts";
 import { recordCi, recordFalseAlarm, recordRule, reportCmd } from "../src/cli/metrics.ts";
 import { buildReport } from "../src/core/report.ts";
+import { metricsDueLine } from "../src/core/main-start.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "metrics-"));
 afterAll(() => rmSync(TMP, { recursive: true, force: true }));
@@ -245,4 +246,18 @@ test("metrics report writes notes/metrics.md and exits 0; a bad --days exits 2",
 	expect(reportCmd(cfg, source, ["--days", "7"], NOW)).toBe(0);
 	const written = Bun.file(join(cfg.paths.notes, "metrics.md"));
 	expect(written.size).toBeGreaterThan(0);
+});
+
+test("metricsDueLine: missing report says never, an 8-day-old report is due, a 1-day-old one is fresh", () => {
+	const cfg = cfgWith(join(TMP, "home-due"), "");
+	cfg.metrics.report_days = DAYS;
+	mkdirSync(cfg.paths.notes, { recursive: true });
+	const file = join(cfg.paths.notes, "metrics.md");
+	const nowMs = NOW * 1000;
+	expect(metricsDueLine(cfg, nowMs)).toContain("(last: never)");
+	writeFileSync(file, "report");
+	utimesSync(file, new Date(nowMs - 8 * DAY * 1000), new Date(nowMs - 8 * DAY * 1000));
+	expect(metricsDueLine(cfg, nowMs)).toContain("report due");
+	utimesSync(file, new Date(nowMs - DAY * 1000), new Date(nowMs - DAY * 1000));
+	expect(metricsDueLine(cfg, nowMs)).toBeNull();
 });

@@ -60,12 +60,8 @@ export async function mainStartText(args: string[], cfg: Config, opts: { inherit
 	const childStdin = opts.inheritStdin ? "inherit" : "ignore";
 	const childStderr = opts.inheritStdin ? "inherit" : "pipe";
 	// Weekly self-metrics: nudge the owner's report when notes/metrics.md is missing or older than the window.
-	const reportFile = join(cfg.paths.notes, "metrics.md");
-	const stamp = existsSync(reportFile) ? statSync(reportFile).mtime : null;
-	if (!stamp || Date.now() - stamp.getTime() > cfg.metrics.report_days * 86400 * 1000) {
-		const last = stamp ? stamp.toISOString().slice(0, 10) : "never";
-		say(`metrics: report due (last: ${last}) — run neurastream metrics report, then propose ONE rule change to the owner`);
-	}
+	const due = metricsDueLine(cfg, Date.now());
+	if (due) say(due);
 	say("=== machine");
 	const mg = await run(bin("machine-guard", cfg), [], { stderr: "ignore" });
 	const mgLines = mg.stdout.trim().split("\n");
@@ -113,4 +109,13 @@ export async function mainStartText(args: string[], cfg: Config, opts: { inherit
 export async function mainStart(args: string[], cfg: Config): Promise<number> {
 	process.stdout.write(await mainStartText(args, cfg, { inheritStdin: true }));
 	return 0;
+}
+
+// Due line for the weekly self-metrics report; null when notes/metrics.md is fresh.
+export function metricsDueLine(cfg: Config, nowMs: number): string | null {
+	const reportFile = join(cfg.paths.notes, "metrics.md");
+	const stamp = existsSync(reportFile) ? statSync(reportFile).mtime : null;
+	if (stamp && nowMs - stamp.getTime() <= cfg.metrics.report_days * 86400 * 1000) return null;
+	const last = stamp ? stamp.toISOString().slice(0, 10) : "never";
+	return `metrics: report due (last: ${last}) — run neurastream metrics report, then propose ONE rule change to the owner`;
 }
