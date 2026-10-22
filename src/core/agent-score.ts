@@ -28,7 +28,7 @@ function eventsPath(cfg: Config): string {
 	return join(cfg.paths.score_state, "events.jsonl");
 }
 
-function readEvents(cfg: Config): Record<string, unknown>[] {
+export function readEvents(cfg: Config): Record<string, unknown>[] {
 	const path = eventsPath(cfg);
 	if (!existsSync(path)) return [];
 	return readFileSync(path, "utf8")

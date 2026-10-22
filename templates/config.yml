@@ -118,6 +118,11 @@ rollover:
   enabled: true
   max_session_mb: 5
 
+metrics:
+  report_days: 7
+  correction_patterns: ['\bno\b', 'wrong', 'why did', 'properly', 'not what', 'stop', 'bullshit', 'fuck']
+  ci_pipelines_cmd: ""   # command run in the repo dir with {mr} replaced; stdout must be a JSON array; "" = not set
+
 machine:
   load_over_cores: 4
   load_max: 0

@@ -600,7 +600,8 @@ test("main-start matches the original", () => {
 	chmodSync(oracle, 0o755);
 	const py = runBash(oracle, ["6"], env);
 	const port = runPort("main-start", ["6"], env);
-	const portOut = port.stdout.replace(/=== doctor\n[\s\S]*$/, "");
+	// the metrics report-due line is new (not in the Python oracle); compare the rest
+	const portOut = port.stdout.replace(/=== doctor\n[\s\S]*$/, "").replace(/^metrics: report due .*\n/m, "");
 	expect(stripLoadavg(portOut)).toBe(stripLoadavg(py.stdout));
 	expect(port.stderr).toBe(py.stderr);
 	expect(port.code).toBe(py.code);

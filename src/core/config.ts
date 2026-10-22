@@ -112,6 +112,7 @@ export interface Config {
 		ledger_command: string;
 	};
 	rollover: { enabled: boolean; max_session_mb: number };
+	metrics: { report_days: number; correction_patterns: string[]; ci_pipelines_cmd: string };
 	machine: {
 		load_over_cores: number;
 		load_max: number;
@@ -260,6 +261,14 @@ function check(cfg: Config): void {
 		throw new ConfigError("guards.sub_warn_calls must be <= guards.sub_max_calls");
 	}
 	if (!(cfg.rollover.max_session_mb > 0)) throw new ConfigError("rollover.max_session_mb must be > 0");
+	if (!(cfg.metrics.report_days >= 1)) throw new ConfigError("metrics.report_days must be >= 1");
+	for (const p of cfg.metrics.correction_patterns) {
+		try {
+			new RegExp(p, "i");
+		} catch {
+			throw new ConfigError(`metrics.correction_patterns: not a valid regex: ${p}`);
+		}
+	}
 	for (const [key, value] of Object.entries(cfg.paths)) {
 		if (key === "work_roots") {
 			if (!Array.isArray(value) || value.some(v => typeof v !== "string")) {

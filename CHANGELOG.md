@@ -3,6 +3,9 @@
 ## Unreleased
 ### Security
 - GitHub Actions in `ci.yml` and `publish.yml` are pinned to full commit SHAs (tags kept as trailing comments) and a new `bunfig.toml` sets a 7-day `minimumReleaseAge` install cooldown: a moved tag or a fresh malicious release can no longer reach the `id-token: write` publish job or a local install.
+### Added
+- Self-metrics: `neurastream metrics report [--days N]` compares this window with the previous one (M1 cost per merge, M2 idle calls, M3 CI tries, M4 owner corrections, M5 guard blocks), writes `<notes>/metrics.md`, and marks the worst change. `metrics ci`, `metrics false-alarm` and `metrics rule` record CI tries (via `metrics.ci_pipelines_cmd`), guard false alarms and the owner's rule decisions. main-start shows the report as due when it is missing or older than `metrics.report_days`.
+
 
 ## 0.1.12
 ### Fixed
