@@ -17,13 +17,13 @@
 
 import { execFileSync, spawn } from "node:child_process";
 import { appendFileSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { Decision } from "../../core/adapter.ts";
 import { loadConfig, type Config } from "../../core/config.ts";
 import { checkInject, checkPlanEdit, checkStop, checkTool, MAIN_PLAN_FILE, recordMainResult } from "../../core/guards.ts";
 import { applyQueueEnv } from "../../core/queue/env.ts";
 import { mainStartText } from "../../core/main-start.ts";
-import { buildHandoff, holdsBlock, notePath, noteRequest, type RolloverState, rolloverState } from "../../core/rollover.ts";
+import { buildHandoff, holdsBlock, notePath, noteRequest, relaunchPath, type RolloverState, rolloverState } from "../../core/rollover.ts";
 import * as q from "../../core/queue/lib.ts";
 // Registers the plugin-command matcher into core's writeTargets (side effect).
 import "./package-ops.ts";
@@ -33,6 +33,7 @@ export interface ExtensionHost {
 	on(event: string, cb: (...args: unknown[]) => unknown): void;
 	registerCommand(name: string, opts: { description?: string; handler: (args: unknown, ctx: unknown) => unknown }): void;
 	sendUserMessage(content: string): void;
+	sendMessage(message: { customType: string; content: string; display: boolean }, options: { triggerTurn: boolean; deliverAs: "nextTurn" }): void;
 }
 
 /** The parts of a harness call context the handlers look at. */
@@ -172,6 +173,8 @@ interface RolloverCtx {
 	waitForIdle(): unknown;
 	newSession(opts: { parentSession: string }): unknown;
 	notify(message: string): void;
+	draft(): string;
+	shutdown(): void;
 }
 
 /** Call a method on a harness object by name; undefined when it is not a function. */
@@ -196,6 +199,13 @@ function asRolloverCtx(v: unknown): RolloverCtx | null {
 		waitForIdle: () => call(r, "waitForIdle"),
 		newSession: opts => call(r, "newSession", [opts]),
 		notify: message => call(asRecord(r.ui), "notify", [message]),
+		draft: () => {
+			const text = call(asRecord(r.ui), "getEditorText");
+			return typeof text === "string" ? text : "";
+		},
+		shutdown: () => {
+			call(r, "shutdown");
+		},
 	};
 }
 
@@ -343,8 +353,9 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	});
 
 	// Session rollover (src/core/rollover.ts). Main's session size decides when a handoff note is
-	// asked for; the owner's next message then starts a fresh session from that note. The size is
-	// re-read at every turn end and tool result; the note instruction goes out once per session file.
+	// asked for at turn end (a sendMessage that triggers Main's next turn). The owner's next message
+	// then starts a fresh session from that note; under `neurastream main` the launcher starts it at
+	// once. The size is re-read at every turn end and tool result; the note request goes out once per session file.
 	let crossed: { file: string; atMs: number } | null = null;
 	let asked: string | null = null;
 	let waitNoticeMs = 0;
@@ -365,10 +376,38 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		});
 	};
 
+	let relaunched = false;
+	// The launcher restarts omp: the request file carries the note and the editor draft, and omp
+	// shuts down only after the file is written. A failed write keeps the session running.
+	const requestRelaunch = (c: RolloverCtx, note: string): void => {
+		try {
+			mkdirSync(dirname(relaunchPath()), { recursive: true });
+			writeFileSync(
+				relaunchPath(),
+				`${JSON.stringify({ previousSessionFile: c.sessionFile, notePath: note, draft: c.draft() })}\n`,
+			);
+		} catch (err) {
+			adapterLog(cfg, `rollover: relaunch request not written: ${String(err)}`);
+			return;
+		}
+		relaunched = true;
+		adapterLog(cfg, `rollover: relaunch requested from ${c.sessionFile}`);
+		c.shutdown();
+	};
+
 	const onSizeCheck = (_e: unknown, ctx: unknown): void => {
 		const c = asRolloverCtx(ctx);
 		if (!cfg.rollover.enabled || !c || !isMain(ctx)) return;
-		stateOf(c);
+		const state = stateOf(c);
+		if (state === "need-note" && asked !== c.sessionFile) {
+			asked = c.sessionFile;
+			pi.sendMessage(
+				{ customType: "main-guard.rollover", content: noteRequest(notePath(c.sessionId), process.env.NEURASTREAM_MAIN_LAUNCHER === "1"), display: false },
+				{ triggerTurn: true, deliverAs: "nextTurn" },
+			);
+		} else if (state === "ready" && process.env.NEURASTREAM_MAIN_LAUNCHER === "1" && !relaunched) {
+			requestRelaunch(c, notePath(c.sessionId));
+		}
 	};
 	pi.on("agent_end", onSizeCheck);
 
@@ -385,15 +424,11 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		};
 	});
 
-	/** Rollover notice for Main's next turn, or null. Asks for the note once per session file; throttles the wait-jobs notice. */
+	/** Wait-jobs notice for Main's next turn, throttled; null otherwise. The note request goes out at turn end. */
 	const rolloverNotice = (ctx: unknown): string | null => {
 		const c = asRolloverCtx(ctx);
 		if (!cfg.rollover.enabled || !c) return null;
 		const state = stateOf(c);
-		if (state === "need-note" && asked !== c.sessionFile) {
-			asked = c.sessionFile;
-			return noteRequest(notePath(c.sessionId));
-		}
 		if (state === "wait-jobs" && Date.now() - waitNoticeMs >= WAIT_NOTICE_MS) {
 			waitNoticeMs = Date.now();
 			const jobs = c.runningJobs().join(", ");

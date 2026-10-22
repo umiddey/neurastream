@@ -1,6 +1,7 @@
 // Session rollover, pure core: when Main's session file has grown past `rollover.max_session_mb`,
-// Main writes a handoff note first; the owner's next message then opens a fresh session that
-// starts from the note plus the generated state. Decisions only: the adapter reads the file size,
+// Main writes a handoff note first; the owner's next message then opens a fresh session that starts
+// from the note plus the generated state. Under `neurastream main` the launcher starts that session
+// without waiting for the owner. Decisions only: the adapter reads the file size,
 // the jobs and the note mtime, and performs the switch. No harness names here.
 
 import { join } from "node:path";
@@ -71,16 +72,23 @@ export function holdsBlock(holds: readonly string[]): string {
 }
 
 /** The one-time note instruction for Main's next turn. */
-export function noteRequest(path: string): string {
+export function noteRequest(path: string, auto = false): string {
 	return [
 		"Session rollover: this session has grown past rollover.max_session_mb.",
 		`Write a handoff note to ${path} (overwrite it). Cover the work in progress and its state, the decisions made and why, the next step, and the files involved.`,
 		"Do not list holds or owner blockers in the note; they come from the plans' WAITING on owner lines.",
-		"When the owner's next message arrives, this session closes and a fresh one starts from that note verbatim plus the generated main-start state.",
+		auto
+			? "As soon as this note is written and no own jobs run, omp restarts into a fresh session that starts from this note verbatim plus the generated main-start state."
+			: "When the owner's next message arrives, this session closes and a fresh one starts from that note verbatim plus the generated main-start state.",
 	].join("\n");
 }
 
 /** Where Main writes the handoff note for one session. */
 export function notePath(sessionId: string, stateDir = stateDirPath()): string {
 	return join(stateDir, "rollover", `${sessionId}.md`);
+}
+
+/** The launcher's relaunch request file: written by omp just before it exits under `neurastream main`. */
+export function relaunchPath(stateDir = stateDirPath()): string {
+	return join(stateDir, "rollover", "relaunch.json");
 }

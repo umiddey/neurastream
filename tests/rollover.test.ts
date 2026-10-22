@@ -120,6 +120,11 @@ describe("noteRequest", () => {
 		expect(text).toContain("Write a handoff note to /s/n.md (overwrite it).");
 		expect(text).toContain("Do not list holds or owner blockers in the note; they come from the plans' WAITING on owner lines.");
 	});
+	test("auto mode says the note starts a relaunch instead of waiting for the owner", () => {
+		const text = noteRequest("/s/n.md", true);
+		expect(text).toContain("As soon as this note is written and no own jobs run, omp restarts into a fresh session that starts from this note verbatim plus the generated main-start state.");
+		expect(text).not.toContain("When the owner's next message arrives");
+	});
 });
 
 describe("notePath", () => {

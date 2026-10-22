@@ -4,12 +4,12 @@
 // a unique session id and removed afterwards.
 
 import { afterAll, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createOmpAdapter } from "../src/adapters/omp/index.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
-import { notePath } from "../src/core/rollover.ts";
+import { notePath, relaunchPath } from "../src/core/rollover.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
@@ -21,6 +21,8 @@ interface FakeHost {
 	on(event: string, cb: Handler): void;
 	registerCommand(name: string, opts: { handler: CommandHandler }): void;
 	sendUserMessage(content: string): void;
+	messages: Array<{ message: { customType: string; content: string; display: boolean }; options: { triggerTurn: boolean; deliverAs: string } }>;
+	sendMessage(message: { customType: string; content: string; display: boolean }, options: { triggerTurn: boolean; deliverAs: string }): void;
 	/** Every handler's non-undefined result, in registration order. */
 	emit(event: string, payload: unknown, ctx: MainCtx): Promise<unknown[]>;
 }
@@ -29,9 +31,11 @@ function fakeHost(): FakeHost {
 	const handlers = new Map<string, Handler[]>();
 	const commands = new Map<string, CommandHandler>();
 	const sent: string[] = [];
+	const messages: FakeHost["messages"] = [];
 	return {
 		commands,
 		sent,
+		messages,
 		on(event, cb) {
 			handlers.set(event, [...(handlers.get(event) ?? []), cb]);
 		},
@@ -40,6 +44,9 @@ function fakeHost(): FakeHost {
 		},
 		sendUserMessage(content) {
 			sent.push(content);
+		},
+		sendMessage(message, options) {
+			messages.push({ message, options });
 		},
 		async emit(event, payload, ctx) {
 			const out: unknown[] = [];
@@ -63,7 +70,8 @@ interface MainCtx {
 	getAsyncJobSnapshot(): { running: Job[]; recent: unknown[]; delivery: unknown };
 	waitForIdle(): Promise<void>;
 	newSession(opts?: { parentSession?: string }): Promise<{ cancelled: boolean }>;
-	ui: { notify(message: string): void };
+	shutdown(): void;
+	ui: { notify(message: string): void; getEditorText(): string };
 }
 
 interface RolloverMessage {
@@ -99,6 +107,9 @@ const SESSION_FILE = join(TMP, "session.jsonl");
 const SESSION_ID = `rollover-test-${process.pid}-${Date.now()}`;
 const NOTE = notePath(SESSION_ID);
 const BIG = "x".repeat(4096);
+let jobs: Job[] = [];
+let draft = "";
+let shutdowns = 0;
 
 afterAll(() => {
 	rmSync(TMP, { recursive: true, force: true });
@@ -115,13 +126,16 @@ function mainCtx(over: Partial<MainCtx> = {}): MainCtx {
 		agent: { kind: "main", id: "main" },
 		cwd: TMP,
 		sessionManager: { getSessionId: () => SESSION_ID, getSessionFile: () => SESSION_FILE },
-		getAsyncJobSnapshot: () => ({ running: [], recent: [], delivery: {} }),
+		getAsyncJobSnapshot: () => ({ running: jobs, recent: [], delivery: {} }),
 		waitForIdle: async () => {},
 		newSession: async opts => {
 			newSessions.push(opts);
 			return { cancelled: false };
 		},
-		ui: { notify: message => notes.push(message) },
+		shutdown: () => {
+			shutdowns++;
+		},
+		ui: { notify: message => notes.push(message), getEditorText: () => draft },
 		...over,
 	};
 }
@@ -141,6 +155,10 @@ function resetState(): void {
 	notes.length = 0;
 	rmSync(NOTE, { force: true });
 	writeFileSync(SESSION_FILE, "");
+	jobs = [];
+	draft = "";
+	shutdowns = 0;
+	rmSync(relaunchPath(), { force: true });
 }
 
 test("below the threshold: no rollover instruction", async () => {
@@ -154,19 +172,88 @@ test("below the threshold: no rollover instruction", async () => {
 	expect(rolloverMessages(results)).toEqual([]);
 });
 
-test("over the threshold without a note: instruction names the note path, once", async () => {
+test("over the threshold: the note request goes out at turn end, once per session file", async () => {
 	resetState();
 	const host = fakeHost();
 	createOmpAdapter(host, overCfg);
 	const ctx = mainCtx();
 	writeFileSync(SESSION_FILE, BIG);
 	await host.emit("agent_end", {}, ctx);
-	const first = rolloverMessages(await host.emit("before_agent_start", { prompt: "next" }, ctx));
-	expect(first.length).toBe(1);
-	expect(first[0]?.content).toContain(NOTE);
-	expect(first[0]?.content).toContain("handoff note");
-	const second = rolloverMessages(await host.emit("before_agent_start", { prompt: "again" }, ctx));
-	expect(second).toEqual([]);
+	expect(host.messages.length).toBe(1);
+	const sent = host.messages[0];
+	expect(sent?.message.customType).toBe("main-guard.rollover");
+	expect(sent?.message.content).toContain(NOTE);
+	expect(sent?.message.content).toContain("handoff note");
+	expect(sent?.message.display).toBe(false);
+	expect(sent?.options).toEqual({ triggerTurn: true, deliverAs: "nextTurn" });
+	await host.emit("agent_end", {}, ctx);
+	expect(host.messages.length).toBe(1);
+	// The next prompt no longer carries the request: it went out at turn end.
+	expect(rolloverMessages(await host.emit("before_agent_start", { prompt: "next" }, ctx))).toEqual([]);
+});
+
+async function withLauncher(value: string | undefined, fn: () => Promise<void>): Promise<void> {
+	const before = process.env.NEURASTREAM_MAIN_LAUNCHER;
+	if (value === undefined) delete process.env.NEURASTREAM_MAIN_LAUNCHER;
+	else process.env.NEURASTREAM_MAIN_LAUNCHER = value;
+	try {
+		await fn();
+	} finally {
+		if (before === undefined) delete process.env.NEURASTREAM_MAIN_LAUNCHER;
+		else process.env.NEURASTREAM_MAIN_LAUNCHER = before;
+	}
+}
+
+test("launcher set, ready: relaunch.json has the three fields and omp shuts down once", async () => {
+	resetState();
+	draft = "half-typed";
+	const host = fakeHost();
+	createOmpAdapter(host, overCfg);
+	const ctx = mainCtx();
+	await withLauncher("1", async () => {
+		await armReady(host, ctx, "## In progress\nstep");
+		await host.emit("agent_end", {}, ctx);
+		await host.emit("agent_end", {}, ctx);
+	});
+	expect(shutdowns).toBe(1);
+	expect(JSON.parse(readFileSync(relaunchPath(), "utf8"))).toEqual({
+		previousSessionFile: SESSION_FILE,
+		notePath: NOTE,
+		draft: "half-typed",
+	});
+});
+
+test("launcher unset, ready: no shutdown and no relaunch.json", async () => {
+	resetState();
+	const host = fakeHost();
+	createOmpAdapter(host, overCfg);
+	const ctx = mainCtx();
+	await withLauncher(undefined, async () => {
+		await armReady(host, ctx, "## In progress\nstep");
+		await host.emit("agent_end", {}, ctx);
+	});
+	expect(shutdowns).toBe(0);
+	expect(existsSync(relaunchPath())).toBe(false);
+});
+
+test("launcher set, own job running: no relaunch; once the job is gone the next turn end relaunches", async () => {
+	resetState();
+	jobs = [{ label: "sub-1" }];
+	const host = fakeHost();
+	createOmpAdapter(host, overCfg);
+	const ctx = mainCtx();
+	await withLauncher("1", async () => {
+		await armReady(host, ctx, "## In progress\nstep");
+		await host.emit("agent_end", {}, ctx);
+	});
+	expect(shutdowns).toBe(0);
+	expect(existsSync(relaunchPath())).toBe(false);
+	jobs = [];
+	await withLauncher("1", async () => {
+		await host.emit("agent_end", {}, ctx);
+	});
+	expect(shutdowns).toBe(1);
+	expect(existsSync(relaunchPath())).toBe(true);
 });
 
 test("ready: an interactive plain message becomes /main-rollover <text>", async () => {
@@ -276,3 +363,16 @@ test("agent host: a child's stderr is appended to the handoff text, right after 
 	expect(handoff).toContain("QC-ERR");
 	expect(handoff.indexOf("QC-OUT")).toBeLessThan(handoff.indexOf("QC-ERR"));
 }, 60_000);
+
+test("launcher set: a non-main session never relaunches", async () => {
+	resetState();
+	const host = fakeHost();
+	createOmpAdapter(host, overCfg);
+	const ctx = mainCtx({ agent: { kind: "sub", id: "w1" } });
+	await withLauncher("1", async () => {
+		await armReady(host, ctx, "## In progress\nstep");
+		await host.emit("agent_end", {}, ctx);
+	});
+	expect(shutdowns).toBe(0);
+	expect(existsSync(relaunchPath())).toBe(false);
+});
