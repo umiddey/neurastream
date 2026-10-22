@@ -63,6 +63,10 @@ export function agentLedger(args: string[], cfg: Config, source: RunSource): num
 	process.stdout.write(`TOTAL ${pyFixed(tt / 1e6, 1)} Mtok, $${pyFixed(tc, 2)} list: whole-run totals of sessions active in the last ${formatG(hours)}h\n`);
 
 	if (!args.includes("--cap")) return 0;
+	// --incident <id>: the cap check runs while Main is spawning the fix for a recorded incident;
+	// then OVER-BUDGET lines must not fail the cap (a ledger bug cannot block its own fix).
+	// Provider slots and the priority check stay binding.
+	const incident = opt(args, "--incident");
 	const live: Record<string, string[]> = {};
 	const notLive: string[] = [];
 	for (const r of rows) {
@@ -105,5 +109,5 @@ export function agentLedger(args: string[], cfg: Config, source: RunSource): num
 	if (prioIdle) {
 		process.stdout.write(`PRIORITY IDLE: no running agent for ${idleIds.join(", ")} (owner queue PRIORITY-ID). Start it first (name must contain the ID), or spawn it with --priority.\n`);
 	}
-	return full.length || prioIdle || over.length ? 1 : 0;
+	return full.length || prioIdle || (over.length > 0 && incident === undefined) ? 1 : 0;
 }

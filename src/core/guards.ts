@@ -13,12 +13,16 @@
 //   - main: 5 project-file changes per `main_window_min` window (owner message resets), spawn
 //     gate (allow-list, task-only, open plan, new Progress since last run), bypass launches go
 //     through the same plan gate, cancel-pending blocks spawns and stops, keep-working stop rule
+//   - incidents: while an incident is open (src/core/incidents.ts: no plan/dismiss/fixed record)
+//     every Main prompt lists it, a spawn must be fix work (its plan cites `INCIDENT <id>`), and
+//     the stop is refused; an incident with a plan no longer blocks (owner 2026-10-22)
 
 import { execFileSync } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Decision, InjectEvent, PlanEditEvent, SpawnEvent, StopEvent, ToolEvent } from "./adapter.ts";
 import type { Config } from "./config.ts";
+import { openIncidents, type IncidentView } from "./incidents.ts";
 import * as q from "./queue/lib.ts";
 import type { Plan } from "./queue/lib.ts";
 
@@ -302,6 +306,50 @@ function editWindow(e: ToolEvent, input: Record<string, unknown>, cfg: Config): 
 	return ALLOW;
 }
 
+// --- incidents (src/core/incidents.ts): open ones push Main until each has a plan or dismissal ---
+
+function openIncidentList(cfg: Config): IncidentView[] {
+	try {
+		return openIncidents(cfg);
+	} catch (err) {
+		log(cfg.paths.guard_log, `cannot read incidents: ${err}`);
+		return [];
+	}
+}
+
+/** The injected prompt line for one open incident, with the two ways to clear it. */
+export function incidentLine(i: IncidentView): string {
+	return (
+		`INCIDENT ${i.id} [${i.source}/${i.kind}]: ${i.summary} — plan the fix: \`neurastream incident plan ${i.id} <plan.md>\`` +
+		` (the plan must contain "INCIDENT ${i.id}"), or dismiss: \`neurastream incident dismiss ${i.id} --why "<text>"\``
+	);
+}
+
+/**
+ * While an incident is open, a launch must be fix work: its brief (or a plan the brief names)
+ * cites `INCIDENT <id>` of an open incident. Anything else is refused until every open incident
+ * has a plan or a dismissal. Returns the refusal reason, or null; `label` names the log line.
+ */
+function incidentSpawnProblem(label: string, brief: string, namedPlans: string[], cfg: Config): string | null {
+	const open = openIncidentList(cfg);
+	if (!open.length) return null;
+	const texts = [brief];
+	for (const f of namedPlans) {
+		try {
+			texts.push(readFileSync(f, "utf8"));
+		} catch {}
+	}
+	const remaining = open.filter(i => !texts.some(t => t.includes(`INCIDENT ${i.id}`)));
+	if (!remaining.length) return null;
+	const ids = remaining.map(i => i.id).join(", ");
+	log(cfg.paths.guard_log, `BLOCK ${label}: open incidents: ${ids}`);
+	return (
+		`open incident(s) ${ids} must be acted on before other work. Write a plan that contains "INCIDENT <id>" ` +
+		`(listed in its repo INDEX.md) and record it: \`neurastream incident plan <id> <plan.md>\`, or dismiss the ` +
+		'incident: `neurastream incident dismiss <id> --why "<text>"`. Fix work goes through: name that plan in the brief.'
+	);
+}
+
 function mainTool(e: ToolEvent, input: Record<string, unknown>, cfg: Config): Decision {
 	if (e.tool === "task") {
 		const pending = q.cancelPending();
@@ -315,6 +363,8 @@ function mainTool(e: ToolEvent, input: Record<string, unknown>, cfg: Config): De
 			log(cfg.paths.guard_log, `BLOCK spawn: ${why}`);
 			return deny(`main-guard: ${why}`);
 		}
+		const inc = incidentSpawnProblem("spawn", JSON.stringify(input), files, cfg);
+		if (inc) return deny(`main-guard: ${inc}`);
 		recordSpawns(files);
 		return ALLOW;
 	}
@@ -332,6 +382,8 @@ function mainTool(e: ToolEvent, input: Record<string, unknown>, cfg: Config): De
 				log(cfg.paths.guard_log, `BLOCK bypass launch: ${why}`);
 				return deny(`main-guard: ${why}`);
 			}
+			const inc = incidentSpawnProblem("bypass launch", command, named, cfg);
+			if (inc) return deny(`main-guard: ${inc}`);
 			if (named.length) recordSpawns(named);
 		}
 	}
@@ -455,6 +507,8 @@ export function checkSpawn(e: SpawnEvent, cfg: Config): Decision {
 		log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${why}`);
 		return deny(`main-guard: ${why}`);
 	}
+	const inc = incidentSpawnProblem(`spawn ${e.agent}`, e.brief, named, cfg);
+	if (inc) return deny(`main-guard: ${inc}`);
 	recordSpawns(named);
 	return ALLOW;
 }
@@ -478,8 +532,9 @@ export function flagCancel(text: string, cfg: Config): string {
 }
 
 /**
- * prompt/owner message: inject the queue summary, flag cancel wording, reset Main's edit window
- * and the stop counters (the original resets them at every user message). A turn the harness
+ * prompt/owner message: inject the queue summary, flag cancel wording, list open incidents, reset
+ * Main's edit window and the stop counters (the original resets them at every user message). A
+ * turn the harness
  * starts from this guard's own stop continuation ("main-guard: …") is not an owner message: it
  * keeps the counters and the edit window, else every continuation reset the idle streak and a
  * model that only answers text was nudged again forever (2026-10-21 OOM: ~205 agent starts in one
@@ -496,10 +551,12 @@ export function checkInject(e: InjectEvent, cfg: Config): Decision {
 		summary = `Queue unreadable (${q.INDEX}): ${err}`;
 	}
 	const cancel = continuation ? "" : flagCancel(e.inject, cfg);
+	const incidents = openIncidentList(cfg);
+	const incidentText = incidents.length ? `\n${incidents.map(incidentLine).join("\n")}` : "";
 	return {
 		allow: true,
 		reason: "",
-		inject: `${summary}\n(main-guard: read ${q.INDEX} and the listed repo INDEX.md files are summarised above; work the open plans, close finished ones with queue-close.)${cancel}`,
+		inject: `${summary}\n(main-guard: read ${q.INDEX} and the listed repo INDEX.md files are summarised above; work the open plans, close finished ones with queue-close.)${cancel}${incidentText}`,
 		...(continuation ? {} : { state: { callsSinceStop: 0, idleStops: 0 } }),
 	};
 }
@@ -624,7 +681,8 @@ export function liveSubagents(ledgerOut: string): string[] {
 
 /**
  * stop: Main may not stop while an open plan is not parked "WAITING on owner" (or the queue has a
- * problem) and no subagent is alive to wake it. Three stop attempts in a row with zero tool calls
+ * problem) and no subagent is alive to wake it; an open incident (no plan, no dismissal) blocks
+ * the stop regardless of live subagents. Three stop attempts in a row with zero tool calls
  * in between are let through. Returns the next counters in `state`.
  */
 export function checkStop(e: StopEvent, cfg: Config): Decision {
@@ -643,6 +701,23 @@ export function checkStop(e: StopEvent, cfg: Config): Decision {
 		state.callsSinceStop = 0;
 		log(cfg.paths.guard_log, `BLOCK stop: cancel pending (${pending.words})`);
 		return { allow: false, reason: `main-guard: ${CANCEL_TODO} Flagged: "${pending.words}"`, state };
+	}
+	// Same release valve as cancel-pending: an idle Main that cannot act is let out after two
+	// empty stop attempts instead of looping forever. Live subagents do not clear this block.
+	const incidents = openIncidentList(cfg);
+	if (incidents.length && state.idleStops < 2) {
+		if (state.callsSinceStop === 0) state.idleStops++;
+		state.callsSinceStop = 0;
+		const ids = incidents.map(i => i.id).join(", ");
+		log(cfg.paths.guard_log, `BLOCK stop: open incidents: ${ids}`);
+		return {
+			allow: false,
+			reason:
+				`main-guard: ${incidents.length} open incident(s) with no plan and no dismissal: ${ids}. Plan the fix: ` +
+				"`neurastream incident plan <id> <plan.md>` (the plan must contain \"INCIDENT <id>\"), or dismiss it: " +
+				'`neurastream incident dismiss <id> --why "<text>"`. The stop stays refused while an incident is open.',
+			state,
+		};
 	}
 	if (open.length === 0) return { ...ALLOW, state };
 	if (liveSubagents(e.ledgerText).length > 0) {
