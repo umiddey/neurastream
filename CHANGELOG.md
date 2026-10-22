@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+### Fixed
+- agent-ledger: a helper whose session ends on a final answer (last assistant message `stop`/`end_turn` with text, no `yield`) shows `done` instead of staying `RUNNING`, so it no longer trips `agent-ledger --cap` with a phantom `OVER-BUDGET`; `MAIN` sessions keep today's rule.
+
 ## 0.1.14
 ### Fixed
 - Main rolls over even when the running plugin is older than the installed package: at every turn end the adapter re-reads the `package.json` it was loaded from, a different or unreadable version counts as over the rollover threshold, and the note request names both versions.
