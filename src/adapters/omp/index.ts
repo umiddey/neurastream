@@ -24,7 +24,7 @@ import { loadConfig, type Config } from "../../core/config.ts";
 import { checkInject, checkPlanEdit, checkStop, checkTool, MAIN_PLAN_FILE, recordMainResult } from "../../core/guards.ts";
 import { applyQueueEnv } from "../../core/queue/env.ts";
 import { mainStartText } from "../../core/main-start.ts";
-import { buildHandoff, holdsBlock, notePath, noteRequest, relaunchPath, type RolloverState, rolloverState } from "../../core/rollover.ts";
+import { buildHandoff, holdsBlock, notePath, noteRequest, relaunchPath, rolloverState, spawnRefusal, type RolloverState } from "../../core/rollover.ts";
 import * as q from "../../core/queue/lib.ts";
 // Registers the plugin-command matcher into core's writeTargets (side effect).
 import "./package-ops.ts";
@@ -315,6 +315,19 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		const cwd = c.cwd ?? process.cwd();
 		const snap = new Map<string, string>();
 		snapshotPlans(tool, input, cwd, snap, !isSub);
+		// Drain (src/core/rollover.ts): while a rollover is pending no new subagent starts; the
+		// running ones finish first. Subagents' own tool calls are unaffected.
+		if (!isSub && tool === "task" && cfg.rollover.enabled) {
+			const rc = asRolloverCtx(ctx);
+			if (rc) {
+				const why = spawnRefusal(rolloverSnapshot(rc).state, rc.runningJobs());
+				if (why) {
+					const tasks = Array.isArray(input.tasks) ? input.tasks : [];
+					adapterLog(cfg, `BLOCK spawn ${String(asRecord(tasks[0]).agent ?? "task")}: rollover pending`);
+					return { block: true, reason: why };
+				}
+			}
+		}
 		const d = checkTool(
 			{ tool, input, cwd, agent, agentId: id, calls: n - 1, paths: [], writes: [], command: asString(input.command) },
 			cfg,

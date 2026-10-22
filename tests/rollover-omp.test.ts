@@ -247,6 +247,83 @@ test("a note that is no longer fresh gets exactly one new request, then none for
 	expect(host.messages.length).toBe(2); // never a loop for the same expired note
 });
 
+const TASK_CALL = { toolName: "task", input: { tasks: [{ agent: "glmfix", context: "do it", task: "work" }] } };
+
+/** A sandbox subagents.md whose Allowed list contains the test agent; QUEUE_SUBAGENTS points at it. */
+function sandboxAllowedAgents(): string {
+	const file = join(TMP, "subagents-allowed.md");
+	writeFileSync(file, "## Allowed\n\n- `glmfix`\n");
+	return file;
+}
+
+test("rollover pending (need-note): a Main task spawn is refused and lands in guard_log", async () => {
+	resetState();
+	mkdirSync(dirname(baseCfg.paths.guard_log), { recursive: true });
+	const host = fakeHost();
+	createOmpAdapter(host, overCfg);
+	const ctx = mainCtx();
+	writeFileSync(SESSION_FILE, BIG);
+	await host.emit("agent_end", {}, ctx); // no note yet: need-note
+	const r = (await host.emit("tool_call", TASK_CALL, ctx)) as Array<{ block?: boolean; reason?: string }>;
+	expect(r).toEqual([
+		{ block: true, reason: "main-guard: rollover pending (need-note); no new subagents until the session rolls over. Running: ." },
+	]);
+	expect(readFileSync(baseCfg.paths.guard_log, "utf8")).toContain("BLOCK spawn glmfix: rollover pending");
+});
+
+test("rollover pending (wait-jobs): the refusal names the running jobs", async () => {
+	resetState();
+	jobs = [{ label: "sub-1" }];
+	const host = fakeHost();
+	createOmpAdapter(host, overCfg);
+	const ctx = mainCtx();
+	await armReady(host, ctx, "## In progress\nstep");
+	const r = (await host.emit("tool_call", TASK_CALL, ctx)) as Array<{ block?: boolean; reason?: string }>;
+	expect(r).toEqual([
+		{ block: true, reason: "main-guard: rollover pending (wait-jobs); no new subagents until the session rolls over. Running: sub-1." },
+	]);
+});
+
+test("below and ready: a Main task spawn passes the drain and reaches the plan gate", async () => {
+	resetState();
+	const subagents = sandboxAllowedAgents();
+	const before = process.env.QUEUE_SUBAGENTS;
+	try {
+		const belowHost = fakeHost();
+		createOmpAdapter(belowHost, belowCfg);
+		// createOmpAdapter re-applies the config env, so the sandbox allow-list is set after it.
+		process.env.QUEUE_SUBAGENTS = subagents;
+		const ctx = mainCtx();
+		writeFileSync(SESSION_FILE, "x"); // small, not stale: below
+		const below = (await belowHost.emit("tool_call", TASK_CALL, ctx)) as Array<{ block?: boolean; reason?: string }>;
+		expect(below[0]?.reason ?? "").toContain("an implementer needs an open plan");
+		expect(below[0]?.reason ?? "").not.toContain("rollover pending");
+
+		const readyHost = fakeHost();
+		createOmpAdapter(readyHost, overCfg);
+		process.env.QUEUE_SUBAGENTS = subagents;
+		await armReady(readyHost, ctx, "## In progress\nstep"); // fresh note, no jobs: ready
+		const ready = (await readyHost.emit("tool_call", TASK_CALL, ctx)) as Array<{ block?: boolean; reason?: string }>;
+		expect(ready[0]?.reason ?? "").toContain("an implementer needs an open plan");
+		expect(ready[0]?.reason ?? "").not.toContain("rollover pending");
+	} finally {
+		if (before === undefined) delete process.env.QUEUE_SUBAGENTS;
+		else process.env.QUEUE_SUBAGENTS = before;
+		rmSync(subagents, { force: true });
+	}
+});
+
+test("a subagent's task call is never drained", async () => {
+	resetState();
+	const host = fakeHost();
+	createOmpAdapter(host, overCfg);
+	const ctx = mainCtx({ agent: { kind: "sub", id: "w1" } });
+	writeFileSync(SESSION_FILE, BIG);
+	await host.emit("agent_end", {}, ctx);
+	const r = (await host.emit("tool_call", TASK_CALL, ctx)) as Array<{ block?: boolean; reason?: string }>;
+	expect(r).toEqual([]); // no block, and no rollover-pending refusal
+});
+
 async function withLauncher(value: string | undefined, fn: () => Promise<void>): Promise<void> {
 	const before = process.env.NEURASTREAM_MAIN_LAUNCHER;
 	if (value === undefined) delete process.env.NEURASTREAM_MAIN_LAUNCHER;

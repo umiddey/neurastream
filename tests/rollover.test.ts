@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { loadConfig } from "../src/core/config.ts";
-import { buildHandoff, holdsBlock, MAX_NOTE_AGE_MS, noteRequest, notePath, rolloverState } from "../src/core/rollover.ts";
+import { buildHandoff, holdsBlock, MAX_NOTE_AGE_MS, noteRequest, notePath, rolloverState, spawnRefusal } from "../src/core/rollover.ts";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -78,6 +78,22 @@ describe("rolloverState", () => {
 
 	test("a stale session with a fresh note and no jobs is ready", () => {
 		expect(rolloverState(input({ sessionBytes: 10 * MB - 1, stale: true, noteMtimeMs: CROSSED + 1 }))).toBe("ready");
+	});
+});
+
+describe("spawnRefusal", () => {
+	test("a pending rollover refuses the spawn and names the running jobs", () => {
+		expect(spawnRefusal("need-note", [])).toBe(
+			"main-guard: rollover pending (need-note); no new subagents until the session rolls over. Running: .",
+		);
+		expect(spawnRefusal("wait-jobs", ["sub-1", "sub-2"])).toBe(
+			"main-guard: rollover pending (wait-jobs); no new subagents until the session rolls over. Running: sub-1, sub-2.",
+		);
+	});
+
+	test("below and ready allow the spawn", () => {
+		expect(spawnRefusal("below", ["sub-1"])).toBe(null);
+		expect(spawnRefusal("ready", [])).toBe(null);
 	});
 });
 
