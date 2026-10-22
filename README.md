@@ -24,7 +24,7 @@ flowchart LR
 | Part | What it enforces |
 |---|---|
 | Queue (`queue-check`, `queue-close`, `queue-cancel`) | Every open plan is listed in an index and follows a template. A plan leaves the queue only when its branch is merged into remote main and its done check passes; a failing check reopens it. A cancelled plan's unmerged work is saved under `refs/queue-archive/`. |
-| Blockers | Each plan's phase 0 lists what helpers may not do: push, touch a path, run a command, or write a text. The guard refuses those calls. |
+| Blockers | Each plan's phase 0 lists what helpers may not do: push, touch a path, run a command, or write a text. The guard judges the command that runs and the files it changes, not words inside commit messages, quoted text or heredoc bodies: `git commit -m "... push ..."` is allowed, `git push` is refused. |
 | Guards | Helpers may only edit their plan's `## Progress`; they get a warning at call 90 and are stopped at call 100. Protected files need an owner unlock (a file the owner touches, valid 30 minutes). |
 | Ledger (`agent-ledger`) | Tokens, cost, state and exit reason per agent; `--cap` refuses a spawn when a provider already runs 2. |
 | Scoring (`agent-score`) | Points only for work Main accepted by commit, times the phase difficulty. Ranked per dollar and per hour. |
