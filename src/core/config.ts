@@ -119,6 +119,8 @@ export interface Config {
 		contradiction_grace_min: number;
 		/** Same guard BLOCK reason within one hour that means a block loop. */
 		block_repeat: number;
+		/** Seconds between scans of the expensive detectors (D1 ledger, D3 block loop). */
+		scan_interval_sec: number;
 		/** A daily metric must be worse than the 7-day mean by at least this percent. */
 		daily_worse_pct: number;
 		/** Per-metric daily floors (keys: m1, m2, m3, m4_corrections, m4_questions, m5): a regression below the floor is noise. */

@@ -12,7 +12,7 @@
 //     times within one hour.
 //   D4 owner-correction: an owner message matching the M4 correction patterns.
 
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Run } from "./adapter.ts";
@@ -20,7 +20,7 @@ import type { Config } from "./config.ts";
 import { nowSec, strftime } from "./clock.ts";
 import { log } from "./guards.ts";
 import { addIncident, type IncidentView } from "./incidents.ts";
-import { readBlocks, type GuardBlock } from "./metrics.ts";
+import type { GuardBlock } from "./metrics.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -148,6 +148,8 @@ export interface DetectorInput {
 	/** D1: finished task results (the harness adapter parses Main's session file) and the ledger runs. */
 	results?: TaskResult[];
 	runs?: Run[];
+	/** D3: the guard BLOCK lines, gathered by the caller behind the scan gate (runDetectorsGated). */
+	blocks?: GuardBlock[];
 	/** D2: the last Main bash tool result. */
 	bash?: { command: string; output: string };
 	/** D4: the owner prompt at before_agent_start; never a main-guard continuation. */
@@ -187,7 +189,9 @@ export function runDetectors(cfg: Config, input: DetectorInput, now = nowSec()):
 			return f ? [f] : [];
 		});
 	}
-	attempt("block-loop", () => blockLoop(readBlocks(cfg), now, cfg.incidents.block_repeat));
+	if (input.blocks) {
+		attempt("block-loop", () => blockLoop(input.blocks!, now, cfg.incidents.block_repeat));
+	}
 	if (input.prompt !== undefined) {
 		attempt("owner-correction", () => {
 			const f = ownerCorrection(input.prompt!, cfg.metrics.correction_patterns.map(p => new RegExp(p, "i")), now);
@@ -195,4 +199,53 @@ export function runDetectors(cfg: Config, input: DetectorInput, now = nowSec()):
 		});
 	}
 	return out;
+}
+
+/** The expensive detector inputs (D1 ledger contradiction, D3 block loop): read in one scan. */
+export interface GatedInputs {
+	results: TaskResult[];
+	runs: Run[];
+	blocks: GuardBlock[];
+}
+
+/**
+ * True when the expensive detectors (D1/D3) may run: at most once per
+ * incidents.scan_interval_sec, tracked by a timestamp in <queue_state>/incident-scan.json. The
+ * stamp is written BEFORE the inputs are read, so a slow or crashing scan cannot stack — the
+ * next attempt is a full interval away (a failed scan retries then, not at the next event). An
+ * unreadable state counts as never scanned; an unwritable one throws (the caller logs it and
+ * runs the cheap detectors only).
+ */
+export function scanDue(cfg: Config, now: number): boolean {
+	const file = join(cfg.paths.queue_state, "incident-scan.json");
+	let last = 0;
+	try {
+		const st = JSON.parse(readFileSync(file, "utf8")) as { lastScan?: unknown };
+		if (typeof st.lastScan === "number") last = st.lastScan;
+	} catch {}
+	if (now - last < cfg.incidents.scan_interval_sec) return false;
+	mkdirSync(dirname(file), { recursive: true });
+	writeFileSync(file, `${JSON.stringify({ lastScan: now })}\n`);
+	return true;
+}
+
+/**
+ * The cheap detectors (D2 bash, D4 prompt) run on every call; D1 and D3 read Main's session
+ * file, the ledger runs and both guard logs — seconds on a real machine — so they run at most
+ * once per incidents.scan_interval_sec and `gather` is never called inside the interval. A
+ * failed gate or gather is logged and the cheap detectors still run.
+ */
+export function runDetectorsGated(
+	cfg: Config,
+	cheap: { bash?: { command: string; output: string }; prompt?: string },
+	gather: () => GatedInputs,
+	now = nowSec(),
+): IncidentView[] {
+	const input: DetectorInput = { ...cheap };
+	try {
+		if (scanDue(cfg, now)) Object.assign(input, gather());
+	} catch (err) {
+		log(cfg.paths.guard_log, `incident scan skipped: ${err instanceof Error ? err.message : String(err)}`);
+	}
+	return runDetectors(cfg, input, now);
 }

@@ -14,6 +14,7 @@ import {
 	ledgerContradictions,
 	ownerCorrection,
 	runDetectors,
+	runDetectorsGated,
 	toolBins,
 	toolCrash,
 	type TaskResult,
@@ -153,8 +154,7 @@ test("D3 positive: the same reason 20× inside the hour; the runner records it",
 	expect(found[0]!.fingerprint).toBe(`block-loop:${REASON}`);
 	expect(found[0]!.summary).toContain("20×");
 	const c = cfg();
-	writeFileSync(c.paths.guard_log, blockLines(20, NOW, 60));
-	runDetectors(c, {}, NOW);
+	runDetectors(c, { blocks }, NOW);
 	expect(readIncidents(c)[0]).toMatchObject({ source: "realtime", kind: "block-loop" });
 });
 
@@ -206,10 +206,44 @@ test("dedupe across repeated runs: the same sighting updates count and lastSeen,
 	expect(readIncidents(c)).toHaveLength(1);
 });
 
-test("a failed detector is logged, never thrown: an unreadable guard log does not break the run", () => {
+test("a failed detector is logged, never thrown: a failing gather does not break the cheap detectors", () => {
 	const c = cfg();
-	c.paths.guard_log = "/nonexistent-root-nsar/guard.log";
-	c.paths.plan_guard_log = "/nonexistent-root-nsar/plan.log";
-	const seen = runDetectors(c, { results: fixtureResults(NOW - 600), runs: [run("AmiiirP9RunGlm", "running")] }, NOW);
-	expect(seen.map(i => i.kind)).toEqual(["ledger-contradiction"]);
+	const seen = runDetectorsGated(
+		c,
+		{ bash: { command: "neurastream metrics report", output: "at neurastream (/x/report.ts:1:1)" } },
+		() => {
+			throw new Error("unreadable guard log");
+		},
+		NOW,
+	);
+	expect(seen.map(i => i.kind)).toEqual(["tool-crash"]);
+	expect(readIncidents(c).map(i => i.kind)).toEqual(["tool-crash"]);
+});
+
+test("scan gate: two calls inside the interval gather the expensive inputs once", () => {
+	const c = cfg();
+	let gathers = 0;
+	const gather = () => {
+		gathers += 1;
+		return { results: [], runs: [], blocks: [] };
+	};
+	runDetectorsGated(c, { prompt: "all quiet" }, gather, NOW);
+	runDetectorsGated(c, { prompt: "still quiet" }, gather, NOW + c.incidents.scan_interval_sec - 1);
+	expect(gathers).toBe(1);
+});
+
+test("scan gate: past the interval the inputs are gathered again; cheap detectors run either way", () => {
+	const c = cfg();
+	let gathers = 0;
+	const gather = () => {
+		gathers += 1;
+		return { results: [], runs: [], blocks: [] };
+	};
+	const cheap = { bash: { command: "neurastream doctor", output: "internal error\nat neurastream (x.ts:1:1)" } };
+	const first = runDetectorsGated(c, cheap, gather, NOW);
+	expect(first.map(i => i.kind)).toEqual(["tool-crash"]);
+	const second = runDetectorsGated(c, cheap, gather, NOW + c.incidents.scan_interval_sec);
+	expect(gathers).toBe(2);
+	expect(second.map(i => i.kind)).toEqual(["tool-crash"]);
+	expect(second[0]!.count).toBe(2);
 });
