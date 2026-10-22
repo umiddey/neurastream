@@ -30,7 +30,8 @@ export interface IncidentRec {
 export type ResolutionRec =
 	| { type: "plan"; id: string; plan: string }
 	| { type: "dismiss"; id: string; why: string }
-	| { type: "fixed"; id: string; plan: string };
+	/** `ts` is the close time; older records (written before plan P5) may lack it. */
+	| { type: "fixed"; id: string; plan: string; ts?: number };
 
 export interface IncidentView extends IncidentRec {
 	/** Last resolution record for the id; null while the incident is open. */
@@ -67,7 +68,9 @@ function parseLine(line: string): IncidentRec | ResolutionRec | null {
 	if (typeof rec.id !== "string") return null;
 	if (rec.type === "plan" || rec.type === "fixed") {
 		if (typeof rec.plan !== "string") return null;
-		return { type: rec.type, id: rec.id, plan: rec.plan };
+		return rec.type === "fixed" && typeof rec.ts === "number"
+			? { type: "fixed", id: rec.id, plan: rec.plan, ts: rec.ts }
+			: { type: rec.type, id: rec.id, plan: rec.plan };
 	}
 	if (rec.type === "dismiss") {
 		if (typeof rec.why !== "string") return null;
@@ -202,5 +205,21 @@ export function dismissIncident(cfg: Config, id: string, why: string): string | 
 	if (!why.trim()) return "refused: an empty --why would hide the incident without a recorded reason";
 	mkdirSync(dirname(file), { recursive: true });
 	appendFileSync(file, `${JSON.stringify({ type: "dismiss", id, why })}\n`);
+	return null;
+}
+
+/**
+ * Records that an incident's fix shipped: the queue writes this when it closes a plan citing
+ * `INCIDENT <id>` (plan P5), so the guards stop pushing a bug whose fix just landed. Refusals
+ * mirror `incident plan`; the caller logs them and closes anyway.
+ */
+export function fixedIncident(cfg: Config, id: string, plan: string, now = nowSec()): string | null {
+	const file = incidentsFile(cfg);
+	const store = readStore(file);
+	if (!store.incidents.some(i => i.id === id)) return `unknown incident ${id}`;
+	const res = store.resolutions.filter(r => r.id === id).at(-1);
+	if (res) return `incident ${id} already has a ${res.type} record`;
+	mkdirSync(dirname(file), { recursive: true });
+	appendFileSync(file, `${JSON.stringify({ type: "fixed", id, plan, ts: now })}\n`);
 	return null;
 }
