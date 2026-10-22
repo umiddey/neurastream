@@ -113,6 +113,13 @@ export interface Config {
 	};
 	rollover: { enabled: boolean; max_session_mb: number };
 	metrics: { report_days: number; correction_patterns: string[]; ci_pipelines_cmd: string };
+	/** Incident detectors (src/core/incident-detectors.ts): when a sighting becomes an incident. */
+	incidents: {
+		/** Minutes after a finished task-result before a RUNNING/WAITING ledger row contradicts it. */
+		contradiction_grace_min: number;
+		/** Same guard BLOCK reason within one hour that means a block loop. */
+		block_repeat: number;
+	};
 	machine: {
 		load_over_cores: number;
 		load_max: number;

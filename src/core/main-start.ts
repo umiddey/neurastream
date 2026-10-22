@@ -2,7 +2,11 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { RunSource } from "./adapter.ts";
 import type { Config } from "./config.ts";
+import { nowSec } from "./clock.ts";
+import { runDetectors, type TaskResult } from "./incident-detectors.ts";
+import { log as logGuard } from "./guards.ts";
 
 function bin(name: string, cfg: Config): string {
 	return join(cfg.paths.home, ".local/bin", name);
@@ -53,9 +57,28 @@ function run(file: string, args: string[], opts: RunOpts = {}): Promise<RunResul
 // an agent host passes false, because its stdin is the session's input.
 // stderr: the CLI lets a child's stderr reach the terminal. An agent host captures it and appends it
 // after that child's stdout, because a write to the terminal would draw over the session's UI.
-export async function mainStartText(args: string[], cfg: Config, opts: { inheritStdin: boolean }): Promise<string> {
+/** What the caller supplies for the detector run and (later phases) the daily/weekly checks. */
+export interface MainStartDeps {
+	/** Runs for the ledger-contradiction detector; null/absent skips what needs one. */
+	source?: RunSource | null;
+	/** Finished task results parsed from Main's session file (the adapter's format knowledge). */
+	results?: TaskResult[];
+}
+
+// Real-time detectors at main-start (plan 20261022_2330 P3): best effort, logged, never thrown.
+function runMainStartDetectors(cfg: Config, deps: MainStartDeps): void {
+	if (!deps.source && !deps.results) return;
+	try {
+		runDetectors(cfg, { results: deps.results, runs: deps.source ? deps.source.listRuns(nowSec() - 2 * 86400) : undefined });
+	} catch (err) {
+		logGuard(cfg.paths.guard_log, `main-start detectors failed: ${err instanceof Error ? err.message : String(err)}`);
+	}
+}
+
+export async function mainStartText(args: string[], cfg: Config, opts: { inheritStdin: boolean }, deps: MainStartDeps = {}): Promise<string> {
 	const out: string[] = [];
 	const say = (line: string) => out.push(`${line}\n`);
+	runMainStartDetectors(cfg, deps);
 	const h = args[0] ?? String(cfg.health.default_hours);
 	const childStdin = opts.inheritStdin ? "inherit" : "ignore";
 	const childStderr = opts.inheritStdin ? "inherit" : "pipe";
@@ -106,8 +129,8 @@ export async function mainStartText(args: string[], cfg: Config, opts: { inherit
 	return out.join("");
 }
 
-export async function mainStart(args: string[], cfg: Config): Promise<number> {
-	process.stdout.write(await mainStartText(args, cfg, { inheritStdin: true }));
+export async function mainStart(args: string[], cfg: Config, deps: MainStartDeps = {}): Promise<number> {
+	process.stdout.write(await mainStartText(args, cfg, { inheritStdin: true }, deps));
 	return 0;
 }
 

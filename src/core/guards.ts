@@ -32,7 +32,8 @@ function deny(reason: string): Decision {
 	return { allow: false, reason };
 }
 
-function log(file: string, line: string): void {
+/** Guard-log line, `<ISO UTC> <line>`; a failed append is swallowed. */
+export function log(file: string, line: string): void {
 	try {
 		appendFileSync(file, `${new Date().toISOString()} ${line}\n`);
 	} catch {}

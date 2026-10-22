@@ -21,10 +21,13 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Decision } from "../../core/adapter.ts";
 import { loadConfig, type Config } from "../../core/config.ts";
+import { nowSec } from "../../core/clock.ts";
+import { runDetectors } from "../../core/incident-detectors.ts";
 import { checkInject, checkPlanEdit, checkStop, checkTool, MAIN_PLAN_FILE, recordMainResult } from "../../core/guards.ts";
 import { applyQueueEnv } from "../../core/queue/env.ts";
 import { mainStartText } from "../../core/main-start.ts";
 import { buildHandoff, holdsBlock, notePath, noteRequest, relaunchPath, rolloverState, spawnRefusal, type RolloverState } from "../../core/rollover.ts";
+import { defaultCompletedResults, defaultRunSource } from "./sessions.ts";
 import * as q from "../../core/queue/lib.ts";
 // Registers the plugin-command matcher into core's writeTargets (side effect).
 import "./package-ops.ts";
@@ -101,6 +104,20 @@ export function adapterLog(cfg: Config, line: string): void {
 	try {
 		appendFileSync(cfg.paths.guard_log, `${new Date().toISOString()} ${line}\n`);
 	} catch {}
+}
+
+/**
+ * Real-time incident detectors (plan 20261022_2330 P3) at Main's prompt and after each Main bash
+ * result. The omp-shaped inputs — Main's session file for D1, the run source for the ledger —
+ * are gathered here, core decides. Best effort: a failed detector is logged, never thrown.
+ */
+function mainDetectors(cfg: Config, extra: { prompt?: string; bash?: { command: string; output: string } }): void {
+	try {
+		const source = defaultRunSource(cfg);
+		runDetectors(cfg, { ...extra, results: defaultCompletedResults(cfg), runs: source.listRuns(nowSec() - 2 * 86400) });
+	} catch (err) {
+		adapterLog(cfg, `incident detectors failed: ${err instanceof Error ? err.message : String(err)}`);
+	}
 }
 
 // Background queue-close for every plan Main marked complete (owner 2026-10-15). Ported from the
@@ -278,6 +295,10 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		callsSinceStop = d.state?.callsSinceStop ?? callsSinceStop;
 		idleStops = d.state?.idleStops ?? idleStops;
 		const notice = rolloverNotice(ctx);
+		// A turn the harness starts from the guard's own stop continuation is not an owner
+		// message: D4 (owner-correction) only sees real prompts; D1/D3 run either way.
+		const prompt = asString(asRecord(event).prompt);
+		mainDetectors(cfg, { prompt: prompt.trimStart().startsWith("main-guard:") ? undefined : prompt });
 		return {
 			message: {
 				customType: "main-guard.queue",
@@ -369,6 +390,13 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 			const content = Array.isArray(e.content) ? e.content : [];
 			const text = content.map(p => asString(asRecord(p).text)).join("\n");
 			recordMainResult(asString(e.toolName), asRecord(e.input), c.cwd ?? process.cwd(), text);
+		}
+		// Real-time detectors after each Main bash result, crashes included (D2 wants the stack).
+		if ((!c.hasAgent || c.kind === "main") && asString(e.toolName) === "bash") {
+			const content = Array.isArray(e.content) ? e.content : [];
+			mainDetectors(cfg, {
+				bash: { command: asString(asRecord(e.input).command), output: content.map(p => asString(asRecord(p).text)).join("\n") },
+			});
 		}
 		return undefined;
 	});
@@ -522,7 +550,10 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 				return;
 			}
 			c.notify("main-rollover: collecting main-start state for the handoff (this can take a minute)…");
-			const generated = [await mainStartText([], cfg, { inheritStdin: false }), holdsBlock(q.ownerHolds())].join("\n");
+			const generated = [
+				await mainStartText([], cfg, { inheritStdin: false }, { source: defaultRunSource(cfg), results: defaultCompletedResults(cfg) }),
+				holdsBlock(q.ownerHolds()),
+			].join("\n");
 			const handoff = buildHandoff({
 				generated,
 				note: readFileSync(path, "utf8"),

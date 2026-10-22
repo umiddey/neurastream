@@ -12,6 +12,7 @@ import { applyQueueEnv } from "../../core/queue/env.ts";
 import * as q from "../../core/queue/lib.ts";
 import { buildHandoff, holdsBlock, relaunchPath } from "../../core/rollover.ts";
 import { adapterLog } from "./index.ts";
+import { defaultCompletedResults, defaultRunSource } from "./sessions.ts";
 
 /** The harness the launcher runs. Tests pass another path through LaunchOptions. */
 export const OMP_BIN = "omp";
@@ -144,7 +145,10 @@ async function nextMessage(req: RelaunchRequest, cfg: Config): Promise<string | 
 		adapterLog(cfg, `rollover: relaunch stopped, note unreadable ${req.notePath}: ${String(err)}`);
 		return null;
 	}
-	const generated = [await mainStartText([], cfg, { inheritStdin: false }), holdsBlock(q.ownerHolds())].join("\n");
+	const generated = [
+		await mainStartText([], cfg, { inheritStdin: false }, { source: defaultRunSource(cfg), results: defaultCompletedResults(cfg) }),
+		holdsBlock(q.ownerHolds()),
+	].join("\n");
 	const draft = req.draft.trim() === "" ? "" : `\nOwner's unsent draft: ${req.draft}`;
 	const handoff = buildHandoff({
 		generated,

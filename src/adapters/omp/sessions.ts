@@ -283,3 +283,40 @@ export function defaultRunSource(cfg: Config): RunSource {
 	const root = cfg.adapter?.sessions || join(cfg.paths.home, ".omp", "agent", "sessions");
 	return ompRunSource(root, cfg);
 }
+
+/**
+ * Completed subagent task-results announced in one Main session file: `custom_message` lines of
+ * `customType` "async-result" whose content carries `<task-result id="X" … status="completed">`
+ * (trimmed real case: tests/fixtures/incidents/async-result-line.json). A line without a
+ * readable timestamp is skipped — without one the contradiction grace cannot be aged.
+ */
+export function completedResults(text: string): { agent: string; ts: number }[] {
+	const out: { agent: string; ts: number }[] = [];
+	for (const line of text.split("\n")) {
+		if (!line.includes('"async-result"')) continue;
+		let d: Record<string, unknown> | null = null;
+		try {
+			d = asObj(JSON.parse(line) as unknown);
+		} catch {
+			d = null;
+		}
+		if (!d || d.type !== "custom_message" || d.customType !== "async-result") continue;
+		const content = typeof d.content === "string" ? d.content : "";
+		const m = /<task-result\s+id="([^"]+)"[^>]*\bstatus="completed"/.exec(content);
+		if (!m) continue;
+		const ts = typeof d.timestamp === "string" ? parseTs(d.timestamp) : null;
+		if (ts === null) continue;
+		out.push({ agent: m[1]!, ts });
+	}
+	return out;
+}
+
+/** `completedResults` of the newest Main session file (the one `mainSession()` picks). */
+export function defaultCompletedResults(cfg: Config): { agent: string; ts: number }[] {
+	try {
+		const s = defaultRunSource(cfg).mainSession();
+		return s ? completedResults(readFileSync(s.file, "utf8")) : [];
+	} catch {
+		return [];
+	}
+}
