@@ -107,6 +107,12 @@ const baseCfg: Config = loadConfig({ home: join(TMP, "home") });
 applyQueueEnv(baseCfg);
 const overCfg: Config = { ...baseCfg, rollover: { enabled: true, max_session_mb: 0.000001 } };
 const belowCfg: Config = { ...baseCfg, rollover: { enabled: true, max_session_mb: 1024 } };
+// session_stop reads guards.ledger_command. The live ledger may show a running subagent, which would let the
+// stop through, so these tests pin a fixed ledger with no subagent rows.
+const stopCfg: Config = {
+	...overCfg,
+	guards: { ...overCfg.guards, ledger_command: "printf 'MAIN x RUNNING\\n'" },
+};
 const SESSION_FILE = join(TMP, "session.jsonl");
 const SESSION_ID = `rollover-test-${process.pid}-${Date.now()}`;
 const NOTE = notePath(SESSION_ID);
@@ -556,7 +562,7 @@ test("launcher: a relaunch requested with an open plan lets session_stop through
 	const cleanup = openPlanFixture();
 	try {
 		const host = fakeHost();
-		createOmpAdapter(host, overCfg);
+		createOmpAdapter(host, stopCfg);
 		const ctx = mainCtx();
 		await withLauncher("1", async () => {
 			await armReady(host, ctx, "## In progress\nstep");
@@ -574,7 +580,7 @@ test("no relaunch: session_stop still blocks on the open plan", async () => {
 	const cleanup = openPlanFixture();
 	try {
 		const host = fakeHost();
-		createOmpAdapter(host, overCfg);
+		createOmpAdapter(host, stopCfg);
 		const r = (await host.emit("session_stop", {}, mainCtx())) as Array<{ decision?: string }>;
 		expect(r[0]?.decision).toBe("block");
 	} finally {
