@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.24
+### Security
+- The public package no longer ships personal machine data. Neutral defaults in `templates/config.yml`, one neutral pin example instead of 18 personal pin files, help texts and queue template without personal remotes/paths, `docs/config.md` rewritten, `docs/inventory.md` deleted. npm identity (license, repo URLs) kept.
+- `src` is config-driven: the repo-specific init special case and brief-lint rules moved to `brief.repo_rules` in config (default empty).
+- New guard test `tests/no-personal-markers.test.ts` fails the suite if a marker reaches the shipped set.
+### Added
+- `neurastream uninstall [--purge]`: inverse of install + init. Removes bins pointing into the package, the omp plugin copy, template-identical pins; strips the managed AGENTS.md block keeping personal lines. `--purge` also removes config + agent_dir state (listed first, requires `--yes`, refuses outside `$HOME`).
+
+
 ## 0.1.23
 ### Added
 - `templates/AGENTS.md` ships the neurastream orchestrator rules as a managed block. `adapter install omp` writes it into the live `~/.omp/agent/AGENTS.md` between markers, keeps every line outside them, and `doctor` reports `stale:` or `missing:` for the block.
