@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.25
+### Fixed
+- Runs on macOS. main-start no longer crashes reading `/proc/loadavg` (incident I-20261023-3). machine-guard reads load, memory, swap, disk and processes with macOS tools. tmp-snapshot runs without `ionice` or GNU `date`. queue-close finds worktrees behind symlinked paths (`/tmp` → `/private/tmp`).
+- heavy-run holds its lock for the whole command. Before, it took the lock and dropped it at once, so two heavy-runs overlapped. Locking now uses `flock(2)` through `bun:ffi`, so the external `flock` program is no longer needed. machine-guard's heavy-lock line and lock check use the package's own `heavy-run --status`.
+- The subagent guard refuses only shell commands that run queue-close or queue-cancel (including `sh -c`, `$( )` and backticks), not commands that merely name such a file.
+### Added
+- `neurastream agents list|allow|deny` edits the spawn allow-list (`## Allowed` in notes/subagents.md). allow and deny count as writes to that protected file.
+- `neurastream init --allow a,b`, or a one-time prompt on a terminal, sets the allow-list.
+- `quota-reset "<time>" [--tz <zone>]` replaces glm-reset (config section `quota:`; works on macOS).
+### Changed
+- A config with `glm:` still loads (as `quota:`), and `pm:` is ignored. Each prints a notice in `doctor` and main-start.
+- brief-lint applies the method-read rule only when `brief.method_marker` is set. The "`find` is broken" and coverage Probe rules are gone; add your own through `brief.repo_rules`. Default `heavy_marker` and `heavy_path`: `heavy-run`.
+- CI runs the suite on macOS as well as Linux.
+### Removed
+- pm-fail-facts and the `pm:` config section; the unused herdr reporter.
+
 ## 0.1.24
 ### Security
 - The public package no longer ships personal machine data. Neutral defaults in `templates/config.yml`, one neutral pin example instead of 18 personal pin files, help texts and queue template without personal remotes/paths, `docs/config.md` rewritten, `docs/inventory.md` deleted. npm identity (license, repo URLs) kept.
