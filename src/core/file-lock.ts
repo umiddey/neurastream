@@ -11,14 +11,36 @@ const EWOULDBLOCK = process.platform === "darwin" ? 35 : 11;
 
 // errno is thread-local; __error (Darwin) and __errno_location (glibc) return its address.
 const errnoFn = process.platform === "darwin" ? "__error" : "__errno_location";
-const libc = dlopen(process.platform === "darwin" ? "libc.dylib" : "libc.so.6", {
-  flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
-  [errnoFn]: { args: [], returns: FFIType.ptr },
-});
-const errnoAt = libc.symbols[errnoFn] as () => Pointer;
+const LIBC_NAME = process.platform === "darwin" ? "libc.dylib" : "libc.so.6";
 
-function errno(): number {
-  const ptr = errnoAt();
+/** The libc symbols this module calls. */
+export interface LibcSymbols {
+  flock(fd: number, op: number): number;
+  [symbol: string]: unknown;
+}
+
+export interface Libc {
+  symbols: LibcSymbols;
+}
+
+// libc opens on first lock use, not at import: a failed load throws from the lock call, naming the
+// library tried, instead of breaking every importer of this module.
+let libcHandle: Libc | undefined;
+function libc(): Libc {
+  if (libcHandle) return libcHandle;
+  try {
+    libcHandle = dlopen(LIBC_NAME, {
+      flock: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
+      [errnoFn]: { args: [], returns: FFIType.ptr },
+    });
+    return libcHandle;
+  } catch (e) {
+    throw new Error(`file-lock: cannot load ${LIBC_NAME}: ${(e as Error).message}`);
+  }
+}
+
+function errno(lib: Libc): number {
+  const ptr = (lib.symbols[errnoFn] as () => Pointer)();
   return read.i32(ptr, 0);
 }
 
@@ -27,11 +49,12 @@ export interface HeldLock {
 }
 
 function acquire(path: string, op: number): HeldLock | null {
+  const lib = libc();
   mkdirSync(dirname(path), { recursive: true });
   const fd = openSync(path, "a");
   for (;;) {
-    if (libc.symbols.flock(fd, op) === 0) break;
-    const err = errno();
+    if (lib.symbols.flock(fd, op) === 0) break;
+    const err = errno(lib);
     if (err === EINTR) continue;
     closeSync(fd);
     if (err === EWOULDBLOCK && (op & LOCK_NB) !== 0) return null;
@@ -39,7 +62,7 @@ function acquire(path: string, op: number): HeldLock | null {
   }
   return {
     release() {
-      libc.symbols.flock(fd, LOCK_UN);
+      lib.symbols.flock(fd, LOCK_UN);
       closeSync(fd);
     },
   };

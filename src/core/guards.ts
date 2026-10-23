@@ -265,10 +265,25 @@ function runBlockers(plan: Plan, hit: string[], e: ToolEvent, cfg: Config): stri
 	return null;
 }
 
+// Words a shell line may put before the tool: launchers, and a script path ending in main.ts.
+const LAUNCHERS: Record<string, true> = { bun: true, run: true, neurastream: true, node: true, npx: true, bunx: true, env: true, sudo: true, nohup: true, exec: true };
+
+// True when a command segment runs queue-close or queue-cancel: the tool is the segment's first word after launchers.
+function runsCloser(input: Record<string, unknown>): boolean {
+	const text = Object.values(input).filter((v): v is string => typeof v === "string").join("\n");
+	return text.split(/&&|\|\||;|\||\n/).some(seg => {
+		const words = seg.trim().split(/\s+/).filter(Boolean);
+		let i = 0;
+		while (i < words.length && (LAUNCHERS[words[i] ?? ""] === true || /(^|\/)main\.ts$/.test(words[i] ?? ""))) i++;
+		const cmd = (words[i] ?? "").replace(/^["']|["']$/g, "").split("/").pop() ?? "";
+		return /^queue-(close|cancel)$/.test(cmd);
+	});
+}
+
 // Subagent half of a tool call (the original plan-guard checkCall without the main return).
 function subRules(e: ToolEvent, input: Record<string, unknown>, paths: string[], writes: string[], cfg: Config): string | null {
-	// Closing and cancelling are Main's decisions.
-	if (cfg.guards.shell_tools.includes(e.tool) && /\bqueue-(?:close|cancel)\b/.test(JSON.stringify(input)))
+	// Closing and cancelling are Main's decisions: a shell that runs the tool is refused; one that only names its path is not.
+	if (cfg.guards.shell_tools.includes(e.tool) && runsCloser(input))
 		return 'queue-close and queue-cancel are Main\'s; report in your plan\'s "## Progress" instead.';
 	const plans = q.activePlans();
 	if (e.calls >= cfg.guards.sub_max_calls) {

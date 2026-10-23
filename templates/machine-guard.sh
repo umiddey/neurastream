@@ -9,7 +9,6 @@ IDLE_MAX_MIN=${IDLE_MAX_MIN:-20}
 IDLE_STATE=${HEAVY_IDLE_STATE:?}
 LOCK=${HEAVY_LOCK:?}
 DISK_PATH=${DISK_PATH:-$HOME}
-HEAVY=${HEAVY_RUN:?}
 HEAVY_STATUS=${HEAVY_STATUS:?}
 HEAVY_MAIN=${HEAVY_MAIN:?}
 UNAME=$(uname -s)
@@ -91,7 +90,7 @@ snapshot() {
   fi
   lock_check
   echo "$(date +%H:%M:%S) load=$(load_3) cores=$NPROC avail=${avail}MB swapfree=${swapfree}MB home_free=${disk}G"
-  echo "heavy-lock: $("$HEAVY" --status 2>&1 | head -1)"
+  echo "heavy-lock: $("$HEAVY_STATUS" "$HEAVY_MAIN" heavy-run --status 2>&1 | head -1)"
   echo "containers: $(docker ps -q 2>/dev/null | wc -l) running; CI job: $(docker ps --format '{{.Names}}' 2>/dev/null | grep -c '^runner-')"
   echo "top RSS:"
   top_rss | awk 'NR>1 && NR<=6{printf "  %5dMB %11s %s\n",$1/1024,$2,substr($0,index($0,$3),90)}'

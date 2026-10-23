@@ -21,7 +21,6 @@ function envFor(cfg: Config): NodeJS.ProcessEnv {
 		HEAVY_LOCK: cfg.paths.heavy_lock,
 		HEAVY_OWNER: cfg.paths.heavy_owner,
 		HEAVY_IDLE_STATE: cfg.paths.heavy_idle_state,
-		HEAVY_RUN: cfg.brief.heavy_path,
 		HEAVY_STATUS: process.execPath,
 		HEAVY_MAIN: join(dirname(fileURLToPath(import.meta.url)), "../cli/main.ts"),
 		DISK_PATH: cfg.machine.disk_path,
