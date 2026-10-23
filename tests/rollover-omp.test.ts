@@ -8,6 +8,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, ut
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createOmpAdapter } from "../src/adapters/omp/index.ts";
+import { blockersDirPath, indexPath, REPO_INDEX } from "../src/core/queue/lib.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { notePath, relaunchPath } from "../src/core/rollover.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
@@ -392,13 +393,15 @@ test("launcher set, own job running: no relaunch; once the job is gone the next 
 });
 
 test("ready: an interactive plain message becomes /main-rollover <text>", async () => {
-	resetState();
-	const host = fakeHost();
-	createOmpAdapter(host, overCfg);
-	const ctx = mainCtx();
-	await armReady(host, ctx, "## In progress\nstep");
-	const results = await host.emit("input", { text: "hello", source: "interactive" }, ctx);
-	expect(results).toEqual([{ text: "/main-rollover hello" }]);
+	await withLauncher(undefined, async () => {
+		resetState();
+		const host = fakeHost();
+		createOmpAdapter(host, overCfg);
+		const ctx = mainCtx();
+		await armReady(host, ctx, "## In progress\nstep");
+		const results = await host.emit("input", { text: "hello", source: "interactive" }, ctx);
+		expect(results).toEqual([{ text: "/main-rollover hello" }]);
+	});
 });
 
 test("slash commands and non-interactive input are left alone", async () => {
@@ -510,4 +513,102 @@ test("launcher set: a non-main session never relaunches", async () => {
 	});
 	expect(shutdowns).toBe(0);
 	expect(existsSync(relaunchPath())).toBe(false);
+});
+
+/** One open plan in a sandbox repo, listed in the sandbox queue index: session_stop has an open item to block on. */
+function openPlanFixture(): () => void {
+	const repo = join(TMP, "open-repo");
+	const plan = join(repo, "docs/plans/20261023_open.md");
+	mkdirSync(dirname(plan), { recursive: true });
+	writeFileSync(plan, OPEN_PLAN);
+	writeFileSync(join(repo, REPO_INDEX), "docs/plans/20261023_open.md\n");
+	mkdirSync(blockersDirPath(), { recursive: true });
+	mkdirSync(dirname(indexPath()), { recursive: true });
+	writeFileSync(indexPath(), `${repo}\n`);
+	return () => {
+		rmSync(indexPath(), { force: true });
+		rmSync(repo, { recursive: true, force: true });
+	};
+}
+
+const OPEN_PLAN = `# Open fixture plan
+
+Worktree: -
+Branch: feat/open
+
+## Goal
+- Fixture for the session_stop check.
+
+## Phases
+- [ ] P1 fixture — verify: test -f src/a.ts
+
+## Done check
+test -f src/a.ts
+
+## Progress
+Status: open
+`;
+
+test("launcher: a relaunch requested with an open plan lets session_stop through", async () => {
+	resetState();
+	const cleanup = openPlanFixture();
+	try {
+		const host = fakeHost();
+		createOmpAdapter(host, overCfg);
+		const ctx = mainCtx();
+		await withLauncher("1", async () => {
+			await armReady(host, ctx, "## In progress\nstep");
+			await host.emit("agent_end", {}, ctx);
+		});
+		expect(shutdowns).toBe(1);
+		expect(await host.emit("session_stop", {}, ctx)).toEqual([]);
+	} finally {
+		cleanup();
+	}
+});
+
+test("no relaunch: session_stop still blocks on the open plan", async () => {
+	resetState();
+	const cleanup = openPlanFixture();
+	try {
+		const host = fakeHost();
+		createOmpAdapter(host, overCfg);
+		const r = (await host.emit("session_stop", {}, mainCtx())) as Array<{ decision?: string }>;
+		expect(r[0]?.decision).toBe("block");
+	} finally {
+		cleanup();
+	}
+});
+
+test("launcher: owner messages during a pending relaunch join its draft, in order, and none becomes /main-rollover", async () => {
+	resetState();
+	const host = fakeHost();
+	createOmpAdapter(host, overCfg);
+	const ctx = mainCtx();
+	await withLauncher("1", async () => {
+		await armReady(host, ctx, "## In progress\nstep");
+		await host.emit("agent_end", {}, ctx);
+		expect(shutdowns).toBe(1);
+		expect(await host.emit("input", { text: "first", source: "interactive" }, ctx)).toEqual([{ handled: true }]);
+		expect(await host.emit("input", { text: "second", source: "interactive" }, ctx)).toEqual([{ handled: true }]);
+	});
+	expect(JSON.parse(readFileSync(relaunchPath(), "utf8")).draft).toBe("first\nsecond");
+	expect(notes.filter(n => n.includes("rollover in progress")).length).toBe(2);
+});
+
+test("launcher: the first owner message in the ready state starts the relaunch, its text in the draft once", async () => {
+	resetState();
+	const host = fakeHost();
+	createOmpAdapter(host, overCfg);
+	const ctx = mainCtx();
+	await withLauncher("1", async () => {
+		await armReady(host, ctx, "## In progress\nstep");
+		expect(await host.emit("input", { text: "hello", source: "interactive" }, ctx)).toEqual([{ handled: true }]);
+	});
+	expect(shutdowns).toBe(1);
+	expect(JSON.parse(readFileSync(relaunchPath(), "utf8"))).toEqual({
+		previousSessionFile: SESSION_FILE,
+		notePath: NOTE,
+		draft: "hello",
+	});
 });
