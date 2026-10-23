@@ -22,3 +22,6 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun test
+      # Zone-dependent output: quota-reset must match date(1)'s abbreviation in a non-UTC zone.
+      # Intl's short timeZoneName is US-only, so the 0.1.25 GMT+2 regression passed in UTC CI.
+      - run: TZ=Europe/Berlin bun test tests/golden tests/quota-reset.test.ts

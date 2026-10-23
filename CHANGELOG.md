@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+### Fixed
+- quota-reset prints the local zone abbreviation from `date` (CEST, CET, CST) like the original glm-reset, where Intl's US-only short names printed GMT+2 on non-US hosts; CI re-runs the golden and quota-reset tests under Europe/Berlin on both OSes.
+
 ## 0.1.25
 ### Fixed
 - Runs on macOS. main-start no longer crashes reading `/proc/loadavg` (incident I-20261023-3). machine-guard reads load, memory, swap, disk and processes with macOS tools. tmp-snapshot runs without `ionice` or GNU `date`. queue-close finds worktrees behind symlinked paths (`/tmp` → `/private/tmp`).
