@@ -23,7 +23,7 @@ import type { Decision } from "../../core/adapter.ts";
 import { loadConfig, type Config } from "../../core/config.ts";
 import { nowSec } from "../../core/clock.ts";
 import { runDetectorsGated } from "../../core/incident-detectors.ts";
-import { checkInject, checkPlanEdit, checkStop, checkTool, MAIN_PLAN_FILE, recordMainResult } from "../../core/guards.ts";
+import { checkInject, checkPlanEdit, checkStop, checkTool, MAIN_PLAN_FILE, recordMainResult, rekeySpawnFile } from "../../core/guards.ts";
 import { applyQueueEnv } from "../../core/queue/env.ts";
 import { mainStartText, runDailyCheck } from "../../core/main-start.ts";
 import { readBlocks } from "../../core/metrics.ts";
@@ -369,12 +369,21 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		return Object.keys(out).length > 0 ? out : undefined;
 	});
 
+	// Main ticked a phase: keep the newest Progress entries in the plan and move older ones to its archive.
+	const trimProgress = (file: string): string | undefined => {
+		const t = q.trimPlanProgress(file, cfg.queue.progress_keep);
+		if (!t) return undefined;
+		rekeySpawnFile(file, t.before, t.after);
+		return `plan-guard: moved ${t.count} older Progress entries to ${t.archive}; re-read the plan before editing it again.`;
+	};
+
 	pi.on("tool_result", (event, ctx) => {
 		onSizeCheck(event, ctx);
 		const e = asRecord(event);
 		const c = asCtx(ctx);
 		const id = asString(e.toolCallId);
 		const snap = pending.get(id);
+		const notes: string[] = [];
 		if (snap) {
 			pending.delete(id);
 			for (const [file, before] of snap) {
@@ -389,6 +398,10 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 						else writeFileSync(d.restore.path, d.restore.text);
 					} catch {}
 					return { isError: true, content: [{ type: "text", text: d.reason }] };
+				}
+				if (d.allow && (!c.hasAgent || c.kind === "main") && q.doneCount(after) > q.doneCount(before) && q.planAt(file, q.activePlans())) {
+					const note = trimProgress(file);
+					if (note) notes.push(note);
 				}
 			}
 		}
@@ -407,6 +420,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 				bash: { command: asString(asRecord(e.input).command), output: content.map(p => asString(asRecord(p).text)).join("\n") },
 			});
 		}
+		if (notes.length) return { content: [...(Array.isArray(e.content) ? e.content : []), ...notes.map(text => ({ type: "text", text }))] };
 		return undefined;
 	});
 

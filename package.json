@@ -37,6 +37,7 @@
     "pm-fail-facts": "bin/pm-fail-facts",
     "main-health": "bin/main-health",
     "queue-check": "bin/queue-check",
+    "queue-trim": "bin/queue-trim",
     "queue-close": "bin/queue-close",
     "queue-cancel": "bin/queue-cancel",
     "main-start": "bin/main-start",

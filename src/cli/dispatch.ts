@@ -19,6 +19,7 @@ const BINS = [
 	"pm-fail-facts",
 	"main-health",
 	"queue-check",
+	"queue-trim",
 	"queue-close",
 	"queue-cancel",
 	"main-start",

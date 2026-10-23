@@ -1,7 +1,7 @@
 // Queue model: main index, repo INDEX.md, plan shape (templates/queue/TEMPLATE.md).
 
 import { createHash } from "node:crypto";
-import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -106,6 +106,53 @@ export function outsideProgress(text: string): string {
 
 export function progressBody(text: string): string {
 	return sections(text).get("progress") ?? "";
+}
+
+export type ProgressTrim = { body: string; moved: string; count: number };
+
+// Entries start at a top-level "- " line. The pointer line that a trim leaves behind is not an entry.
+const POINTER_PREFIX = "- Older Progress entries:";
+
+/** Keep the first `keep` entries (the file lists them newest first) and move the rest. Pure. */
+export function trimProgressBody(body: string, keep: number, pointer: string): ProgressTrim | undefined {
+	const lines = body.split("\n").filter(l => !l.startsWith(POINTER_PREFIX));
+	const starts = lines.flatMap((l, i) => (/^- /.test(l) ? [i] : []));
+	if (starts.length <= keep) return undefined;
+	const cut = starts[keep];
+	const tail = lines.slice(cut);
+	let end = tail.length;
+	while (end > 0 && tail[end - 1] === "") end--;
+	return {
+		body: [...lines.slice(0, cut), pointer, ...tail.slice(end)].join("\n"),
+		moved: tail.slice(0, end).join("\n"),
+		count: starts.length - keep,
+	};
+}
+
+/** Trim the `## Progress` body of a plan file in place and append the moved entries to its archive (newest batch on top). */
+export function trimPlanProgress(planFile: string, keep: number): { count: number; archive: string; before: string; after: string } | undefined {
+	const text = readFileSync(planFile, "utf8");
+	const head = /^## Progress[^\n]*\n/m.exec(text);
+	if (!head) return undefined;
+	const start = head.index + head[0].length;
+	const next = text.slice(start).search(/^## /m);
+	const end = next === -1 ? text.length : start + next;
+	const before = text.slice(start, end);
+	const archiveName = `${path.basename(planFile, ".md")}-progress.md`;
+	const res = trimProgressBody(before, keep, `- Older Progress entries: archive/${archiveName}`);
+	if (!res) return undefined;
+	const dir = path.join(path.dirname(planFile), "archive");
+	const archive = path.join(dir, archiveName);
+	const older = (existsSync(archive) ? readFileSync(archive, "utf8") : "").replace(/^# Progress archive:[^\n]*\n?/, "").trim();
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(archive, `# Progress archive: ${path.basename(planFile)}\n\n${res.moved.trim()}\n${older ? `\n${older}\n` : ""}`);
+	writeFileSync(planFile, text.slice(0, start) + res.body + text.slice(end));
+	return { count: res.count, archive, before, after: res.body };
+}
+
+/** Number of ticked phase lines ("- [x]") in a plan. */
+export function doneCount(text: string): number {
+	return (text.match(/^\s*[-*] \[x\]/gm) ?? []).length;
 }
 
 export function statusOf(text: string): Plan["status"] {

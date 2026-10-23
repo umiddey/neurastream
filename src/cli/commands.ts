@@ -11,6 +11,7 @@ import { pmFailFacts } from "../core/pm-fail-facts.ts";
 import { priorityWatch } from "../core/priority-watch.ts";
 import { queueCancel } from "../core/queue-cancel.ts";
 import { queueCheck } from "../core/queue-check.ts";
+import { queueTrim } from "../core/queue-trim.ts";
 import { queueClose } from "../core/queue-close.ts";
 import { resourceAlerts } from "../core/resource-alerts.ts";
 import { tmpSnapshot } from "../core/tmp-snapshot.ts";
@@ -32,6 +33,7 @@ export const PORTED = [
 	"pm-fail-facts",
 	"main-health",
 	"queue-check",
+	"queue-trim",
 	"queue-close",
 	"queue-cancel",
 	"main-start",
@@ -70,6 +72,8 @@ export async function runPorted(cmd: string, args: string[]): Promise<number> {
 			return mainHealth(args, rt.cfg, rt.source);
 		case "queue-check":
 			return queueCheck(args, rt.cfg);
+		case "queue-trim":
+			return queueTrim(args, rt.cfg);
 		case "queue-close":
 			return queueClose(args, rt.cfg);
 		case "queue-cancel":

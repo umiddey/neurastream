@@ -106,6 +106,24 @@ export function recordSpawns(files: string[]): void {
 	}
 }
 
+/** Re-key a plan's spawn hash after its Progress body was trimmed. Only a hash that matched the old body moves. Pure. */
+export function rekeySpawns(spawns: Record<string, string>, file: string, before: string, after: string): boolean {
+	if (spawns[file] !== q.sha(before)) return false;
+	spawns[file] = q.sha(after);
+	return true;
+}
+
+/** Apply rekeySpawns to the stored spawn hashes. */
+export function rekeySpawnFile(file: string, before: string, after: string): void {
+	const s = readSpawns();
+	if (!rekeySpawns(s, file, before, after)) return;
+	try {
+		writeFileSync(spawnsFile(), JSON.stringify(s, null, 1));
+	} catch (err) {
+		log(`${q.STATE_DIR}/../main-guard.log`, `cannot write ${spawnsFile()}: ${err}`);
+	}
+}
+
 // --- shared pieces ---
 
 function unlocked(cfg: Config): boolean {

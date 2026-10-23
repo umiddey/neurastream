@@ -86,6 +86,7 @@ export interface Config {
 	queue: {
 		archive_days: number;
 		background_max_lines: number;
+		progress_keep: number;
 		priority_id: string;
 		cancel_min_words: number;
 		auto_close_min: number;
