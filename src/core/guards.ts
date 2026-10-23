@@ -265,17 +265,18 @@ function runBlockers(plan: Plan, hit: string[], e: ToolEvent, cfg: Config): stri
 	return null;
 }
 
-// Words a shell line may put before the tool: launchers, and a script path ending in main.ts.
-const LAUNCHERS: Record<string, true> = { bun: true, run: true, neurastream: true, node: true, npx: true, bunx: true, env: true, sudo: true, nohup: true, exec: true };
+// Words a shell line may put before the tool: launchers, shells with -c, VAR=value, and a script path ending in main.ts.
+const LAUNCHERS: Record<string, true> = { bun: true, run: true, neurastream: true, node: true, npx: true, bunx: true, env: true, sudo: true, nohup: true, exec: true, bash: true, sh: true, zsh: true, "-c": true };
 
 // True when a command segment runs queue-close or queue-cancel: the tool is the segment's first word after launchers.
+// Segments also split at $( and backticks, so substitutions and `sh -c "..."` bodies are checked too.
 function runsCloser(input: Record<string, unknown>): boolean {
 	const text = Object.values(input).filter((v): v is string => typeof v === "string").join("\n");
-	return text.split(/&&|\|\||;|\||\n/).some(seg => {
-		const words = seg.trim().split(/\s+/).filter(Boolean);
+	return text.split(/&&|\|\||;|\||\n|\$\(|`/).some(seg => {
+		const words = seg.trim().split(/\s+/).filter(Boolean).map(w => w.replace(/^["'(]+|["')]+$/g, ""));
 		let i = 0;
-		while (i < words.length && (LAUNCHERS[words[i] ?? ""] === true || /(^|\/)main\.ts$/.test(words[i] ?? ""))) i++;
-		const cmd = (words[i] ?? "").replace(/^["']|["']$/g, "").split("/").pop() ?? "";
+		while (i < words.length && (LAUNCHERS[words[i] ?? ""] === true || /^\w+=/.test(words[i] ?? "") || /(^|\/)main\.ts$/.test(words[i] ?? ""))) i++;
+		const cmd = (words[i] ?? "").split("/").pop() ?? "";
 		return /^queue-(close|cancel)$/.test(cmd);
 	});
 }

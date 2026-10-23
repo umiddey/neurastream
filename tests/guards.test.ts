@@ -461,7 +461,7 @@ console.log(JSON.stringify(mod.checkCall("write", { path: ${JSON.stringify(targe
 test("subagent shell: a commit that names a queue-close path is allowed; a shell that runs the tool is refused", () => {
 	fresh();
 	expect(guardCli("pre-tool", toolEvent("bash", { command: "git commit -m x -- src/core/queue-close.ts" }, "sub")).code).toBe(0);
-	for (const command of ["queue-close plan.md", 'queue-cancel p "a b c"', "cd r && neurastream queue-close p", "bun run queue-cancel p"]) {
+	for (const command of ["queue-close plan.md", 'queue-cancel p "a b c"', "cd r && neurastream queue-close p", "bun run queue-cancel p", 'bash -c "queue-close p"', "sh -c 'cd r; ~/.local/bin/queue-cancel p'", "x=$(queue-close p)", "echo `queue-cancel p`"]) {
 		expect(guardCli("pre-tool", toolEvent("bash", { command }, "sub")).code).toBe(2);
 	}
 });
