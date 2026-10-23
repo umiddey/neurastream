@@ -149,7 +149,7 @@ async function nextMessage(req: RelaunchRequest, cfg: Config): Promise<string | 
 		await mainStartText([], cfg, { inheritStdin: false }, { source: defaultRunSource(cfg), results: defaultCompletedResults(cfg) }),
 		holdsBlock(q.ownerHolds()),
 	].join("\n");
-	const draft = req.draft.trim() === "" ? "" : `\nOwner's unsent draft: ${req.draft}`;
+	const draft = req.draft.trim() === "" ? "" : `\nOwner's messages during the rollover (and any unsent draft): ${req.draft}`;
 	const handoff = buildHandoff({
 		generated,
 		note,

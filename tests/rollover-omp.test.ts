@@ -8,6 +8,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, ut
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createOmpAdapter } from "../src/adapters/omp/index.ts";
+import { blockersDirPath, indexPath, REPO_INDEX } from "../src/core/queue/lib.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { notePath, relaunchPath } from "../src/core/rollover.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
@@ -155,6 +156,8 @@ async function armReady(host: FakeHost, ctx: MainCtx, note: string): Promise<voi
 
 function resetState(): void {
 	newSessions.length = 0;
+	// Plain omp unless a test sets the launcher flag itself (withLauncher): the caller's shell may export it.
+	delete process.env.NEURASTREAM_MAIN_LAUNCHER;
 	notes.length = 0;
 	rmSync(NOTE, { force: true });
 	writeFileSync(SESSION_FILE, "");
@@ -307,8 +310,8 @@ test("below and ready: a Main task spawn passes the drain and reaches the plan g
 		process.env.QUEUE_SUBAGENTS = subagents;
 		await armReady(readyHost, ctx, "## In progress\nstep"); // fresh note, no jobs: ready
 		const ready = (await readyHost.emit("tool_call", TASK_CALL, ctx)) as Array<{ block?: boolean; reason?: string }>;
-		expect(ready[0]?.reason ?? "").toContain("an implementer needs an open plan");
-		expect(ready[0]?.reason ?? "").not.toContain("rollover pending");
+		// ready refuses too (e): the rollover follows the next idle, so a spawn now would be aborted.
+		expect(ready[0]?.reason ?? "").toContain("rollover pending (ready)");
 	} finally {
 		if (before === undefined) delete process.env.QUEUE_SUBAGENTS;
 		else process.env.QUEUE_SUBAGENTS = before;
@@ -392,13 +395,15 @@ test("launcher set, own job running: no relaunch; once the job is gone the next 
 });
 
 test("ready: an interactive plain message becomes /main-rollover <text>", async () => {
-	resetState();
-	const host = fakeHost();
-	createOmpAdapter(host, overCfg);
-	const ctx = mainCtx();
-	await armReady(host, ctx, "## In progress\nstep");
-	const results = await host.emit("input", { text: "hello", source: "interactive" }, ctx);
-	expect(results).toEqual([{ text: "/main-rollover hello" }]);
+	await withLauncher(undefined, async () => {
+		resetState();
+		const host = fakeHost();
+		createOmpAdapter(host, overCfg);
+		const ctx = mainCtx();
+		await armReady(host, ctx, "## In progress\nstep");
+		const results = await host.emit("input", { text: "hello", source: "interactive" }, ctx);
+		expect(results).toEqual([{ text: "/main-rollover hello" }]);
+	});
 });
 
 test("slash commands and non-interactive input are left alone", async () => {
@@ -510,4 +515,160 @@ test("launcher set: a non-main session never relaunches", async () => {
 	});
 	expect(shutdowns).toBe(0);
 	expect(existsSync(relaunchPath())).toBe(false);
+});
+
+/** One open plan in a sandbox repo, listed in the sandbox queue index: session_stop has an open item to block on. */
+function openPlanFixture(): () => void {
+	const repo = join(TMP, "open-repo");
+	const plan = join(repo, "docs/plans/20261023_open.md");
+	mkdirSync(dirname(plan), { recursive: true });
+	writeFileSync(plan, OPEN_PLAN);
+	writeFileSync(join(repo, REPO_INDEX), "docs/plans/20261023_open.md\n");
+	mkdirSync(blockersDirPath(), { recursive: true });
+	mkdirSync(dirname(indexPath()), { recursive: true });
+	writeFileSync(indexPath(), `${repo}\n`);
+	return () => {
+		rmSync(indexPath(), { force: true });
+		rmSync(repo, { recursive: true, force: true });
+	};
+}
+
+const OPEN_PLAN = `# Open fixture plan
+
+Worktree: -
+Branch: feat/open
+
+## Goal
+- Fixture for the session_stop check.
+
+## Phases
+- [ ] P1 fixture — verify: test -f src/a.ts
+
+## Done check
+test -f src/a.ts
+
+## Progress
+Status: open
+`;
+
+test("launcher: a relaunch requested with an open plan lets session_stop through", async () => {
+	resetState();
+	const cleanup = openPlanFixture();
+	try {
+		const host = fakeHost();
+		createOmpAdapter(host, overCfg);
+		const ctx = mainCtx();
+		await withLauncher("1", async () => {
+			await armReady(host, ctx, "## In progress\nstep");
+			await host.emit("agent_end", {}, ctx);
+		});
+		expect(shutdowns).toBe(1);
+		expect(await host.emit("session_stop", {}, ctx)).toEqual([]);
+	} finally {
+		cleanup();
+	}
+});
+
+test("no relaunch: session_stop still blocks on the open plan", async () => {
+	resetState();
+	const cleanup = openPlanFixture();
+	try {
+		const host = fakeHost();
+		createOmpAdapter(host, overCfg);
+		const r = (await host.emit("session_stop", {}, mainCtx())) as Array<{ decision?: string }>;
+		expect(r[0]?.decision).toBe("block");
+	} finally {
+		cleanup();
+	}
+});
+
+test("launcher: owner messages during a pending relaunch join its draft, in order, and none becomes /main-rollover", async () => {
+	resetState();
+	const host = fakeHost();
+	createOmpAdapter(host, overCfg);
+	const ctx = mainCtx();
+	await withLauncher("1", async () => {
+		await armReady(host, ctx, "## In progress\nstep");
+		await host.emit("agent_end", {}, ctx);
+		expect(shutdowns).toBe(1);
+		expect(await host.emit("input", { text: "first", source: "interactive" }, ctx)).toEqual([{ handled: true }]);
+		expect(await host.emit("input", { text: "second", source: "interactive" }, ctx)).toEqual([{ handled: true }]);
+	});
+	expect(JSON.parse(readFileSync(relaunchPath(), "utf8")).draft).toBe("first\nsecond");
+	expect(notes.filter(n => n.includes("rollover in progress")).length).toBe(2);
+});
+
+test("launcher: the first owner message in the ready state starts the relaunch, its text in the draft once", async () => {
+	resetState();
+	const host = fakeHost();
+	createOmpAdapter(host, overCfg);
+	const ctx = mainCtx();
+	await withLauncher("1", async () => {
+		await armReady(host, ctx, "## In progress\nstep");
+		expect(await host.emit("input", { text: "hello", source: "interactive" }, ctx)).toEqual([{ handled: true }]);
+	});
+	expect(shutdowns).toBe(1);
+	expect(JSON.parse(readFileSync(relaunchPath(), "utf8"))).toEqual({
+		previousSessionFile: SESSION_FILE,
+		notePath: NOTE,
+		draft: "hello",
+	});
+});
+
+test("single-flight: a second /main-rollover during the first's wait adds its text; one new session, one handoff with both", async () => {
+	resetState();
+	const host = fakeHost();
+	createOmpAdapter(host, overCfg);
+	let release: () => void = () => {};
+	const gate = new Promise<void>(resolve => {
+		release = resolve;
+	});
+	const ctx = mainCtx({ waitForIdle: () => gate });
+	await armReady(host, ctx, "## In progress\nstep");
+	const run = host.commands.get("main-rollover");
+	const first = run?.("first msg", ctx);
+	const second = run?.("second msg", ctx);
+	release();
+	await Promise.all([first, second]);
+	expect(newSessions).toEqual([{ parentSession: SESSION_FILE }]);
+	expect(host.sent.length).toBe(1);
+	expect(host.sent[0]?.endsWith("Owner's message:\nfirst msg\nsecond msg")).toBe(true);
+}, 60_000);
+
+test("single-flight: a state change during the wait (a job starts) stops the rollover before the new session", async () => {
+	resetState();
+	const host = fakeHost();
+	createOmpAdapter(host, overCfg);
+	let release: () => void = () => {};
+	const gate = new Promise<void>(resolve => {
+		release = resolve;
+	});
+	const ctx = mainCtx({ waitForIdle: () => gate });
+	await armReady(host, ctx, "## In progress\nstep");
+	const run = host.commands.get("main-rollover")?.("owner msg", ctx);
+	try {
+		jobs = [{ label: "sub-1" }];
+		release();
+		await run;
+	} finally {
+		jobs = [];
+	}
+	expect(newSessions.length).toBe(0);
+	// The owner's text is not dropped: after an abort it goes to this session as an ordinary message.
+	expect(host.sent).toEqual(["owner msg"]);
+	expect(notes.some(n => n.includes("no new session"))).toBe(true);
+}, 60_000);
+
+test("launcher: /main-rollover is refused; the launcher's relaunch is the only rollover path", async () => {
+	resetState();
+	const host = fakeHost();
+	createOmpAdapter(host, overCfg);
+	const ctx = mainCtx();
+	await withLauncher("1", async () => {
+		await armReady(host, ctx, "## In progress\nstep");
+		await host.commands.get("main-rollover")?.("owner msg", ctx);
+	});
+	expect(newSessions.length).toBe(0);
+	expect(host.sent.length).toBe(0);
+	expect(notes.some(n => n.includes("neurastream main"))).toBe(true);
 });

@@ -16,7 +16,7 @@
 // Harness payloads are untyped at the boundary: every field read goes through a runtime check.
 
 import { execFileSync, spawn } from "node:child_process";
-import { appendFileSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Decision } from "../../core/adapter.ts";
@@ -412,6 +412,8 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	pi.on("session_stop", (_e, ctx) => {
 		const c = asCtx(ctx);
 		if (c.hasAgent && c.kind !== "main") return;
+		// A relaunch is requested: omp shuts down at the next idle, so the stop must not be continued.
+		if (relaunched) return undefined;
 		const d = checkStop({ agent: "main", callsSinceStop, idleStops, ledgerText: ledgerText(cfg) }, cfg);
 		callsSinceStop = d.state?.callsSinceStop ?? 0;
 		idleStops = d.state?.idleStops ?? idleStops;
@@ -464,20 +466,35 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	let relaunched = false;
 	// The launcher restarts omp: the request file carries the note and the editor draft, and omp
 	// shuts down only after the file is written. A failed write keeps the session running.
-	const requestRelaunch = (c: RolloverCtx, note: string): void => {
+	// Returns whether the request was written.
+	const requestRelaunch = (c: RolloverCtx, note: string, draft = c.draft()): boolean => {
 		try {
 			mkdirSync(dirname(relaunchPath()), { recursive: true });
-			writeFileSync(
-				relaunchPath(),
-				`${JSON.stringify({ previousSessionFile: c.sessionFile, notePath: note, draft: c.draft() })}\n`,
-			);
+			writeFileSync(relaunchPath(), `${JSON.stringify({ previousSessionFile: c.sessionFile, notePath: note, draft })}\n`);
 		} catch (err) {
 			adapterLog(cfg, `rollover: relaunch request not written: ${String(err)}`);
-			return;
+			return false;
 		}
 		relaunched = true;
 		adapterLog(cfg, `rollover: relaunch requested from ${c.sessionFile}`);
 		c.shutdown();
+		return true;
+	};
+
+	// An owner message typed while the relaunch is pending joins the request's draft, in order; the
+	// launcher's handoff carries it. The rewrite is atomic, so the launcher never reads a partial file.
+	const appendToRelaunch = (text: string): boolean => {
+		try {
+			const req = asRecord(JSON.parse(readFileSync(relaunchPath(), "utf8")));
+			const draft = [asString(req.draft), text].filter(s => s !== "").join("\n");
+			const tmp = `${relaunchPath()}.tmp`;
+			writeFileSync(tmp, `${JSON.stringify({ ...req, draft })}\n`);
+			renameSync(tmp, relaunchPath());
+			return true;
+		} catch (err) {
+			adapterLog(cfg, `rollover: owner message not added to the relaunch request: ${String(err)}`);
+			return false;
+		}
 	};
 
 	const onSizeCheck = (_e: unknown, ctx: unknown): void => {
@@ -527,22 +544,46 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		return null;
 	};
 
-	// A plain interactive message in the ready state becomes the owner's first message of the new session.
+	// Under the launcher the relaunch is the only rollover path: a plain interactive message in the ready
+	// state requests it, and every such message joins the pending request's draft, in order. Plain omp keeps
+	// `/main-rollover <text>`: the message becomes the owner's first message of the new session.
 	pi.on("input", (event, ctx) => {
 		const e = asRecord(event);
 		const c = asRolloverCtx(ctx);
 		const text = asString(e.text);
 		if (!cfg.rollover.enabled || !c || !isMain(ctx)) return undefined;
 		if (asString(e.source) !== "interactive" || text === "" || text.startsWith("/")) return undefined;
+		if (process.env.NEURASTREAM_MAIN_LAUNCHER === "1") {
+			if (!relaunched) {
+				if (rolloverSnapshot(c).state !== "ready") return undefined;
+				// The message is the request's first owner text, so the editor draft is not carried.
+				if (!requestRelaunch(c, notePath(c.sessionId), "")) return undefined;
+			}
+			if (appendToRelaunch(text)) c.notify("rollover in progress: your message goes to the new session");
+			else c.notify("rollover in progress: your message could not be saved and was not sent; send it again after the rollover");
+			return { handled: true };
+		}
 		if (rolloverSnapshot(c).state !== "ready") return undefined;
 		return { text: `/main-rollover ${text}` };
 	});
 
+	// One /main-rollover at a time: while one waits for idle, a second call adds its text to the owner message.
+	let flight: string[] | null = null;
 	pi.registerCommand("main-rollover", {
 		description: "Start a fresh session from Main's handoff note; the rest of the message is the owner's first message",
 		handler: async (args: unknown, ctx: unknown) => {
 			const c = asRolloverCtx(ctx);
 			if (!c) return;
+			const text = asString(args);
+			if (process.env.NEURASTREAM_MAIN_LAUNCHER === "1") {
+				c.notify("main-rollover: under neurastream main the rollover starts from your next message, not from this command.");
+				return;
+			}
+			if (flight) {
+				flight.push(text);
+				c.notify("main-rollover: a rollover is already in progress; your message is added to its handoff.");
+				return;
+			}
 			const path = notePath(c.sessionId);
 			const state = rolloverSnapshot(c).state;
 			if (state === "below") {
@@ -557,22 +598,39 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 				c.notify(`main-rollover: own jobs are still running (${c.runningJobs().join(", ")}); a rollover would cancel them.`);
 				return;
 			}
-			c.notify("main-rollover: collecting main-start state for the handoff (this can take a minute)…");
-			const generated = [
-				await mainStartText([], cfg, { inheritStdin: false }, { source: defaultRunSource(cfg), results: defaultCompletedResults(cfg) }),
-				holdsBlock(q.ownerHolds()),
-			].join("\n");
-			const handoff = buildHandoff({
-				generated,
-				note: readFileSync(path, "utf8"),
-				previousSessionFile: c.sessionFile,
-				ownerMessage: asString(args),
-			});
-			adapterLog(cfg, `rollover: new session from ${c.sessionFile}; note ${path}`);
-			await c.waitForIdle();
-			const r = asRecord(await c.newSession({ parentSession: c.sessionFile }));
-			if (r.cancelled === true) return;
-			pi.sendUserMessage(handoff);
+			const previous = c.sessionFile;
+			const owner = [text];
+			flight = owner;
+			try {
+				c.notify("main-rollover: collecting main-start state for the handoff (this can take a minute)…");
+				const generated = [
+					await mainStartText([], cfg, { inheritStdin: false }, { source: defaultRunSource(cfg), results: defaultCompletedResults(cfg) }),
+					holdsBlock(q.ownerHolds()),
+				].join("\n");
+				const note = readFileSync(path, "utf8");
+				adapterLog(cfg, `rollover: new session from ${previous}; note ${path}`);
+				await c.waitForIdle();
+				const again = rolloverSnapshot(c).state;
+				if (relaunched || again !== "ready") {
+					c.notify(`main-rollover: the state changed while waiting for idle (${relaunched ? "relaunch requested" : again}); no new session.`);
+					// The owner's text is not lost: it goes to this session as an ordinary message.
+					const pending = owner.filter(s => s !== "").join("\n");
+					if (pending !== "") pi.sendUserMessage(pending);
+					return;
+				}
+				const r = asRecord(await c.newSession({ parentSession: previous }));
+				if (r.cancelled === true) return;
+				// Read after the await: owner messages that arrived during newSession are part of the handoff.
+				const handoff = buildHandoff({
+					generated,
+					note,
+					previousSessionFile: previous,
+					ownerMessage: owner.filter(s => s !== "").join("\n"),
+				});
+				pi.sendUserMessage(handoff);
+			} finally {
+				flight = null;
+			}
 		},
 	});
 }

@@ -41,7 +41,7 @@ const second = existsSync(env.FAKE_MARK);
 if (!second) {
 	writeFileSync(env.FAKE_MARK, "");
 	writeFileSync(env.FAKE_NOTE, env.FAKE_NOTE_TEXT);
-	writeFileSync(env.FAKE_RELAUNCH, JSON.stringify({ previousSessionFile: env.FAKE_PREV, notePath: env.FAKE_NOTE, draft: "half typed" }));
+	writeFileSync(env.FAKE_RELAUNCH, JSON.stringify({ previousSessionFile: env.FAKE_PREV, notePath: env.FAKE_NOTE, draft: env.FAKE_DRAFT ?? "half typed" }));
 	if (env.FAKE_STALE === "1") utimesSync(env.FAKE_RELAUNCH, 1, 1);
 }
 process.exit(second ? 7 : 0);
@@ -136,10 +136,20 @@ test("a relaunch request starts a second run: the owner's flags, then the handof
 	const handoff = runs[1]?.argv[2] ?? "";
 	expect(handoff).toContain("Note: continue the parser work");
 	expect(handoff).toContain("Owner away");
-	expect(handoff).toContain("Owner's unsent draft: half typed");
+	expect(handoff).toContain("Owner's messages during the rollover (and any unsent draft): half typed");
 	expect(handoff).toContain(SESSION_FILE);
 	expect(code).toBe(7);
 	expect(existsSync(relaunchPath())).toBe(false);
+}, 60_000);
+
+test("owner messages typed during a pending relaunch all reach the second run, in order", async () => {
+	const dir = newCase();
+	const code = await launch([], dir, { FAKE_DRAFT: "first\nsecond" });
+	const runs = runsOf(dir);
+	expect(runs.length).toBe(2);
+	const handoff = runs[1]?.argv.at(-1) ?? "";
+	expect(handoff).toContain("Owner's messages during the rollover (and any unsent draft): first\nsecond");
+	expect(code).toBe(7);
 }, 60_000);
 
 test("a stale relaunch.json (mtime before the run started) does not relaunch", async () => {
