@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.18
 ### Fixed
 - Session rollover has one owner while a relaunch is pending: under neurastream main the owner's messages join the pending handoff (no second session, no stale relaunch) and `/main-rollover` is refused there; a second `/main-rollover` adds its text to the rollover in progress; `ready` refuses new subagent spawns like the other pending states.
 
