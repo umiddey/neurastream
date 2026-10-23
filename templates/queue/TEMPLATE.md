@@ -1,5 +1,5 @@
 # <short title>
-Worktree: {{HOME}}/Work/<repo>-<topic>
+Worktree: <work root>/<repo>-<topic> (configure paths.work_roots, e.g. {{HOME}}/work)
 Branch: <type>/<topic>
 PRIORITY-ID: <optional, e.g. PR01>
 

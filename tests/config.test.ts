@@ -37,7 +37,7 @@ describe("loadConfig", () => {
 		expect(cfg.machine.avail_min_mb).toBe(3072);
 		expect(cfg.paths.home).toBe(home);
 		expect(cfg.paths.agent_dir).toBe(`${home}/.config/neurastream`);
-		expect(cfg.paths.work_roots).toEqual([`${home}/Work`, `${home}/projects`]);
+		expect(cfg.paths.work_roots).toEqual([]);
 		expect(cfg.ledger.providers.length).toBe(7);
 	});
 

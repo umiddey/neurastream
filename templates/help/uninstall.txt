@@ -1,0 +1,14 @@
+uninstall: remove what init and adapter install put under this HOME.
+
+Bins are removed only when they point into this package (a symlink into an
+installed copy, or a byte-identical copy). The plugin link goes, pins go only
+when byte-identical to the shipped templates (your own pins stay), and the
+managed neurastream block is stripped from AGENTS.md — everything you wrote
+around it stays.
+
+  --purge   also remove the config file and the agent-dir state init created
+            (index, queue, notes, blockers)
+
+The exact list prints first; without --yes nothing is removed. Paths that
+resolve outside your HOME are refused.
+Usage: neurastream uninstall [--purge] [--yes]

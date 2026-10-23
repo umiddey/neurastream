@@ -10,6 +10,22 @@ const REPO = dirname(dirname(dirname(import.meta.path)));
 const LIVE = join(REPO, "tests/fixtures/originals/bin");
 const ROOT = "/tmp/neurastream-home-golden";
 
+// The oracles are frozen pre-scrub scripts: they hardcode the old ~/Work layout and the
+// original backup remote. This sandbox config pins the same values so the port's effective
+// paths equal the oracle's. The shipped template defaults stay scrubbed
+// (tests/no-personal-markers.test.ts guards that); this file only aligns the comparison.
+const LEGACY_CONFIG = `paths:
+  work_roots: ["~/Work"]
+  heavy_lock: "~/Work/.heavy-run.lock"
+  heavy_owner: "~/Work/.heavy-run.owner"
+  heavy_log: "~/Work/.heavy-run.log"
+  heavy_idle_state: "~/Work/.heavy-run.idle-state"
+wip:
+  backup_url: "git@github.com:umiddey/wip-backup-clean.git"
+  backup_log: "~/Work/WIP-BACKUP.md"
+  status_log: "~/Work/WIP-STATUS.md"
+`;
+
 afterAll(() => {
 	rmSync(ROOT, { recursive: true, force: true });
 });
@@ -69,6 +85,8 @@ function homeFor(name: string): string {
 }
 
 function envFor(home: string, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+	mkdirSync(join(home, ".config/neurastream"), { recursive: true });
+	writeFileSync(join(home, ".config/neurastream/config.yml"), LEGACY_CONFIG);
 	const env: NodeJS.ProcessEnv = {
 		...process.env,
 		HOME: home,
@@ -135,8 +153,11 @@ at somewhere</failure>
 	writeFileSync(blog, "ok\nERROR no such user\nINFO fine\n");
 	const oracle = join(home, "pm-fail-facts.py");
 	rewrite("pm-fail-facts", oracle, home);
+	// the scrub dropped the "PM" prefix from the help's first line
+	const toOracle = (s: string): string => s.replace("a Playwright run's failures", "a PM Playwright run's failures");
 	for (const args of [[], [wt, "--backend-log", blog, "--lines", "2"], [join(home, "missing")]]) {
-		match(runPy(oracle, args, env, home), runPort("pm-fail-facts", args, env, home));
+		const port = runPort("pm-fail-facts", args, env, home);
+		match(runPy(oracle, args, env, home), { code: port.code, stdout: toOracle(port.stdout), stderr: toOracle(port.stderr) });
 	}
 });
 
@@ -353,11 +374,13 @@ test("agent-score matches the original", () => {
 			.filter(l => !l.startsWith("  agent-score validate") && !l.startsWith("        validation phase with proof"))
 			.join("\n")
 			.replaceAll("Accepted (diag/val)", "Accepted (diag)")
-			.replace(/\((\d+)\/(\d+)\)/g, "($1)");
+			.replace(/\((\d+)\/(\d+)\)/g, "($1)")
+			// the scrub dropped the default-branch wording from the accept line
+			.replace("(required; there is no default branch)", "(branch)");
 	for (const args of cases) {
 		const py = runPy(oracle, args, pyEnv, pyHome);
 		// The live help string hardcodes this machine. The package ships ~/Work/pm-counts.
-		const stdout = py.stdout.replaceAll("/home/ukd/Work/pm-counts", "~/Work/pm-counts");
+		const stdout = py.stdout.replaceAll("/home/ukd/Work/pm-counts", "~/Work/pm-counts").replace("(default pm/pr01-counts in ~/Work/pm-counts)", "(branch)");
 		const stderr = py.stderr.replaceAll("/home/ukd/Work/pm-counts", "~/Work/pm-counts");
 		const port = runPort("agent-score", args, portEnv, portHome);
 		match({ ...py, stdout, stderr }, { code: port.code, stdout: toOracle(port.stdout), stderr: toOracle(port.stderr) });

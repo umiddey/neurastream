@@ -59,10 +59,6 @@ const AGENT_DIR_KEYS = /^(  (?:agent_dir|queue_index|blockers|notes|ranking_boar
 function configText(home: string, invoked: string, agentDir?: string): string {
 	let text = readFileSync(TEMPLATE_PATH, "utf8");
 	if (!text.endsWith("\n")) text += "\n";
-	if (existsSync(join(home, "Work", "pm-counts"))) {
-		if (!text.includes('default_repo: ""')) throw new Error("templates/config.yml has no default_repo placeholder");
-		text = text.replace('default_repo: ""', 'default_repo: "~/Work/pm-counts"');
-	}
 	// An existing machine keeps its index, notes, blockers and unlock where they are today.
 	const agent = agentDir ? tilde(home, resolve(home, agentDir.replace(/^~(?=\/|$)/, home))) : "~/.config/neurastream";
 	if (agentDir) {

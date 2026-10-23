@@ -1,6 +1,6 @@
 paths:
   home: "~"
-  work_roots: ["~/Work", "~/projects"]
+  work_roots: []   # set your own roots
   config_dir: "~/.config/neurastream"
   agent_dir: "~/.config/neurastream"
   score_state: "~/.local/state/agent-score"
@@ -14,16 +14,16 @@ paths:
   unlock: "~/.config/neurastream/.guard-unlock"
   guard_log: "~/.local/state/main-guard.log"
   plan_guard_log: "~/.local/state/plan-guard.log"
-  heavy_lock: "~/Work/.heavy-run.lock"
-  heavy_owner: "~/Work/.heavy-run.owner"
-  heavy_log: "~/Work/.heavy-run.log"
-  heavy_idle_state: "~/Work/.heavy-run.idle-state"
+  heavy_lock: "~/.local/state/neurastream/heavy-run.lock"
+  heavy_owner: "~/.local/state/neurastream/heavy-run.owner"
+  heavy_log: "~/.local/state/neurastream/heavy-run.log"
+  heavy_idle_state: "~/.local/state/neurastream/heavy-run.idle-state"
   alert_state: "~/.cache/resource-alerts"
   snapshot_lock: "~/.cache/tmp-snapshot.lock"
 
 score:
   default_repo: ""
-  default_branch: "pm/pr01-counts"
+  default_branch: ""   # no default: pass --branch (agent-score refuses to guess a branch)
   penalties:
     false-claim: 5
     rule-break: 2
@@ -57,7 +57,13 @@ brief:
   aim_chars: 8000
   path_prefixes: ["$HOME/"]
   method_read: "$HOME/projects/opus-implementer-method.md"
-  heavy_path: "$HOME/Work/heavy-run.sh"
+  heavy_path: "$HOME/.local/bin/heavy-run.sh"
+  repo_rules: []   # optional repo-specific lint rules; each fires when `match` (regex, whole brief) hits and the body lacks `require`:
+  # - match: 'legacy-api'            # trigger anywhere in the brief (case-insensitive)
+  #   first: 'Refactor'              # optional: also require this on the title line
+  #   unless: 'plan only|read-only'  # optional: skip when the title matches this
+  #   require: 'regression test'     # the brief must contain this when the rule fires
+  #   message: 'legacy-api work must name its regression test'
 
 oc:
   model_prefix: "opencode/"
@@ -67,17 +73,17 @@ oc:
 wip:
   limit: 6
   days: 14
-  backup_url: "git@github.com:umiddey/wip-backup-clean.git"
-  backup_log: "~/Work/WIP-BACKUP.md"
-  backup_hook_off: ["umiddey/aetherios-property-management"]
+  backup_url: ""   # your own private backup repo; wip-backup refuses to invent one
+  backup_log: "~/.local/state/neurastream/WIP-BACKUP.md"
+  backup_hook_off: []   # origin name fragments whose pre-push hook wip-backup may bypass
   backup_max_repo_mb: 1000
   secret_gate: "~/.local/bin/git-secret-gate"
   snapshot_max_mb: 5
-  status_log: "~/Work/WIP-STATUS.md"
-  secret_file: '(?i)(^|/)(\.env(\.(?!example$|sample$|template$|dist$)[\w-]+)?|[^/]*\.env|env\.json|[^/]*\.(pem|p12|pfx|jks|keystore|key)|id_(rsa|dsa|ecdsa|ed25519)|credentials(\.json)?|\.netrc|\.pgpass|\.htpasswd|local-run\.env)$|(^|/)\.gateforge/test-gates/'
+  status_log: "~/.local/state/neurastream/WIP-STATUS.md"
+  secret_file: '(?i)(^|/)(\.env(\.(?!example$|sample$|template$|dist$)[\w-]+)?|[^/]*\.env|env\.json|[^/]*\.(pem|p12|pfx|jks|keystore|key)|id_(rsa|dsa|ecdsa|ed25519)|credentials(\.json)?|\.netrc|\.pgpass|\.htpasswd|local-run\.env)$'
 
 pm:
-  backend_log: "~/Work/gf-testbed/pm-batch-logs/backend-last.log"
+  backend_log: ""   # your backend service log; pm-fail-facts reads it for errors ("" = only explicit --backend-log runs)
   fail_lines: 25
   backend_error: 'Traceback|ERROR|CRITICAL|Exception| 5\d\d '
 
@@ -110,7 +116,7 @@ guards:
   shell_tools: [bash, eval]
   write_tools: [write, edit, ast_edit]
   free_ext: '\.(md|txt)$'
-  free_prefixes: ["~/Work/gf-testbed/", "~/Work/archive/", "~/Work/heavy-run.sh"]
+  free_prefixes: []   # path prefixes the write guard allows without an unlock
   bypass_spawn: ["opencode run"]
   protected: []
   ledger_command: "agent-ledger --hours 12"
@@ -163,9 +169,9 @@ alerts:
   cooldown_sec: 600
 
 snapshot:
-  tmp_dest: "~/Work/tmp-snapshot"
-  git_repo: "~/Work/gateforge"
-  git_backup: "~/Work/gf-backups/latest"
+  tmp_dest: "~/.local/state/neurastream/tmp-snapshot"
+  git_repo: ""   # optional: a repo whose git worktrees get patch snapshots (git worktree list)
+  git_backup: ""   # where the patch snapshot lands (only used when snapshot.git_repo is set)
   excludes:
     - "playwright-transform-cache-*"
     - "pytest-of-*"
@@ -175,5 +181,4 @@ snapshot:
     - ".XIM-unix"
     - ".font-unix"
     - "snap-private-tmp"
-    - "gf-luna"
     - "*.sock"

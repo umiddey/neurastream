@@ -56,3 +56,20 @@ export function blockState(fileText: string, block: string): "ok" | "stale" | "m
 	if (!at) return "missing";
 	return fileText.slice(at.start, at.end) === block ? "ok" : "stale";
 }
+
+// Remove the marked block, keeping every byte outside the markers (uninstall's inverse of
+// upsertBlock). "missing": there was no block. "stale": the markers are malformed — the text
+// comes back untouched.
+export function stripBlock(fileText: string): { text: string; state: "ok" | "stale" | "missing" } {
+	let at: { start: number; end: number } | null;
+	try {
+		at = span(fileText);
+	} catch {
+		return { text: fileText, state: "stale" };
+	}
+	if (!at) return { text: fileText, state: "missing" };
+	let text = fileText.slice(0, at.start) + fileText.slice(at.end);
+	if (text.trim() === "") text = "";
+	else text = `${text.replace(/\n+$/, "")}\n`;
+	return { text, state: "ok" };
+}

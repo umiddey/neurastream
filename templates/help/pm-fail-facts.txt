@@ -1,4 +1,4 @@
-pm-fail-facts: every fact about a PM Playwright run's failures in ONE call.
+pm-fail-facts: every fact about a Playwright run's failures in ONE call.
 
 Replaces hand-grepping logs/artifacts turn by turn (owner 2026-10-11: deterministic work goes to scripts).
 For each failed test in <worktree>/test-results/e2e-junit.xml: title, file:line, error head,

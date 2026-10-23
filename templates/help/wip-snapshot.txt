@@ -5,6 +5,7 @@ For each worktree under ROOTS with tracked changes or new (non-ignored) files, b
 from a TEMPORARY index (parent = HEAD) and store it at refs/wip/<worktree>/<stamp>.
 The working tree, the real index, HEAD and every branch stay untouched, so it is safe while
 agents work. Skips a worktree whose content equals its last snapshot. New files > MAX_MB skipped.
-Writes ~/Work/WIP-STATUS.md (wip-check output + snapshot list).
+Writes wip.status_log from config.yml (default ~/.local/state/neurastream/WIP-STATUS.md):
+wip-check output + snapshot list.
 Restore: git -C <wt> restore --source=<ref> --worktree -- <paths or .>   |   list: git for-each-ref refs/wip
 Usage: wip-snapshot [--quiet]

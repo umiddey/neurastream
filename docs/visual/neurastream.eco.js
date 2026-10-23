@@ -1,5 +1,5 @@
 // Content for the forest+trees engine: how neurastream keeps one AI agent's work in check.
-// Facts checked against /home/ukd/projects/neurastream: src/core/guards.ts (checkInject,
+// Facts checked against this repo: src/core/guards.ts (checkInject,
 // planGate, subRules, checkPlanEdit, checkMainPlan, editWindow, protected-file refusal, call
 // budget), src/core/blockers.ts (noPush, deny-command, deny-path, deny-text), src/core/queue/lib.ts
 // (REQUIRED sections, READ_CUTOVER, AWAITING merge, UNLOCK), src/core/queue-close.ts (squashMerged,

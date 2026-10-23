@@ -2,11 +2,11 @@
 set -uo pipefail
 
 SNAP=${SNAP_DEST:?}
-GF=${SNAP_GIT_REPO:?}
-GFB=${SNAP_GIT_BACKUP:?}
+GF=${SNAP_GIT_REPO:-}
+GFB=${SNAP_GIT_BACKUP:-}
 LOCK=${SNAP_LOCK:?}
-mkdir -p "$SNAP/tmp" "$GFB" "$(dirname "$LOCK")"
-chmod 700 "$SNAP" "$(dirname "$GFB")"
+mkdir -p "$SNAP/tmp" "$(dirname "$LOCK")"
+chmod 700 "$SNAP"
 
 exec 9>"$LOCK"
 flock -n 9 || { echo "snapshot already running"; exit 0; }
@@ -21,7 +21,10 @@ if [[ $rc -ne 0 && $rc -ne 23 && $rc -ne 24 ]]; then
   echo "rsync /tmp failed with $rc" >&2
 fi
 
-if git -C "$GF" rev-parse --git-dir >/dev/null 2>&1; then
+# Git patch backup is opt-in: set snapshot.git_repo + snapshot.git_backup.
+if [[ -n $GF && -n $GFB ]] && git -C "$GF" rev-parse --git-dir >/dev/null 2>&1; then
+  mkdir -p "$GFB"
+  chmod 700 "$GFB" "$(dirname "$GFB")"
   tmpb=$(mktemp -d "$GFB.new.XXXXXX")
   fail=0
   while IFS= read -r wt; do
@@ -37,7 +40,7 @@ if git -C "$GF" rev-parse --git-dir >/dev/null 2>&1; then
         { git branch --show-current >"$out/BRANCH"; true; } &&
         { git ls-files -o --exclude-standard -z | xargs -0 -r tar czf "$out/untracked.tgz"; } &&
         { [[ ! -d docs ]] || tar czf "$out/docs.tgz" docs; }
-    ) || { echo "gateforge backup failed for $wt" >&2; fail=1; }
+    ) || { echo "repo backup failed for $wt" >&2; fail=1; }
   done < <(git -C "$GF" worktree list --porcelain | awk '/^worktree /{wt=substr($0,10)} /^bare$/{wt=""} /^$/{if(wt!="")print wt; wt=""} END{if(wt!="")print wt}')
   if (( fail == 0 )); then rm -rf "$GFB" && mv "$tmpb" "$GFB"; else rm -rf "$tmpb"; fi
 fi
