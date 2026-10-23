@@ -592,7 +592,10 @@ export function checkPlanEdit(e: PlanEditEvent, cfg: Config): Decision {
 // An empty `before` means the plan file did not exist yet; a refusal then deletes it.
 function checkMainPlan(e: PlanEditEvent, cfg: Config): Decision {
 	if (q.outsideProgress(e.after) === q.outsideProgress(e.before)) return ALLOW;
-	const problems = planReadProblems(e.after, e.path, cfg);
+	// Refuse only what this edit adds: a problem the plan already had is not Main's doing now.
+	// The missing-section problem is always refused: a plan with no read list has no evidence behind its text.
+	const known = new Set(e.before ? planReadProblems(e.before, e.path, cfg) : []);
+	const problems = planReadProblems(e.after, e.path, cfg).filter(p => p === NO_SECTION || !known.has(p));
 	if (!problems.length) return ALLOW;
 	log(cfg.paths.plan_guard_log, `REFUSE-READ ${e.path}: ${problems.join("; ")}`);
 	return {
@@ -606,11 +609,13 @@ const READ_SECTION = /^## Code read by Main[^\n]*\n([\s\S]*?)(?=^## |(?![\s\S]))
 const LISTED_PATH = /`([^`\s]+)`/g;
 const CITED_PATH = /((?:~\/|\/|\.{1,2}\/)?[\w@.-]+(?:\/[\w@.-]+)*\.[A-Za-z0-9]+):\d+/g;
 
+const NO_SECTION = `no "## Code read by Main" section lists a file (list each file you read for this plan as a backticked path)`;
+
 /** Read evidence behind a plan edit: section present, each listed path read within the window, no unlisted cited path. */
 function planReadProblems(text: string, planPath: string, cfg: Config): string[] {
 	const section = READ_SECTION.exec(text)?.[1] ?? "";
 	const listed = [...section.matchAll(LISTED_PATH)].map(m => (m[1] ?? "").replace(/:[\d,+\- ]+$/, ""));
-	if (!listed.length) return [`no "## Code read by Main" section lists a file (list each file you read for this plan as a backticked path)`];
+	if (!listed.length) return [NO_SECTION];
 	const reads = readMainReads();
 	const maxMs = cfg.guards.plan_read_max_hours * 3_600_000;
 	const problems: string[] = [];
@@ -621,7 +626,7 @@ function planReadProblems(text: string, planPath: string, cfg: Config): string[]
 		if (!isFile(abs)) problems.push(`${p} does not exist`);
 		else if (!(Date.parse(reads[abs] ?? "") >= Date.now() - maxMs)) problems.push(`${p} was not read by Main within ${cfg.guards.plan_read_max_hours} h`);
 	}
-	for (const [, cited = ""] of text.matchAll(CITED_PATH)) {
+	for (const [, cited = ""] of q.outsideProgress(text).matchAll(CITED_PATH)) {
 		const abs = planFile(cited, planPath, text);
 		if (abs.includes("/docs/plans/") || named.has(abs) || !isFile(abs)) continue;
 		problems.push(`${cited} is cited but not listed under "## Code read by Main"`);
