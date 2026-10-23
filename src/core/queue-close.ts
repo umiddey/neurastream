@@ -115,9 +115,25 @@ export function queueClose(args: string[], cfg: Config): number {
 	git(plan.repo, "fetch", "-q", "origin");
 	const head = git(plan.repo, "symbolic-ref", "-q", "refs/remotes/origin/HEAD");
 	const base = upstreamBase(plan.repo, head.ok ? head.out : "refs/remotes/origin/main");
+	const worktrees = (): { path: string; branch: string | null; head: string }[] => {
+		const list: { path: string; branch: string | null; head: string }[] = [];
+		for (const line of git(plan.repo, "worktree", "list", "--porcelain").out.split("\n")) {
+			if (line.startsWith("worktree ")) list.push({ path: path.resolve(line.slice(9)), branch: null, head: "" });
+			const cur = list.at(-1);
+			if (!cur) continue;
+			if (line.startsWith("HEAD ")) cur.head = line.slice(5);
+			else if (line.startsWith("branch refs/heads/")) cur.branch = line.slice(18);
+		}
+		return list;
+	};
+	const wtEntry = plan.worktree ? worktrees().find(w => w.path === path.resolve(plan.worktree!)) : undefined;
 	const wtExists = !!plan.worktree && existsSync(plan.worktree);
-	let branch = plan.branch;
-	if (wtExists) branch ??= git(plan.worktree!, "rev-parse", "--abbrev-ref", "HEAD").out;
+	// A plan worktree is the plan's only while it sits on the plan's branch (or a detached HEAD already merged into it).
+	const owned = wtExists && !!plan.branch && !!wtEntry && (wtEntry.branch !== null
+		? wtEntry.branch === plan.branch
+		: git(plan.repo, "merge-base", "--is-ancestor", wtEntry.head, `refs/heads/${plan.branch}`).ok);
+	if (wtExists && !owned) console.log(`queue-close: worktree ${plan.worktree} kept: it is on ${wtEntry?.branch ?? (wtEntry ? "a detached HEAD" : "no branch of this repo")}`);
+	const branch = plan.branch;
 	const branchExists = !!branch && git(plan.repo, "rev-parse", "--verify", "-q", `refs/heads/${branch}`).ok;
 	const merged = branchExists && (
 		git(plan.repo, "merge-base", "--is-ancestor", `refs/heads/${branch}`, base).ok ||
@@ -158,8 +174,9 @@ export function queueClose(args: string[], cfg: Config): number {
 		const [ref, t] = line.split(" ");
 		if (ref && Number(t) < cutoff) git(plan.repo, "update-ref", "-d", ref);
 	}
-	if (wtExists) {
-		const saved = git(plan.worktree!, "stash", "create", `queue-close: uncommitted work of ${path.basename(file)}`).out;
+	if (owned) {
+		const stash = git(plan.worktree!, "stash", "create", `queue-close: uncommitted work of ${path.basename(file)}`);
+		const saved = stash.ok ? stash.out : "";
 		if (saved) {
 			const ref = `refs/queue-archive/${path.basename(file, ".md")}-${today}`;
 			if (!git(plan.repo, "update-ref", ref, saved).ok || !git(plan.repo, "stash", "show", "-p", ref).out)
@@ -174,9 +191,9 @@ export function queueClose(args: string[], cfg: Config): number {
 		if (!keep.ok || !git(plan.repo, "update-ref", ref, keep.out).ok) die(`could not save branch ${branch} to ${ref}; nothing removed`);
 		console.log(`queue-close: branch ${branch} saved as ${ref} (restore: git -C ${plan.repo} branch ${branch} ${ref}^; pruned after ${ARCHIVE_DAYS} days)`);
 	}
-	if (wtExists) {
+	if (owned) {
 		let rm = git(plan.repo, "worktree", "remove", "--force", plan.worktree!);
-		if (!rm.ok && /Permission denied/.test(rm.out)) {
+		if (!rm.ok && existsSync(plan.worktree!)) {
 			spawnSync("docker", ["run", "--rm", "-v", `${plan.worktree}:/w`, "alpine", "chown", "-R", `${os.userInfo().uid}:${os.userInfo().gid}`, "/w"], { stdio: "ignore" });
 			rm = git(plan.repo, "worktree", "remove", "--force", plan.worktree!);
 			if (!rm.ok && existsSync(plan.worktree!)) {
@@ -189,9 +206,13 @@ export function queueClose(args: string[], cfg: Config): number {
 		console.log(`queue-close: worktree ${plan.worktree} removed`);
 	}
 	if (branchExists) {
-		const d = git(plan.repo, "branch", "-D", branch!);
-		if (!d.ok) die(`could not delete branch ${branch}: ${d.out}`);
-		console.log(`queue-close: branch ${branch} deleted`);
+		const holder = worktrees().find(w => w.branch === branch);
+		if (holder) console.log(`queue-close: branch ${branch} kept: checked out in ${holder.path}`);
+		else {
+			const d = git(plan.repo, "branch", "-D", branch!);
+			if (!d.ok) die(`could not delete branch ${branch}: ${d.out}`);
+			console.log(`queue-close: branch ${branch} deleted`);
+		}
 	}
 
 	const month = today.slice(0, 7).replace("-", "");

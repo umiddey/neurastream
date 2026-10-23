@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -107,8 +107,9 @@ function envFor(home: string): NodeJS.ProcessEnv {
 	};
 }
 
-function runClose(home: string, file: string) {
-	const r = spawnSync("bun", [join(REPO, "src/cli/main.ts"), "queue-close", file], { env: envFor(home), encoding: "utf8" });
+function runClose(home: string, file: string, binDir = "") {
+	const env = { ...envFor(home), ...(binDir ? { PATH: `${binDir}:${process.env.PATH}` } : {}) };
+	const r = spawnSync("bun", [join(REPO, "src/cli/main.ts"), "queue-close", file], { env, encoding: "utf8" });
 	return { code: r.status ?? 1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 }
 
@@ -143,7 +144,7 @@ note
 // Chain: repo R -> middle C -> upstream U. C's HEAD is a feature branch and its local main is stale,
 // so R's origin/HEAD (cloned from C) points at that feature branch, not at the upstream default.
 // Plan's branch F is merged into U's main only when `landed` is true.
-function chain(dir: string, landed: boolean): string {
+function chain(dir: string, landed: boolean, worktree = "-"): string {
 	const U = join(dir, "upstream");
 	const C = join(dir, "middle");
 	const R = join(dir, "repo");
@@ -158,7 +159,7 @@ function chain(dir: string, landed: boolean): string {
 	git(R, "checkout", "-q", "chore/other");
 	writeFileSync(join(R, ".git/info/exclude"), "/INDEX.md\n");
 	mkdirSync(join(R, "docs/plans"), { recursive: true });
-	writeFileSync(join(R, "docs/plans", PLAN), planText("complete", "F", "-", "true"));
+	writeFileSync(join(R, "docs/plans", PLAN), planText("complete", "F", worktree, "true"));
 	writeFileSync(join(R, "INDEX.md"), `- ${join(R, "docs/plans", PLAN)}\n`);
 	git(R, "add", join("docs/plans", PLAN));
 	git(R, "commit", "-q", "-m", "plan");
@@ -199,6 +200,43 @@ test("P1: base follows a local origin chain; unmerged branch stays AWAITING merg
 	expect(gitOk(R, "rev-parse", "--verify", "-q", "refs/heads/F")).toBe(true);
 });
 
-// readdirSync is used by the P2/P3 cases added in later commits.
-void readdirSync;
-void readFileSync;
+test("P2: a plan worktree on another branch is kept intact; the plan is still archived", () => {
+	const dir = fresh("p2-kept");
+	const home = makeHome(dir);
+	const W = join(dir, "wt-g");
+	const R = chain(dir, true, W);
+	git(R, "worktree", "add", "-q", "-b", "G", W, "origin/main");
+	indexHome(home, R);
+	const r = runClose(home, join(R, "docs/plans", PLAN));
+	expect(r.stdout).toContain(`queue-close: worktree ${W} kept: it is on G`);
+	expect(r.stdout).toContain("branch F deleted");
+	expect(r.stdout).toContain("queue-close: CLOSED");
+	expect(r.code).toBe(0);
+	expect(existsSync(join(W, ".git"))).toBe(true);
+	expect(git(W, "rev-parse", "--abbrev-ref", "HEAD")).toBe("G");
+	expect(git(R, "worktree", "list", "--porcelain")).toContain(W);
+	expect(existsSync(join(R, "docs/plans/archive", MONTH, PLAN))).toBe(true);
+});
+
+test("P2: a plan worktree git cannot remove is docker-chowned, then deleted and pruned", () => {
+	const dir = fresh("p2-leftover");
+	const home = makeHome(dir);
+	const W = join(dir, "wt-f");
+	const R = chain(dir, true, W);
+	git(R, "worktree", "add", "-q", W, "F");
+	rmSync(join(W, ".git")); // git can no longer remove this worktree
+	const bin = join(home, "stub-bin");
+	mkdirSync(bin, { recursive: true });
+	const log = join(home, "docker.log");
+	writeFileSync(join(bin, "docker"), `#!/bin/sh\necho "$@" >> ${log}\nexit 0\n`);
+	chmodSync(join(bin, "docker"), 0o755);
+	indexHome(home, R);
+	const r = runClose(home, join(R, "docs/plans", PLAN), bin);
+	expect(r.stderr).toBe("");
+	expect(r.stdout).toContain(`queue-close: worktree ${W} removed`);
+	expect(r.stdout).toContain("branch F deleted");
+	expect(r.code).toBe(0);
+	expect(readFileSync(log, "utf8")).toContain("chown");
+	expect(existsSync(W)).toBe(false);
+	expect(git(R, "worktree", "list", "--porcelain")).not.toContain(W);
+});
