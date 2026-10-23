@@ -351,8 +351,10 @@ test("tmp-snapshot matches the original", () => {
 	chmodSync(oracle, 0o755);
 	const py = runBash(oracle, [], env);
 	const port = runPort("tmp-snapshot", [], env);
+	// the scrub renamed the oracle's "gateforge backup failed" to "repo backup failed"
+	const toOracle = (s: string): string => s.replaceAll("repo backup failed for", "gateforge backup failed for");
 	expect(stripTs(port.stdout)).toBe(stripTs(py.stdout));
-	expect(stripVanished(port.stderr)).toBe(stripVanished(py.stderr));
+	expect(stripVanished(toOracle(port.stderr))).toBe(stripVanished(py.stderr));
 	expect(port.code).toBe(py.code);
 }, 120_000);
 

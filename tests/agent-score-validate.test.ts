@@ -52,8 +52,9 @@ function writeEvidence(h: string, name: string, body: string): string {
 }
 
 function writeHeavyLog(h: string, lines: string[]): void {
-	mkdirSync(dirname(join(h, "Work/.heavy-run.log")), { recursive: true });
-	writeFileSync(join(h, "Work/.heavy-run.log"), `${lines.join("\n")}\n`);
+	// the scrub moved the heavy-log default under ~/.local/state/neurastream
+	mkdirSync(dirname(join(h, ".local/state/neurastream/heavy-run.log")), { recursive: true });
+	writeFileSync(join(h, ".local/state/neurastream/heavy-run.log"), `${lines.join("\n")}\n`);
 }
 
 const HEAVY = [
