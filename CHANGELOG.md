@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+### Fixed
+- Session rollover has one owner while a relaunch is pending: under neurastream main the owner's messages join the pending handoff (no second session, no stale relaunch) and `/main-rollover` is refused there; a second `/main-rollover` adds its text to the rollover in progress; `ready` refuses new subagent spawns like the other pending states.
+
 ## 0.1.17
 ### Fixed
 - queue-close judges the real upstream default branch (local-path origin chains are followed and the default is fetched), keeps a plan worktree that is on another branch, falls back to docker chown and `worktree prune` when git cannot remove a worktree, and runs the done check in a temp worktree of that base when the plan worktree is missing or kept.
