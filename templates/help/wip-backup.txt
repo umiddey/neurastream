@@ -1,12 +1,18 @@
-Push unfinished work to the PRIVATE GitHub repo umiddey/wip-backup (off this disk).
+Push unfinished work to your own private backup repo (off this disk).
 
-Per repo under ROOTS (one per shared git dir):
-  - every local branch with commits on no remote  -> refs/heads/<repo>/<branch>
+The remote is wip.backup_url from config.yml. While it is empty, nothing is
+pushed and every repo lands under "Failed" in the report (git has no target).
+
+Per repo under your configured work roots (paths.work_roots; one run per shared
+git dir):
+  - every local branch with commits on no remote  -> refs/heads/<repo-key>/<branch>
   - newest wip-snapshot ref per worktree          -> refs/heads/wip/<worktree-key>
-Never touches worktrees, branches or the real remotes. Hooks are NOT bypassed (machine
-rule: --no-verify is banned): a repo with a pre-push hook is skipped and listed. A ref
-whose new commits fail `git-secret-gate scan` (gitleaks, owner order 2026-10-11: never a
-password on git, private repos included) is NOT pushed and is listed as skipped.
+Never touches worktrees, branches or the real remotes. Hooks are NOT bypassed
+(--no-verify is banned): a repo with a pre-push hook is skipped and listed;
+wip.backup_hook_off names origin fragments this rule may bypass. A ref whose
+new commits fail the secret scan (wip.secret_gate; never a password on git,
+private repos included) is NOT pushed and is listed as skipped. Repos whose
+git dir exceeds wip.backup_max_repo_mb and shallow clones are skipped whole.
 
-Restore: git fetch git@github.com:umiddey/wip-backup-clean.git '<repo>/<branch>:<branch>'
+Restore: git fetch '<wip.backup_url>' '<repo-key>/<branch>:<branch>'
 Usage: wip-backup [--dry-run] [--quiet]

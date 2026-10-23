@@ -4,14 +4,4 @@
 
 ## Allowed
 
-- `glm`
-- `deepseek`
-- `composer`
-- `hiko`
-- `muse`
-- `luna`
-- `sol`
-- `grok`
-- `gemini`
-- `local-qwen`
-- `haiku`
+<!-- Empty by default: add one bullet per worker you want spawnable (dash, space, backticked pin name from templates/agents). -->

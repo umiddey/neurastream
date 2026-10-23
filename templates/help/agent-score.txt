@@ -4,7 +4,7 @@ Points come only from work Main accepted, weighted by the plan phase's `difficul
 Cost = the worker's own list cost + Main's steering cost (Main tokens spent on turns that mention the agent).
 
   agent-score accept <Agent> --plan <plan.md> --phase P2 --commits <sha,sha|a..b> [--repo R] [--branch B] [--weight N] [--rework] [--note T]
-        commits must be ancestors of --branch (default pm/pr01-counts in ~/Work/pm-counts); --rework = needed fixes by Main/another agent
+        commits must be ancestors of --branch (required; there is no default branch); --rework = needed fixes by Main/another agent
   agent-score diagnose <Agent> --plan <plan.md> --phase P --evidence <file> [--weight N]
         a real product bug found and recorded (no commit needed); default weight 4
   agent-score validate <Agent> --plan <plan.md> --phase P --evidence <report.md> --section "## Heading" [--weight N] [--rework] [--note T]

@@ -56,9 +56,10 @@ test("init creates the layout and a second run changes nothing", () => {
 	expect(cfg.paths.queue_index).toBe(join(HOME, ".config/neurastream/INDEX.md"));
 	expect(cfg.guards.protected.some(p => p.endsWith("/notes/"))).toBe(true);
 	expect(cfg.score.default_repo).toBe("");
-	expect(readFileSync(join(HOME, ".config/neurastream/notes/subagents.md"), "utf8")).toContain("- `glm`");
+	expect(readFileSync(join(HOME, ".config/neurastream/notes/subagents.md"), "utf8")).toContain("backticked pin name");
 	const rendered = readFileSync(join(HOME, ".config/neurastream/queue/TEMPLATE.md"), "utf8");
-	expect(rendered).toContain(`Worktree: ${HOME}/Work/<repo>-<topic>`);
+	expect(rendered).toContain("Worktree: <work root>/<repo>-<topic>");
+	expect(rendered).toContain(`e.g. ${HOME}/work)`);
 	expect(rendered).not.toContain("{{HOME}}");
 	expect(rendered).not.toContain("/home/");
 
@@ -88,7 +89,7 @@ test("adapter install keeps one omp load route: no extension link, stale symlink
 	// The plugin route is the only one; it is what guard parity locks.
 	expect(existsSync(extension)).toBe(false);
 	expect(existsSync(installed.plugin)).toBe(true);
-	expect(installed.pinsCopied.length).toBe(17);
+	expect(installed.pinsCopied.length).toBe(1); // only the neutral example pin ships now
 	const cfg = loadConfig({ home: HOME, env: {} });
 	expect(cfg.adapter?.name).toBe("omp");
 	expect(cfg.adapter?.extensions).toBe(join(HOME, ".omp/agent/extensions"));
