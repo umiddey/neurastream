@@ -433,6 +433,24 @@ function withoutHeredocBodies(code: string): string {
 	return keep.join("\n");
 }
 
+// `neurastream agents allow|deny` and `neurastream init --allow` edit the subagent allow-list,
+// a protected guard file, so they count as writes to it (also when run as `bun .../src/cli/main.ts`).
+function subagentsOpWrites(code: string): boolean {
+	for (const seg of code.split(/&&|\|\||;|\n|\|/)) {
+		const toks = seg.trim().split(/\s+/).filter(Boolean);
+		let i = 0;
+		while (i < toks.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(toks[i] ?? "")) i++;
+		const cmd = (toks[i] ?? "").replace(/^["']|["']$/g, "").replace(/^.*\//, "");
+		const rest = toks.slice(i + 1).map(t => t.replace(/^["']+|["']+$/g, ""));
+		const off = cmd === "neurastream" ? 0 : cmd === "bun" && (rest[0] ?? "").endsWith("src/cli/main.ts") ? 1 : -1;
+		if (off < 0) continue;
+		const sub = rest[off] ?? "";
+		if (sub === "agents" && ["allow", "deny"].includes(rest[off + 1] ?? "")) return true;
+		if (sub === "init" && rest.some(t => t === "--allow" || t.startsWith("--allow="))) return true;
+	}
+	return false;
+}
+
 export function writeTargets(toolName: string, input: Record<string, unknown>, cwd: string): string[] {
 	const out = new Set<string>();
 	const add = (raw: string, from: string) => {
@@ -464,7 +482,8 @@ export function writeTargets(toolName: string, input: Record<string, unknown>, c
 	// A package/plugin/cutover command is a write even though none of the
 	// generic mutating heuristics fire on its text.
 	const pkgOp = packageOpTarget(code);
-	if (!MUTATING.test(code) && !pkgOp) return [];
+	const subOp = subagentsOpWrites(code);
+	if (!MUTATING.test(code) && !pkgOp && !subOp) return [];
 	let dir = typeof input?.cwd === "string" ? path.resolve(cwd, expandHome(input.cwd)) : cwd;
 	for (const seg of withoutHeredocBodies(code).split(/&&|\|\||;|\n|\|/)) {
 		const s = seg.trim();
@@ -499,6 +518,7 @@ export function writeTargets(toolName: string, input: Record<string, unknown>, c
 	])
 		for (const m of code.matchAll(re)) add((m[1] ?? "").replace(/`/g, ""), dir);
 	if (pkgOp) out.add(pkgOp);
+	if (subOp) out.add(subagentsPath());
 	return [...out];
 }
 
