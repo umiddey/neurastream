@@ -163,7 +163,7 @@ Only this folder may name the harness. It does three things:
 
 1. Session reader implementing `RunSource` (the jsonl rules above).
 2. An extension module (`package.json` key `omp.extensions` → `["./src/adapters/omp/index.ts"]`) that subscribes to `session_start`, `before_agent_start`, `before_subagent_spawn`, `tool_call`, `tool_result`, and `session_stop`, and calls the core functions. Return values map to the harness shapes `{ block, reason }`, `{ additionalContext }`, `{ message }`, and `{ decision: "block", reason }`.
-3. A copy of the herdr pane reporter. It talks to a socket. Core does not. Adapter install links the extension entry under the sandbox HOME and does not edit the live agent directory.
+3. A pane-state reporter owned by the pane host; this package does not ship it. It talks to a socket. Core does not. Adapter install links the extension entry under the sandbox HOME and does not edit the live agent directory.
 
 Agent pins ship as templates. Adapter install copies `templates/agents/*.md` (no `.bak*`) into `adapter.pins` only when that file is absent.
 

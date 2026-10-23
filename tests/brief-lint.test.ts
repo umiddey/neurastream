@@ -1,7 +1,8 @@
-// Brief-lint's incident rule (plan 20261022_2330 P5): a plan citing INCIDENT <id> must have a
-// phase whose text says "fail-before" — its regression test has to fail on the old code. Every
-// other rule of lint() must still pass for the positive cases, so the briefs below satisfy the
-// full template (method read, acceptance, never push, find note, call budget).
+// Brief-lint rules. The shipped default config carries no team rules: a method read and a find note
+// are required only when a config sets them (brief.method_marker, brief.repo_rules). The incident rule
+// (plan 20261022_2330 P5) applies to every config: a plan citing
+// INCIDENT <id> must have a phase whose text says "fail-before" — its regression test has to fail on
+// the old code.
 
 import { afterAll, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -16,42 +17,43 @@ afterAll(() => {
 	rmSync(TMP, { recursive: true, force: true });
 });
 
-// The paths rule requires every $HOME/... path a brief names to exist; the briefs below name
-// method_read, so the sandbox home carries a stub of it.
+// A team's method file: referenced only by the config that sets brief.method_marker.
 mkdirSync(join(TMP, "home/projects"), { recursive: true });
-writeFileSync(join(TMP, "home/projects/opus-implementer-method.md"), "method text\n");
+writeFileSync(join(TMP, "home/projects/team-method.md"), "method text\n");
 
 const cfg: Config = loadConfig({ home: join(TMP, "home"), env: {} });
+const team: Config = {
+	...cfg,
+	brief: { ...cfg.brief, method_marker: "team-method.md", method_read: "$HOME/projects/team-method.md" },
+};
 
-function brief(name: string, incidentId: string | null, failBefore: boolean): string {
+function brief(name: string, incidentId: string | null, failBefore: boolean, c: Config = cfg, extra: string[] = []): string {
 	const p = join(TMP, name);
 	mkdirSync(TMP, { recursive: true });
-	writeFileSync(
-		p,
-		[
-			`# ${name.replace(/\.md$/, "")}`,
-			"",
-			`Read ${cfg.brief.method_read} first.`,
-			"",
-			"## Goal",
-			incidentId ? `Close the loop on ${incidentId}. INCIDENT ${incidentId}` : "Tighten a guard message.",
-			"",
-			"## Phases",
-			incidentId && failBefore
-				? `- [x] P1 detector gate, fail-before: the regression test fails on the old code — verify: \`true\``
-				: `- [x] P1 detector gate — verify: \`true\``,
-			"",
-			"## Acceptance",
-			"- bun run typecheck && bun test exit 0",
-			"",
-			"## Forbidden",
-			"- never push, never open a PR",
-			"",
-			"## Notes",
-			"`find` is broken: use grep/glob/read. Every test run goes through heavy-run.sh. Stop and report within ~100 tool calls.",
-			"",
-		].join("\n"),
-	);
+	const lines = [
+		`# ${name.replace(/\.md$/, "")}`,
+		"",
+		...(c.brief.method_read ? [`Read ${c.brief.method_read} first.`, ""] : []),
+		"## Goal",
+		incidentId ? `Close the loop on ${incidentId}. INCIDENT ${incidentId}` : "Tighten a guard message.",
+		"",
+		"## Phases",
+		incidentId && failBefore
+			? "- [x] P1 detector gate, fail-before: the regression test fails on the old code — verify: `true`"
+			: "- [x] P1 detector gate — verify: `true`",
+		"",
+		"## Acceptance",
+		"- bun run typecheck && bun test exit 0",
+		"",
+		"## Forbidden",
+		"- never push, never open a PR",
+		"",
+		"## Notes",
+		"Stop and report within ~100 tool calls.",
+		...extra,
+		"",
+	];
+	writeFileSync(p, lines.join("\n"));
 	return p;
 }
 
@@ -65,16 +67,51 @@ test("the same plan with a fail-before phase passes; a plan without an INCIDENT 
 	expect(briefLint([brief("20261023_1400_noincident.md", null, false)], cfg)).toBe(0);
 });
 
-// The repo-specific brief rules moved from code to config (brief.repo_rules); the shipped
-// default list is empty, so the same briefs stay clean without them.
+test("the shipped default config carries no team rules and names the package heavy-run", () => {
+	expect(cfg.brief.method_marker).toBe("");
+	expect(cfg.brief.method_read).toBe("");
+	expect(cfg.brief.heavy_marker).toBe("heavy-run");
+	expect(cfg.brief.heavy_path).toBe("heavy-run");
+	expect(cfg.brief.repo_rules).toEqual([]);
+});
+
+test("default config: a brief with no method read and no find note passes", () => {
+	const p = brief("20261023_1600_default.md", null, false, cfg, ["Run the full suite through heavy-run before reporting."]);
+	expect(briefLint([p], cfg)).toBe(0);
+});
+
+test("default config: a run-raw or run-batch mention is not a heavy trigger", () => {
+	const p = brief("20261023_1610_runraw.md", null, false, cfg, ["Replay the sample with run-raw.sh and run-batch.sh."]);
+	expect(briefLint([p], cfg)).toBe(0);
+});
+
+test("default config: a coverage batch needs no Probe line", () => {
+	const p = brief("20261023_1620_coverage.md", null, false, cfg, ["Coverage batch: test-map the 255 claims in one pass."]);
+	expect(briefLint([p], cfg)).toBe(0);
+});
+
+test("a config that sets method_marker still requires the method read", () => {
+	expect(briefLint([brief("20261023_1700_nomethod.md", null, false, cfg)], team)).toBe(1);
+	expect(briefLint([brief("20261023_1701_method.md", null, false, team)], team)).toBe(0);
+});
+
+test("a repo_rules entry (match '.', require find.*broken) reproduces the find note", () => {
+	const rules: Config["brief"]["repo_rules"] = [
+		{ match: ".", require: "find.*broken", message: "missing: '`find` is broken: use grep/glob/read' note" },
+	];
+	const finder: Config = { ...cfg, brief: { ...cfg.brief, repo_rules: rules } };
+	expect(briefLint([brief("20261023_1800_nofind.md", null, false, cfg)], finder)).toBe(1);
+	expect(briefLint([brief("20261023_1801_find.md", null, false, cfg, ["`find` is broken: use grep/glob/read."])], finder)).toBe(0);
+});
+
+// The repo-specific brief rules live in config (brief.repo_rules); the shipped default list is empty,
+// so the same briefs stay clean without them.
 function ruledBrief(name: string, title: string, bodyLine: string): string {
 	const p = join(TMP, name);
 	writeFileSync(
 		p,
 		[
 			`# ${title}`,
-			"",
-			`Read ${cfg.brief.method_read} first.`,
 			"",
 			"## Goal",
 			"Repo-ruled work.",
@@ -89,7 +126,7 @@ function ruledBrief(name: string, title: string, bodyLine: string): string {
 			"- never push, never open a PR",
 			"",
 			"## Notes",
-			"`find` is broken: use grep/glob/read. Stop and report within ~100 tool calls.",
+			"Stop and report within ~100 tool calls.",
 			bodyLine,
 			"",
 		].join("\n"),

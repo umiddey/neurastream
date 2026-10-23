@@ -11,6 +11,7 @@ import { addIncident, type IncidentView } from "./incidents.ts";
 import { log as logGuard } from "./guards.ts";
 import { dailyChecks, readBlocks, readMetricEvents, worseThanMean } from "./metrics.ts";
 import { buildReport } from "./report.ts";
+import { loadavgLine } from "./host.ts";
 
 function bin(name: string, cfg: Config): string {
 	return join(cfg.paths.home, ".local/bin", name);
@@ -83,6 +84,8 @@ export async function mainStartText(args: string[], cfg: Config, opts: { inherit
 	const out: string[] = [];
 	const say = (line: string) => out.push(`${line}\n`);
 	runMainStartDetectors(cfg, deps);
+	// Config notices (legacy keys renamed or removed by loadConfig): one line each, above the sections.
+	for (const n of cfg.notices) say(`notice: ${n}`);
 	const h = args[0] ?? String(cfg.health.default_hours);
 	const childStdin = opts.inheritStdin ? "inherit" : "ignore";
 	const childStderr = opts.inheritStdin ? "inherit" : "pipe";
@@ -111,7 +114,7 @@ export async function mainStartText(args: string[], cfg: Config, opts: { inherit
 	const mg = await run(bin("machine-guard", cfg), [], { stderr: "ignore" });
 	const mgLines = mg.stdout.trim().split("\n");
 	say(mgLines.at(-1) ?? "");
-	say(readFileSync("/proc/loadavg", "utf8").trim());
+	say(loadavgLine());
 	say("");
 	say(`=== agents (last ${h}h; DIED = check its worktree, relaunch FRESH with its progress file)`);
 	const ledger = await run(bin("agent-ledger", cfg), ["--hours", h], { stderr: "ignore" });

@@ -1,4 +1,4 @@
-agent-score: rank subagent workers by CORRECT work per dollar and per hour (owner 2026-10-16, AGENTS.md line 16).
+agent-score: rank subagent workers by CORRECT work per dollar and per hour.
 
 Points come only from work Main accepted, weighted by the plan phase's `difficulty: N` (set at plan time).
 Cost = the worker's own list cost + Main's steering cost (Main tokens spent on turns that mention the agent).

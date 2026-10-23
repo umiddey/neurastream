@@ -135,6 +135,8 @@ export interface DoctorReport {
 	ok: string[];
 	problems: string[];
 	warnings: string[];
+	/** Legacy config keys loadConfig renamed or dropped; informational, not problems. */
+	notices: string[];
 	installed: string;
 	registry: string | null;
 }
@@ -172,7 +174,8 @@ export function doctorReport(home: string, env: NodeJS.ProcessEnv = process.env)
 	}
 	const agents = liveAgentsMd(home);
 	const text = existsSync(agents) ? readFileSync(agents, "utf8") : "";
-	const state = blockState(text, renderBlock(loadConfig({ home, env })));
+	const cfg = loadConfig({ home, env });
+	const state = blockState(text, renderBlock(cfg));
 	if (state === "ok") ok.push(`${agents} neurastream block`);
 	else problems.push(`${state}: ${agents} neurastream block`);
 	const warnings: string[] = [];
@@ -183,7 +186,7 @@ export function doctorReport(home: string, env: NodeJS.ProcessEnv = process.env)
 		registry = viewed.version;
 		if (registry !== installed) problems.push(`stale version: installed ${installed}, registry ${registry}`);
 	}
-	return { ok, problems, warnings, installed, registry };
+	return { ok, problems, warnings, installed, registry, notices: cfg.notices };
 }
 
 export function formatDoctor(report: DoctorReport): string {
@@ -191,6 +194,7 @@ export function formatDoctor(report: DoctorReport): string {
 	if (report.problems.length === 0) lines.push("neurastream doctor: ok");
 	else lines.push(`neurastream doctor: ${report.problems.length} problem(s)`);
 	for (const p of report.problems) lines.push(p);
+	for (const n of report.notices) lines.push(`notice: ${n}`);
 	lines.push(`installed ${report.installed}`);
 	if (report.registry !== null) lines.push(`registry ${report.registry}`);
 	for (const w of report.warnings) lines.push(`warning: ${w}`);

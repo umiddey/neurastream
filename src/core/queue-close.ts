@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, fstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, fstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Config } from "./config.ts";
@@ -115,10 +115,12 @@ export function queueClose(args: string[], cfg: Config): number {
 	git(plan.repo, "fetch", "-q", "origin");
 	const head = git(plan.repo, "symbolic-ref", "-q", "refs/remotes/origin/HEAD");
 	const base = upstreamBase(plan.repo, head.ok ? head.out : "refs/remotes/origin/main");
+	// git reports worktree paths through symlinks resolved (macOS: /tmp -> /private/tmp); match resolved paths on both sides.
+	const real = (p: string): string => { try { return realpathSync(p); } catch { return path.resolve(p); } };
 	const worktrees = (): { path: string; branch: string | null; head: string }[] => {
 		const list: { path: string; branch: string | null; head: string }[] = [];
 		for (const line of git(plan.repo, "worktree", "list", "--porcelain").out.split("\n")) {
-			if (line.startsWith("worktree ")) list.push({ path: path.resolve(line.slice(9)), branch: null, head: "" });
+			if (line.startsWith("worktree ")) list.push({ path: real(line.slice(9)), branch: null, head: "" });
 			const cur = list.at(-1);
 			if (!cur) continue;
 			if (line.startsWith("HEAD ")) cur.head = line.slice(5);
@@ -126,7 +128,7 @@ export function queueClose(args: string[], cfg: Config): number {
 		}
 		return list;
 	};
-	const wtEntry = plan.worktree ? worktrees().find(w => w.path === path.resolve(plan.worktree!)) : undefined;
+	const wtEntry = plan.worktree ? worktrees().find(w => w.path === real(plan.worktree!)) : undefined;
 	const wtExists = !!plan.worktree && existsSync(plan.worktree);
 	// A plan worktree is the plan's only while it sits on the plan's branch (or a detached HEAD already merged into it).
 	const owned = wtExists && !!plan.branch && !!wtEntry && (wtEntry.branch !== null

@@ -50,14 +50,14 @@ ledger:
     - opencode-zen
 
 brief:
-  method_marker: "opus-implementer-method.md"
-  heavy_marker: "heavy-run.sh"
+  method_marker: ""   # empty = no method read required
+  heavy_marker: "heavy-run"
   max_keys: 10
   warn_chars: 12000
   aim_chars: 8000
   path_prefixes: ["$HOME/"]
-  method_read: "$HOME/projects/opus-implementer-method.md"
-  heavy_path: "$HOME/.local/bin/heavy-run.sh"
+  method_read: ""
+  heavy_path: "heavy-run"
   repo_rules: []   # optional repo-specific lint rules; each fires when `match` (regex, whole brief) hits and the body lacks `require`:
   # - match: 'legacy-api'            # trigger anywhere in the brief (case-insensitive)
   #   first: 'Refactor'              # optional: also require this on the title line
@@ -81,11 +81,6 @@ wip:
   snapshot_max_mb: 5
   status_log: "~/.local/state/neurastream/WIP-STATUS.md"
   secret_file: '(?i)(^|/)(\.env(\.(?!example$|sample$|template$|dist$)[\w-]+)?|[^/]*\.env|env\.json|[^/]*\.(pem|p12|pfx|jks|keystore|key)|id_(rsa|dsa|ecdsa|ed25519)|credentials(\.json)?|\.netrc|\.pgpass|\.htpasswd|local-run\.env)$'
-
-pm:
-  backend_log: ""   # your backend service log; pm-fail-facts reads it for errors ("" = only explicit --backend-log runs)
-  fail_lines: 25
-  backend_error: 'Traceback|ERROR|CRITICAL|Exception| 5\d\d '
 
 health:
   warn_ctx: 150000
@@ -155,9 +150,9 @@ machine:
   watch_sec: 60
   watch_streak: 3
 
-glm:
+quota:
   reset_tz: "Asia/Shanghai"
-  label: "GLM"
+  label: "quota"
 
 priority:
   sleep_sec: 120

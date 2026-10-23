@@ -1,6 +1,6 @@
 // omp adapter: one extension translating the harness events the originals used into the core
 // guard calls (src/core/guards.ts), plus the auto-close scheduler from main-guard. The harness
-// name appears only here and in herdr-agent-state.ts; core never imports this file.
+// name appears only here; core never imports this file.
 //
 // Event map (docs/adapter.md, docs/inventory.md):
 //   session_start          (main only) auto-close now + every queue.auto_close_min minutes
@@ -33,7 +33,7 @@ import * as q from "../../core/queue/lib.ts";
 // Registers the plugin-command matcher into core's writeTargets (side effect).
 import "./package-ops.ts";
 
-/** Subset of the harness extension host the adapter needs (pi.on; herdr also uses pi.events). */
+/** Subset of the harness extension host the adapter needs. */
 export interface ExtensionHost {
 	on(event: string, cb: (...args: unknown[]) => unknown): void;
 	registerCommand(name: string, opts: { description?: string; handler: (args: unknown, ctx: unknown) => unknown }): void;
@@ -128,7 +128,7 @@ function mainDetectors(cfg: Config, extra: { prompt?: string; bash?: { command: 
 	}
 }
 
-// Background queue-close for every plan Main marked complete (owner 2026-10-15). Ported from the
+// Background queue-close for every plan Main marked complete. Ported from the
 // original autoClose: same filter, same "--- auto-close attempt" log line, detached child with
 // stdio on the per-plan close log. QUEUE_CLOSE_BIN overrides the binary (tests); without it the
 // package's own executable bin/queue-close runs (its `#!/usr/bin/env bun` shebang picks bun).

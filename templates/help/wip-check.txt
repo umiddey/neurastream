@@ -1,4 +1,4 @@
-wip-check: unlanded work across Main's repos (owner 2026-10-11: land before starting new work).
+wip-check: unlanded work across Main's repos (land before starting new work).
 
 Lists every local branch with commits on no remote, and every worktree with uncommitted changes.
 Exit 1 when unlanded branches exceed WIP_LIMIT (default 6) so the number cannot be ignored.

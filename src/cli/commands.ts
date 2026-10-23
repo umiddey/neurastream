@@ -1,13 +1,12 @@
 import { agentLedger } from "../core/agent-ledger.ts";
 import { agentScore } from "../core/agent-score.ts";
 import { briefLint } from "../core/brief-lint.ts";
-import { glmReset } from "../core/glm-reset.ts";
+import { quotaReset } from "../core/quota-reset.ts";
 import { heavyRun } from "../core/heavy-run.ts";
 import { mainHealth } from "../core/main-health.ts";
 import { mainStart } from "../core/main-start.ts";
 import { machineGuard } from "../core/machine-guard.ts";
 import { ocRun } from "../core/oc-run.ts";
-import { pmFailFacts } from "../core/pm-fail-facts.ts";
 import { priorityWatch } from "../core/priority-watch.ts";
 import { queueCancel } from "../core/queue-cancel.ts";
 import { queueCheck } from "../core/queue-check.ts";
@@ -30,7 +29,6 @@ export const PORTED = [
 	"wip-check",
 	"wip-backup",
 	"wip-snapshot",
-	"pm-fail-facts",
 	"main-health",
 	"queue-check",
 	"queue-trim",
@@ -38,7 +36,7 @@ export const PORTED = [
 	"queue-cancel",
 	"main-start",
 	"machine-guard",
-	"glm-reset",
+	"quota-reset",
 	"priority-watch",
 	"resource-alerts",
 	"tmp-snapshot",
@@ -66,8 +64,6 @@ export async function runPorted(cmd: string, args: string[]): Promise<number> {
 			return wipBackup(args, rt.cfg);
 		case "wip-snapshot":
 			return wipSnapshot(args, rt.cfg);
-		case "pm-fail-facts":
-			return pmFailFacts(args, rt.cfg);
 		case "main-health":
 			return mainHealth(args, rt.cfg, rt.source);
 		case "queue-check":
@@ -82,8 +78,8 @@ export async function runPorted(cmd: string, args: string[]): Promise<number> {
 			return mainStart(args, rt.cfg, { source: defaultRunSource(rt.cfg), results: defaultCompletedResults(rt.cfg) });
 		case "machine-guard":
 			return machineGuard(args, rt.cfg);
-		case "glm-reset":
-			return glmReset(args, rt.cfg);
+		case "quota-reset":
+			return quotaReset(args, rt.cfg);
 		case "priority-watch":
 			return priorityWatch(args, rt.cfg);
 		case "resource-alerts":

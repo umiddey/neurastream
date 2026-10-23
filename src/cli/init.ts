@@ -2,11 +2,13 @@
 // and rewrites nothing (docs/config.md). Paths come from the loaded config, not literals in core.
 
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, readSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { configFile, loadConfig, TEMPLATE_PATH, type Config } from "../core/config.ts";
+import { allowedAgents } from "../core/queue/lib.ts";
+import { allowAgents, invalidSlugs, InvalidSlugError } from "../core/subagents.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const PACKAGE_ROOT = resolve(HERE, "../..");
@@ -21,6 +23,7 @@ const BLOCKERS: { name: string; fn: string }[] = [
 export interface InitResult {
 	created: string[];
 	unchanged: string[];
+	allowed: string[];
 }
 
 function tilde(home: string, p: string): string {
@@ -102,10 +105,14 @@ Empty until \`agent-score board\` writes this file. Do not hand-edit after that.
 `;
 
 /** Create the layout. Existing files are left byte-for-byte alone. */
-export function initHome(home: string, opts: { invoked?: string; env?: NodeJS.ProcessEnv; agentDir?: string } = {}): InitResult {
+export function initHome(home: string, opts: { invoked?: string; env?: NodeJS.ProcessEnv; agentDir?: string; allow?: string[]; ask?: () => string } = {}): InitResult {
 	const created: string[] = [];
 	const unchanged: string[] = [];
 	const invoked = opts.invoked ?? "";
+	// The allow-list is settled before anything is written, so a bad slug leaves no trace.
+	const slugs = opts.allow ?? (opts.ask ? opts.ask().split(",").map(s => s.trim()).filter(s => s !== "") : undefined);
+	const bad = invalidSlugs(slugs ?? []);
+	if (bad.length) throw new InvalidSlugError(`invalid slug: ${bad.join(", ")} (use a-z, 0-9 and -)`);
 	const cfgPath = configFile(home);
 	putFile(cfgPath, configText(home, invoked, opts.agentDir), 0o644, created, unchanged);
 
@@ -138,29 +145,46 @@ export function initHome(home: string, opts: { invoked?: string; env?: NodeJS.Pr
 	for (const b of BLOCKERS) {
 		putFile(join(cfg.paths.blockers, b.name), blockerWrapper(b.fn), 0o755, created, unchanged);
 	}
-	return { created, unchanged };
+	if (slugs?.length) allowAgents(cfg.paths.subagents, slugs);
+	return { created, unchanged, allowed: [...allowedAgents(cfg.paths.subagents)] };
 }
 
 export function printInit(result: InitResult): void {
 	if (result.created.length === 0) {
 		console.log("neurastream init: unchanged");
-		return;
+	} else {
+		console.log("neurastream init: created");
+		for (const p of result.created) console.log(`  ${p}`);
+		if (result.unchanged.length) console.log(`neurastream init: left ${result.unchanged.length} existing file(s) alone`);
 	}
-	console.log("neurastream init: created");
-	for (const p of result.created) console.log(`  ${p}`);
-	if (result.unchanged.length) console.log(`neurastream init: left ${result.unchanged.length} existing file(s) alone`);
+	if (result.allowed.length === 0) console.log("no subagents allowed yet: neurastream agents allow <name>");
+}
+
+/** One line from stdin, read synchronously; a terminal hands over a line at a time. */
+function askLine(prompt: string): string {
+	process.stdout.write(prompt);
+	const buf = Buffer.alloc(4096);
+	const n = readSync(0, buf, 0, buf.length, null);
+	return buf.toString("utf8", 0, n).split(/\r?\n/)[0] ?? "";
 }
 
 export function runInit(args: string[] = []): number {
 	try {
 		const i = args.indexOf("--agent-dir");
 		const agentDir = i >= 0 ? args[i + 1] : undefined;
-		if (i >= 0 && !agentDir) throw new Error("usage: neurastream init [--agent-dir <dir>]");
-		printInit(initHome(homedir(), { invoked: process.argv[1] ?? "", env: process.env, agentDir }));
+		const a = args.indexOf("--allow");
+		const allowArg = a >= 0 ? args[a + 1] : undefined;
+		if ((i >= 0 && !agentDir) || (a >= 0 && allowArg === undefined)) {
+			throw new Error("usage: neurastream init [--agent-dir <dir>] [--allow a,b]");
+		}
+		const allow = allowArg?.split(",").map(s => s.trim()).filter(s => s !== "");
+		const interactive = allow === undefined && Boolean(process.stdin.isTTY && process.stdout.isTTY);
+		const ask = interactive ? () => askLine("Subagents allowed to spawn (comma-separated names, empty = none): ") : undefined;
+		printInit(initHome(homedir(), { invoked: process.argv[1] ?? "", env: process.env, agentDir, allow, ask }));
 		return 0;
 	} catch (err) {
 		console.error(err instanceof Error ? err.message : String(err));
-		return 1;
+		return err instanceof InvalidSlugError ? 2 : 1;
 	}
 }
 

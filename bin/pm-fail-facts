@@ -1,6 +1,0 @@
-#!/usr/bin/env bun
-import { basename } from "node:path";
-import { run } from "../src/cli/dispatch.ts";
-
-const invoked = basename(process.argv[1] ?? "");
-process.exit(await run(invoked, process.argv.slice(2)));

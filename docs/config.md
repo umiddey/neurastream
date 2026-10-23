@@ -2,6 +2,8 @@
 
 Path: `~/.config/neurastream/config.yml`. `neurastream init` creates it. A second init does not change it.
 
+`neurastream init --allow a,b` (or the prompt on a terminal) adds slugs to the subagent allow-list in `paths.subagents`; it never removes one. See the README install section.
+
 The loader merges, in order (later wins): packaged defaults below, this file, then the env overrides listed below (`QUEUE_AGENT`, `QUEUE_INDEX`, `QUEUE_BLOCKERS`, `QUEUE_STATE`, `QUEUE_SUBAGENTS`, `QUEUE_CANCELLED`, `QUEUE_UNLOCK`, `MAIN_GUARD_LIMIT`, `MAIN_GUARD_WINDOW_MIN`, `MAIN_GUARD_ROOTS`, `MAIN_GUARD_LEDGER`, `MAIN_GUARD_LOG`, `PLAN_GUARD_LOG`, `WIP_LIMIT`, `WIP_DAYS`, `WIP_BACKUP_MAX_REPO_MB`, `WIP_SNAPSHOT_MAX_MB`, `LOAD_MAX`, `AVAIL_MIN_MB`, `DISK_MIN_GB`, `TMP_MAX_MB`, `IDLE_MAX_MIN`). Env exists so tests and the old command lines keep working. Code reads the merged object only.
 
 `src/core` does not embed a home directory, a branch, a provider, a model, a price, or a harness name. Those values live here. `~` and `$HOME` expand at load. An empty string means unset (the command requires the flag).
@@ -85,14 +87,14 @@ ledger:
     - opencode-zen
 
 brief:
-  method_marker: "opus-implementer-method.md"
-  heavy_marker: "heavy-run.sh"
+  method_marker: ""  # empty = no method read required
+  heavy_marker: "heavy-run"
   max_keys: 10
   warn_chars: 12000
   aim_chars: 8000
   path_prefixes: ["$HOME/"]
-  method_read: "$HOME/projects/opus-implementer-method.md"  # text of the missing-method line
-  heavy_path: "$HOME/.local/bin/heavy-run.sh"              # text of the missing-heavy-run line
+  method_read: ""  # text of the missing-method line
+  heavy_path: "heavy-run"  # text of the missing-heavy-run line
   repo_rules: []   # optional repo-specific lint rules; each fires when `match` (regex, whole brief) hits and the body lacks `require`:
   # - match: 'legacy-api'            # trigger anywhere in the brief (case-insensitive)
   #   first: 'Refactor'              # optional: also require this on the title line
@@ -116,11 +118,6 @@ wip:
   snapshot_max_mb: 5
   status_log: "~/.local/state/neurastream/WIP-STATUS.md"
   secret_file: "(?i)(^|/)(\\.env(\\.(?!example$|sample$|template$|dist$)[\\w-]+)?|[^/]*\\.env|env\\.json|[^/]*\\.(pem|p12|pfx|jks|keystore|key)|id_(rsa|dsa|ecdsa|ed25519)|credentials(\\.json)?|\\.netrc|\\.pgpass|\\.htpasswd|local-run\\.env)$"
-
-pm:
-  backend_log: ""   # your backend service log; pm-fail-facts reads it for errors ("" = only explicit --backend-log runs)
-  fail_lines: 25
-  backend_error: "Traceback|ERROR|CRITICAL|Exception| 5\\d\\d "
 
 health:
   warn_ctx: 150000
@@ -168,9 +165,9 @@ machine:
   watch_sec: 60
   watch_streak: 3
 
-glm:
+quota:
   reset_tz: "Asia/Shanghai"
-  label: "GLM"
+  label: "quota"
 
 priority:
   sleep_sec: 120

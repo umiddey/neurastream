@@ -8,6 +8,8 @@ import { PORTED, runMain, runPorted } from "./commands.ts";
 import { runMetrics } from "./metrics.ts";
 import { runIncident } from "./incident.ts";
 import { runUninstall } from "../core/uninstall.ts";
+import { allowedAgents, subagentsPath } from "../core/queue/lib.ts";
+import { allowAgents, denyAgents, invalidSlugs } from "../core/subagents.ts";
 
 const BINS = [
 	"agent-score",
@@ -17,7 +19,6 @@ const BINS = [
 	"wip-check",
 	"wip-backup",
 	"wip-snapshot",
-	"pm-fail-facts",
 	"main-health",
 	"queue-check",
 	"queue-trim",
@@ -25,7 +26,7 @@ const BINS = [
 	"queue-cancel",
 	"main-start",
 	"machine-guard",
-	"glm-reset",
+	"quota-reset",
 	"priority-watch",
 	"resource-alerts",
 	"tmp-snapshot",
@@ -38,9 +39,10 @@ export function helpText(): string {
 		"",
 		"Usage:",
 		"  neurastream --help",
-		"  neurastream init [--agent-dir <dir>]",
+		"  neurastream init [--agent-dir <dir>] [--allow a,b]",
 		"                                create config, index, notes, blockers, queue template, state dirs",
 		"                                (--agent-dir: keep an existing index/notes/blockers dir)",
+		"                                (--allow a,b: subagents allowed to spawn; on a terminal init asks instead)",
 		"  neurastream adapter install omp",
 		"                                link the omp extension under this HOME",
 		"  neurastream uninstall [--purge] [--yes]",
@@ -54,6 +56,8 @@ export function helpText(): string {
 		"  neurastream main [args]       run omp under the launcher (automatic session rollover)",
 		"  neurastream metrics <cmd>     self-metrics: report, ci, false-alarm, rule (see README)",
 		"  neurastream incident <cmd>    incidents Main must act on: list, add, plan, dismiss (see README)",
+		"  neurastream agents list | allow <slug>... | deny <slug>...",
+		"                                the subagent allow-list (## Allowed in notes/subagents.md)",
 		"",
 		"Compatibility bins (same names as today; ports land in later phases):",
 		...BINS.map(b => `  ${b}`),
@@ -88,6 +92,7 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 	if (cmd === "guard") {
 		return runGuard(args[0] ?? "");
 	}
+	if (cmd === "agents") return runAgents(args);
 	if ((PORTED as readonly string[]).includes(cmd)) {
 		try {
 			applyQueueEnv(loadConfig());
@@ -99,4 +104,46 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 	}
 	console.error(`unknown command ${cmd}\n${helpText()}`);
 	return 2;
+}
+
+const AGENTS_USAGE = "usage: neurastream agents list | allow <slug>... | deny <slug>...";
+
+function runAgents(args: string[]): number {
+	const [action, ...slugs] = args;
+	if (action !== "list" && action !== "allow" && action !== "deny") {
+		console.error(AGENTS_USAGE);
+		return 2;
+	}
+	if (action !== "list" && slugs.length === 0) {
+		console.error(AGENTS_USAGE);
+		return 2;
+	}
+	const bad = invalidSlugs(slugs);
+	if (bad.length) {
+		console.error(`invalid slug: ${bad.join(", ")} (allowed: a-z, 0-9, -)`);
+		return 2;
+	}
+	try {
+		applyQueueEnv(loadConfig());
+	} catch (err) {
+		console.error(err instanceof ConfigError ? err.message : String(err));
+		return 1;
+	}
+	const file = subagentsPath();
+	if (action === "list") {
+		for (const slug of allowedAgents(file)) console.log(slug);
+		console.log(`file: ${file}`);
+		return 0;
+	}
+	if (action === "allow") {
+		const { added, kept } = allowAgents(file, slugs);
+		for (const slug of added) console.log(`allowed: ${slug}`);
+		for (const slug of kept) console.log(`already allowed: ${slug}`);
+	} else {
+		const { removed, absent } = denyAgents(file, slugs);
+		for (const slug of removed) console.log(`removed: ${slug}`);
+		for (const slug of absent) console.log(`not listed: ${slug}`);
+	}
+	console.log(`file: ${file}`);
+	return 0;
 }
