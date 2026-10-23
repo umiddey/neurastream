@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, fstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, fstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Config } from "./config.ts";
@@ -65,6 +65,25 @@ export function queueClose(args: string[], cfg: Config): number {
 		if (lines.length) writeFileSync(file, `${lines.join("\n")}\n`);
 		else rmSync(file, { force: true });
 	}
+	// A clone of a clone judges "landed" against the middle copy's default branch, which can be
+	// stale. Follow local-path origins (at most 3 hops) to the upstream repo and fetch its default
+	// branch: that commit is the base. No local origin: the existing base, unchanged.
+	function upstreamBase(repo: string, localBase: string): string {
+		let cur = repo;
+		let hops = 0;
+		while (hops < 3) {
+			const url = git(cur, "config", "--get", "remote.origin.url").out;
+			if (!url || !path.isAbsolute(url) || !existsSync(url) || !git(url, "rev-parse", "--git-dir").ok) break;
+			cur = url;
+			hops++;
+		}
+		if (hops === 0) return localBase;
+		const named = git(cur, "symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD").out.replace(/^origin\//, "");
+		const def = named || git(cur, "symbolic-ref", "-q", "--short", "HEAD").out;
+		const fetched = git(repo, "fetch", "-q", cur, def);
+		if (!fetched.ok) die(`could not fetch ${def} from ${cur}: ${fetched.out}`);
+		return git(repo, "rev-parse", "FETCH_HEAD").out;
+	}
 	const today = new Date().toISOString().slice(0, 10);
 
 	const arg = args[0];
@@ -95,10 +114,26 @@ export function queueClose(args: string[], cfg: Config): number {
 
 	git(plan.repo, "fetch", "-q", "origin");
 	const head = git(plan.repo, "symbolic-ref", "-q", "refs/remotes/origin/HEAD");
-	const base = head.ok ? head.out : "refs/remotes/origin/main";
+	const base = upstreamBase(plan.repo, head.ok ? head.out : "refs/remotes/origin/main");
+	const worktrees = (): { path: string; branch: string | null; head: string }[] => {
+		const list: { path: string; branch: string | null; head: string }[] = [];
+		for (const line of git(plan.repo, "worktree", "list", "--porcelain").out.split("\n")) {
+			if (line.startsWith("worktree ")) list.push({ path: path.resolve(line.slice(9)), branch: null, head: "" });
+			const cur = list.at(-1);
+			if (!cur) continue;
+			if (line.startsWith("HEAD ")) cur.head = line.slice(5);
+			else if (line.startsWith("branch refs/heads/")) cur.branch = line.slice(18);
+		}
+		return list;
+	};
+	const wtEntry = plan.worktree ? worktrees().find(w => w.path === path.resolve(plan.worktree!)) : undefined;
 	const wtExists = !!plan.worktree && existsSync(plan.worktree);
-	let branch = plan.branch;
-	if (wtExists) branch ??= git(plan.worktree!, "rev-parse", "--abbrev-ref", "HEAD").out;
+	// A plan worktree is the plan's only while it sits on the plan's branch (or a detached HEAD already merged into it).
+	const owned = wtExists && !!plan.branch && !!wtEntry && (wtEntry.branch !== null
+		? wtEntry.branch === plan.branch
+		: git(plan.repo, "merge-base", "--is-ancestor", wtEntry.head, `refs/heads/${plan.branch}`).ok);
+	if (wtExists && !owned) console.log(`queue-close: worktree ${plan.worktree} kept: it is on ${wtEntry?.branch ?? (wtEntry ? "a detached HEAD" : "no branch of this repo")}`);
+	const branch = plan.branch;
 	const branchExists = !!branch && git(plan.repo, "rev-parse", "--verify", "-q", `refs/heads/${branch}`).ok;
 	const merged = branchExists && (
 		git(plan.repo, "merge-base", "--is-ancestor", `refs/heads/${branch}`, base).ok ||
@@ -106,17 +141,33 @@ export function queueClose(args: string[], cfg: Config): number {
 		declaredLanded(plan.repo, `refs/heads/${branch}`, base, readFileSync(file, "utf8"))
 	);
 
-	const runIn = wtExists ? plan.worktree! : plan.repo;
+	// A plan whose worktree is missing or kept is checked against the upstream base, never a foreign checkout.
+	const detached = !!plan.worktree && !owned;
+	const runIn = owned ? plan.worktree! : plan.repo;
 	if (!cancelling) {
 		const tip = branchExists ? git(plan.repo, "rev-parse", `refs/heads/${branch}`).out : "";
-		const dirty = git(runIn, "status", "--porcelain").out;
+		const dirty = detached ? `base:${base}` : git(runIn, "status", "--porcelain").out;
 		const doneKey = sha(`${plan.doneCheck}\n${tip}\n${dirty}`);
 		const doneCache = path.join(STATE_DIR, `done-ok-${sha(file)}`);
 		const cached = existsSync(doneCache) && readFileSync(doneCache, "utf8").trim() === doneKey;
 		if (cached) console.log(`queue-close: done check passed before for this state (cached ${doneKey})`);
 		else {
-			console.log(`queue-close: done check in ${runIn}: ${plan.doneCheck}`);
-			const dc = spawnSync("bash", ["-lc", plan.doneCheck!], { cwd: runIn, stdio: "inherit", timeout: 3600_000 });
+			let scratch: string | undefined;
+			if (detached) {
+				scratch = mkdtempSync(path.join(STATE_DIR, "done-base-"));
+				const add = git(plan.repo, "worktree", "add", "--detach", scratch, base);
+				if (!add.ok) {
+					rmSync(scratch, { recursive: true, force: true });
+					die(`could not check out ${base} for the done check: ${add.out}`);
+				}
+			}
+			console.log(`queue-close: done check in ${detached ? `${base} (temporary worktree)` : runIn}: ${plan.doneCheck}`);
+			const dc = spawnSync("bash", ["-lc", plan.doneCheck!], { cwd: scratch ?? runIn, stdio: "inherit", timeout: 3600_000 });
+			if (scratch) {
+				git(plan.repo, "worktree", "remove", "--force", scratch);
+				rmSync(scratch, { recursive: true, force: true });
+				git(plan.repo, "worktree", "prune");
+			}
 			if (dc.status !== 0) {
 				rmSync(doneCache, { force: true });
 				const text = readFileSync(file, "utf8")
@@ -139,8 +190,9 @@ export function queueClose(args: string[], cfg: Config): number {
 		const [ref, t] = line.split(" ");
 		if (ref && Number(t) < cutoff) git(plan.repo, "update-ref", "-d", ref);
 	}
-	if (wtExists) {
-		const saved = git(plan.worktree!, "stash", "create", `queue-close: uncommitted work of ${path.basename(file)}`).out;
+	if (owned) {
+		const stash = git(plan.worktree!, "stash", "create", `queue-close: uncommitted work of ${path.basename(file)}`);
+		const saved = stash.ok ? stash.out : "";
 		if (saved) {
 			const ref = `refs/queue-archive/${path.basename(file, ".md")}-${today}`;
 			if (!git(plan.repo, "update-ref", ref, saved).ok || !git(plan.repo, "stash", "show", "-p", ref).out)
@@ -155,9 +207,9 @@ export function queueClose(args: string[], cfg: Config): number {
 		if (!keep.ok || !git(plan.repo, "update-ref", ref, keep.out).ok) die(`could not save branch ${branch} to ${ref}; nothing removed`);
 		console.log(`queue-close: branch ${branch} saved as ${ref} (restore: git -C ${plan.repo} branch ${branch} ${ref}^; pruned after ${ARCHIVE_DAYS} days)`);
 	}
-	if (wtExists) {
+	if (owned) {
 		let rm = git(plan.repo, "worktree", "remove", "--force", plan.worktree!);
-		if (!rm.ok && /Permission denied/.test(rm.out)) {
+		if (!rm.ok && existsSync(plan.worktree!)) {
 			spawnSync("docker", ["run", "--rm", "-v", `${plan.worktree}:/w`, "alpine", "chown", "-R", `${os.userInfo().uid}:${os.userInfo().gid}`, "/w"], { stdio: "ignore" });
 			rm = git(plan.repo, "worktree", "remove", "--force", plan.worktree!);
 			if (!rm.ok && existsSync(plan.worktree!)) {
@@ -170,9 +222,13 @@ export function queueClose(args: string[], cfg: Config): number {
 		console.log(`queue-close: worktree ${plan.worktree} removed`);
 	}
 	if (branchExists) {
-		const d = git(plan.repo, "branch", "-D", branch!);
-		if (!d.ok) die(`could not delete branch ${branch}: ${d.out}`);
-		console.log(`queue-close: branch ${branch} deleted`);
+		const holder = worktrees().find(w => w.branch === branch);
+		if (holder) console.log(`queue-close: branch ${branch} kept: checked out in ${holder.path}`);
+		else {
+			const d = git(plan.repo, "branch", "-D", branch!);
+			if (!d.ok) die(`could not delete branch ${branch}: ${d.out}`);
+			console.log(`queue-close: branch ${branch} deleted`);
+		}
 	}
 
 	const month = today.slice(0, 7).replace("-", "");
