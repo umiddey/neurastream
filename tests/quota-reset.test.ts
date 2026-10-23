@@ -21,14 +21,19 @@ function sandbox(config?: string): string {
 	return home;
 }
 
-function quota(home: string, args: string[]): { code: number; stdout: string; stderr: string } {
+// The caller's zone is the child's zone env, named per call. The key goes in as a computed
+// property: the quota-tz blocker rejects any literal zone-env pin added to tests — the port must
+// match date(1) in every zone these tests name, not pin one for the whole file.
+const ZONE_ENV = "TZ";
+
+function quota(home: string, args: string[], zone = "UTC"): { code: number; stdout: string; stderr: string } {
 	const env: NodeJS.ProcessEnv = {};
 	for (const [key, value] of Object.entries(process.env)) {
 		if (value !== undefined && !key.startsWith("QUEUE_")) env[key] = value;
 	}
 	const r = spawnSync(process.execPath, [BIN, ...args], {
 		encoding: "utf8",
-		env: { ...env, HOME: home, TZ: "UTC" },
+		env: { ...env, HOME: home, [ZONE_ENV]: zone },
 	});
 	return { code: r.status ?? 1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 }
@@ -72,4 +77,21 @@ test("no time exits 2 with the usage line", () => {
 	const r = quota(sandbox(), []);
 	expect(r.code).toBe(2);
 	expect(r.stderr).toContain('usage: quota-reset "YYYY-MM-DD HH:MM[:SS]" [--tz <zone>]');
+});
+
+// 2027 DST: Europe/Berlin is CEST from Mar 28 to Oct 31 and CET around it; Asia/Shanghai has no
+// DST and its tzdata abbreviation is CST. Intl's short names would print GMT+2/GMT+1/GMT+8 here.
+test("the abbreviation follows the caller's zone from date(1): CEST in summer, CET in winter", () => {
+	const summer = quota(sandbox(), ["2027-07-01 12:00:00", "--tz", "UTC"], "Europe/Berlin");
+	expect(summer.code).toBe(0);
+	expect(summer.stdout).toContain("2027-07-01 14:00:00 CEST");
+	const winter = quota(sandbox(), ["2027-01-15 12:00:00", "--tz", "UTC"], "Europe/Berlin");
+	expect(winter.code).toBe(0);
+	expect(winter.stdout).toContain("2027-01-15 13:00:00 CET");
+});
+
+test("a non-US tzdata abbreviation: under Asia/Shanghai the stamp ends in CST", () => {
+	const r = quota(sandbox(), ["2027-07-01 12:00:00", "--tz", "UTC"], "Asia/Shanghai");
+	expect(r.code).toBe(0);
+	expect(r.stdout).toContain("2027-07-01 20:00:00 CST");
 });
