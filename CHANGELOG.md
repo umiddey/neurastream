@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+### Fixed
+- An upgrade while the launcher runs no longer crashes it (incident I-20261023-6). A relaunch request left after an upgrade goes to a fresh launcher from the installed package, so the handoff is built with the new code. Version helpers live in `src/adapters/omp/package-root.ts`.
+- A main-start failure during a rollover no longer stops the launcher. The handoff carries a `main-start failed during the rollover (…)` line, and the note still reaches the next run.
+- An incident planned before its fix ships becomes FIXED when the plan that cites it closes. A plan that names an incident several times records it once.
+
 ## 0.1.26
 ### Fixed
 - quota-reset prints the local zone abbreviation from `date` (CEST, CET, CST) like the original glm-reset, where Intl's US-only short names printed GMT+2 on non-US hosts; CI re-runs the golden and quota-reset tests under Europe/Berlin on both OSes.
