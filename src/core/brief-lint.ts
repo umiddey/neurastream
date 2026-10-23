@@ -20,15 +20,15 @@ function lint(path: string, cfg: Config): { errs: string[]; warns: string[] } {
 		if (!cond) errs.push(msg);
 	};
 
-	need(text.includes(cfg.brief.method_marker), `missing: 'Read ${cfg.brief.method_read} first'`);
+	// The method read is opt-in: only a config that sets brief.method_marker requires it.
+	if (cfg.brief.method_marker) need(text.includes(cfg.brief.method_marker), `missing: 'Read ${cfg.brief.method_read} first'`);
 	need(
 		/^#+[^\n]*(acceptance|done|report)|acceptance:|^done\s*=|^\d+\.\s*report\b/im.test(text),
 		"missing: Acceptance/Done/Report section (observable result on the real target)",
 	);
 	need(/never push|no push|not push|never `?git push/.test(low), "missing: 'never push' line");
-	need(low.includes("find") && low.includes("broken"), "missing: '`find` is broken: use grep/glob/read' note");
 
-	const heavy = /pytest|vitest|playwright|run-raw|run-batch|full suite|\bsuite\b/.test(low);
+	const heavy = /pytest|vitest|playwright|full suite|\bsuite\b/.test(low);
 	if (heavy) need(text.includes(cfg.brief.heavy_marker), `runs tests/suites but never names ${cfg.brief.heavy_path}`);
 
 	// Repo-specific rules are config-driven (brief.repo_rules); the shipped default list is empty.
@@ -39,19 +39,6 @@ function lint(path: string, cfg: Config): { errs: string[]; warns: string[] } {
 		need(new RegExp(rule.require, "i").test(low), rule.message);
 	}
 
-	const planOnly = /plan only|read-only review|CI fix|\bdelete\b/i.test(first);
-	if (low.includes("test-map") && !planOnly) {
-		const m = text.match(/^Probe:\s*(\S+)/m);
-		if (/^#+\s*probe first/im.test(text) && !m) {
-			// the agent runs the probe itself and must stop on 0 satisfied
-		} else if (!m) {
-			errs.push("coverage batch without 'Probe: <log>' line: run ONE witnessed probe that SATISFIES its claims first (lesson 2026-10-10: 0/255)");
-		} else if (!existsSync(m[1]!)) {
-			errs.push(`Probe log does not exist: ${m[1]}`);
-		} else if (!readFileSync(m[1]!, "utf8").toLowerCase().includes("satisfied")) {
-			errs.push(`Probe log shows no 'satisfied' claim: ${m[1]}`);
-		}
-	}
 
 	const paths = new Set<string>();
 	for (const prefix of cfg.brief.path_prefixes) {

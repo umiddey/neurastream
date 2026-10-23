@@ -6,7 +6,7 @@
 // Callers must first map config into the queue paths (applyQueueEnv): the queue library resolves
 // INDEX.md, blockers, state, subagents, cancelled and unlock from those env vars.
 //
-// Ported rules (owner 2026-10-15..17):
+// Ported rules:
 //   - protected guard files, unlockable by the owner for `guards.unlock_minutes`
 //   - subs: no queue-close/queue-cancel, call budget 90/100, plan edits only inside "## Progress",
 //     blocker execution, invalid plans refuse
@@ -15,7 +15,7 @@
 //     through the same plan gate, cancel-pending blocks spawns and stops, keep-working stop rule
 //   - incidents: while an incident is open (src/core/incidents.ts: no plan/dismiss/fixed record)
 //     every Main prompt lists it, a spawn must be fix work (its plan cites `INCIDENT <id>`), and
-//     the stop is refused; an incident with a plan no longer blocks (owner 2026-10-22)
+//     the stop is refused; an incident with a plan no longer blocks
 
 import { execFileSync } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -39,7 +39,7 @@ export function log(file: string, line: string): void {
 	} catch {}
 }
 
-// Owner message that may call work off (owner 2026-10-16: "don't do X" must hold even if no plan
+// Owner message that may call work off ("don't do X" must hold even if no plan
 // exists yet). Flagged until Main records it with queue-cancel; no spawn and no stop until then.
 export const CANCEL_TODO =
 	'the owner\'s message may call work off. Record it first: an indexed plan → `queue-cancel <plan> "<owner words>"`; ' +
@@ -146,7 +146,7 @@ function protectedHit(paths: string[], cfg: Config): string | null {
 	return null;
 }
 
-// Text files never count (owner 2026-10-15: "only ... anything apart from .md or .txt").
+// Text files never count: only files apart from .md or .txt do.
 function freeExt(cfg: Config): RegExp {
 	return new RegExp(cfg.guards.free_ext, "i");
 }
@@ -267,7 +267,7 @@ function runBlockers(plan: Plan, hit: string[], e: ToolEvent, cfg: Config): stri
 
 // Subagent half of a tool call (the original plan-guard checkCall without the main return).
 function subRules(e: ToolEvent, input: Record<string, unknown>, paths: string[], writes: string[], cfg: Config): string | null {
-	// Closing and cancelling are Main's decisions (owner 2026-10-15/16).
+	// Closing and cancelling are Main's decisions.
 	if (cfg.guards.shell_tools.includes(e.tool) && /\bqueue-(?:close|cancel)\b/.test(JSON.stringify(input)))
 		return 'queue-close and queue-cancel are Main\'s; report in your plan\'s "## Progress" instead.';
 	const plans = q.activePlans();

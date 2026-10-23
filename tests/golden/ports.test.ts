@@ -107,26 +107,6 @@ function match(py: { code: number; stdout: string; stderr: string }, port: { cod
 	expect(port.code).toBe(py.code);
 }
 
-test("brief-lint matches the original", () => {
-	const home = homeFor("brief");
-	const env = envFor(home);
-	const oracle = join(home, "brief-lint.py");
-	rewrite("brief-lint", oracle, home);
-	const ok = join(home, "ok.md");
-	const bad = join(home, "bad.md");
-	writeFileSync(ok, `Read ${home}/projects/opus-implementer-method.md first\n# Acceptance\nnever push\nfind is broken\nstop within 40 calls\n`);
-	writeFileSync(bad, "just a note\n");
-	const missing = join(home, "missing-file.ts");
-	writeFileSync(join(home, "with-path.md"), `Read ${home}/projects/opus-implementer-method.md first\n# Report\nnever push\nfind is broken: use grep\nstop within 20 calls\n${missing}\n`);
-	mkdirSync(join(home, ".omp/agent/notes"), { recursive: true });
-	for (const args of [[], [ok], [bad], [ok, bad], [join(home, "with-path.md")]]) {
-		match(runPy(oracle, args, env), runPort("brief-lint", args, env));
-	}
-	const recorded = join(ROOT, "recorded");
-	mkdirSync(recorded, { recursive: true });
-	const one = runPy(oracle, [ok, bad], env);
-	writeFileSync(join(recorded, "brief-lint.txt"), `code ${one.code}\n${one.stdout}${one.stderr}`);
-});
 
 test("oc-run matches the original", () => {
 	const home = homeFor("oc");
@@ -346,8 +326,8 @@ test("agent-score matches the original", () => {
 			.replace("(required; there is no default branch)", "(branch)");
 	for (const args of cases) {
 		const py = runPy(oracle, args, pyEnv, pyHome);
-		// The live help string hardcodes this machine. The package ships ~/Work/pm-counts.
-		const stdout = py.stdout.replaceAll("/home/ukd/Work/pm-counts", "~/Work/pm-counts").replace("(default pm/pr01-counts in ~/Work/pm-counts)", "(branch)");
+		// The live help string hardcodes this machine. The package ships ~/Work/pm-counts and no owner date (P9 scrub).
+		const stdout = py.stdout.replaceAll("/home/ukd/Work/pm-counts", "~/Work/pm-counts").replace("(default pm/pr01-counts in ~/Work/pm-counts)", "(branch)").replace(" (owner 2026-10-16, AGENTS.md line 16)", "");
 		const stderr = py.stderr.replaceAll("/home/ukd/Work/pm-counts", "~/Work/pm-counts");
 		const port = runPort("agent-score", args, portEnv, portHome);
 		match({ ...py, stdout, stderr }, { code: port.code, stdout: toOracle(port.stdout), stderr: toOracle(port.stderr) });

@@ -87,14 +87,14 @@ ledger:
     - opencode-zen
 
 brief:
-  method_marker: "opus-implementer-method.md"
-  heavy_marker: "heavy-run.sh"
+  method_marker: ""  # empty = no method read required
+  heavy_marker: "heavy-run"
   max_keys: 10
   warn_chars: 12000
   aim_chars: 8000
   path_prefixes: ["$HOME/"]
-  method_read: "$HOME/projects/opus-implementer-method.md"  # text of the missing-method line
-  heavy_path: "$HOME/.local/bin/heavy-run.sh"              # text of the missing-heavy-run line
+  method_read: ""  # text of the missing-method line
+  heavy_path: "heavy-run"  # text of the missing-heavy-run line
   repo_rules: []   # optional repo-specific lint rules; each fires when `match` (regex, whole brief) hits and the body lacks `require`:
   # - match: 'legacy-api'            # trigger anywhere in the brief (case-insensitive)
   #   first: 'Refactor'              # optional: also require this on the title line
