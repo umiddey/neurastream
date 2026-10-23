@@ -156,6 +156,8 @@ async function armReady(host: FakeHost, ctx: MainCtx, note: string): Promise<voi
 
 function resetState(): void {
 	newSessions.length = 0;
+	// Plain omp unless a test sets the launcher flag itself (withLauncher): the caller's shell may export it.
+	delete process.env.NEURASTREAM_MAIN_LAUNCHER;
 	notes.length = 0;
 	rmSync(NOTE, { force: true });
 	writeFileSync(SESSION_FILE, "");
@@ -308,8 +310,8 @@ test("below and ready: a Main task spawn passes the drain and reaches the plan g
 		process.env.QUEUE_SUBAGENTS = subagents;
 		await armReady(readyHost, ctx, "## In progress\nstep"); // fresh note, no jobs: ready
 		const ready = (await readyHost.emit("tool_call", TASK_CALL, ctx)) as Array<{ block?: boolean; reason?: string }>;
-		expect(ready[0]?.reason ?? "").toContain("an implementer needs an open plan");
-		expect(ready[0]?.reason ?? "").not.toContain("rollover pending");
+		// ready refuses too (e): the rollover follows the next idle, so a spawn now would be aborted.
+		expect(ready[0]?.reason ?? "").toContain("rollover pending (ready)");
 	} finally {
 		if (before === undefined) delete process.env.QUEUE_SUBAGENTS;
 		else process.env.QUEUE_SUBAGENTS = before;
@@ -611,4 +613,62 @@ test("launcher: the first owner message in the ready state starts the relaunch, 
 		notePath: NOTE,
 		draft: "hello",
 	});
+});
+
+test("single-flight: a second /main-rollover during the first's wait adds its text; one new session, one handoff with both", async () => {
+	resetState();
+	const host = fakeHost();
+	createOmpAdapter(host, overCfg);
+	let release: () => void = () => {};
+	const gate = new Promise<void>(resolve => {
+		release = resolve;
+	});
+	const ctx = mainCtx({ waitForIdle: () => gate });
+	await armReady(host, ctx, "## In progress\nstep");
+	const run = host.commands.get("main-rollover");
+	const first = run?.("first msg", ctx);
+	const second = run?.("second msg", ctx);
+	release();
+	await Promise.all([first, second]);
+	expect(newSessions).toEqual([{ parentSession: SESSION_FILE }]);
+	expect(host.sent.length).toBe(1);
+	expect(host.sent[0]?.endsWith("Owner's message:\nfirst msg\nsecond msg")).toBe(true);
+}, 60_000);
+
+test("single-flight: a state change during the wait (a job starts) stops the rollover before the new session", async () => {
+	resetState();
+	const host = fakeHost();
+	createOmpAdapter(host, overCfg);
+	let release: () => void = () => {};
+	const gate = new Promise<void>(resolve => {
+		release = resolve;
+	});
+	const ctx = mainCtx({ waitForIdle: () => gate });
+	await armReady(host, ctx, "## In progress\nstep");
+	const run = host.commands.get("main-rollover")?.("owner msg", ctx);
+	try {
+		jobs = [{ label: "sub-1" }];
+		release();
+		await run;
+	} finally {
+		jobs = [];
+	}
+	expect(newSessions.length).toBe(0);
+	// The owner's text is not dropped: after an abort it goes to this session as an ordinary message.
+	expect(host.sent).toEqual(["owner msg"]);
+	expect(notes.some(n => n.includes("no new session"))).toBe(true);
+}, 60_000);
+
+test("launcher: /main-rollover is refused; the launcher's relaunch is the only rollover path", async () => {
+	resetState();
+	const host = fakeHost();
+	createOmpAdapter(host, overCfg);
+	const ctx = mainCtx();
+	await withLauncher("1", async () => {
+		await armReady(host, ctx, "## In progress\nstep");
+		await host.commands.get("main-rollover")?.("owner msg", ctx);
+	});
+	expect(newSessions.length).toBe(0);
+	expect(host.sent.length).toBe(0);
+	expect(notes.some(n => n.includes("neurastream main"))).toBe(true);
 });

@@ -91,9 +91,11 @@ describe("spawnRefusal", () => {
 		);
 	});
 
-	test("below and ready allow the spawn", () => {
+	test("below allows the spawn; ready refuses it, since the rollover follows the next idle (e)", () => {
 		expect(spawnRefusal("below", ["sub-1"])).toBe(null);
-		expect(spawnRefusal("ready", [])).toBe(null);
+		expect(spawnRefusal("ready", [])).toBe(
+			"main-guard: rollover pending (ready); no new subagents until the session rolls over. Running: .",
+		);
 	});
 });
 

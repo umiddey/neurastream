@@ -45,12 +45,12 @@ export function rolloverState(p: RolloverInput): RolloverState {
 }
 
 /**
- * Drain: while a rollover is pending (need-note or wait-jobs) Main must not start new subagents —
- * a rollover would cancel them, or they would outlive the handoff. Returns the refusal text, or
- * null when the spawn may proceed (below, ready).
+ * Drain: while a rollover is pending (need-note, wait-jobs or ready) Main must not start new subagents —
+ * a rollover would cancel them, or they would outlive the handoff. Ready counts: the rollover follows the
+ * next idle, so a spawn now would be aborted. Returns the refusal text, or null when the spawn may proceed.
  */
 export function spawnRefusal(state: RolloverState, runningJobs: readonly string[]): string | null {
-	if (state !== "need-note" && state !== "wait-jobs") return null;
+	if (state !== "need-note" && state !== "wait-jobs" && state !== "ready") return null;
 	return `main-guard: rollover pending (${state}); no new subagents until the session rolls over. Running: ${runningJobs.join(", ")}.`;
 }
 

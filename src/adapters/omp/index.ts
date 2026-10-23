@@ -567,11 +567,23 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		return { text: `/main-rollover ${text}` };
 	});
 
+	// One /main-rollover at a time: while one waits for idle, a second call adds its text to the owner message.
+	let flight: string[] | null = null;
 	pi.registerCommand("main-rollover", {
 		description: "Start a fresh session from Main's handoff note; the rest of the message is the owner's first message",
 		handler: async (args: unknown, ctx: unknown) => {
 			const c = asRolloverCtx(ctx);
 			if (!c) return;
+			const text = asString(args);
+			if (process.env.NEURASTREAM_MAIN_LAUNCHER === "1") {
+				c.notify("main-rollover: under neurastream main the rollover starts from your next message, not from this command.");
+				return;
+			}
+			if (flight) {
+				flight.push(text);
+				c.notify("main-rollover: a rollover is already in progress; your message is added to its handoff.");
+				return;
+			}
 			const path = notePath(c.sessionId);
 			const state = rolloverSnapshot(c).state;
 			if (state === "below") {
@@ -586,22 +598,39 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 				c.notify(`main-rollover: own jobs are still running (${c.runningJobs().join(", ")}); a rollover would cancel them.`);
 				return;
 			}
-			c.notify("main-rollover: collecting main-start state for the handoff (this can take a minute)…");
-			const generated = [
-				await mainStartText([], cfg, { inheritStdin: false }, { source: defaultRunSource(cfg), results: defaultCompletedResults(cfg) }),
-				holdsBlock(q.ownerHolds()),
-			].join("\n");
-			const handoff = buildHandoff({
-				generated,
-				note: readFileSync(path, "utf8"),
-				previousSessionFile: c.sessionFile,
-				ownerMessage: asString(args),
-			});
-			adapterLog(cfg, `rollover: new session from ${c.sessionFile}; note ${path}`);
-			await c.waitForIdle();
-			const r = asRecord(await c.newSession({ parentSession: c.sessionFile }));
-			if (r.cancelled === true) return;
-			pi.sendUserMessage(handoff);
+			const previous = c.sessionFile;
+			const owner = [text];
+			flight = owner;
+			try {
+				c.notify("main-rollover: collecting main-start state for the handoff (this can take a minute)…");
+				const generated = [
+					await mainStartText([], cfg, { inheritStdin: false }, { source: defaultRunSource(cfg), results: defaultCompletedResults(cfg) }),
+					holdsBlock(q.ownerHolds()),
+				].join("\n");
+				const note = readFileSync(path, "utf8");
+				adapterLog(cfg, `rollover: new session from ${previous}; note ${path}`);
+				await c.waitForIdle();
+				const again = rolloverSnapshot(c).state;
+				if (relaunched || again !== "ready") {
+					c.notify(`main-rollover: the state changed while waiting for idle (${relaunched ? "relaunch requested" : again}); no new session.`);
+					// The owner's text is not lost: it goes to this session as an ordinary message.
+					const pending = owner.filter(s => s !== "").join("\n");
+					if (pending !== "") pi.sendUserMessage(pending);
+					return;
+				}
+				const r = asRecord(await c.newSession({ parentSession: previous }));
+				if (r.cancelled === true) return;
+				// Read after the await: owner messages that arrived during newSession are part of the handoff.
+				const handoff = buildHandoff({
+					generated,
+					note,
+					previousSessionFile: previous,
+					ownerMessage: owner.filter(s => s !== "").join("\n"),
+				});
+				pi.sendUserMessage(handoff);
+			} finally {
+				flight = null;
+			}
 		},
 	});
 }
