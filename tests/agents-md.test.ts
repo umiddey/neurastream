@@ -1,17 +1,51 @@
 // The managed AGENTS.md block: rendered from templates/AGENTS.md with the config's agent dir,
 // upserted between two markers so every byte outside them stays the owner's.
 
-import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { afterAll, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { chmodSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { installOmp } from "../src/adapters/omp/install.ts";
+import { adapterLiveFiles } from "../src/adapters/omp/doctor.ts";
 import { BEGIN_MARK, END_MARK, blockState, renderBlock, upsertBlock } from "../src/core/agents-md.ts";
 import { loadConfig } from "../src/core/config.ts";
+import { initHome } from "../src/cli/init.ts";
 
 const REPO = join(import.meta.dir, "..");
 const HOME = "/tmp/neurastream-home-agentsmd";
 const cfg = loadConfig({ home: HOME, env: {} });
 const block = renderBlock(cfg);
 const PERSONAL = "# my notes\n\nBe kind.\n\n- Pipelines on our local computer: one combined merge request at a time\n";
+
+// Install and doctor run against their own sandbox HOME, with a stub npm that reports the package's own version.
+const SANDBOX = "/tmp/neurastream-home-agentsmd-p2";
+const AGENTS = join(SANDBOX, ".omp/agent/AGENTS.md");
+const CLI = join(REPO, "src/cli/main.ts");
+const INSTALLED = JSON.parse(readFileSync(join(REPO, "package.json"), "utf8")).version as string;
+
+afterAll(() => {
+	rmSync(SANDBOX, { recursive: true, force: true });
+});
+
+function freshInstall(personal?: string) {
+	rmSync(SANDBOX, { recursive: true, force: true });
+	initHome(SANDBOX, { env: {} });
+	mkdirSync(join(SANDBOX, ".omp/agent"), { recursive: true });
+	if (personal !== undefined) writeFileSync(AGENTS, personal);
+	return installOmp(SANDBOX);
+}
+
+function runDoctor() {
+	const dir = join(SANDBOX, "stub-bin");
+	mkdirSync(dir, { recursive: true });
+	const npm = join(dir, "npm");
+	writeFileSync(npm, `#!/bin/sh\necho ${INSTALLED}\n`);
+	chmodSync(npm, 0o755);
+	return spawnSync(process.execPath, [CLI, "doctor"], {
+		encoding: "utf8",
+		env: { ...process.env, HOME: SANDBOX, PATH: `${dir}:${process.env.PATH ?? ""}` },
+	});
+}
 
 test("renderBlock fills in the agent dir and wraps the rules in the markers", () => {
 	expect(block.startsWith(`${BEGIN_MARK}\n`)).toBe(true);
@@ -69,4 +103,50 @@ test("the template holds only the neurastream rules: no owner-personal, provider
 	}
 	expect(/\b(PM|CP)\b/.test(tpl)).toBe(false);
 	expect(tpl).toContain("{{AGENT_DIR}}/INDEX.md");
+});
+
+test("install keeps the owner's AGENTS.md text, adds the block once, and a second install changes nothing", () => {
+	const first = freshInstall(PERSONAL);
+	expect(first.agentsMd).toBe("written");
+	const text = readFileSync(AGENTS, "utf8");
+	expect(text.startsWith(PERSONAL)).toBe(true);
+	expect(text).toContain(`${BEGIN_MARK}\n`);
+	expect(text).toContain(`\n${END_MARK}`);
+	const second = installOmp(SANDBOX);
+	expect(second.agentsMd).toBe("unchanged");
+	expect(readFileSync(AGENTS, "utf8")).toBe(text);
+});
+
+test("a clean install passes doctor", () => {
+	freshInstall(PERSONAL);
+	const ran = runDoctor();
+	expect(ran.stdout).toContain("neurastream doctor: ok");
+	expect(ran.status).toBe(0);
+});
+
+test("an edit inside the block is reported as stale", () => {
+	freshInstall(PERSONAL);
+	writeFileSync(AGENTS, readFileSync(AGENTS, "utf8").replace("You are Main", "You are Bob"));
+	const ran = runDoctor();
+	expect(ran.stdout).toContain(`stale: ${AGENTS} neurastream block`);
+	expect(ran.status).toBe(1);
+});
+
+test("an edit outside the block is not reported", () => {
+	freshInstall(PERSONAL);
+	writeFileSync(AGENTS, readFileSync(AGENTS, "utf8").replace("Be kind.", "Be kind, always."));
+	const ran = runDoctor();
+	expect(ran.stdout).toContain("neurastream doctor: ok");
+	expect(ran.status).toBe(0);
+});
+
+test("a deleted linked bin is reported missing, not foreign", () => {
+	freshInstall(PERSONAL);
+	const bin = adapterLiveFiles(SANDBOX).find(f => f.live.includes("/.local/bin/"));
+	if (!bin) throw new Error("no linked bin in adapterLiveFiles");
+	unlinkSync(bin.live);
+	const ran = runDoctor();
+	expect(ran.stdout).toContain(`missing: ${bin.live}`);
+	expect(ran.stdout).not.toContain("foreign:");
+	expect(ran.status).toBe(1);
 });
