@@ -115,7 +115,7 @@ export function queueClose(args: string[], cfg: Config): number {
 	git(plan.repo, "fetch", "-q", "origin");
 	const head = git(plan.repo, "symbolic-ref", "-q", "refs/remotes/origin/HEAD");
 	const base = upstreamBase(plan.repo, head.ok ? head.out : "refs/remotes/origin/main");
-	// git reports worktree paths through symlinks resolved (macOS: /tmp -> /private/tmp); compare resolved paths on both sides.
+	// git reports worktree paths through symlinks resolved (macOS: /tmp -> /private/tmp); match resolved paths on both sides.
 	const real = (p: string): string => { try { return realpathSync(p); } catch { return path.resolve(p); } };
 	const worktrees = (): { path: string; branch: string | null; head: string }[] => {
 		const list: { path: string; branch: string | null; head: string }[] = [];
