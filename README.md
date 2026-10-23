@@ -36,6 +36,7 @@ flowchart LR
 ## Requirements
 
 - [Bun](https://bun.sh) 1.x
+- Runs on Linux and macOS.
 - git
 - omp, for the guards and rollover (the command-line tools work without it)
 

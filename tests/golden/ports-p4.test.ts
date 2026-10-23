@@ -270,7 +270,8 @@ test("glm-reset matches the original", () => {
 	match(runBash(oracle, [], env), runPort("glm-reset", [], env));
 });
 
-test("heavy-run matches the original", () => {
+// The oracle needs Linux tools (flock, /proc, nproc); the port itself runs on macOS too.
+test.skipIf(process.platform !== "linux")("heavy-run matches the original", () => {
 	const home = homeFor("heavy");
 	pinOmp(home);
 	const env = envFor(home);
@@ -293,7 +294,8 @@ test("heavy-run matches the original", () => {
 	);
 });
 
-test("machine-guard matches the original", () => {
+// The oracle needs Linux tools (flock, /proc, nproc); the port itself runs on macOS too.
+test.skipIf(process.platform !== "linux")("machine-guard matches the original", () => {
 	const home = homeFor("mg");
 	pinOmp(home);
 	const env = envFor(home);
@@ -340,7 +342,8 @@ test("resource-alerts matches the original", () => {
 	match(runBash(oracle, [], env), runPort("resource-alerts", [], env));
 });
 
-test("tmp-snapshot matches the original", () => {
+// The oracle needs Linux tools (flock, /proc, nproc); the port itself runs on macOS too.
+test.skipIf(process.platform !== "linux")("tmp-snapshot matches the original", () => {
 	const home = homeFor("snap");
 	pinOmp(home);
 	const env = envFor(home);
@@ -582,7 +585,8 @@ test("queue-close cancelled plan matches the original", () => {
 	expect(stripTs(port.stdout.split(portHome).join(pyHome))).toBe(stripTs(py.stdout));
 });
 
-test("main-start matches the original", () => {
+// The oracle needs Linux tools (flock, /proc, nproc); the port itself runs on macOS too.
+test.skipIf(process.platform !== "linux")("main-start matches the original", () => {
 	const home = homeFor("mstart");
 	pinOmp(home);
 	const env = envFor(home);
