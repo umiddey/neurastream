@@ -7,6 +7,7 @@ import { runInit } from "./init.ts";
 import { PORTED, runMain, runPorted } from "./commands.ts";
 import { runMetrics } from "./metrics.ts";
 import { runIncident } from "./incident.ts";
+import { runUninstall } from "../core/uninstall.ts";
 
 const BINS = [
 	"agent-score",
@@ -42,6 +43,10 @@ export function helpText(): string {
 		"                                (--agent-dir: keep an existing index/notes/blockers dir)",
 		"  neurastream adapter install omp",
 		"                                link the omp extension under this HOME",
+		"  neurastream uninstall [--purge] [--yes]",
+		"                                inverse of init/install: removes our bins, the plugin link,",
+		"                                template-identical pins and the AGENTS.md block (--purge adds",
+		"                                config + agent-dir state); prints the list, refuses outside HOME",
 		"  neurastream doctor            report hand-edited live files and a stale install",
 		"  neurastream config [--json]   print the merged config (defaults + file + env)",
 		"  neurastream guard <event> --json",
@@ -79,6 +84,7 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 		}
 	}
 	if (cmd === "doctor") return runDoctor();
+	if (cmd === "uninstall") return runUninstall(args);
 	if (cmd === "guard") {
 		return runGuard(args[0] ?? "");
 	}

@@ -46,11 +46,12 @@ bun add -g neurastream
 neurastream init
 neurastream adapter install omp
 neurastream doctor
+neurastream uninstall --purge   # the inverse: removes it all again
 ```
 
-`init` writes `~/.config/neurastream/config.yml` from the defaults in [docs/config.md](docs/config.md), plus an empty index, notes, the queue template, blocker wrappers, and the state directories. A second run changes nothing. `adapter install omp` links the extension (`~/.omp/agent/extensions` and `omp plugin link`). `doctor` exits 0 when the install matches the package.
+`init` writes `~/.config/neurastream/config.yml` from the defaults in [docs/config.md](docs/config.md), plus an empty index, notes, the queue template, blocker wrappers, and the state directories. A second run changes nothing. `adapter install omp` links the extension (`~/.omp/agent/extensions` and `omp plugin link`). `doctor` exits 0 when the install matches the package. `uninstall` removes the installed bins, the plugin link, template-identical pins and the AGENTS.md block; `--purge` adds the config file and the agent-dir state. It prints the list first and refuses anything outside your HOME.
 
-The defaults are the author's setup (paths, the backup repo, provider names). Edit `config.yml` before relying on them. To try it without touching your real home, set `HOME=/tmp/neurastream-home-dev` first.
+The defaults are neutral (empty work roots, no backup remote, no default branch); set your own in `config.yml`. To try it without touching your real home, set `HOME=/tmp/neurastream-home-dev` first.
 
 Check the merged result:
 
