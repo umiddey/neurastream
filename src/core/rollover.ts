@@ -85,11 +85,12 @@ export function holdsBlock(holds: readonly string[]): string {
 	return ["=== owner holds (plans' WAITING on owner lines)", ...(holds.length > 0 ? holds : ["none"]), ""].join("\n");
 }
 
-/** The one-time note instruction for Main's next turn. `reason` (a stale install) names both versions. */
+/** The one-time note instruction for Main's next turn. `reason` (a stale install) names both versions and replaces the size line. */
 export function noteRequest(path: string, auto = false, reason = ""): string {
 	return [
-		"Session rollover: this session has grown past rollover.max_session_mb.",
-		...(reason ? [reason] : []),
+		reason
+			? `Session rollover: a new neurastream version is installed (${reason}).`
+			: "Session rollover: this session has grown past rollover.max_session_mb.",
 		`Write a handoff note to ${path} (overwrite it). Cover the work in progress and its state, the decisions made and why, the next step, and the files involved.`,
 		"Do not list holds or owner blockers in the note; they come from the plans' WAITING on owner lines.",
 		auto
