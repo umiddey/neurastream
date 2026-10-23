@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.23
 ### Added
 - `templates/AGENTS.md` ships the neurastream orchestrator rules as a managed block. `adapter install omp` writes it into the live `~/.omp/agent/AGENTS.md` between markers, keeps every line outside them, and `doctor` reports `stale:` or `missing:` for the block.
 ### Changed
