@@ -44,3 +44,21 @@ test("main-start prints the load line after the machine-guard line, with no /pro
 			: /^\d+\.\d\d \d+\.\d\d \d+\.\d\d$/;
 	expect(lines[at + 1]).toMatch(want);
 });
+
+test("main-start prints one notice line per config notice, near the top", async () => {
+	const home = join(TMP, "home-notice");
+	stubBins(home);
+	mkdirSync(join(home, ".config/neurastream"), { recursive: true });
+	const file = join(home, ".config/neurastream/config.yml");
+	writeFileSync(file, 'glm:\n  label: "GLM"\npm:\n  fail_lines: 25\n');
+	const cfg = loadConfig({ home, env: {} });
+	const text = await mainStartText([], cfg, { inheritStdin: false });
+	const lines = text.split("\n");
+	const glm = `notice: config "glm:" is now "quota:"; rename it in ${file}`;
+	const pm = `notice: config "pm:" was removed; delete it from ${file}`;
+	expect(lines).toContain(glm);
+	expect(lines).toContain(pm);
+	const machine = lines.indexOf("=== machine");
+	expect(lines.indexOf(glm)).toBeLessThan(machine);
+	expect(lines.indexOf(pm)).toBeLessThan(machine);
+});

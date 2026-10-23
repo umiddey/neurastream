@@ -84,6 +84,8 @@ export async function mainStartText(args: string[], cfg: Config, opts: { inherit
 	const out: string[] = [];
 	const say = (line: string) => out.push(`${line}\n`);
 	runMainStartDetectors(cfg, deps);
+	// Config notices (legacy keys renamed or removed by loadConfig): one line each, above the sections.
+	for (const n of cfg.notices) say(`notice: ${n}`);
 	const h = args[0] ?? String(cfg.health.default_hours);
 	const childStdin = opts.inheritStdin ? "inherit" : "ignore";
 	const childStderr = opts.inheritStdin ? "inherit" : "pipe";
