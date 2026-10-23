@@ -1,6 +1,6 @@
 // The managed block in the owner's AGENTS.md. The rules come from templates/AGENTS.md with the
 // config's agent dir filled in; they sit between two markers, and only what is between them is
-// ever written or compared. Everything outside the markers stays the owner's.
+// ever written or checked against the package's block. Everything outside the markers stays the owner's.
 
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";

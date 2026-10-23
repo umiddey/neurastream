@@ -293,7 +293,7 @@ Loaded today because they sit in the agent extensions directory. The package dec
 | `tool_result` on a push or merge | schedule close |
 | `session_stop` | `checkStop` |
 
-Rules that move into core as pure functions: 5 changes per 15 minutes (`MAIN_GUARD_LIMIT`, `MAIN_GUARD_WINDOW_MIN`), free extensions `.md` and `.txt`, free roots from `MAIN_GUARD_ROOTS` (default `$HOME/Work/` and `$HOME/projects/`), free prefixes `gf-testbed/`, `archive/`, and `heavy-run.sh` under Work, spawn allow-list from `` - `name` `` lines under `## Allowed`, plan gate (absolute plan path, open, valid, not waiting, progress hash changed since the last spawn, no unclosed complete/cancelled unless awaiting merge), spin guard of 3 idle stops, auto-close every 15 minutes. Ledger command default `agent-ledger --hours 12` (`MAIN_GUARD_LEDGER`). Log `~/.local/state/main-guard.log`.
+Rules that move into core as pure functions: the edit limit per window from config (`guards.main_edit_limit`, `guards.main_window_min`; env `MAIN_GUARD_LIMIT`, `MAIN_GUARD_WINDOW_MIN`), free extensions `.md` and `.txt`, free roots from `MAIN_GUARD_ROOTS` (default `$HOME/Work/` and `$HOME/projects/`), free prefixes `gf-testbed/`, `archive/`, and `heavy-run.sh` under Work, spawn allow-list from `` - `name` `` lines under `## Allowed`, plan gate (absolute plan path, open, valid, not waiting, progress hash changed since the last spawn, no unclosed complete/cancelled unless awaiting merge), spin guard of 3 idle stops, auto-close every 15 minutes. Ledger command default `agent-ledger --hours 12` (`MAIN_GUARD_LEDGER`). Log `~/.local/state/main-guard.log`.
 
 A shell launch that skips the spawn hook (today: `opencode run`) is a core rule. The command text is config `guards.bypass_spawn`, default `["opencode run"]`, not an import.
 
@@ -332,7 +332,7 @@ Contract: argv = plan args, stdin = call JSON, exit 0 allow, exit 2 plus one std
 
 | File | Lines | Ships as |
 |---|---|---|
-| agent `AGENTS.md` | 38 | `templates/AGENTS.md` (orchestrator rules). Not imported by core. |
+| agent `AGENTS.md` | managed block | `templates/AGENTS.md` (orchestrator rules). `renderBlock` fills `{{AGENT_DIR}}`; `adapter install omp` upserts it between markers and keeps the owner's text outside them. |
 | `notes/subagents.md` | 52 | template. `## Allowed` is machine-read. |
 | `notes/lessons.md` | 83 | template |
 | `notes/projects.md` | 40 | template |

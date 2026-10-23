@@ -147,7 +147,16 @@ bun add -g neurastream@latest
 neurastream adapter install omp
 ```
 
-Live copies are never hand-edited. `neurastream doctor` names each hand-edited or foreign installed file, and a stale install (the installed version is not `npm view neurastream version`). If the registry cannot be reached, that check is a warning, not a failure.
+Live copies are never hand-edited. `neurastream doctor` names each hand-edited installed file and each missing one (`missing:`), and a stale install (the installed version is not `npm view neurastream version`). If the registry cannot be reached, that check is a warning, not a failure.
+
+## AGENTS.md block
+
+`adapter install omp` writes the neurastream orchestrator rules into `~/.omp/agent/AGENTS.md`, between the markers `<!-- neurastream:begin (managed by neurastream; edit the package, not this block) -->` and `<!-- neurastream:end -->`. The rules come from `templates/AGENTS.md`; the agent dir comes from your config.
+
+- Managed: the text between the markers. Install replaces it. A second install changes nothing.
+- Yours: every line outside the markers. Install keeps it byte for byte. A file with no markers gets the block appended.
+- Drift: `neurastream doctor` reports `stale:` when the text between the markers differs from the package's block, and `missing:` when the markers are absent. Edits outside the markers are never reported.
+- Edit limit: the project-file changes Main gets per window come from `guards.main_edit_limit` and `guards.main_window_min`, not from the block text.
 
 ## License
 
