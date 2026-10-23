@@ -95,7 +95,7 @@ function makeHome(dir: string): string {
 function envFor(home: string): NodeJS.ProcessEnv {
 	const agent = join(home, ".omp/agent");
 	return {
-		...process.env,
+		...GIT_ENV,
 		HOME: home,
 		QUEUE_AGENT: agent,
 		QUEUE_INDEX: join(agent, "INDEX.md"),
