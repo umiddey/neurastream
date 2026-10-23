@@ -6,9 +6,10 @@ import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSy
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { configFile } from "../../core/config.ts";
+import { renderBlock, upsertBlock } from "../../core/agents-md.ts";
+import { configFile, loadConfig } from "../../core/config.ts";
 
-import { adapterLiveFiles } from "./doctor.ts";
+import { adapterLiveFiles, liveAgentsMd } from "./doctor.ts";
 // Registers the plugin-command matcher into core's writeTargets (side effect).
 import "./package-ops.ts";
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -31,6 +32,7 @@ export interface InstallResult {
 	pinsCopied: string[];
 	pinsKept: string[];
 	overlay: "written" | "unchanged";
+	agentsMd: "written" | "unchanged";
 }
 
 function ensureLink(link: string, target: string): void {
@@ -101,6 +103,17 @@ function writeOverlay(file: string): "written" | "unchanged" {
 	return "written";
 }
 
+// Writes the managed block into the owner's AGENTS.md: the rest of the file is never touched.
+function writeAgentsMd(home: string): "written" | "unchanged" {
+	const file = liveAgentsMd(home);
+	const current = existsSync(file) ? readFileSync(file, "utf8") : "";
+	const next = upsertBlock(current, renderBlock(loadConfig({ home })));
+	if (next === current) return "unchanged";
+	mkdirSync(dirname(file), { recursive: true });
+	writeFileSync(file, next);
+	return "written";
+}
+
 function linkPlugin(home: string): string {
 	const r = spawnSync("omp", ["plugin", "link", PACKAGE_ROOT], {
 		env: { ...process.env, HOME: home },
@@ -141,7 +154,8 @@ export function installOmp(home: string): InstallResult {
 	linkInstalled(home);
 	const plugin = linkPlugin(home);
 	const overlay = writeOverlay(file);
-	return { plugin, removedStaleLink, pinsCopied: pins.copied, pinsKept: pins.kept, overlay };
+	const agentsMd = writeAgentsMd(home);
+	return { plugin, removedStaleLink, pinsCopied: pins.copied, pinsKept: pins.kept, overlay, agentsMd };
 }
 
 export function printInstall(result: InstallResult): void {
@@ -150,6 +164,7 @@ export function printInstall(result: InstallResult): void {
 	console.log(
 		`neurastream adapter install omp: pins copied ${result.pinsCopied.length}, kept ${result.pinsKept.length}; overlay ${result.overlay}`,
 	);
+	console.log(`neurastream adapter install omp: AGENTS.md block ${result.agentsMd}`);
 }
 
 export function runAdapterInstall(args: string[]): number {

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.23
+### Added
+- `templates/AGENTS.md` ships the neurastream orchestrator rules as a managed block. `adapter install omp` writes it into the live `~/.omp/agent/AGENTS.md` between markers, keeps every line outside them, and `doctor` reports `stale:` or `missing:` for the block.
+### Changed
+- The edit limit Main sees in each prompt comes from `guards.main_edit_limit` and `guards.main_window_min`, not from the rules text.
+### Fixed
+- `doctor` reports an absent bin as `missing:`, not `foreign:`.
+
 ## 0.1.22
 ### Added
 - Progress trim: when Main ticks a plan phase, Progress entries beyond `queue.progress_keep` (default 6) move to `<plan dir>/archive/<name>-progress.md`; `queue-trim <plan> [--keep N]` does the same by hand.

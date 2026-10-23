@@ -1,5 +1,5 @@
-// Reports hand-edited or foreign live files the omp adapter installs, and a stale
-// registry version. Offline `npm view` is a warning, not a failure.
+// Reports hand-edited or missing live files the omp adapter installs, the managed block in
+// the owner's AGENTS.md, and a stale registry version. Offline `npm view` is a warning, not a failure.
 // Notes, INDEX, queue state and config are user state: not checked.
 
 import { spawnSync } from "node:child_process";
@@ -7,6 +7,8 @@ import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { blockState, renderBlock } from "../../core/agents-md.ts";
+import { loadConfig } from "../../core/config.ts";
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
@@ -28,6 +30,11 @@ function readPackage(root: string): PackageJson {
 export function packageBins(root: string): { name: string; source: string }[] {
 	const pkg = readPackage(root);
 	return Object.entries(pkg.bin ?? {}).map(([name, rel]) => ({ name, source: join(root, rel) }));
+}
+
+/** The omp agent's AGENTS.md, which carries the managed neurastream block. */
+export function liveAgentsMd(home: string): string {
+	return join(home, ".omp/agent/AGENTS.md");
 }
 
 /** Files adapter install places under this home. Bun's global bin dir is extra, checked only when a name is present. */
@@ -154,7 +161,7 @@ export function doctorReport(home: string, env: NodeJS.ProcessEnv = process.env)
 		if (seen.has(file.live)) continue;
 		seen.add(file.live);
 		if (!existsSync(file.live)) {
-			problems.push(`foreign: ${file.live}`);
+			problems.push(`missing: ${file.live}`);
 			continue;
 		}
 		if (isPackageFile(file.live, file.source)) {
@@ -163,6 +170,11 @@ export function doctorReport(home: string, env: NodeJS.ProcessEnv = process.env)
 		}
 		problems.push(`hand-edited: ${file.live}`);
 	}
+	const agents = liveAgentsMd(home);
+	const text = existsSync(agents) ? readFileSync(agents, "utf8") : "";
+	const state = blockState(text, renderBlock(loadConfig({ home, env })));
+	if (state === "ok") ok.push(`${agents} neurastream block`);
+	else problems.push(`${state}: ${agents} neurastream block`);
 	const warnings: string[] = [];
 	const viewed = npmViewVersion(name, env);
 	let registry: string | null = null;
