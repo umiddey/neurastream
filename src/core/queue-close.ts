@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, fstatSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, fstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Config } from "./config.ts";
@@ -141,17 +141,33 @@ export function queueClose(args: string[], cfg: Config): number {
 		declaredLanded(plan.repo, `refs/heads/${branch}`, base, readFileSync(file, "utf8"))
 	);
 
-	const runIn = wtExists ? plan.worktree! : plan.repo;
+	// A plan whose worktree is missing or kept is checked against the upstream base, never a foreign checkout.
+	const detached = !!plan.worktree && !owned;
+	const runIn = owned ? plan.worktree! : plan.repo;
 	if (!cancelling) {
 		const tip = branchExists ? git(plan.repo, "rev-parse", `refs/heads/${branch}`).out : "";
-		const dirty = git(runIn, "status", "--porcelain").out;
+		const dirty = detached ? `base:${base}` : git(runIn, "status", "--porcelain").out;
 		const doneKey = sha(`${plan.doneCheck}\n${tip}\n${dirty}`);
 		const doneCache = path.join(STATE_DIR, `done-ok-${sha(file)}`);
 		const cached = existsSync(doneCache) && readFileSync(doneCache, "utf8").trim() === doneKey;
 		if (cached) console.log(`queue-close: done check passed before for this state (cached ${doneKey})`);
 		else {
-			console.log(`queue-close: done check in ${runIn}: ${plan.doneCheck}`);
-			const dc = spawnSync("bash", ["-lc", plan.doneCheck!], { cwd: runIn, stdio: "inherit", timeout: 3600_000 });
+			let scratch: string | undefined;
+			if (detached) {
+				scratch = mkdtempSync(path.join(STATE_DIR, "done-base-"));
+				const add = git(plan.repo, "worktree", "add", "--detach", scratch, base);
+				if (!add.ok) {
+					rmSync(scratch, { recursive: true, force: true });
+					die(`could not check out ${base} for the done check: ${add.out}`);
+				}
+			}
+			console.log(`queue-close: done check in ${detached ? `${base} (temporary worktree)` : runIn}: ${plan.doneCheck}`);
+			const dc = spawnSync("bash", ["-lc", plan.doneCheck!], { cwd: scratch ?? runIn, stdio: "inherit", timeout: 3600_000 });
+			if (scratch) {
+				git(plan.repo, "worktree", "remove", "--force", scratch);
+				rmSync(scratch, { recursive: true, force: true });
+				git(plan.repo, "worktree", "prune");
+			}
 			if (dc.status !== 0) {
 				rmSync(doneCache, { force: true });
 				const text = readFileSync(file, "utf8")

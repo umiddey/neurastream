@@ -144,7 +144,7 @@ note
 // Chain: repo R -> middle C -> upstream U. C's HEAD is a feature branch and its local main is stale,
 // so R's origin/HEAD (cloned from C) points at that feature branch, not at the upstream default.
 // Plan's branch F is merged into U's main only when `landed` is true.
-function chain(dir: string, landed: boolean, worktree = "-"): string {
+function chain(dir: string, landed: boolean, worktree = "-", done = "true"): string {
 	const U = join(dir, "upstream");
 	const C = join(dir, "middle");
 	const R = join(dir, "repo");
@@ -159,7 +159,7 @@ function chain(dir: string, landed: boolean, worktree = "-"): string {
 	git(R, "checkout", "-q", "chore/other");
 	writeFileSync(join(R, ".git/info/exclude"), "/INDEX.md\n");
 	mkdirSync(join(R, "docs/plans"), { recursive: true });
-	writeFileSync(join(R, "docs/plans", PLAN), planText("complete", "F", worktree, "true"));
+	writeFileSync(join(R, "docs/plans", PLAN), planText("complete", "F", worktree, done));
 	writeFileSync(join(R, "INDEX.md"), `- ${join(R, "docs/plans", PLAN)}\n`);
 	git(R, "add", join("docs/plans", PLAN));
 	git(R, "commit", "-q", "-m", "plan");
@@ -239,4 +239,29 @@ test("P2: a plan worktree git cannot remove is docker-chowned, then deleted and 
 	expect(readFileSync(log, "utf8")).toContain("chown");
 	expect(existsSync(W)).toBe(false);
 	expect(git(R, "worktree", "list", "--porcelain")).not.toContain(W);
+});
+
+test("P3: a missing plan worktree is checked on the upstream base; the file is there, so CLOSED", () => {
+	const dir = fresh("p3-present");
+	const home = makeHome(dir);
+	// F.txt lands on upstream main only; R's checkout (chore/other) does not have it.
+	const R = chain(dir, true, join(dir, "gone"), "test -f F.txt");
+	indexHome(home, R);
+	const r = runClose(home, join(R, "docs/plans", PLAN));
+	expect(r.stdout).toContain("temporary worktree");
+	expect(r.stdout).toContain("queue-close: CLOSED");
+	expect(r.code).toBe(0);
+	expect(git(R, "worktree", "list", "--porcelain")).not.toContain("done-base-");
+});
+
+test("P3: a missing plan worktree is checked on the upstream base; the file is absent, so the plan reopens", () => {
+	const dir = fresh("p3-absent");
+	const home = makeHome(dir);
+	const R = chain(dir, true, join(dir, "gone"), "test -f NOT_ON_MAIN.txt");
+	indexHome(home, R);
+	const r = runClose(home, join(R, "docs/plans", PLAN));
+	expect(r.code).toBe(1);
+	expect(r.stderr).toContain("plan reopened (Status: open)");
+	expect(readFileSync(join(R, "docs/plans", PLAN), "utf8")).toContain("Status: open");
+	expect(existsSync(join(R, "docs/plans/archive", MONTH, PLAN))).toBe(false);
 });
