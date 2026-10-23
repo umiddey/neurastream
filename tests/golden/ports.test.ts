@@ -128,39 +128,6 @@ test("brief-lint matches the original", () => {
 	writeFileSync(join(recorded, "brief-lint.txt"), `code ${one.code}\n${one.stdout}${one.stderr}`);
 });
 
-test("pm-fail-facts matches the original", () => {
-	const home = homeFor("pm");
-	const env = envFor(home);
-	const wt = join(home, "wt");
-	const art = join(wt, "test-results/playwright-output/checkout-fails-card");
-	mkdirSync(art, { recursive: true });
-	writeFileSync(join(wt, "test-results/e2e-junit.xml"), `<?xml version="1.0"?>
-<testsuites>
-  <testsuite name="e2e">
-    <testcase classname="checkout.spec.ts" name="pays with card" />
-    <testcase classname="checkout.spec.ts" name="fails card">
-      <failure message="Error: boom">Error: boom
-tests/checkout.spec.ts:12
-at somewhere</failure>
-    </testcase>
-    <testcase classname="other.spec.ts" name="skipped one"><skipped/></testcase>
-  </testsuite>
-</testsuites>
-`);
-	writeFileSync(join(art, "error-context.md"), "context line\n");
-	writeFileSync(join(art, "trace.zip"), "x");
-	const blog = join(home, "backend.log");
-	writeFileSync(blog, "ok\nERROR no such user\nINFO fine\n");
-	const oracle = join(home, "pm-fail-facts.py");
-	rewrite("pm-fail-facts", oracle, home);
-	// the scrub dropped the "PM" prefix from the help's first line
-	const toOracle = (s: string): string => s.replace("a Playwright run's failures", "a PM Playwright run's failures");
-	for (const args of [[], [wt, "--backend-log", blog, "--lines", "2"], [join(home, "missing")]]) {
-		const port = runPort("pm-fail-facts", args, env, home);
-		match(runPy(oracle, args, env, home), { code: port.code, stdout: toOracle(port.stdout), stderr: toOracle(port.stderr) });
-	}
-});
-
 test("oc-run matches the original", () => {
 	const home = homeFor("oc");
 	const env = envFor(home);

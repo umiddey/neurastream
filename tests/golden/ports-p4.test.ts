@@ -257,17 +257,25 @@ function setupQueue(home: string, env: NodeJS.ProcessEnv, status: "open" | "comp
 	return plan;
 }
 
-test("glm-reset matches the original", () => {
+test.skipIf(process.platform !== "linux")("quota-reset matches the original", () => {
 	const home = homeFor("glm");
 	pinOmp(home);
+	// the oracle labels its output GLM; pin the label so the port matches it
+	const cfg = join(home, ".config/neurastream/config.yml");
+	writeFileSync(cfg, `${readFileSync(cfg, "utf8")}quota:\n  label: "GLM"\n`);
 	const env = envFor(home);
 	const oracle = join(home, "glm-reset.sh");
 	writeFileSync(oracle, readFileSync(join(LIVE, "glm-reset"), "utf8"));
 	chmodSync(oracle, 0o755);
 	for (const when of ["2026-10-09 14:03:41", "2099-01-01 00:00:00"]) {
-		match(runBash(oracle, [when], env), runPort("glm-reset", [when], env));
+		match(runBash(oracle, [when], env), runPort("quota-reset", [when], env));
 	}
-	match(runBash(oracle, [], env), runPort("glm-reset", [], env));
+	// the no-args usage text differs from the oracle's; compare exit code and stdout only
+	const want = runBash(oracle, [], env);
+	const got = runPort("quota-reset", [], env);
+	expect(got.code).toBe(want.code);
+	expect(got.stdout).toBe(want.stdout);
+	expect(got.stderr).toContain("usage: quota-reset");
 });
 
 // The oracle needs Linux tools (flock, /proc, nproc); the port itself runs on macOS too.

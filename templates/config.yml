@@ -82,11 +82,6 @@ wip:
   status_log: "~/.local/state/neurastream/WIP-STATUS.md"
   secret_file: '(?i)(^|/)(\.env(\.(?!example$|sample$|template$|dist$)[\w-]+)?|[^/]*\.env|env\.json|[^/]*\.(pem|p12|pfx|jks|keystore|key)|id_(rsa|dsa|ecdsa|ed25519)|credentials(\.json)?|\.netrc|\.pgpass|\.htpasswd|local-run\.env)$'
 
-pm:
-  backend_log: ""   # your backend service log; pm-fail-facts reads it for errors ("" = only explicit --backend-log runs)
-  fail_lines: 25
-  backend_error: 'Traceback|ERROR|CRITICAL|Exception| 5\d\d '
-
 health:
   warn_ctx: 150000
   tail_calls: 50
@@ -155,9 +150,9 @@ machine:
   watch_sec: 60
   watch_streak: 3
 
-glm:
+quota:
   reset_tz: "Asia/Shanghai"
-  label: "GLM"
+  label: "quota"
 
 priority:
   sleep_sec: 120

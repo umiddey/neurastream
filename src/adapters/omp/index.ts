@@ -1,6 +1,6 @@
 // omp adapter: one extension translating the harness events the originals used into the core
 // guard calls (src/core/guards.ts), plus the auto-close scheduler from main-guard. The harness
-// name appears only here and in herdr-agent-state.ts; core never imports this file.
+// name appears only here; core never imports this file.
 //
 // Event map (docs/adapter.md, docs/inventory.md):
 //   session_start          (main only) auto-close now + every queue.auto_close_min minutes

@@ -143,12 +143,14 @@ export interface Config {
 		watch_sec: number;
 		watch_streak: number;
 	};
-	glm: { reset_tz: string; label: string };
+	quota: { reset_tz: string; label: string };
 	priority: { sleep_sec: number };
 	alerts: { temp_c: number; mem_psi: number; io_psi: number; cooldown_sec: number };
 	snapshot: { tmp_dest: string; git_repo: string; git_backup: string; excludes: string[] };
 	/** Optional overlay written by adapter install. Absent until an adapter is installed. */
 	adapter?: { name: string; sessions: string; pins: string; extensions: string };
+	/** Notices about legacy keys in the user's config file; empty when there are none. */
+	notices: string[];
 }
 
 type EnvKind = "string" | "number" | "csv";
@@ -317,17 +319,37 @@ export interface LoadOptions {
 	template?: string;
 }
 
+// Old keys that still load, each with a notice to rename or delete it. "glm:" moves to "quota:" only
+// when "quota:" is absent; with both present, "glm:" stays and fails as an unknown key.
+function migrateLegacy(user: Record<string, unknown>, file: string, notices: string[]): Record<string, unknown> {
+	const out = { ...user };
+	if ("glm" in out && !("quota" in out)) {
+		out.quota = out.glm;
+		delete out.glm;
+		notices.push(`config "glm:" is now "quota:"; rename it in ${file}`);
+	}
+	if ("pm" in out) {
+		delete out.pm;
+		notices.push(`config "pm:" was removed; delete it from ${file}`);
+	}
+	return out;
+}
+
 export function loadConfig(opts: LoadOptions = {}): Config {
 	const home = opts.home ?? homedir();
 	const template = parseYaml(readFileSync(opts.template ?? TEMPLATE_PATH, "utf8"), "defaults");
 	const file = opts.file ?? configFile(home);
+	const notices: string[] = [];
 	let merged: unknown = template;
 	if (existsSync(file)) {
-		merged = merge(template, parseYaml(readFileSync(file, "utf8"), file), "");
+		let user = parseYaml(readFileSync(file, "utf8"), file);
+		if (isObj(user)) user = migrateLegacy(user, file, notices);
+		merged = merge(template, user, "");
 	}
 	if (!isObj(merged)) throw new ConfigError("config must be an object");
 	applyEnv(merged, opts.env ?? process.env);
 	const expanded = expand(merged, home) as Config;
+	expanded.notices = notices;
 	check(expanded);
 	return expanded;
 }
