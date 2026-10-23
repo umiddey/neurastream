@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.27
 ### Fixed
 - An upgrade while the launcher runs no longer crashes it (incident I-20261023-6). A relaunch request left after an upgrade goes to a fresh launcher from the installed package, so the handoff is built with the new code. Version helpers live in `src/adapters/omp/package-root.ts`.
 - A main-start failure during a rollover no longer stops the launcher. The handoff carries a `main-start failed during the rollover (…)` line, and the note still reaches the next run.
