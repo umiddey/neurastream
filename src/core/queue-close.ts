@@ -65,6 +65,25 @@ export function queueClose(args: string[], cfg: Config): number {
 		if (lines.length) writeFileSync(file, `${lines.join("\n")}\n`);
 		else rmSync(file, { force: true });
 	}
+	// A clone of a clone judges "landed" against the middle copy's default branch, which can be
+	// stale. Follow local-path origins (at most 3 hops) to the upstream repo and fetch its default
+	// branch: that commit is the base. No local origin: the existing base, unchanged.
+	function upstreamBase(repo: string, localBase: string): string {
+		let cur = repo;
+		let hops = 0;
+		while (hops < 3) {
+			const url = git(cur, "config", "--get", "remote.origin.url").out;
+			if (!url || !path.isAbsolute(url) || !existsSync(url) || !git(url, "rev-parse", "--git-dir").ok) break;
+			cur = url;
+			hops++;
+		}
+		if (hops === 0) return localBase;
+		const named = git(cur, "symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD").out.replace(/^origin\//, "");
+		const def = named || git(cur, "symbolic-ref", "-q", "--short", "HEAD").out;
+		const fetched = git(repo, "fetch", "-q", cur, def);
+		if (!fetched.ok) die(`could not fetch ${def} from ${cur}: ${fetched.out}`);
+		return git(repo, "rev-parse", "FETCH_HEAD").out;
+	}
 	const today = new Date().toISOString().slice(0, 10);
 
 	const arg = args[0];
@@ -95,7 +114,7 @@ export function queueClose(args: string[], cfg: Config): number {
 
 	git(plan.repo, "fetch", "-q", "origin");
 	const head = git(plan.repo, "symbolic-ref", "-q", "refs/remotes/origin/HEAD");
-	const base = head.ok ? head.out : "refs/remotes/origin/main";
+	const base = upstreamBase(plan.repo, head.ok ? head.out : "refs/remotes/origin/main");
 	const wtExists = !!plan.worktree && existsSync(plan.worktree);
 	let branch = plan.branch;
 	if (wtExists) branch ??= git(plan.worktree!, "rev-parse", "--abbrev-ref", "HEAD").out;
