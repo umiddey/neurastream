@@ -61,7 +61,7 @@ tree_ticks() {
 
 lock_check() {
   local owner pid now ticks spid sts sticks
-  if flock -n "$LOCK" true 2>/dev/null; then rm -f "$IDLE_STATE"; return; fi
+  if [ "$("$HEAVY" --status 2>/dev/null)" = "free" ]; then rm -f "$IDLE_STATE"; return; fi
   owner=$(cat "${HEAVY_OWNER:?}" 2>/dev/null)
   pid=$(sed -nE 's/.*\| pid ([0-9]+).*/\1/p' <<<"$owner")
   [ -n "$pid" ] || { ALERTS+=("heavy-lock busy but owner file empty: find holder with fuser $LOCK"); return; }

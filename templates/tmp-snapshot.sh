@@ -4,12 +4,10 @@ set -uo pipefail
 SNAP=${SNAP_DEST:?}
 GF=${SNAP_GIT_REPO:-}
 GFB=${SNAP_GIT_BACKUP:-}
-LOCK=${SNAP_LOCK:?}
-mkdir -p "$SNAP/tmp" "$(dirname "$LOCK")"
+mkdir -p "$SNAP/tmp"
 chmod 700 "$SNAP"
 
-exec 9>"$LOCK"
-flock -n 9 || { echo "snapshot already running"; exit 0; }
+# The snapshot lock is held by tmp-snapshot.ts (file-lock) for the whole run.
 
 EXCLUDES=(${SNAP_EXCLUDES:-})
 rsync_args=(-a --ignore-errors --delete-after)
