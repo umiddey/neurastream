@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.17
 ### Fixed
 - queue-close judges the real upstream default branch (local-path origin chains are followed and the default is fetched), keeps a plan worktree that is on another branch, falls back to docker chown and `worktree prune` when git cannot remove a worktree, and runs the done check in a temp worktree of that base when the plan worktree is missing or kept.
 
