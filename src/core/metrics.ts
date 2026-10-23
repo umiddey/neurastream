@@ -200,7 +200,7 @@ export function m4(runs: Run[], w: Window, patterns: RegExp[]): M4 {
 				const text = blocks(m.text)
 					.map((b) => b.text)
 					.join("\n");
-				// Machine prompts (rollover note request, handoff note text) are not owner corrections.
+				// Machine-written messages (rollover note request, handoff note text) are not owner corrections.
 				const own = ownerText(text);
 				if (own !== undefined && patterns.some((p) => p.test(own))) out.corrections++;
 			} else if (m.role === "assistant") {

@@ -64,7 +64,7 @@ export interface HandoffInput {
 	ownerMessage: string;
 }
 
-/** Prefixes of the machine prompts: the builders write them, ownerText reads them. */
+/** Prefixes of the machine-written messages: the builders write them, ownerText reads them. */
 const NOTE_REQUEST_PREFIX = "Session rollover:";
 const HANDOFF_PREFIX = "Previous session file:";
 const OWNER_MARK = "Owner's message:";
