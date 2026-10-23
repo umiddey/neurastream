@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.20
+### Fixed
+- A pending rollover wins over the stop guard: `session_stop` reads the rollover state before `checkStop`. In `ready` and `wait-jobs` the stop is allowed (no queue, incident or cancel block and no "spawn an agent" text), and in `need-note` it is blocked by the note request only.
+
 ## 0.1.19
 ### Fixed
 - The rollover request after a neurastream update says "a new neurastream version is installed (…)" instead of claiming the session grew past `rollover.max_session_mb`.

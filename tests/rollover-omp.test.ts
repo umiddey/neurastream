@@ -12,6 +12,7 @@ import { blockersDirPath, indexPath, REPO_INDEX } from "../src/core/queue/lib.ts
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { notePath, relaunchPath } from "../src/core/rollover.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
+import { addIncident, incidentsFile } from "../src/core/incidents.ts";
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
 type CommandHandler = (args: string, ctx: MainCtx) => unknown;
@@ -583,6 +584,102 @@ test("no relaunch: session_stop still blocks on the open plan", async () => {
 		createOmpAdapter(host, stopCfg);
 		const r = (await host.emit("session_stop", {}, mainCtx())) as Array<{ decision?: string }>;
 		expect(r[0]?.decision).toBe("block");
+	} finally {
+		cleanup();
+	}
+});
+
+/** The guard log so far: each rollover stop decision in session_stop writes one line. */
+function guardLog(): string {
+	try {
+		return readFileSync(baseCfg.paths.guard_log, "utf8");
+	} catch {
+		return "";
+	}
+}
+
+test("ready under the launcher: session_stop requests the relaunch and allows the stop, with an open plan", async () => {
+	resetState();
+	const cleanup = openPlanFixture();
+	try {
+		const host = fakeHost();
+		createOmpAdapter(host, stopCfg);
+		const ctx = mainCtx();
+		await withLauncher("1", async () => {
+			await armReady(host, ctx, "## In progress\nstep");
+			expect(await host.emit("session_stop", {}, ctx)).toEqual([]);
+		});
+		expect(shutdowns).toBe(1);
+		expect(existsSync(relaunchPath())).toBe(true);
+		expect(guardLog()).toContain("ALLOW stop: rollover ready");
+	} finally {
+		cleanup();
+	}
+});
+
+test("ready in plain omp: session_stop allows the stop with an open plan and shuts nothing down", async () => {
+	resetState();
+	const cleanup = openPlanFixture();
+	try {
+		const host = fakeHost();
+		createOmpAdapter(host, stopCfg);
+		const ctx = mainCtx();
+		await armReady(host, ctx, "## In progress\nstep");
+		expect(await host.emit("session_stop", {}, ctx)).toEqual([]);
+		expect(shutdowns).toBe(0);
+		expect(guardLog()).toContain("ALLOW stop: rollover ready");
+	} finally {
+		cleanup();
+	}
+});
+
+test("wait-jobs: session_stop allows the stop while own jobs run, with an open plan", async () => {
+	resetState();
+	const cleanup = openPlanFixture();
+	try {
+		const host = fakeHost();
+		createOmpAdapter(host, stopCfg);
+		const ctx = mainCtx();
+		await armReady(host, ctx, "## In progress\nstep");
+		jobs = [{ label: "ci-watch" }];
+		expect(await host.emit("session_stop", {}, ctx)).toEqual([]);
+		expect(shutdowns).toBe(0);
+		expect(guardLog()).toContain("ALLOW stop: rollover wait-jobs");
+	} finally {
+		cleanup();
+	}
+});
+
+test("ready with an open incident and no plan: session_stop allows the stop", async () => {
+	resetState();
+	addIncident(stopCfg, { source: "main", kind: "fixture", summary: "open incident for the stop check" });
+	try {
+		const host = fakeHost();
+		createOmpAdapter(host, stopCfg);
+		const ctx = mainCtx();
+		await armReady(host, ctx, "## In progress\nstep");
+		expect(await host.emit("session_stop", {}, ctx)).toEqual([]);
+		expect(guardLog()).toContain("ALLOW stop: rollover ready");
+	} finally {
+		rmSync(incidentsFile(stopCfg), { force: true });
+	}
+});
+
+test("need-note with an open plan: session_stop blocks with the note request only, never the queue text", async () => {
+	resetState();
+	const cleanup = openPlanFixture();
+	try {
+		const host = fakeHost();
+		createOmpAdapter(host, stopCfg);
+		const ctx = mainCtx();
+		writeFileSync(SESSION_FILE, BIG);
+		await host.emit("agent_end", {}, ctx); // no note yet: need-note
+		const r = (await host.emit("session_stop", {}, ctx)) as Array<{ decision?: string; reason?: string }>;
+		expect(r).toHaveLength(1);
+		expect(r[0]?.decision).toBe("block");
+		expect(r[0]?.reason).toContain("Write a handoff note to");
+		expect(r[0]?.reason).not.toContain("spawn");
+		expect(guardLog()).toContain("BLOCK stop: rollover need-note");
 	} finally {
 		cleanup();
 	}
