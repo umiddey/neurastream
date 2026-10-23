@@ -6,7 +6,7 @@ import { afterAll, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { carriedArgs, runMainLauncher } from "../src/adapters/omp/launch.ts";
+import { carriedArgs, type LaunchOptions, runMainLauncher } from "../src/adapters/omp/launch.ts";
 import { loadConfig } from "../src/core/config.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { notePath, relaunchPath } from "../src/core/rollover.ts";
@@ -67,7 +67,7 @@ function newCase(): string {
 	return dir;
 }
 
-async function launch(args: string[], dir: string, extra: Record<string, string> = {}): Promise<number> {
+async function launch(args: string[], dir: string, extra: Record<string, string> = {}, opts: Partial<LaunchOptions> = {}): Promise<number> {
 	const keys: Record<string, string> = {
 		FAKE_LOG: join(dir, "runs.log"),
 		FAKE_MARK: join(dir, "mark"),
@@ -80,7 +80,7 @@ async function launch(args: string[], dir: string, extra: Record<string, string>
 	const saved = Object.fromEntries(Object.keys(keys).map(k => [k, process.env[k]]));
 	Object.assign(process.env, keys);
 	try {
-		return await runMainLauncher(args, cfg, { harness: FAKE });
+		return await runMainLauncher(args, cfg, { harness: FAKE, ...opts });
 	} finally {
 		for (const [k, v] of Object.entries(saved)) {
 			if (v === undefined) delete process.env[k];
@@ -177,4 +177,20 @@ test("a handoff over 100000 bytes goes to a file and the argument points at it",
 	expect(arg).toBe(`Read ${file} first: it is the handoff from your previous session (too long for one message).`);
 	expect(readFileSync(file, "utf8").length).toBeGreaterThan(100_000);
 	expect(code).toBe(7);
+}, 60_000);
+
+test("a main-start failure does not stop the relaunch: the note still reaches the second run", async () => {
+	const dir = newCase();
+	const code = await launch([], dir, {}, {
+		mainStart: async () => {
+			throw new Error("ENOENT: no such file or directory, open '/proc/loadavg'");
+		},
+	});
+	const runs = runsOf(dir);
+	expect(runs.length).toBe(2);
+	const handoff = runs[1]?.argv.at(-1) ?? "";
+	expect(handoff).toContain("Note: continue the parser work");
+	expect(handoff).toContain("main-start failed during the rollover (ENOENT: no such file or directory, open '/proc/loadavg'); run main-start yourself.");
+	expect(code).toBe(7);
+	expect(readFileSync(cfg.paths.guard_log, "utf8")).toContain("rollover: main-start failed: ENOENT");
 }, 60_000);

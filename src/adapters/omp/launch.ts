@@ -73,6 +73,8 @@ const OWNER_AWAY =
 
 export interface LaunchOptions {
 	harness?: string;
+	/** The main-start text generator for the handoff (default: src/core/main-start.ts). Tests inject a failing one. */
+	mainStart?: typeof mainStartText;
 }
 
 interface RelaunchRequest {
@@ -90,6 +92,7 @@ interface RelaunchRequest {
 export async function runMainLauncher(args: string[], cfg: Config, opts: LaunchOptions = {}): Promise<number> {
 	applyQueueEnv(cfg);
 	const harness = opts.harness ?? OMP_BIN;
+	const mainStart = opts.mainStart ?? mainStartText;
 	const carried = carriedArgs(args);
 	const loaded = packageVersion(packageJsonPath());
 	// Set only in a fresh launcher the previous one started: its first step is the request that run left.
@@ -101,7 +104,7 @@ export async function runMainLauncher(args: string[], cfg: Config, opts: LaunchO
 		const req = readRequest(since, cfg);
 		if (req !== null) {
 			rmSync(relaunchPath(), { force: true });
-			const message = await nextMessage(req, cfg);
+			const message = await nextMessage(req, cfg, mainStart);
 			if (message === null) return 1;
 			runArgs = [...carried, message];
 		}
@@ -122,7 +125,7 @@ export async function runMainLauncher(args: string[], cfg: Config, opts: LaunchO
 			});
 		}
 		rmSync(relaunchPath(), { force: true });
-		const message = await nextMessage(req, cfg);
+		const message = await nextMessage(req, cfg, mainStart);
 		if (message === null) return code;
 		runArgs = [...carried, message];
 	}
@@ -180,7 +183,7 @@ function noteReadable(path: string): boolean {
 }
 
 /** The next run's message: the handoff inline, or the pointer to a file that holds it. */
-async function nextMessage(req: RelaunchRequest, cfg: Config): Promise<string | null> {
+async function nextMessage(req: RelaunchRequest, cfg: Config, mainStart: typeof mainStartText): Promise<string | null> {
 	let note: string;
 	try {
 		note = readFileSync(req.notePath, "utf8");
@@ -188,10 +191,18 @@ async function nextMessage(req: RelaunchRequest, cfg: Config): Promise<string | 
 		adapterLog(cfg, `rollover: relaunch stopped, note unreadable ${req.notePath}: ${String(err)}`);
 		return null;
 	}
-	const generated = [
-		await mainStartText([], cfg, { inheritStdin: false }, { source: defaultRunSource(cfg), results: defaultCompletedResults(cfg) }),
-		holdsBlock(q.ownerHolds()),
-	].join("\n");
+	let generated: string;
+	try {
+		generated = [
+			await mainStart([], cfg, { inheritStdin: false }, { source: defaultRunSource(cfg), results: defaultCompletedResults(cfg) }),
+			holdsBlock(q.ownerHolds()),
+		].join("\n");
+	} catch (err) {
+		// A failing main-start must not cost the owner the note: the handoff says it failed.
+		const first = (err instanceof Error ? err.message : String(err)).split("\n")[0] ?? "";
+		adapterLog(cfg, `rollover: main-start failed: ${first}`);
+		generated = `main-start failed during the rollover (${first}); run main-start yourself.`;
+	}
 	const draft = req.draft.trim() === "" ? "" : `\nOwner's messages during the rollover (and any unsent draft): ${req.draft}`;
 	const handoff = buildHandoff({
 		generated,
