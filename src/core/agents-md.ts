@@ -28,11 +28,13 @@ function occurrences(text: string, mark: string): number[] {
 function span(text: string): { start: number; end: number } | null {
 	const begins = occurrences(text, BEGIN_MARK);
 	const ends = occurrences(text, END_MARK);
-	if (begins.length === 0 && ends.length === 0) return null;
-	if (begins.length !== 1 || ends.length !== 1 || ends[0] < begins[0]) {
+	const begin = begins[0];
+	const end = ends[0];
+	if (begin === undefined && end === undefined) return null;
+	if (begins.length !== 1 || ends.length !== 1 || begin === undefined || end === undefined || end < begin) {
 		throw new Error("neurastream block markers malformed: expected one begin marker, then one end marker");
 	}
-	return { start: begins[0], end: ends[0] + END_MARK.length };
+	return { start: begin, end: end + END_MARK.length };
 }
 
 // Replace the marked block, or append one when the file has none. Bytes outside the markers are kept.
