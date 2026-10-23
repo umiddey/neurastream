@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.22
+### Added
+- Progress trim: when Main ticks a plan phase, Progress entries beyond `queue.progress_keep` (default 6) move to `<plan dir>/archive/<name>-progress.md`; `queue-trim <plan> [--keep N]` does the same by hand.
+### Fixed
+- The plan-read guard refuses only new plan-read problems, and the cite scan skips the Progress section (incident I-20261023-14).
+- Machine prompts (guard and rollover text sent as user messages) are not owner corrections, so they no longer count as owner messages or corrections in metrics (incident I-20261023-11).
+
 ## 0.1.21
 ### Fixed
 - The edit-window guard no longer counts heredoc bodies (`python3 - <<'EOF'` prose) or punctuation-only redirect targets (`>,`) as project-file writes, so plan text no longer shows up as changes to files such as `<cwd>/,`.

@@ -21,6 +21,7 @@ import {
 import { recordCi, recordFalseAlarm, recordRule, reportCmd } from "../src/cli/metrics.ts";
 import { buildReport, m6 } from "../src/core/report.ts";
 import type { IncidentView } from "../src/core/incidents.ts";
+import { buildHandoff, noteRequest } from "../src/core/rollover.ts";
 import { metricsDueLine } from "../src/core/main-start.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "metrics-"));
@@ -151,6 +152,22 @@ test("M4 counts owner messages, corrections and Main's trailing-? questions from
 	const sub = run({ id: "s", kind: "sub", lastWriteAt: NOW - 100, messages: [{ role: "user", cost: 0, text: "no" }] });
 	const patterns = ["\\bno\\b", "wrong"].map((p) => new RegExp(p, "i"));
 	expect(m4([main, sub], cur, patterns)).toEqual({ users: 2, corrections: 1, questions: 1 });
+});
+
+test("M4 does not count the rollover note request or a handoff's note as owner corrections; the owner's own words count", () => {
+	const machine = [
+		noteRequest("/x/rollover/s.md", false, "neurastream on disk is 0.1.21, this session runs 0.1.19"),
+		buildHandoff({ generated: "=== generated state", note: "Do not stop; no holds.", previousSessionFile: "/x/previous.jsonl", ownerMessage: "continue" }),
+		buildHandoff({ generated: "=== generated state", note: "Do not stop; no holds.", previousSessionFile: "/x/previous.jsonl", ownerMessage: "no, that is wrong" }),
+	];
+	const main = run({
+		id: "20261023-main",
+		kind: "main",
+		lastWriteAt: NOW - 100,
+		messages: machine.map(text => ({ role: "user", cost: 0, text: JSON.stringify([{ type: "text", text }]) })),
+	});
+	const patterns = ["\\bno\\b", "wrong", "stop"].map((p) => new RegExp(p, "i"));
+	expect(m4([main], cur, patterns)).toEqual({ users: 3, corrections: 1, questions: 0 });
 });
 
 test("M5 counts BLOCK lines in the window, groups reasons, and counts in-window false alarms", () => {

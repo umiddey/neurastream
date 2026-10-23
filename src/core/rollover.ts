@@ -64,10 +64,15 @@ export interface HandoffInput {
 	ownerMessage: string;
 }
 
+/** Prefixes of the machine-written messages: the builders write them, ownerText reads them. */
+const NOTE_REQUEST_PREFIX = "Session rollover:";
+const HANDOFF_PREFIX = "Previous session file:";
+const OWNER_MARK = "Owner's message:";
+
 /** The first user message of the new session: header, Main's note, generated state, owner message. */
 export function buildHandoff(p: HandoffInput): string {
 	return [
-		`Previous session file: ${p.previousSessionFile}. Its full history stays there; this session continues from the handoff below.`,
+		`${HANDOFF_PREFIX} ${p.previousSessionFile}. Its full history stays there; this session continues from the handoff below.`,
 		"",
 		"## Main's handoff note (verbatim)",
 		p.note.trimEnd(),
@@ -75,9 +80,23 @@ export function buildHandoff(p: HandoffInput): string {
 		"## Generated state (main-start)",
 		p.generated.trimEnd(),
 		"",
-		"Owner's message:",
+		OWNER_MARK,
 		p.ownerMessage,
 	].join("\n");
+}
+
+/**
+ * The owner's own words in a user prompt, or undefined for a machine prompt: a guard continuation, the
+ * rollover note request, or a handoff without its owner marker. A handoff yields only its owner message.
+ */
+export function ownerText(prompt: string): string | undefined {
+	const t = prompt.trimStart();
+	if (t.startsWith("main-guard:") || t.startsWith(NOTE_REQUEST_PREFIX)) return undefined;
+	if (t.startsWith(HANDOFF_PREFIX)) {
+		const at = prompt.lastIndexOf(OWNER_MARK);
+		return at < 0 ? undefined : prompt.slice(at + OWNER_MARK.length).trim();
+	}
+	return prompt;
 }
 
 /** The owner-holds part of the generated state: each WAITING on owner line verbatim, or none. */
@@ -89,8 +108,8 @@ export function holdsBlock(holds: readonly string[]): string {
 export function noteRequest(path: string, auto = false, reason = ""): string {
 	return [
 		reason
-			? `Session rollover: a new neurastream version is installed (${reason}).`
-			: "Session rollover: this session has grown past rollover.max_session_mb.",
+			? `${NOTE_REQUEST_PREFIX} a new neurastream version is installed (${reason}).`
+			: `${NOTE_REQUEST_PREFIX} this session has grown past rollover.max_session_mb.`,
 		`Write a handoff note to ${path} (overwrite it). Cover the work in progress and its state, the decisions made and why, the next step, and the files involved.`,
 		"Do not list holds or owner blockers in the note; they come from the plans' WAITING on owner lines.",
 		auto

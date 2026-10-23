@@ -3,10 +3,11 @@
 
 import { describe, expect, test } from "bun:test";
 import { loadConfig } from "../src/core/config.ts";
-import { buildHandoff, holdsBlock, MAX_NOTE_AGE_MS, noteRequest, notePath, rolloverState, spawnRefusal } from "../src/core/rollover.ts";
+import { buildHandoff, holdsBlock, MAX_NOTE_AGE_MS, noteRequest, notePath, ownerText, rolloverState, spawnRefusal } from "../src/core/rollover.ts";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ownerCorrection } from "../src/core/incident-detectors.ts";
 
 const MB = 1024 * 1024;
 const CROSSED = 1_000_000;
@@ -206,5 +207,42 @@ describe("rollover config", () => {
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
+	});
+});
+
+// P2 (I-20261023-14, I-20261023-11): machine prompts are not owner corrections.
+describe("ownerText", () => {
+	const PATTERNS = loadConfig({ home: join(tmpdir(), "nsar-owner-text-none"), env: {} }).metrics.correction_patterns.map(p => new RegExp(p, "i"));
+	const NOW = Date.parse("2026-10-23T10:00:00Z");
+	const handoff = (note: string, owner: string) =>
+		buildHandoff({ generated: "=== generated state", note, previousSessionFile: "/x/previous.jsonl", ownerMessage: owner });
+
+	test("the rollover note request gives no D4 finding and is not an owner message", () => {
+		const note = noteRequest("/x/rollover/s.md", false, "neurastream on disk is 0.1.21, this session runs 0.1.19");
+		expect(ownerText(note)).toBeUndefined();
+		expect(ownerCorrection(note, PATTERNS, NOW)).toBeNull();
+	});
+
+	test("a handoff whose note has 'no' and 'stop' but whose owner message is 'continue' is not a correction", () => {
+		const text = ownerText(handoff("Do not stop; no holds.", "continue"));
+		expect(text).toBe("continue");
+		expect(ownerCorrection(text ?? "", PATTERNS, NOW)).toBeNull();
+	});
+
+	test("a handoff whose owner message is a correction still yields one", () => {
+		expect(ownerCorrection(ownerText(handoff("Do not stop; no holds.", "no, that is wrong")) ?? "", PATTERNS, NOW)).not.toBeNull();
+	});
+
+	test("a plain owner message is returned unchanged and still counts", () => {
+		expect(ownerText("stop that")).toBe("stop that");
+		expect(ownerCorrection(ownerText("stop that") ?? "", PATTERNS, NOW)).not.toBeNull();
+	});
+
+	test("a main-guard continuation is not an owner message", () => {
+		expect(ownerText("main-guard: the queue still has a ticked phase; continue.")).toBeUndefined();
+	});
+
+	test("the owner message is taken after the last 'Owner's message:' marker, even if the owner typed the marker", () => {
+		expect(ownerText(handoff("Do not stop.", "Owner's message: no"))).toBe("no");
 	});
 });
