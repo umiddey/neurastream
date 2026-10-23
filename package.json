@@ -1,6 +1,6 @@
 {
   "name": "neurastream",
-  "version": "0.1.16",
+  "version": "0.1.17",
   "description": "Guardrails for running many AI coding agents at once: plan queue, blockers, call budgets, provider caps, scoring, merge-verified close.",
   "keywords": ["ai-agents", "coding-agents", "orchestration", "guardrails", "omp", "bun", "cli"],
   "homepage": "https://github.com/umiddey/neurastream#readme",
