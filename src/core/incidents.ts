@@ -223,15 +223,17 @@ export function dismissIncident(cfg: Config, id: string, why: string): string | 
 
 /**
  * Records that an incident's fix shipped: the queue writes this when it closes a plan citing
- * `INCIDENT <id>` (plan P5), so the guards stop pushing a bug whose fix just landed. Refusals
- * mirror `incident plan`; the caller logs them and closes anyway.
+ * `INCIDENT <id>` (plan P5), so the guards stop pushing a bug whose fix just landed. A plan record
+ * (the normal path: planned, then fixed) may be closed out; a dismissed or fixed incident is final.
+ * The caller logs refusals and closes anyway.
  */
 export function fixedIncident(cfg: Config, id: string, plan: string, now = nowSec()): string | null {
 	const file = incidentsFile(cfg);
 	const store = readStore(file);
 	if (!store.incidents.some(i => i.id === id)) return `unknown incident ${id}`;
 	const res = store.resolutions.filter(r => r.id === id).at(-1);
-	if (res) return `incident ${id} already has a ${res.type} record`;
+	// A plan record is the normal path (planned, then fixed); dismissed or fixed is final.
+	if (res && res.type !== "plan") return `incident ${id} already has a ${res.type} record`;
 	mkdirSync(dirname(file), { recursive: true });
 	appendFileSync(file, `${JSON.stringify({ type: "fixed", id, plan, ts: now })}\n`);
 	return null;

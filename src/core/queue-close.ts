@@ -310,10 +310,12 @@ export function queueClose(args: string[], cfg: Config): number {
 	// resolved) is logged into the close log and never fails the close.
 	if (!cancelling) {
 		const recorded: string[] = [];
-		for (const m of plan.text.matchAll(/\bINCIDENT\s+(I-\d{8}-\d+)\b/g)) {
-			const why = fixedIncident(cfg, m[1]!, file);
-			if (why) result(`queue-close: not recording fixed for ${m[1]}: ${why}`);
-			else recorded.push(m[1]!);
+		// A plan may cite one incident several times; record it once so the second citation is not a refusal.
+		const ids = new Set([...plan.text.matchAll(/\bINCIDENT\s+(I-\d{8}-\d+)\b/g)].map(m => m[1]!));
+		for (const id of ids) {
+			const why = fixedIncident(cfg, id, file);
+			if (why) result(`queue-close: not recording fixed for ${id}: ${why}`);
+			else recorded.push(id);
 		}
 		if (recorded.length) console.log(`queue-close: recorded fixed for ${recorded.join(", ")}`);
 	}

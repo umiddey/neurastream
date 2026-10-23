@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { strftime } from "../src/core/clock.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
-import { addIncident, readIncidents } from "../src/core/incidents.ts";
+import { addIncident, planIncident, readIncidents } from "../src/core/incidents.ts";
 import { refreshQueuePaths } from "../src/core/queue/lib.ts";
 import { queueClose } from "../src/core/queue-close.ts";
 
@@ -98,6 +98,70 @@ test("closing a plan that cites INCIDENT <id> records fixed for each id", () => 
 	const res = v?.resolution;
 	expect(res).toMatchObject({ type: "fixed", id: ID, plan });
 	expect(res?.type === "fixed" && typeof res.ts === "number" && res.plan === plan).toBe(true);
+});
+
+/** A plan that closes and cites the incident id `cites` times, like a plan that names it in several places. */
+function closedPlan(id: string, cites: number): string {
+	return [
+		"# plan",
+		"",
+		"## Goal",
+		`Fix ${id}.`,
+		"",
+		"## Forbidden",
+		"- never push",
+		"",
+		"## Blockers",
+		"- no-push",
+		"",
+		"## Phases",
+		"- [x] P1 fix — verify: `true`",
+		"",
+		"## Done check",
+		"`true`",
+		"",
+		"## Code read by Main",
+		"- `src/core/incidents.ts`",
+		"",
+		"## Progress",
+		"Status: complete",
+		"- done.",
+		"",
+		...Array.from({ length: cites }, () => `INCIDENT ${id}`),
+		"",
+	].join("\n");
+}
+
+test("an incident with a plan record becomes FIXED when a plan citing it closes; a later plan is refused once", () => {
+	const cfg = seed();
+	writeFileSync(join(TOY, "INDEX.md"), "docs/plans/20261021_0900_plan-a.md\ndocs/plans/20261021_0930_plan-b.md\n");
+	const { incident } = addIncident(cfg, { source: "realtime", kind: "ledger-contradiction", summary: "ledger says RUNNING for a second finished agent" }, NOW);
+	const id = incident.id;
+	const planA = join(TOY, "docs/plans/20261021_0900_plan-a.md");
+	const planB = join(TOY, "docs/plans/20261021_0930_plan-b.md");
+	writeFileSync(planA, closedPlan(id, 2));
+	writeFileSync(planB, closedPlan(id, 1));
+	expect(planIncident(cfg, id, planA)).toBeNull();
+	expect(readIncidents(cfg).find(i => i.id === id)?.resolution?.type).toBe("plan");
+
+	const errors: string[] = [];
+	const logError = console.error;
+	console.error = (...args: unknown[]) => {
+		errors.push(args.map(String).join(" "));
+		logError(...args);
+	};
+	try {
+		expect(queueClose([planA], cfg)).toBe(0);
+		expect(queueClose([planB], cfg)).toBe(0);
+	} finally {
+		console.error = logError;
+	}
+	const res = readIncidents(cfg).find(i => i.id === id)?.resolution;
+	expect(res).toMatchObject({ type: "fixed", id, plan: planA });
+	// plan-a cites the id twice: one record, no refusal. plan-b is refused once, the record stays plan-a's.
+	expect(errors.filter(l => l.includes("not recording fixed"))).toEqual([
+		`queue-close: not recording fixed for ${id}: incident ${id} already has a fixed record`,
+	]);
 });
 
 afterAll(() => {
