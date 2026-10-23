@@ -1,8 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.1.26
 ### Fixed
 - quota-reset prints the local zone abbreviation from `date` (CEST, CET, CST) like the original glm-reset, where Intl's US-only short names printed GMT+2 on non-US hosts; CI re-runs the golden and quota-reset tests under Europe/Berlin on both OSes.
+- `neurastream incident plan` finds the repo of a plan at any depth (it walks up to the folder holding INDEX.md), so plans under `docs/plans/immediate/` are accepted instead of refused as "not listed in …/docs/INDEX.md".
 
 ## 0.1.25
 ### Fixed
