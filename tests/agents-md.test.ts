@@ -10,6 +10,8 @@ import { adapterLiveFiles } from "../src/adapters/omp/doctor.ts";
 import { BEGIN_MARK, END_MARK, blockState, renderBlock, upsertBlock } from "../src/core/agents-md.ts";
 import { loadConfig } from "../src/core/config.ts";
 import { initHome } from "../src/cli/init.ts";
+import { checkInject } from "../src/core/guards.ts";
+import { applyQueueEnv } from "../src/core/queue/env.ts";
 
 const REPO = join(import.meta.dir, "..");
 const HOME = "/tmp/neurastream-home-agentsmd";
@@ -149,4 +151,23 @@ test("a deleted linked bin is reported missing, not foreign", () => {
 	expect(ran.stdout).toContain(`missing: ${bin.live}`);
 	expect(ran.stdout).not.toContain("foreign:");
 	expect(ran.status).toBe(1);
+});
+// P3: the edit limit shown to Main comes from config, never from template text.
+const P3_HOME = "/tmp/neurastream-home-agentsmd-p3";
+rmSync(P3_HOME, { recursive: true, force: true });
+const p3Base = loadConfig({ home: P3_HOME, env: {} });
+mkdirSync(p3Base.paths.queue_state, { recursive: true });
+mkdirSync(p3Base.paths.agent_dir, { recursive: true });
+applyQueueEnv(p3Base);
+const tuned = { ...p3Base, guards: { ...p3Base.guards, main_edit_limit: 7, main_window_min: 20 } };
+
+test("the main prompt states the edit limit from config", () => {
+	const d = checkInject({ inject: "hello", agent: "main" }, tuned);
+	expect(d.inject).toContain("at most 7 times per 20-minute window");
+	expect(d.inject).not.toContain("at most 5 times");
+});
+
+test("a stop continuation does not repeat the edit-limit line", () => {
+	const d = checkInject({ inject: "main-guard: keep going", agent: "main" }, tuned);
+	expect(d.inject).not.toContain("at most");
 });

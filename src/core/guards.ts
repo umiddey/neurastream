@@ -572,10 +572,11 @@ export function checkInject(e: InjectEvent, cfg: Config): Decision {
 	const cancel = continuation ? "" : flagCancel(e.inject, cfg);
 	const incidents = openIncidentList(cfg);
 	const incidentText = incidents.length ? `\n${incidents.map(incidentLine).join("\n")}` : "";
+	const editLimit = continuation ? "" : `\nmain-guard: Main may change project files at most ${cfg.guards.main_edit_limit} times per ${cfg.guards.main_window_min}-minute window; then delegate.`;
 	return {
 		allow: true,
 		reason: "",
-		inject: `${summary}\n(main-guard: read ${q.INDEX} and the listed repo INDEX.md files are summarised above; work the open plans, close finished ones with queue-close.)${cancel}${incidentText}`,
+		inject: `${summary}\n(main-guard: read ${q.INDEX} and the listed repo INDEX.md files are summarised above; work the open plans, close finished ones with queue-close.)${editLimit}${cancel}${incidentText}`,
 		...(continuation ? {} : { state: { callsSinceStop: 0, idleStops: 0 } }),
 	};
 }
