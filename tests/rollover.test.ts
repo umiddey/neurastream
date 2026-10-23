@@ -160,10 +160,14 @@ describe("noteRequest", () => {
 		expect(text).toContain("As soon as this note is written and no own jobs run, this session restarts into a fresh one that starts from this note verbatim plus the generated main-start state.");
 		expect(text).not.toContain("When the owner's next message arrives");
 	});
-	test("a stale install names the version on disk and the one running", () => {
+	test("a stale install names both versions and does not claim the size limit", () => {
 		const text = noteRequest("/s/n.md", false, "neurastream on disk is 0.2.0, this session runs 0.1.13");
-		expect(text).toContain("neurastream on disk is 0.2.0, this session runs 0.1.13");
+		expect(text).toContain("Session rollover: a new neurastream version is installed (neurastream on disk is 0.2.0, this session runs 0.1.13).");
+		expect(text).not.toContain("max_session_mb");
 		expect(text).toContain("Write a handoff note to /s/n.md (overwrite it).");
+	});
+	test("without a reason the size limit is the stated cause", () => {
+		expect(noteRequest("/s/n.md")).toContain("Session rollover: this session has grown past rollover.max_session_mb.");
 	});
 });
 
