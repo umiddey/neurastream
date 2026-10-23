@@ -360,6 +360,28 @@ function packageOpTarget(code: string): string | null {
 	return packageOpMatcher?.(code) ?? null;
 }
 
+// Heredoc bodies are data, not commands: a `<<WORD` body (up to a line that is
+// exactly WORD; leading tabs are ignored for `<<-`) is dropped from the text the
+// redirect and command-word scans read. The line that opens the heredoc stays,
+// so its own redirects (`cat <<EOF > out.txt`) still count. An unterminated
+// heredoc is kept as command text: failing open would hide real writes.
+const HEREDOC_START = /(?<!<)<<(-?)\s*\\?(["']?)([A-Za-z_][A-Za-z0-9_]*)\2/g;
+function withoutHeredocBodies(code: string): string {
+	const lines = code.split("\n");
+	const keep: string[] = [];
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i] ?? "";
+		keep.push(line);
+		for (const m of line.matchAll(HEREDOC_START)) {
+			const word = m[3] ?? "";
+			const dash = m[1] === "-";
+			const end = lines.findIndex((l, j) => j > i && (dash ? l.replace(/^\t+/, "") : l) === word);
+			if (end > i) i = end;
+		}
+	}
+	return keep.join("\n");
+}
+
 export function writeTargets(toolName: string, input: Record<string, unknown>, cwd: string): string[] {
 	const out = new Set<string>();
 	const add = (raw: string, from: string) => {
@@ -393,14 +415,18 @@ export function writeTargets(toolName: string, input: Record<string, unknown>, c
 	const pkgOp = packageOpTarget(code);
 	if (!MUTATING.test(code) && !pkgOp) return [];
 	let dir = typeof input?.cwd === "string" ? path.resolve(cwd, expandHome(input.cwd)) : cwd;
-	for (const seg of code.split(/&&|\|\||;|\n|\|/)) {
+	for (const seg of withoutHeredocBodies(code).split(/&&|\|\||;|\n|\|/)) {
 		const s = seg.trim();
 		const cd = s.match(/^cd\s+(\S+)/);
 		if (cd) {
 			dir = path.resolve(dir, expandHome((cd[1] ?? "").replace(/^["']|["']$/g, "")));
 			continue;
 		}
-		for (const m of s.matchAll(/(?:^|[^0-9&>=\-])>{1,2}\s*([^\s&|;)<>]+)/g)) add(m[1] ?? "", dir);
+		for (const m of s.matchAll(/(?:^|[^0-9&>=\-])>{1,2}\s*([^\s&|;)<>]+)/g)) {
+			// A target with no letter, digit, `.` or `/` (`>,`) is prose, not a file.
+			const target = m[1] ?? "";
+			if (/[\p{L}\p{N}./]/u.test(target)) add(target, dir);
+		}
 		const words = s.split(/\s+/).filter(Boolean);
 		const cmd = words[0]?.replace(/^.*\//, "") ?? "";
 		const args = words.slice(1).filter(w => !w.startsWith("-"));
