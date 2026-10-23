@@ -110,21 +110,25 @@ export function progressBody(text: string): string {
 
 export type ProgressTrim = { body: string; moved: string; count: number };
 
-// Entries start at a top-level "- " line. The pointer line that a trim leaves behind is not an entry.
+// Entries start at a top-level "- " line. The pointer line that a trim leaves behind is not an entry,
+// and Main-only lines (status, owner parking/cancel, cancelled-list clearance) never move to the archive.
 const POINTER_PREFIX = "- Older Progress entries:";
+const MAIN_ONLY_LINE = /^\s*(?:[-*]\s+)?(Status:|WAITING on owner:|Cancelled by owner:|False positive:)/;
 
 /** Keep the first `keep` entries (the file lists them newest first) and move the rest. Pure. */
 export function trimProgressBody(body: string, keep: number, pointer: string): ProgressTrim | undefined {
 	const lines = body.split("\n").filter(l => !l.startsWith(POINTER_PREFIX));
-	const starts = lines.flatMap((l, i) => (/^- /.test(l) ? [i] : []));
+	const starts = lines.flatMap((l, i) => (/^- /.test(l) && !MAIN_ONLY_LINE.test(l) ? [i] : []));
 	if (starts.length <= keep) return undefined;
 	const cut = starts[keep];
 	const tail = lines.slice(cut);
-	let end = tail.length;
-	while (end > 0 && tail[end - 1] === "") end--;
+	const pinned = tail.filter(l => MAIN_ONLY_LINE.test(l));
+	const moved = tail.filter(l => !MAIN_ONLY_LINE.test(l));
+	let end = moved.length;
+	while (end > 0 && moved[end - 1] === "") end--;
 	return {
-		body: [...lines.slice(0, cut), pointer, ...tail.slice(end)].join("\n"),
-		moved: tail.slice(0, end).join("\n"),
+		body: [...lines.slice(0, cut), ...pinned, pointer, ...moved.slice(end)].join("\n"),
+		moved: moved.slice(0, end).join("\n"),
 		count: starts.length - keep,
 	};
 }

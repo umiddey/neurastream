@@ -59,6 +59,16 @@ describe("trimProgressBody (pure)", () => {
 		const body = q.progressBody(planText(all9.slice(0, 6)));
 		expect(q.trimProgressBody(body, 6, POINTER)).toBeUndefined();
 	});
+
+	test("a Main-only line among the older entries stays in the plan and is not counted as an entry", () => {
+		const withHold = [...all9.slice(0, 7), "- WAITING on owner: prod access", "WAITING on owner: second hold", ...all9.slice(7)];
+		const res = q.trimProgressBody(q.progressBody(planText(withHold)), 6, POINTER);
+		expect(res?.count).toBe(3);
+		expect(res?.body).toContain("- WAITING on owner: prod access");
+		expect(res?.body).toContain("WAITING on owner: second hold");
+		expect(res?.moved).not.toContain("WAITING on owner");
+		expect(q.statusOf(`## Progress\n${res?.body ?? ""}`)).toBe("open");
+	});
 });
 
 describe("trimPlanProgress (IO)", () => {
