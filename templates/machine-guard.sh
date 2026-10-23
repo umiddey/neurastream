@@ -10,6 +10,8 @@ IDLE_STATE=${HEAVY_IDLE_STATE:?}
 LOCK=${HEAVY_LOCK:?}
 DISK_PATH=${DISK_PATH:-$HOME}
 HEAVY=${HEAVY_RUN:?}
+HEAVY_STATUS=${HEAVY_STATUS:?}
+HEAVY_MAIN=${HEAVY_MAIN:?}
 UNAME=$(uname -s)
 
 # Probes. Only these small functions branch on the OS: Linux keeps /proc, GNU df and procps ps;
@@ -61,7 +63,7 @@ tree_ticks() {
 
 lock_check() {
   local owner pid now ticks spid sts sticks
-  if [ "$("$HEAVY" --status 2>/dev/null)" = "free" ]; then rm -f "$IDLE_STATE"; return; fi
+  if [ "$("$HEAVY_STATUS" "$HEAVY_MAIN" heavy-run --status 2>/dev/null)" = "free" ]; then rm -f "$IDLE_STATE"; return; fi
   owner=$(cat "${HEAVY_OWNER:?}" 2>/dev/null)
   pid=$(sed -nE 's/.*\| pid ([0-9]+).*/\1/p' <<<"$owner")
   [ -n "$pid" ] || { ALERTS+=("heavy-lock busy but owner file empty: find holder with fuser $LOCK"); return; }

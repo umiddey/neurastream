@@ -26,6 +26,8 @@ test.skipIf(process.platform !== "darwin")("machine-guard snapshot runs on macOS
       HEAVY_LOCK: join(dir, "lock"),
       HEAVY_OWNER: owner,
       HEAVY_IDLE_STATE: join(dir, "idle-state"),
+      HEAVY_STATUS: process.execPath,
+      HEAVY_MAIN: join(import.meta.dir, "..", "src", "cli", "main.ts"),
     },
   });
   expect(r.stderr).toBe("");
