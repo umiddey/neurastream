@@ -8,6 +8,7 @@ import { join } from "node:path";
 import type { Config } from "./config.ts";
 import type { Run, RunSource } from "./adapter.ts";
 import { readEvents } from "./agent-score.ts";
+import { ownerText } from "./rollover.ts";
 
 export type Ev = Record<string, unknown>;
 
@@ -199,7 +200,9 @@ export function m4(runs: Run[], w: Window, patterns: RegExp[]): M4 {
 				const text = blocks(m.text)
 					.map((b) => b.text)
 					.join("\n");
-				if (patterns.some((p) => p.test(text))) out.corrections++;
+				// Machine prompts (rollover note request, handoff note text) are not owner corrections.
+				const own = ownerText(text);
+				if (own !== undefined && patterns.some((p) => p.test(own))) out.corrections++;
 			} else if (m.role === "assistant") {
 				const last = blocks(m.text)
 					.filter((b) => b.type === "text")

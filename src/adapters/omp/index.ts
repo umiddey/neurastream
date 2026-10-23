@@ -27,7 +27,7 @@ import { checkInject, checkPlanEdit, checkStop, checkTool, MAIN_PLAN_FILE, recor
 import { applyQueueEnv } from "../../core/queue/env.ts";
 import { mainStartText, runDailyCheck } from "../../core/main-start.ts";
 import { readBlocks } from "../../core/metrics.ts";
-import { buildHandoff, holdsBlock, notePath, noteRequest, relaunchPath, rolloverState, spawnRefusal, type RolloverState } from "../../core/rollover.ts";
+import { buildHandoff, holdsBlock, notePath, noteRequest, ownerText, relaunchPath, rolloverState, spawnRefusal, type RolloverState } from "../../core/rollover.ts";
 import { defaultCompletedResults, defaultRunSource } from "./sessions.ts";
 import * as q from "../../core/queue/lib.ts";
 // Registers the plugin-command matcher into core's writeTargets (side effect).
@@ -306,7 +306,8 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		// A turn the harness starts from the guard's own stop continuation is not an owner
 		// message: D4 (owner-correction) only sees real prompts; D1/D3 run either way.
 		const prompt = asString(asRecord(event).prompt);
-		mainDetectors(cfg, { prompt: prompt.trimStart().startsWith("main-guard:") ? undefined : prompt });
+		// Machine prompts (guard continuation, rollover note request, handoff note) are not owner messages.
+		mainDetectors(cfg, { prompt: ownerText(prompt) });
 		return {
 			message: {
 				customType: "main-guard.queue",
