@@ -31,9 +31,12 @@ function lint(path: string, cfg: Config): { errs: string[]; warns: string[] } {
 	const heavy = /pytest|vitest|playwright|run-raw|run-batch|full suite|\bsuite\b/.test(low);
 	if (heavy) need(text.includes(cfg.brief.heavy_marker), `runs tests/suites but never names ${cfg.brief.heavy_path}`);
 
-	const vitestLines = low.split(/\r?\n/).filter(l => l.includes("vitest") && !/not needed|no vitest/.test(l));
-	if (vitestLines.length && /gateforge|witness|\bgf-/i.test(first)) {
-		need(low.includes("typecheck"), "Gateforge green = vitest exit 0 AND `npm run typecheck` exit 0: typecheck missing");
+	// Repo-specific rules are config-driven (brief.repo_rules); the shipped default list is empty.
+	for (const rule of cfg.brief.repo_rules) {
+		if (!new RegExp(rule.match, "i").test(low)) continue;
+		if (rule.first && !new RegExp(rule.first, "i").test(first)) continue;
+		if (rule.unless && new RegExp(rule.unless, "i").test(first)) continue;
+		need(new RegExp(rule.require, "i").test(low), rule.message);
 	}
 
 	const planOnly = /plan only|read-only review|CI fix|\bdelete\b/i.test(first);
@@ -48,21 +51,6 @@ function lint(path: string, cfg: Config): { errs: string[]; warns: string[] } {
 		} else if (!readFileSync(m[1]!, "utf8").toLowerCase().includes("satisfied")) {
 			errs.push(`Probe log shows no 'satisfied' claim: ${m[1]}`);
 		}
-	}
-
-	if (
-		/aetherios-property-management|pm-pr01|\bPR01\b|contractor.portal|cp-/.test(text) &&
-		!planOnly &&
-		/test-map|obligation|gateforge check|coverage/.test(low)
-	) {
-		need(
-			/^Gate before:\s*\d+\s+missing/im.test(text),
-			"PM/CP coverage brief without 'Gate before: <N> missing' line from `gateforge check` (green tests are not progress)",
-		);
-		need(
-			/gate missing.*before.*after|before\s*->\s*after/.test(low),
-			"report must state gate missing before->after; a round that does not lower it stops",
-		);
 	}
 
 	const paths = new Set<string>();

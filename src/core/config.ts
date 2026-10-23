@@ -67,6 +67,10 @@ export interface Config {
 		path_prefixes: string[];
 		method_read: string;
 		heavy_path: string;
+		/** Repo-specific brief rules; the shipped default list is empty. A rule fires when `match`
+		 *  (regex on the whole brief) hits and the body lacks `require`; optional `first`/`unless`
+		 *  gate the rule on the plan's title line. */
+		repo_rules: { match: string; require: string; message: string; first?: string; unless?: string }[];
 	};
 	oc: { model_prefix: string; tail_lines: number; tail_chars: number };
 	wip: {
@@ -282,6 +286,18 @@ function check(cfg: Config): void {
 		} catch {
 			throw new ConfigError(`metrics.correction_patterns: not a valid regex: ${p}`);
 		}
+	}
+	for (const rule of cfg.brief.repo_rules) {
+		for (const key of ["match", "require", "first", "unless"] as const) {
+			const pattern = rule[key];
+			if (pattern === undefined) continue;
+			try {
+				new RegExp(pattern, "i");
+			} catch {
+				throw new ConfigError(`brief.repo_rules.${key}: not a valid regex: ${pattern}`);
+			}
+		}
+		if (!rule.message) throw new ConfigError("brief.repo_rules.message must be a non-empty string");
 	}
 	for (const [key, value] of Object.entries(cfg.paths)) {
 		if (key === "work_roots") {

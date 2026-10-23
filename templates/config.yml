@@ -58,6 +58,12 @@ brief:
   path_prefixes: ["$HOME/"]
   method_read: "$HOME/projects/opus-implementer-method.md"
   heavy_path: "$HOME/.local/bin/heavy-run.sh"
+  repo_rules: []   # optional repo-specific lint rules; each fires when `match` (regex, whole brief) hits and the body lacks `require`:
+  # - match: 'legacy-api'            # trigger anywhere in the brief (case-insensitive)
+  #   first: 'Refactor'              # optional: also require this on the title line
+  #   unless: 'plan only|read-only'  # optional: skip when the title matches this
+  #   require: 'regression test'     # the brief must contain this when the rule fires
+  #   message: 'legacy-api work must name its regression test'
 
 oc:
   model_prefix: "opencode/"
