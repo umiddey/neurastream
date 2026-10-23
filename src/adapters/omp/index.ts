@@ -17,8 +17,7 @@
 
 import { execFileSync, spawn } from "node:child_process";
 import { appendFileSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import type { Decision } from "../../core/adapter.ts";
 import { loadConfig, type Config } from "../../core/config.ts";
 import { nowSec } from "../../core/clock.ts";
@@ -29,6 +28,7 @@ import { mainStartText, runDailyCheck } from "../../core/main-start.ts";
 import { readBlocks } from "../../core/metrics.ts";
 import { buildHandoff, holdsBlock, notePath, noteRequest, ownerText, relaunchPath, rolloverState, spawnRefusal, type RolloverState } from "../../core/rollover.ts";
 import { defaultCompletedResults, defaultRunSource } from "./sessions.ts";
+import { packageJsonPath, packageVersion } from "./package-root.ts";
 import * as q from "../../core/queue/lib.ts";
 // Registers the plugin-command matcher into core's writeTargets (side effect).
 import "./package-ops.ts";
@@ -85,21 +85,7 @@ export function toExtensionResult(d: Decision): Record<string, unknown> {
 // A push or merge by Main may have landed a completed plan: try closing right away.
 const PUSH_MERGE = /\bgit\b[^\n;|&]*\bpush\b|\b(glab\s+mr|gh\s+pr)\s+merge\b/;
 
-// The installed copy this plugin comes from (computed as in doctor.ts) and the package.json whose
-// version decides staleness. omp never reloads a plugin, so the version is read once at adapter
-// start (the code actually running) and re-read at every rollover check; a different or unreadable
-// version means the running plugin is stale. NEURASTREAM_PACKAGE_JSON overrides the path (tests
-// and the sandbox smoke point it at a copy whose version changes mid-run), like QUEUE_CLOSE_BIN.
-const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
-
-function packageVersion(packageJson: string): string | null {
-	try {
-		const version = asRecord(JSON.parse(readFileSync(packageJson, "utf8"))).version;
-		return typeof version === "string" ? version : null;
-	} catch {
-		return null;
-	}
-}
+// The installed package and its version: see ./package-root.ts.
 
 export function adapterLog(cfg: Config, line: string): void {
 	try {
@@ -458,7 +444,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	// once. The size and the installed version are re-read at every turn end and tool result; the
 	// note request goes out once per session file and note state.
 	// The version this process loaded at start: the plugin code that is actually running.
-	const loadedVersion = packageVersion(process.env.NEURASTREAM_PACKAGE_JSON ?? join(PACKAGE_ROOT, "package.json"));
+	const loadedVersion = packageVersion(packageJsonPath());
 	let crossed: { file: string; atMs: number } | null = null;
 	// The note request already sent, keyed by session file + note mtime at send time ("none" when
 	// no note exists): a note that expires while jobs run falls back to need-note with a key no
@@ -471,7 +457,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		const bytes = sizeOf(c.sessionFile);
 		const maxMb = cfg.rollover.max_session_mb;
 		const noteMtimeMs = mtimeOf(notePath(c.sessionId));
-		const liveVersion = packageVersion(process.env.NEURASTREAM_PACKAGE_JSON ?? join(PACKAGE_ROOT, "package.json"));
+		const liveVersion = packageVersion(packageJsonPath());
 		const stale = liveVersion === null || loadedVersion === null || liveVersion !== loadedVersion;
 		if (stale) {
 			// Note freshness is measured against the crossing: a stale session counts as crossed

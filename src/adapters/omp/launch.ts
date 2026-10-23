@@ -12,6 +12,7 @@ import { applyQueueEnv } from "../../core/queue/env.ts";
 import * as q from "../../core/queue/lib.ts";
 import { buildHandoff, holdsBlock, relaunchPath } from "../../core/rollover.ts";
 import { adapterLog } from "./index.ts";
+import { PACKAGE_ROOT, packageJsonPath, packageVersion } from "./package-root.ts";
 import { defaultCompletedResults, defaultRunSource } from "./sessions.ts";
 
 /** The harness the launcher runs. Tests pass another path through LaunchOptions. */
@@ -80,40 +81,71 @@ interface RelaunchRequest {
 	draft: string;
 }
 
-/** Runs the harness until a run ends without a fresh relaunch request; returns the last run's code. */
+/**
+ * Runs the harness until a run ends without a fresh relaunch request; returns the last run's code.
+ * The launcher keeps the version it loaded. When the package on disk has another version (or either
+ * is unreadable) by the time a run leaves a request, that request goes to a fresh launcher started
+ * from the package on disk: the handoff is then built with the installed code, not the old code.
+ */
 export async function runMainLauncher(args: string[], cfg: Config, opts: LaunchOptions = {}): Promise<number> {
 	applyQueueEnv(cfg);
 	const harness = opts.harness ?? OMP_BIN;
 	const carried = carriedArgs(args);
+	const loaded = packageVersion(packageJsonPath());
+	// Set only in a fresh launcher the previous one started: its first step is the request that run left.
+	const handedOver = process.env.NEURASTREAM_RELAUNCH_SINCE;
+	delete process.env.NEURASTREAM_RELAUNCH_SINCE;
 	let runArgs = args;
+	const since = handedOver === undefined ? Number.NaN : Number(handedOver);
+	if (Number.isFinite(since)) {
+		const req = readRequest(since, cfg);
+		if (req !== null) {
+			rmSync(relaunchPath(), { force: true });
+			const message = await nextMessage(req, cfg);
+			if (message === null) return 1;
+			runArgs = [...carried, message];
+		}
+	}
 	for (;;) {
 		rmSync(relaunchPath(), { force: true });
 		const started = Date.now();
-		const code = await runChild(harness, runArgs);
-		const req = takeRequest(started, cfg);
+		const code = await runChild(harness, runArgs, { ...process.env, NEURASTREAM_MAIN_LAUNCHER: "1" });
+		const req = readRequest(started, cfg);
 		if (req === null) return code;
+		const installed = packageVersion(packageJsonPath());
+		const changed = loaded === null || installed === null || loaded !== installed;
+		if (changed && noteReadable(req.notePath)) {
+			adapterLog(cfg, `rollover: relaunch handed to a fresh launcher (${loaded ?? "unknown"} → ${installed ?? "unknown"})`);
+			return runChild(process.execPath, [join(PACKAGE_ROOT, "src", "cli", "main.ts"), "main", ...carried], {
+				...process.env,
+				NEURASTREAM_RELAUNCH_SINCE: String(started),
+			});
+		}
+		rmSync(relaunchPath(), { force: true });
 		const message = await nextMessage(req, cfg);
 		if (message === null) return code;
 		runArgs = [...carried, message];
 	}
 }
 
-function runChild(harness: string, args: string[]): Promise<number> {
+/** Runs a command with inherited stdio; resolves to its exit code (127 when it cannot start). */
+function runChild(cmd: string, args: string[], env: NodeJS.ProcessEnv): Promise<number> {
 	const { promise, resolve } = Promise.withResolvers<number>();
-	const child = spawn(harness, args, {
-		stdio: "inherit",
-		env: { ...process.env, NEURASTREAM_MAIN_LAUNCHER: "1" },
-	});
+	const child = spawn(cmd, args, { stdio: "inherit", env });
 	child.on("error", err => {
-		console.error(`neurastream main: cannot start ${harness}: ${err.message}`);
+		console.error(`neurastream main: cannot start ${cmd}: ${err.message}`);
 		resolve(127);
 	});
 	child.on("close", code => resolve(code ?? 1));
 	return promise;
 }
 
-/** The request the last run left behind, only if it was written during that run; consumed on read. */
-function takeRequest(since: number, cfg: Config): RelaunchRequest | null {
+/**
+ * The request the last run left behind, only if it was written during that run (mtime at or after
+ * `since`). Not consumed: the caller removes it once it has decided to use it. A request without the
+ * required fields is removed and logged; an unreadable one is logged and left in place.
+ */
+function readRequest(since: number, cfg: Config): RelaunchRequest | null {
 	const path = relaunchPath();
 	let mtimeMs: number;
 	try {
@@ -122,17 +154,28 @@ function takeRequest(since: number, cfg: Config): RelaunchRequest | null {
 		return null;
 	}
 	if (mtimeMs < since) return null;
+	let raw: Partial<RelaunchRequest>;
 	try {
-		const raw = JSON.parse(readFileSync(path, "utf8")) as Partial<RelaunchRequest>;
-		rmSync(path, { force: true });
-		if (typeof raw.previousSessionFile !== "string" || typeof raw.notePath !== "string") {
-			adapterLog(cfg, `rollover: relaunch request ignored, missing fields in ${path}`);
-			return null;
-		}
-		return { previousSessionFile: raw.previousSessionFile, notePath: raw.notePath, draft: raw.draft ?? "" };
+		raw = JSON.parse(readFileSync(path, "utf8")) as Partial<RelaunchRequest>;
 	} catch (err) {
 		adapterLog(cfg, `rollover: relaunch request ignored, unreadable ${path}: ${String(err)}`);
 		return null;
+	}
+	if (typeof raw.previousSessionFile !== "string" || typeof raw.notePath !== "string") {
+		rmSync(path, { force: true });
+		adapterLog(cfg, `rollover: relaunch request ignored, missing fields in ${path}`);
+		return null;
+	}
+	return { previousSessionFile: raw.previousSessionFile, notePath: raw.notePath, draft: raw.draft ?? "" };
+}
+
+/** Whether the handoff note can be read now: a launcher cannot relaunch without it. */
+function noteReadable(path: string): boolean {
+	try {
+		readFileSync(path, "utf8");
+		return true;
+	} catch {
+		return false;
 	}
 }
 
