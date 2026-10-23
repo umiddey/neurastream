@@ -7,6 +7,9 @@ const SLUG = /^[a-z0-9-]+$/;
 const ALLOWED_HEAD = /^## allowed\s*$/i;
 const BULLET = /^\s*[-*]\s+`([a-z0-9-]+)`/;
 
+/** A slug that is not a valid allow-list entry. The CLI maps it to exit 2. */
+export class InvalidSlugError extends Error {}
+
 /** Slugs that are not valid allow-list entries. */
 export function invalidSlugs(slugs: string[]): string[] {
 	return slugs.filter(s => !SLUG.test(s));
@@ -28,7 +31,7 @@ function allowedSection(lines: string[]): { head: number; end: number } | null {
  */
 export function allowAgents(file: string, slugs: string[]): { added: string[]; kept: string[] } {
 	const bad = invalidSlugs(slugs);
-	if (bad.length) throw new Error(`invalid slug: ${bad.join(", ")}`);
+	if (bad.length) throw new InvalidSlugError(`invalid slug: ${bad.join(", ")} (use a-z, 0-9 and -)`);
 	const wanted = [...new Set(slugs)];
 	const present = existsSync(file);
 	const listed = present ? allowedAgents(file) : new Set<string>();
@@ -59,7 +62,7 @@ export function allowAgents(file: string, slugs: string[]): { added: string[]; k
 /** Remove the bullet lines for these slugs from the `## Allowed` section; nothing else changes. */
 export function denyAgents(file: string, slugs: string[]): { removed: string[]; absent: string[] } {
 	const bad = invalidSlugs(slugs);
-	if (bad.length) throw new Error(`invalid slug: ${bad.join(", ")}`);
+	if (bad.length) throw new InvalidSlugError(`invalid slug: ${bad.join(", ")} (use a-z, 0-9 and -)`);
 	const wanted = [...new Set(slugs)];
 	if (!existsSync(file)) return { removed: [], absent: wanted };
 	const listed = allowedAgents(file);

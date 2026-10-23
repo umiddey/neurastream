@@ -1,10 +1,11 @@
 import { afterAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { installOmp } from "../src/adapters/omp/install.ts";
 import { loadConfig } from "../src/core/config.ts";
 import { initHome, treeHash } from "../src/cli/init.ts";
+import { allowedAgents } from "../src/core/queue/lib.ts";
 
 const HOME = "/tmp/neurastream-home-init";
 const NOOMP_HOME = "/tmp/neurastream-home-init-noomp";
@@ -175,4 +176,51 @@ test("packed templates contain no /home/ path", () => {
 	walk(extract);
 	expect(hits.filter(p => p.includes("/templates/"))).toEqual([]);
 	expect(hits).toEqual([]);
+});
+
+const REPO = resolve(import.meta.dir, "..");
+const ALLOW_HOME = "/tmp/neurastream-home-init-allow";
+
+afterAll(() => rmSync(ALLOW_HOME, { recursive: true, force: true }));
+
+test("init --allow slugs go through allowAgents, and a second run adds without removing", () => {
+	rmSync(ALLOW_HOME, { recursive: true, force: true });
+	initHome(ALLOW_HOME, { env: {}, allow: ["alpha", "beta-2"] });
+	const subagents = loadConfig({ home: ALLOW_HOME, env: {} }).paths.subagents;
+	expect([...allowedAgents(subagents)]).toEqual(["alpha", "beta-2"]);
+	initHome(ALLOW_HOME, { env: {}, allow: ["gamma"] });
+	expect([...allowedAgents(subagents)]).toEqual(["alpha", "beta-2", "gamma"]);
+	initHome(ALLOW_HOME, { env: {} });
+	expect([...allowedAgents(subagents)]).toEqual(["alpha", "beta-2", "gamma"]);
+});
+
+test("init ask: called once, its answer is applied, an empty answer adds nothing", () => {
+	rmSync(ALLOW_HOME, { recursive: true, force: true });
+	let asked = 0;
+	initHome(ALLOW_HOME, { env: {}, ask: () => { asked++; return "delta, epsilon"; } });
+	expect(asked).toBe(1);
+	const subagents = loadConfig({ home: ALLOW_HOME, env: {} }).paths.subagents;
+	expect([...allowedAgents(subagents)]).toEqual(["delta", "epsilon"]);
+	initHome(ALLOW_HOME, { env: {}, ask: () => "" });
+	expect([...allowedAgents(subagents)]).toEqual(["delta", "epsilon"]);
+});
+
+test("init with an invalid slug throws before anything is written", () => {
+	rmSync(ALLOW_HOME, { recursive: true, force: true });
+	expect(() => initHome(ALLOW_HOME, { env: {}, allow: ["ok", "Bad_Slug"] })).toThrow("invalid slug");
+	expect(existsSync(join(ALLOW_HOME, ".config/neurastream"))).toBe(false);
+});
+
+test("init without a TTY prints the hint while no subagent is allowed", () => {
+	rmSync(ALLOW_HOME, { recursive: true, force: true });
+	const r = spawnSync("bun", [join(REPO, "src/cli/main.ts"), "init"], { encoding: "utf8", env: { PATH: process.env.PATH ?? "", HOME: ALLOW_HOME } });
+	expect(r.status).toBe(0);
+	expect(r.stdout).toContain("no subagents allowed yet: neurastream agents allow <name>");
+});
+
+test("init --allow with an invalid slug exits 2", () => {
+	rmSync(ALLOW_HOME, { recursive: true, force: true });
+	const r = spawnSync("bun", [join(REPO, "src/cli/main.ts"), "init", "--allow", "Bad_Slug"], { encoding: "utf8", env: { PATH: process.env.PATH ?? "", HOME: ALLOW_HOME } });
+	expect(r.status).toBe(2);
+	expect(existsSync(join(ALLOW_HOME, ".config/neurastream"))).toBe(false);
 });

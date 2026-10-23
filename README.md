@@ -52,6 +52,8 @@ neurastream uninstall --purge   # the inverse: removes it all again
 
 `init` writes `~/.config/neurastream/config.yml` from the defaults in [docs/config.md](docs/config.md), plus an empty index, notes, the queue template, blocker wrappers, and the state directories. A second run changes nothing. `adapter install omp` links the extension (`~/.omp/agent/extensions` and `omp plugin link`). `doctor` exits 0 when the install matches the package. `uninstall` removes the installed bins, the plugin link, template-identical pins and the AGENTS.md block; `--purge` adds the config file and the agent-dir state. It prints the list first and refuses anything outside your HOME.
 
+`init` also sets the subagent allow-list (`notes/subagents.md`, the `## Allowed` section). `neurastream init --allow a,b` adds those slugs on the first run and on later runs, and never removes one. Without `--allow`, a terminal run asks once: `Subagents allowed to spawn (comma-separated names, empty = none):`; a blank answer, or no terminal, leaves the list as it is. While the list is empty, init prints `no subagents allowed yet: neurastream agents allow <name>`. `neurastream agents list|allow|deny` changes it later. A slug must match `[a-z0-9-]+`; a bad one exits 2 and writes nothing.
+
 The defaults are neutral (empty work roots, no backup remote, no default branch); set your own in `config.yml`. To try it without touching your real home, set `HOME=/tmp/neurastream-home-dev` first.
 
 Check the merged result:

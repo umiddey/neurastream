@@ -2,6 +2,8 @@
 
 Path: `~/.config/neurastream/config.yml`. `neurastream init` creates it. A second init does not change it.
 
+`neurastream init --allow a,b` (or the prompt on a terminal) adds slugs to the subagent allow-list in `paths.subagents`; it never removes one. See the README install section.
+
 The loader merges, in order (later wins): packaged defaults below, this file, then the env overrides listed below (`QUEUE_AGENT`, `QUEUE_INDEX`, `QUEUE_BLOCKERS`, `QUEUE_STATE`, `QUEUE_SUBAGENTS`, `QUEUE_CANCELLED`, `QUEUE_UNLOCK`, `MAIN_GUARD_LIMIT`, `MAIN_GUARD_WINDOW_MIN`, `MAIN_GUARD_ROOTS`, `MAIN_GUARD_LEDGER`, `MAIN_GUARD_LOG`, `PLAN_GUARD_LOG`, `WIP_LIMIT`, `WIP_DAYS`, `WIP_BACKUP_MAX_REPO_MB`, `WIP_SNAPSHOT_MAX_MB`, `LOAD_MAX`, `AVAIL_MIN_MB`, `DISK_MIN_GB`, `TMP_MAX_MB`, `IDLE_MAX_MIN`). Env exists so tests and the old command lines keep working. Code reads the merged object only.
 
 `src/core` does not embed a home directory, a branch, a provider, a model, a price, or a harness name. Those values live here. `~` and `$HOME` expand at load. An empty string means unset (the command requires the flag).
