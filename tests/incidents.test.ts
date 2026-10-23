@@ -32,6 +32,7 @@ const NOW3 = 1754000000;
 const NOW4 = 1756000000;
 const NOW5 = 1758000000;
 const NOW6 = 1761000000;
+const NOW7 = 1765000000;
 
 function seed(): Config {
 	for (const d of [join(AGENT, "notes"), join(TOY, "docs/plans"), join(HOME, ".config/neurastream"), QUEUE_STATE])
@@ -126,6 +127,23 @@ test("incident plan refusals: unknown id, missing file, missing citation, not in
 	const v = readIncidents(cfg).find(x => x.id === id);
 	expect(v?.resolution).toEqual({ type: "plan", id, plan: ok });
 	expect(planIncident(cfg, id, ok)).toBe(`incident ${id} already has a plan record`);
+});
+
+// Plans live at any depth under the repo (docs/plans/immediate/…): the repo is found by walking up
+// to the directory holding INDEX.md, not by a fixed number of dirname steps (which landed on docs/).
+test("incident plan accepts a plan nested under docs/plans/immediate/ listed in the root INDEX", () => {
+	const { incident } = addIncident(cfg, { source: "realtime", kind: "k", summary: "nested fix" }, NOW7);
+	const id = incident.id;
+	const nested = join(TOY, "docs/plans/immediate/20261206_nested.md");
+	mkdirSync(dirname(nested), { recursive: true });
+	writeFileSync(nested, `# fix\n\nINCIDENT ${id}\n`);
+	writeFileSync(
+		join(TOY, "INDEX.md"),
+		"docs/plans/20261020_fix.md\ndocs/plans/20261020_ok.md\ndocs/plans/immediate/20261206_nested.md\n",
+	);
+	expect(planIncident(cfg, id, nested)).toBe(null);
+	const v = readIncidents(cfg).find(x => x.id === id);
+	expect(v?.resolution).toEqual({ type: "plan", id, plan: nested });
 });
 
 test("incident dismiss: empty why refused, unknown id refused, a real why closes it", () => {
