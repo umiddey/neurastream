@@ -105,6 +105,7 @@ In both modes:
 - The running plugin going stale counts as over the threshold too: at every check the adapter re-reads the `package.json` it was loaded from, and a different (or unreadable) version asks for the handoff note even below `rollover.max_session_mb`, naming both versions (`NEURASTREAM_PACKAGE_JSON` overrides the path it watches).
 - While a rollover is pending (no fresh note, own jobs still running, or the handoff is ready and waiting for idle), Main cannot start new subagents: a `task` call is refused until the running jobs finish and the session rolls over.
 - While own jobs (subagents included) are still running, the switch waits: a rollover would cancel them.
+- While a rollover is pending, the stop guard does not apply: Main may stop in `ready` or `wait-jobs`, and in `need-note` the stop is blocked only by the note request.
 - `/main-rollover <message>` does the same by hand. It refuses below the threshold, without a fresh note, or while jobs run. Under neurastream main it is refused and the owner's next message starts the rollover; in plain omp a second call while one waits adds its text to the same handoff.
 - `/main-rollover` shows a notice at once and gathers `main-start` in the background, so omp keeps repainting and reading keys until the new session opens.
 - The previous session file stays where it is.

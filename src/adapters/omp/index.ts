@@ -414,6 +414,23 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		if (c.hasAgent && c.kind !== "main") return;
 		// A relaunch is requested: omp shuts down at the next idle, so the stop must not be continued.
 		if (relaunched) return undefined;
+		// A pending rollover decides the stop and checkStop is not consulted: its queue, incident and cancel
+		// blocks would hold Main at a wait the new session raises again through main-start, and its "spawn an
+		// agent" text is refused while the rollover is pending.
+		const rc = cfg.rollover.enabled ? asRolloverCtx(ctx) : null;
+		if (rc) {
+			const snap = rolloverSnapshot(rc);
+			if (snap.state === "need-note") {
+				adapterLog(cfg, "BLOCK stop: rollover need-note");
+				return { decision: "block", reason: noteRequestFor(rc, snap) };
+			}
+			if (snap.state === "ready" || snap.state === "wait-jobs") {
+				adapterLog(cfg, `ALLOW stop: rollover ${snap.state}`);
+				// Under the launcher a ready rollover starts now; plain omp waits for the owner's next message.
+				if (snap.state === "ready" && process.env.NEURASTREAM_MAIN_LAUNCHER === "1") requestRelaunch(rc, notePath(rc.sessionId));
+				return undefined;
+			}
+		}
 		const d = checkStop({ agent: "main", callsSinceStop, idleStops, ledgerText: ledgerText(cfg) }, cfg);
 		callsSinceStop = d.state?.callsSinceStop ?? 0;
 		idleStops = d.state?.idleStops ?? idleStops;
@@ -463,6 +480,12 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		};
 	};
 
+	// The note request for a state. A stale install names both versions in place of the size line.
+	const noteRequestFor = (c: RolloverCtx, snap: { stale: boolean; liveVersion: string | null }): string => {
+		const reason = snap.stale ? `neurastream on disk is ${snap.liveVersion ?? "unknown"}, this session runs ${loadedVersion ?? "unknown"}` : undefined;
+		return noteRequest(notePath(c.sessionId), process.env.NEURASTREAM_MAIN_LAUNCHER === "1", reason);
+	};
+
 	let relaunched = false;
 	// The launcher restarts omp: the request file carries the note and the editor draft, and omp
 	// shuts down only after the file is written. A failed write keeps the session running.
@@ -504,12 +527,8 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		const key = `${c.sessionFile}:${snap.noteMtimeMs ?? "none"}`;
 		if (snap.state === "need-note" && asked !== key) {
 			asked = key;
-			// A stale install says so: the request names the version on disk and the one running.
-			const reason = snap.stale
-				? `neurastream on disk is ${snap.liveVersion ?? "unknown"}, this session runs ${loadedVersion ?? "unknown"}`
-				: undefined;
 			pi.sendMessage(
-				{ customType: "main-guard.rollover", content: noteRequest(notePath(c.sessionId), process.env.NEURASTREAM_MAIN_LAUNCHER === "1", reason), display: false },
+				{ customType: "main-guard.rollover", content: noteRequestFor(c, snap), display: false },
 				{ triggerTurn: true, deliverAs: "nextTurn" },
 			);
 		} else if (snap.state === "ready" && process.env.NEURASTREAM_MAIN_LAUNCHER === "1" && !relaunched) {
