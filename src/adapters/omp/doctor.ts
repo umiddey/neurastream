@@ -11,6 +11,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { blockState, renderBlock } from "../../core/agents-md.ts";
 import { loadConfig } from "../../core/config.ts";
+import { notifyFindings } from "../../core/notify.ts";
 import { readIndex } from "../../core/queue/lib.ts";
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -196,6 +197,9 @@ export function doctorReport(home: string, env: NodeJS.ProcessEnv = process.env)
 	if (state === "ok") ok.push(`${agents} neurastream block`);
 	else problems.push(`${state}: ${agents} neurastream block`);
 	const warnings: string[] = [];
+	const notify = notifyFindings(cfg);
+	problems.push(...notify.problems);
+	warnings.push(...notify.warnings);
 	const viewed = npmViewVersion(name, env);
 	let registry: string | null = null;
 	if ("warning" in viewed) warnings.push(viewed.warning);

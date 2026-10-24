@@ -4,6 +4,7 @@
 // from them (guard rules in guards.ts), and does the posting. Plain TypeScript, no harness here.
 
 import { dirname } from "node:path";
+import { readFileSync, statSync } from "node:fs";
 import { configFile, type Config } from "./config.ts";
 
 export type NotifyProviderName = "discord" | "slack";
@@ -56,4 +57,52 @@ export function notifySecretReadHit(paths: string[], cfg: Config): string | null
 		}
 	}
 	return null;
+}
+
+export interface NotifyFindings {
+	problems: string[];
+	warnings: string[];
+}
+
+/** Host fragments that mark a webhook URL pasted straight into the config file, by provider. */
+const RAW_URL_LABELS: Record<string, string> = {
+	"discord.com/api/webhooks": "discord",
+	"discordapp.com/api/webhooks": "discord",
+	"hooks.slack.com": "slack",
+};
+
+/** Doctor findings for the notify setup: a problem when a secret file is readable by group or
+ *  others, when the config file holds a raw webhook URL, or when a secret file sits next to
+ *  config.yml; a warning only when a configured secret file is missing (notify is simply off). */
+export function notifyFindings(cfg: Config): NotifyFindings {
+	const problems: string[] = [];
+	const warnings: string[] = [];
+	const configPath = configFile(cfg.paths.home);
+	const configDir = dirname(configPath);
+	let raw = "";
+	try {
+		raw = readFileSync(configPath, "utf8");
+	} catch {}
+	const rawLabels = new Set<string>();
+	for (const [host, label] of Object.entries(RAW_URL_LABELS)) if (raw.includes(host)) rawLabels.add(label);
+	for (const label of rawLabels) {
+		problems.push(`notify: ${configPath} holds a raw ${label} webhook URL; anyone holding it can post as the bot — keep it in a secret file`);
+	}
+	for (const p of notifyProviders(cfg)) {
+		const key = `notify.${p.name}_webhook_file`;
+		let st;
+		try {
+			st = statSync(p.file);
+		} catch {
+			warnings.push(`notify: ${key} points at ${p.file}, which does not exist; notify stays off until the owner writes it`);
+			continue;
+		}
+		if ((st.mode & 0o77) !== 0) {
+			problems.push(`notify: ${p.file} is readable by group/others (mode ${(st.mode & 0o777).toString(8)}); chmod 600 it`);
+		}
+		if (dirname(p.file) === configDir) {
+			problems.push(`notify: ${p.file} sits next to ${configPath}; keep the webhook files in their own directory`);
+		}
+	}
+	return { problems, warnings };
 }

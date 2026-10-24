@@ -54,6 +54,11 @@ rollover:
   max_session_mb: 5
   exit_grace_s: 20
 
+notify:
+  discord_webhook_file: ""   # file holding the Discord webhook URL; "" = off
+  slack_webhook_file: ""     # file holding the Slack webhook URL; "" = off
+  prefix: ""                 # optional label prepended to each posted reply, e.g. "Main:"
+
 metrics:
   report_days: 7
   correction_patterns: ['\bno\b', 'wrong', 'why did', 'properly', 'not what', 'stop', 'bullshit', 'fuck']
