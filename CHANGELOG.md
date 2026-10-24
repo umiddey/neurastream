@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.28
 ### Fixed
 - The relaunch is requested only at a run's real end (incident I-20261024-4). A tool result mid-run no longer writes `relaunch.json` and shuts the session down while Main keeps working; while a relaunch is pending, every later terminal run end calls `shutdown()` again, because omp 18.11.1 re-runs its deferred exit check only then.
 - A relaunch omp does not exit falls back to an in-process rollover. If omp still has not exited `rollover.exit_grace_s` seconds (default 20, new config key) after the request, the adapter rolls over in the running process — fresh session, handoff, the owner's typed messages included — instead of leaving a dead UI that swallows every message. A real shutdown cancels the fallback.
