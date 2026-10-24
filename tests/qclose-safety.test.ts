@@ -179,11 +179,12 @@ test("P1: base follows a local origin chain to the upstream default branch (merg
 	indexHome(home, join(R, "docs/plans", PLAN));
 	const r = runClose(home, join(R, "docs/plans", PLAN));
 	expect(r.stderr + r.stdout).not.toContain("AWAITING");
-	expect(r.stdout).toContain("branch F deleted");
+	expect(r.stdout).toContain("queue-close: branch F kept");
 	expect(r.stdout).toContain("queue-close: CLOSED");
 	expect(r.code).toBe(0);
 	expect(existsSync(join(R, "docs/plans/archive", MONTH, PLAN))).toBe(true);
-	expect(gitOk(R, "rev-parse", "--verify", "-q", "refs/heads/F")).toBe(false);
+	// git's -d cannot see the landing on the stale upstream, so the branch stays.
+	expect(gitOk(R, "rev-parse", "--verify", "-q", "refs/heads/F")).toBe(true);
 });
 
 test("P1: base follows a local origin chain; unmerged branch stays AWAITING merge", () => {
@@ -207,7 +208,7 @@ test("P2: a plan worktree on another branch is kept intact; the plan is still ar
 	indexHome(home, join(R, "docs/plans", PLAN));
 	const r = runClose(home, join(R, "docs/plans", PLAN));
 	expect(r.stdout).toContain(`queue-close: worktree ${W} kept: it is on G`);
-	expect(r.stdout).toContain("branch F deleted");
+	expect(r.stdout).toContain("queue-close: branch F kept");
 	expect(r.stdout).toContain("queue-close: CLOSED");
 	expect(r.code).toBe(0);
 	expect(existsSync(join(W, ".git"))).toBe(true);
@@ -216,7 +217,7 @@ test("P2: a plan worktree on another branch is kept intact; the plan is still ar
 	expect(existsSync(join(R, "docs/plans/archive", MONTH, PLAN))).toBe(true);
 });
 
-test("P2: a plan worktree git cannot remove is docker-chowned, then deleted and pruned", () => {
+test("P2: a worktree git cannot remove is kept; no docker, no force, branch included", () => {
 	const dir = fresh("p2-leftover");
 	const home = makeHome(dir);
 	const W = join(dir, "wt-f");
@@ -231,12 +232,13 @@ test("P2: a plan worktree git cannot remove is docker-chowned, then deleted and 
 	indexHome(home, join(R, "docs/plans", PLAN));
 	const r = runClose(home, join(R, "docs/plans", PLAN), bin);
 	expect(r.stderr).toBe("");
-	expect(r.stdout).toContain(`queue-close: worktree ${W} removed`);
-	expect(r.stdout).toContain("branch F deleted");
+	expect(r.stdout).toContain(`queue-close: worktree ${W} kept`);
+	expect(r.stdout).toContain("queue-close: branch F kept");
 	expect(r.code).toBe(0);
-	expect(readFileSync(log, "utf8")).toContain("chown");
-	expect(existsSync(W)).toBe(false);
-	expect(git(R, "worktree", "list", "--porcelain")).not.toContain(W);
+	expect(existsSync(log)).toBe(false);
+	expect(existsSync(W)).toBe(true);
+	expect(git(R, "worktree", "list", "--porcelain")).toContain(W);
+	expect(gitOk(R, "rev-parse", "--verify", "-q", "refs/heads/F")).toBe(true);
 });
 
 test("P3: a missing plan worktree is checked on the upstream base; the file is there, so CLOSED", () => {
