@@ -30,6 +30,9 @@ PRIORITY-ID: <optional, e.g. PR01>
 Status: open
 <!-- The implementer may only append dated entries here: what was done, what was verified (command +
      result), commits, what is next. It never changes the Status line or adds "WAITING on owner".
+     Every new entry ends with a Findings line: "Findings: none", or one item per finding (bug,
+     workaround, improvement — any repo) with file:line evidence, items separated by ";". Plan-guard
+     restores an entry without it, and each item becomes an incident Main must plan or dismiss.
      Main reviews the work and then writes "Status: complete"; main-guard auto-runs queue-close, which
      closes the plan once the branch is on main and the done check passes (else reopens it).
      Owner calls it off: Main writes "Status: cancelled" + "Cancelled by owner: <date> "<words>"";

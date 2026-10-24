@@ -25,7 +25,7 @@ flowchart LR
 |---|---|
 | Queue (`queue-check`, `queue-close`, `queue-cancel`) | Every open plan is listed in an index and follows a template. A plan leaves the queue only when its branch is merged into remote main and its done check passes; a failing check reopens it. A cancelled plan's unmerged work is saved under `refs/queue-archive/`. |
 | Blockers | Each plan's phase 0 lists what helpers may not do: push, touch a path, run a command, or write a text. The guard judges the command that runs and the files it changes, not words inside commit messages, quoted text or heredoc bodies: `git commit -m "... push ..."` is allowed, `git push` is refused. |
-| Guards | Helpers may only edit their plan's `## Progress`; they get a warning at call 90 and are stopped at call 100. Protected files need an owner unlock (a file the owner touches, valid 30 minutes). |
+| Guards | Helpers may only edit their plan's `## Progress`; every new entry ends with a `Findings:` line (`Findings: none`, or one item per finding with `file:line` evidence) or the edit is refused and the file restored, and each item becomes an incident. Helpers get a warning at call 90 and are stopped at call 100. Protected files need an owner unlock (a file the owner touches, valid 30 minutes). |
 | Ledger (`agent-ledger`) | Tokens, cost, state and exit reason per agent; `--cap` refuses a spawn when a provider already runs 2. |
 | Scoring (`agent-score`) | Points only for work Main accepted by commit, times the phase difficulty. Ranked per dollar and per hour. |
 | Brief lint (`brief-lint`) | Refuses a helper brief that misses a required rule (acceptance, stop condition, no push, call budget). |
@@ -136,12 +136,13 @@ Weekly loop: run `neurastream metrics report`, then propose ONE rule change to t
 
 Bugs in neurastream itself are found by code, written to a persistent list, and pushed on Main until each one has a plan or a recorded dismissal — not remembered. The list is `<paths.queue_state>/incidents.jsonl`; `neurastream incident list [--open] [--json]` reads it.
 
-Four sources feed it:
+Five sources feed it:
 
 - Real time (at Main's prompt and after each Main bash result): a finished subagent the agent-ledger still shows RUNNING/WAITING past `incidents.contradiction_grace_min` (D1); a neurastream tool that crashed in a Main bash result (D2); the same guard block firing `incidents.block_repeat` times within one hour (D3); an owner message matching `metrics.correction_patterns` (D4). D2 and D4 run on every event; D1 and D3 read the session files and the guard logs at most once per `incidents.scan_interval_sec` (state: `incident-scan.json` in the queue state dir).
 - Daily: at the first main-start or Main prompt of a day, M1-M5 for the last 24 hours against the mean of the 7 days before; a metric worse by `incidents.daily_worse_pct` and above its `incidents.daily_floor` floor is an incident.
 - Weekly: when the metrics report is due, the code writes `<paths.notes>/metrics.md` itself and its worst ranked metric becomes an incident.
 - Main itself: `neurastream incident add "<summary>" --kind <k>`.
+- A subagent's plan work: every new `## Progress` entry in a plan ends with a `Findings:` line (`Findings: none`, or one item per finding — bug, workaround, improvement, any repo — with `file:line` evidence, items separated by `;`). The plan-guard refuses and restores an entry without the line, and each item of an allowed edit becomes an incident (source `findings`, evidence = plan path + agent); the same text again dedupes into the open incident.
 
 While an incident is open (no plan, dismissal or fixed record), every Main prompt carries one `INCIDENT <id> [<source>/<kind>]: <summary>` line per open incident, Main's `task` spawns and bypass launches are refused unless the brief names a plan citing `INCIDENT <id>`, and Main cannot stop with an incident that has neither. The loop closes three ways: `neurastream incident plan <id> <plan.md>` (the plan must exist, be listed in its repo INDEX, cite `INCIDENT <id>`, and carry a fail-before phase — its regression test has to fail on the old code), `neurastream incident dismiss <id> --why "<text>"`, and `fixed` — written by the queue itself when it closes a plan that cites the incident. `neurastream metrics report` shows M6: incidents opened / planned / dismissed / fixed and the median hours from open to fixed.
 

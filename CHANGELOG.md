@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+### Added
+- Plan-guard requires a `Findings:` line in every `## Progress` entry a subagent adds to a plan: `Findings: none`, or one item per finding (bug, workaround, improvement — any repo) with `file:line` evidence, items separated by `;`. An edit that adds an entry without the line is refused and the file restored. Each finding item of an allowed edit becomes an incident (source `findings`, kind `agent-finding`, evidence = plan path + agent); the same item text again dedupes into the open incident, and `Findings: none` records nothing. Main's own entries are unaffected. (The penalty for a false `Findings: none` needs the trace scan and is not part of this.)
+
 ## 0.1.28
 ### Fixed
 - The relaunch is requested only at a run's real end (incident I-20261024-4). A tool result mid-run no longer writes `relaunch.json` and shuts the session down while Main keeps working; while a relaunch is pending, every later terminal run end calls `shutdown()` again, because omp 18.11.1 re-runs its deferred exit check only then.
