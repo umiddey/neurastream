@@ -5,7 +5,8 @@
 // refuse spawns and the stop (src/core/guards.ts), so a found bug is deterministically pushed,
 // not remembered. A repeat sighting of an open fingerprint updates count and lastSeen on the
 // existing record instead of adding a second incident; after a resolution the same fingerprint
-// opens a new incident. Sources: realtime (detectors), daily, weekly, main (`incident add`).
+// opens a new incident. Sources: realtime (detectors), daily, weekly, main (`incident add`),
+// findings (plan-guard: the Findings: items of a subagent's new Progress entry).
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -13,7 +14,7 @@ import { nowSec, strftime } from "./clock.ts";
 import type { Config } from "./config.ts";
 import * as q from "./queue/lib.ts";
 
-export type IncidentSource = "realtime" | "daily" | "weekly" | "main";
+export type IncidentSource = "realtime" | "daily" | "weekly" | "main" | "findings";
 
 export interface IncidentRec {
 	id: string;
@@ -79,7 +80,7 @@ function parseLine(line: string): IncidentRec | ResolutionRec | null {
 	if (rec.type !== undefined) return null;
 	if (typeof rec.fingerprint !== "string" || typeof rec.kind !== "string" || typeof rec.summary !== "string" || typeof rec.ts !== "number")
 		return null;
-	const source = rec.source === "realtime" || rec.source === "daily" || rec.source === "weekly" ? rec.source : "main";
+	const source = rec.source === "realtime" || rec.source === "daily" || rec.source === "weekly" || rec.source === "findings" ? rec.source : "main";
 	return {
 		id: rec.id,
 		fingerprint: rec.fingerprint,

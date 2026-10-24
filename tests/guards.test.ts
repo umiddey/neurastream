@@ -222,7 +222,12 @@ console.log(JSON.stringify(out));
 	const hacked = guardCli("plan-edit", { path: PLAN, before, after: goalHack, agent: "sub" });
 	expect(hacked.code).toBe(2);
 	expect(hacked.d.restore?.text).toBe(before);
-	const progressOnly = guardCli("plan-edit", { path: PLAN, before, after: before.replace("- Started the toy work.", "- Started the toy work.\n- Did the thing."), agent: "sub" });
+	// Since 2026-10-24 a new Progress entry must carry a Findings line (a port-only rule; the
+	// original has no such check): the plain entry is refused, the dated one passes.
+	const plainEntry = guardCli("plan-edit", { path: PLAN, before, after: before.replace("- Started the toy work.", "- Started the toy work.\n- Did the thing."), agent: "sub" });
+	expect(plainEntry.code).toBe(2);
+	expect(plainEntry.d.restore).toEqual({ path: PLAN, text: before });
+	const progressOnly = guardCli("plan-edit", { path: PLAN, before, after: before.replace("- Started the toy work.", "- Started the toy work.\n- Did the thing. Findings: none."), agent: "sub" });
 	expect(progressOnly.code).toBe(0);
 	expect(guardCli("plan-edit", { path: PLAN, before, after: statusFlip, agent: "main" }).code).toBe(0);
 });

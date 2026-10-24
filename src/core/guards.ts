@@ -22,7 +22,7 @@ import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from
 import path from "node:path";
 import type { Decision, InjectEvent, PlanEditEvent, SpawnEvent, StopEvent, ToolEvent } from "./adapter.ts";
 import type { Config } from "./config.ts";
-import { openIncidents, type IncidentView } from "./incidents.ts";
+import { addIncident, openIncidents, type IncidentView } from "./incidents.ts";
 import * as q from "./queue/lib.ts";
 import type { Plan } from "./queue/lib.ts";
 
@@ -598,17 +598,18 @@ export function checkInject(e: InjectEvent, cfg: Config): Decision {
 }
 
 // Lines only Main may write: the status, owner parking, owner cancellation, cancelled-list clearance.
+const MAIN_ONLY_LINE = /^\s*(?:[-*]\s+)?(Status:|WAITING on owner:|Cancelled by owner:|False positive:)/;
+
 function mainOnlyLines(text: string): string {
-	return text
-		.split("\n")
-		.filter(l => /^\s*(?:[-*]\s+)?(Status:|WAITING on owner:|Cancelled by owner:|False positive:)/.test(l))
-		.join("\n");
+	return text.split("\n").filter(l => MAIN_ONLY_LINE.test(l)).join("\n");
 }
 
 /**
  * plan-edit: after a subagent changed a plan, everything outside "## Progress" and every
- * Main-only line must be unchanged; `restore` hands back the untouched text for the caller to
- * write (the original restored the file itself before reporting).
+ * Main-only line must be unchanged, and every Progress entry the edit adds must carry a
+ * "Findings:" line (2026-10-24: a finding buried in a Progress note never became a plan);
+ * `restore` hands back the untouched text for the caller to write (the original restored the
+ * file itself before reporting).
  */
 export function checkPlanEdit(e: PlanEditEvent, cfg: Config): Decision {
 	if (e.agent === "main") return checkMainPlan(e, cfg);
@@ -620,7 +621,69 @@ export function checkPlanEdit(e: PlanEditEvent, cfg: Config): Decision {
 			restore: { path: e.path, text: e.before },
 		};
 	}
+	const missing = newProgressEntries(e.before, e.after).filter(b => !findingsValue(b));
+	if (missing.length) {
+		log(cfg.paths.plan_guard_log, `RESTORE ${e.path} (no Findings line)`);
+		return {
+			allow: false,
+			reason: `plan-guard: ${missing.length === 1 ? "your new entry in" : `${missing.length} of your new entries in`} ${e.path} ${missing.length === 1 ? "has" : "have"} no "Findings:" line. End every new "## Progress" entry with "Findings: none", or "Findings: <one item per finding (bug, workaround, improvement — any repo), each with file:line evidence>", items separated by ";". The file was restored.`,
+			restore: { path: e.path, text: e.before },
+		};
+	}
+	recordFindings(e, cfg);
 	return ALLOW;
+}
+
+/**
+ * Each finding item of an allowed subagent edit becomes an incident (source "findings", kind
+ * "agent-finding", evidence = plan path + agent; the default fingerprint dedupes the same item
+ * text). A store failure is logged and swallowed: it must not break the verified edit.
+ */
+function recordFindings(e: PlanEditEvent, cfg: Config): void {
+	try {
+		const evidence = `${e.path} (${e.agent})`;
+		for (const block of newProgressEntries(e.before, e.after)) {
+			const value = findingsValue(block);
+			if (!value || /^none\.?$/i.test(value)) continue;
+			for (const item of value.split(";")) {
+				if (item.trim()) addIncident(cfg, { source: "findings", kind: "agent-finding", summary: item.trim(), evidence });
+			}
+		}
+	} catch (err) {
+		log(cfg.paths.plan_guard_log, `findings: cannot record incidents for ${e.path}: ${err}`);
+	}
+}
+
+/** One "## Progress" entry: its "- " line plus indented continuation lines (trimProgressBody's entry rule). */
+function progressEntries(text: string): string[] {
+	const blocks: string[] = [];
+	const lines = q.progressBody(text).split("\n");
+	for (let i = 0; i < lines.length; i++) {
+		const head = lines[i];
+		if (head === undefined || !/^- /.test(head) || MAIN_ONLY_LINE.test(head)) continue;
+		const block = [head];
+		while (i + 1 < lines.length) {
+			const cont = lines[i + 1];
+			if (cont === undefined || !/^[ \t]/.test(cont)) break;
+			block.push(cont);
+			i++;
+		}
+		blocks.push(block.join("\n"));
+	}
+	return blocks;
+}
+
+/** Entries an edit adds or rewrites: blocks whose text was not in the Progress section before. */
+function newProgressEntries(before: string, after: string): string[] {
+	const old = new Set(progressEntries(before));
+	return progressEntries(after).filter(b => !old.has(b));
+}
+
+/** The value after "Findings:" in an entry, or null when the entry has no Findings line with content. */
+function findingsValue(block: string): string | null {
+	const line = block.split("\n").find(l => l.includes("Findings:"));
+	if (!line) return null;
+	return line.slice(line.indexOf("Findings:") + "Findings:".length).trim() || null;
 }
 
 // Main's plan text outside "## Progress" must rest on files Main read itself (planReadProblems).

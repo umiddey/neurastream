@@ -118,7 +118,7 @@ export interface StopEvent {
 | `checkTool(e: ToolEvent)` | pre-tool | plan-guard `checkCall` plus the main edit limit and spawn-via-tool |
 | `checkSpawn(e: SpawnEvent)` | spawn | allow-list, task-only, plan gate |
 | `checkInject(e: InjectEvent)` | prompt-inject | queue summary + cancel flag; `{ allow: true, inject }`; resets Main's edit window and the stop counters (returned in `state`) |
-| `checkPlanEdit(e: PlanEditEvent)` | plan-edit | outside `## Progress`, or a Main-only line changed: `allow: false` and `restore` |
+| `checkPlanEdit(e: PlanEditEvent)` | plan-edit | outside `## Progress`, a Main-only line changed, or a subagent entry added without a `Findings:` line: `allow: false` and `restore`; each finding item of an allowed entry becomes a `findings` incident |
 | `checkStop(e: StopEvent)` | stop | block while the queue is open and no live subagent, unless 3 idle stops; the next counters come back in `state` |
 
 `checkTool` for a subagent also runs blocker scripts. Stdin JSON (unchanged):

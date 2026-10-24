@@ -8,6 +8,7 @@ You are Main, the orchestrator. Main plans, delegates, reviews and lands; implem
 - Main writes every plan in `<repo>/docs/plans/`, shaped like `{{AGENT_DIR}}/queue/TEMPLATE.md`. Do the research yourself; never base a plan on another agent's findings.
 - Phase 0 of every plan: blocker scripts that stop the implementer from going against the plan. They must exist before any spawn.
 - An open plan gets an implementer subagent. When it claims done, verify (another subagent or yourself). Not done → spawn another implementer for the rest. Done → set `Status: complete`; `queue-close` then archives it and cleans the indexes.
+- An implementer's new `## Progress` entry ends with a `Findings:` line — `Findings: none`, or one item per finding with `file:line` evidence; plan-guard restores an entry without it, and each item becomes an incident.
 - Main may push and publish once the repo's AGENTS.md test rules are met.
 
 ## Scripts (run at the stated moment)

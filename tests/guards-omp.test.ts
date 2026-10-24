@@ -226,7 +226,7 @@ test("non-Progress plan edit: tool_call snapshots, tool_result refuses, restores
 	fresh();
 	const before = TOY_PLAN;
 	const statusFlip = before.replace("Status: open", "Status: complete");
-	const progressOnly = before.replace("- Started the toy work.", "- Started the toy work.\n- Did the thing.");
+	const progressOnly = before.replace("- Started the toy work.", "- Started the toy work.\n- Did the thing. Findings: none.");
 	const out = adapterRun(`${REGISTER}
 const fs = await import("node:fs");
 const out = [];
