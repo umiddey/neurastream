@@ -1,11 +1,12 @@
 import { afterAll, expect, test } from "bun:test";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 
 // The checkout these tests ship in (worktree-safe: never a hardcoded path).
 const REPO = dirname(dirname(import.meta.path));
-const ROOT = "/tmp/neurastream-home-qclose-safety";
+// realpath: macOS /tmp is a symlink to /private/tmp, and git reports worktrees by real path.
+const ROOT = join(realpathSync("/tmp"), "neurastream-home-qclose-safety");
 const PLAN = "20261018_0900_qclose_probe.md";
 const TODAY = new Date().toISOString().slice(0, 10);
 const MONTH = TODAY.slice(0, 7).replace("-", "");
