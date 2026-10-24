@@ -283,9 +283,16 @@ function under(p: string, root: string): boolean {
 	return p === root || p.startsWith(`${root}/`);
 }
 
-export function planCovers(plan: Plan, p: string): boolean {
-	if (under(p, plan.repo) || plan.appliesTo.some(a => under(p, a)) || (plan.worktree && under(p, plan.worktree))) return true;
-	return repoRoot(p) === plan.repo;
+export function planCovers(plan: Plan, p: string, plans: Plan[] = []): boolean {
+	// One plan = one worktree (0.2.0 one-index): a linked worktree that another open plan names
+	// as its Worktree is that plan's ground, so this plan covers such a path only through its
+	// own Worktree or ## Applies to — the repo-level fallback below must not claim every
+	// worktree of the shared repo. Paths in the main checkout and in worktrees no open plan
+	// names stay covered as before (safe default).
+	const g = gitTop(p);
+	if (g && plans.some(o => o !== plan && o.status === "open" && o.worktree && o.worktree === g.top))
+		return plan.appliesTo.some(a => under(p, a)) || (!!plan.worktree && under(p, plan.worktree));
+	return under(p, plan.repo) || plan.appliesTo.some(a => under(p, a)) || (!!plan.worktree && under(p, plan.worktree)) || repoRoot(p) === plan.repo;
 }
 
 export function planAt(p: string, plans: Plan[]): Plan | null {
