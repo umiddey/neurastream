@@ -104,6 +104,13 @@ export function holdsBlock(holds: readonly string[]): string {
 	return ["=== owner holds (plans' WAITING on owner lines)", ...(holds.length > 0 ? holds : ["none"]), ""].join("\n");
 }
 
+/**
+ * The launcher's owner-away text: the handoff's owner message when the owner typed nothing during the
+ * rollover. The adapter's in-process fallback carries the same text, so it lives here, harness-free.
+ */
+export const OWNER_AWAY =
+	"Owner away (automatic rollover). Continue the work in the note and the queue; the owner reads results later.";
+
 /** The one-time note instruction for Main's next turn. `reason` (a stale install) names both versions and replaces the size line. */
 export function noteRequest(path: string, auto = false, reason = ""): string {
 	return [

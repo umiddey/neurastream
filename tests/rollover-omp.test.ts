@@ -3,7 +3,7 @@
 // and handoff. The session file is a temp file; the note is written under the queue state dir for
 // a unique session id and removed afterwards.
 
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, expect, test, vi } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -106,8 +106,8 @@ for (const k of Object.keys(queueEnvBefore)) delete process.env[k];
 // and every live repo, and the note would land in the live queue state dir.
 const baseCfg: Config = loadConfig({ home: join(TMP, "home") });
 applyQueueEnv(baseCfg);
-const overCfg: Config = { ...baseCfg, rollover: { enabled: true, max_session_mb: 0.000001 } };
-const belowCfg: Config = { ...baseCfg, rollover: { enabled: true, max_session_mb: 1024 } };
+const overCfg: Config = { ...baseCfg, rollover: { enabled: true, max_session_mb: 0.000001, exit_grace_s: 20 } };
+const belowCfg: Config = { ...baseCfg, rollover: { enabled: true, max_session_mb: 1024, exit_grace_s: 20 } };
 // session_stop reads guards.ledger_command. The live ledger may show a running subagent, which would let the
 // stop through, so these tests pin a fixed ledger with no subagent rows.
 const stopCfg: Config = {
@@ -349,6 +349,25 @@ async function withLauncher(value: string | undefined, fn: () => Promise<void>):
 	}
 }
 
+/** A config over the rollover threshold with a short exit grace, so the timer fires inside the test. */
+function graceCfg(): Config {
+	return { ...baseCfg, rollover: { enabled: true, max_session_mb: 0.000001, exit_grace_s: 0.05 } };
+}
+
+/** A main ctx whose newSession resolves `opened` when the rollover reaches it (the awaited real signal). */
+function ctxAwaitingOpen(over: Partial<MainCtx> = {}): { ctx: MainCtx; opened: Promise<void> } {
+	const { promise, resolve } = Promise.withResolvers<void>();
+	const ctx = mainCtx({
+		newSession: async opts => {
+			newSessions.push(opts);
+			resolve();
+			return { cancelled: false };
+		},
+		...over,
+	});
+	return { ctx, opened: promise };
+}
+
 test("launcher set, ready: relaunch.json has the three fields, omp shuts down and re-arms at the next run end", async () => {
 	resetState();
 	draft = "half-typed";
@@ -393,6 +412,64 @@ test("launcher set: the relaunch is requested only at a real run end and re-arme
 		await host.emit("agent_end", {}, ctx);
 		expect(shutdowns).toBe(2);
 	});
+});
+
+test("launcher: omp still running past exit_grace_s rolls over in-process with the owner's typed message", async () => {
+	resetState();
+	const host = fakeHost();
+	createOmpAdapter(host, graceCfg());
+	const { ctx, opened } = ctxAwaitingOpen();
+	await withLauncher("1", async () => {
+		await armReady(host, ctx, "## In progress\nstep");
+		await host.emit("agent_end", {}, ctx); // the relaunch is requested; omp does not exit here
+		expect(shutdowns).toBe(1);
+		await host.emit("input", { text: "a", source: "interactive" }, ctx);
+		await opened; // the fallback reached newSession: its own real signal, no guessed duration
+	});
+	expect(newSessions).toEqual([{ parentSession: SESSION_FILE }]);
+	expect(host.sent.length).toBe(1);
+	expect(host.sent[0]?.endsWith("Owner's message:\na")).toBe(true);
+	expect(existsSync(relaunchPath())).toBe(false);
+	expect(shutdowns).toBe(2);
+	expect(notes.some(n => n.includes("omp did not restart"))).toBe(true);
+}, 60_000);
+
+test("launcher: the in-process fallback without an owner message carries the owner-away text", async () => {
+	resetState();
+	const host = fakeHost();
+	createOmpAdapter(host, graceCfg());
+	const { ctx, opened } = ctxAwaitingOpen();
+	await withLauncher("1", async () => {
+		await armReady(host, ctx, "## In progress\nstep");
+		await host.emit("agent_end", {}, ctx);
+		await opened;
+	});
+	expect(host.sent.length).toBe(1);
+	expect(host.sent[0]?.endsWith(
+		"Owner's message:\nOwner away (automatic rollover). Continue the work in the note and the queue; the owner reads results later.",
+	)).toBe(true);
+}, 60_000);
+
+test("launcher: omp really shutting down (session_shutdown) cancels the in-process fallback", async () => {
+	resetState();
+	const host = fakeHost();
+	createOmpAdapter(host, graceCfg());
+	const ctx = mainCtx();
+	vi.useFakeTimers();
+	try {
+		await withLauncher("1", async () => {
+			await armReady(host, ctx, "## In progress\nstep");
+			await host.emit("agent_end", {}, ctx); // arms the grace timer (now fake)
+			await host.emit("session_shutdown", {}, ctx); // omp is really exiting: must clear it
+			vi.advanceTimersByTime(60_000); // the grace and far beyond, without real waiting
+		});
+	} finally {
+		vi.useRealTimers();
+	}
+	expect(newSessions.length).toBe(0);
+	expect(host.sent.length).toBe(0);
+	// A fired fallback deletes the request synchronously; it must still be there.
+	expect(existsSync(relaunchPath())).toBe(true);
 });
 
 test("launcher unset, ready: no shutdown and no relaunch.json", async () => {
@@ -737,7 +814,8 @@ test("launcher: the first owner message in the ready state starts the relaunch, 
 		await armReady(host, ctx, "## In progress\nstep");
 		expect(await host.emit("input", { text: "hello", source: "interactive" }, ctx)).toEqual([{ handled: true }]);
 	});
-	expect(shutdowns).toBe(1);
+	// The request's shutdown plus the message's re-arm: omp re-checks only when shutdown() is called again.
+	expect(shutdowns).toBe(2);
 	expect(JSON.parse(readFileSync(relaunchPath(), "utf8"))).toEqual({
 		previousSessionFile: SESSION_FILE,
 		notePath: NOTE,

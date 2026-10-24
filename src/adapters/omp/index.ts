@@ -26,7 +26,7 @@ import { checkInject, checkPlanEdit, checkStop, checkTool, MAIN_PLAN_FILE, recor
 import { applyQueueEnv } from "../../core/queue/env.ts";
 import { mainStartText, runDailyCheck } from "../../core/main-start.ts";
 import { readBlocks } from "../../core/metrics.ts";
-import { buildHandoff, holdsBlock, notePath, noteRequest, ownerText, relaunchPath, rolloverState, spawnRefusal, type RolloverState } from "../../core/rollover.ts";
+import { buildHandoff, holdsBlock, notePath, noteRequest, OWNER_AWAY, ownerText, relaunchPath, rolloverState, spawnRefusal, type RolloverState } from "../../core/rollover.ts";
 import { defaultCompletedResults, defaultRunSource } from "./sessions.ts";
 import { packageJsonPath, packageVersion } from "./package-root.ts";
 import * as q from "../../core/queue/lib.ts";
@@ -488,6 +488,67 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	};
 
 	let relaunched = false;
+	// omp 18.11.1 defers an extension shutdown: it re-checks only when shutdown() is called again or
+	// an owner submission finishes, so a refused exit once left a dead UI that swallowed every owner
+	// message (I-20261024-4). One unref'd timer per request: if omp still has not exited
+	// rollover.exit_grace_s after the request, the adapter rolls over in-process. The timer keeps its
+	// own clearer: session_shutdown cancels the fallback when omp really exits.
+	let clearGrace: (() => void) | null = null;
+	const armGraceTimer = (c: RolloverCtx): void => {
+		clearGrace?.();
+		const t = setTimeout(() => {
+			clearGrace = null;
+			exitGraceElapsed(c);
+		}, cfg.rollover.exit_grace_s * 1000);
+		if (t && typeof t === "object" && "unref" in t && typeof t.unref === "function") t.unref();
+		clearGrace = () => {
+			clearTimeout(t);
+			clearGrace = null;
+		};
+	};
+
+	// One /main-rollover at a time: while one waits for idle, a second call adds its text to the owner message.
+	let flight: string[] | null = null;
+
+	// The one in-process rollover, shared by /main-rollover and the exit-grace fallback: gather the
+	// generated state, wait for idle, then start a fresh session whose first message is the handoff.
+	// A state change during the wait sends the owner's text to this session as an ordinary message.
+	const rolloverInProcess = async (c: RolloverCtx, owner: string[], notice: string): Promise<void> => {
+		const previous = c.sessionFile;
+		const path = notePath(c.sessionId);
+		flight = owner;
+		try {
+			c.notify(notice);
+			const generated = [
+				await mainStartText([], cfg, { inheritStdin: false }, { source: defaultRunSource(cfg), results: defaultCompletedResults(cfg) }),
+				holdsBlock(q.ownerHolds()),
+			].join("\n");
+			const note = readFileSync(path, "utf8");
+			adapterLog(cfg, `rollover: new session from ${previous}; note ${path}`);
+			await c.waitForIdle();
+			const again = rolloverSnapshot(c).state;
+			if (relaunched || again !== "ready") {
+				c.notify(`main-rollover: the state changed while waiting for idle (${relaunched ? "relaunch requested" : again}); no new session.`);
+				// The owner's text is not lost: it goes to this session as an ordinary message.
+				const pending = owner.filter(s => s !== "").join("\n");
+				if (pending !== "") pi.sendUserMessage(pending);
+				return;
+			}
+			const r = asRecord(await c.newSession({ parentSession: previous }));
+			if (r.cancelled === true) return;
+			// Read after the await: owner messages that arrived during newSession are part of the handoff.
+			const handoff = buildHandoff({
+				generated,
+				note,
+				previousSessionFile: previous,
+				ownerMessage: owner.filter(s => s !== "").join("\n"),
+			});
+			pi.sendUserMessage(handoff);
+		} finally {
+			flight = null;
+		}
+	};
+
 	// The launcher restarts omp: the request file carries the note and the editor draft, and omp
 	// shuts down only after the file is written. A failed write keeps the session running.
 	// Returns whether the request was written.
@@ -502,6 +563,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		relaunched = true;
 		adapterLog(cfg, `rollover: relaunch requested from ${c.sessionFile}`);
 		c.shutdown();
+		armGraceTimer(c);
 		return true;
 	};
 
@@ -519,6 +581,22 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 			adapterLog(cfg, `rollover: owner message not added to the relaunch request: ${String(err)}`);
 			return false;
 		}
+	};
+
+	// The grace elapsed without a session_shutdown: omp refused the exit. Read the request's draft,
+	// drop the request and roll over here, so the owner's messages reach a live session instead of a
+	// dead UI. The owner-away text stands in when nothing was typed.
+	const exitGraceElapsed = (c: RolloverCtx): void => {
+		adapterLog(cfg, `rollover: omp did not exit within ${cfg.rollover.exit_grace_s}s; rolling over in-process`);
+		let draft = "";
+		try {
+			draft = asString(asRecord(JSON.parse(readFileSync(relaunchPath(), "utf8"))).draft);
+		} catch {}
+		rmSync(relaunchPath(), { force: true });
+		relaunched = false;
+		rolloverInProcess(c, [draft.trim() === "" ? OWNER_AWAY : draft], "rollover: omp did not restart; continuing in a new session here").catch((err: unknown) => {
+			adapterLog(cfg, `rollover: in-process rollover failed: ${err instanceof Error ? err.message : String(err)}`);
+		});
 	};
 
 	const onSizeCheck = (kind: "tool_result" | "agent_end", e: unknown, ctx: unknown): void => {
@@ -544,6 +622,9 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		}
 	};
 	pi.on("agent_end", (e, ctx) => onSizeCheck("agent_end", e, ctx));
+
+	// omp is really shutting down: the exit-grace fallback must not fire.
+	pi.on("session_shutdown", () => clearGrace?.());
 
 	// Compaction keeps the owner's holds true: a summary may state a hold only as a plans' WAITING on owner line says it.
 	pi.on("session.compacting", (_e, ctx) => {
@@ -588,6 +669,8 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 			}
 			if (appendToRelaunch(text)) c.notify("rollover in progress: your message goes to the new session");
 			else c.notify("rollover in progress: your message could not be saved and was not sent; send it again after the rollover");
+			// omp re-checks its deferred exit only when shutdown() is called again: re-arm per message.
+			c.shutdown();
 			return { handled: true };
 		}
 		if (rolloverSnapshot(c).state !== "ready") return undefined;
@@ -595,7 +678,6 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	});
 
 	// One /main-rollover at a time: while one waits for idle, a second call adds its text to the owner message.
-	let flight: string[] | null = null;
 	pi.registerCommand("main-rollover", {
 		description: "Start a fresh session from Main's handoff note; the rest of the message is the owner's first message",
 		handler: async (args: unknown, ctx: unknown) => {
@@ -625,39 +707,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 				c.notify(`main-rollover: own jobs are still running (${c.runningJobs().join(", ")}); a rollover would cancel them.`);
 				return;
 			}
-			const previous = c.sessionFile;
-			const owner = [text];
-			flight = owner;
-			try {
-				c.notify("main-rollover: collecting main-start state for the handoff (this can take a minute)…");
-				const generated = [
-					await mainStartText([], cfg, { inheritStdin: false }, { source: defaultRunSource(cfg), results: defaultCompletedResults(cfg) }),
-					holdsBlock(q.ownerHolds()),
-				].join("\n");
-				const note = readFileSync(path, "utf8");
-				adapterLog(cfg, `rollover: new session from ${previous}; note ${path}`);
-				await c.waitForIdle();
-				const again = rolloverSnapshot(c).state;
-				if (relaunched || again !== "ready") {
-					c.notify(`main-rollover: the state changed while waiting for idle (${relaunched ? "relaunch requested" : again}); no new session.`);
-					// The owner's text is not lost: it goes to this session as an ordinary message.
-					const pending = owner.filter(s => s !== "").join("\n");
-					if (pending !== "") pi.sendUserMessage(pending);
-					return;
-				}
-				const r = asRecord(await c.newSession({ parentSession: previous }));
-				if (r.cancelled === true) return;
-				// Read after the await: owner messages that arrived during newSession are part of the handoff.
-				const handoff = buildHandoff({
-					generated,
-					note,
-					previousSessionFile: previous,
-					ownerMessage: owner.filter(s => s !== "").join("\n"),
-				});
-				pi.sendUserMessage(handoff);
-			} finally {
-				flight = null;
-			}
+			await rolloverInProcess(c, [text], "main-rollover: collecting main-start state for the handoff (this can take a minute)…");
 		},
 	});
 }

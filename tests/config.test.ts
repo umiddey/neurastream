@@ -45,6 +45,7 @@ describe("loadConfig", () => {
 		const cfg = loadConfig({ file: withFile("wip:\n  limit: 3\n"), home, env: {} });
 		expect(cfg.rollover.max_session_mb).toBe(5);
 		expect(cfg.rollover.enabled).toBe(true);
+		expect(cfg.rollover.exit_grace_s).toBe(20);
 	});
 
 	test("user file merges one object level and replaces arrays", () => {

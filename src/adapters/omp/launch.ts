@@ -10,7 +10,7 @@ import type { Config } from "../../core/config.ts";
 import { mainStartText } from "../../core/main-start.ts";
 import { applyQueueEnv } from "../../core/queue/env.ts";
 import * as q from "../../core/queue/lib.ts";
-import { buildHandoff, holdsBlock, relaunchPath } from "../../core/rollover.ts";
+import { buildHandoff, holdsBlock, OWNER_AWAY, relaunchPath } from "../../core/rollover.ts";
 import { adapterLog } from "./index.ts";
 import { PACKAGE_ROOT, packageJsonPath, packageVersion } from "./package-root.ts";
 import { defaultCompletedResults, defaultRunSource } from "./sessions.ts";
@@ -67,9 +67,6 @@ export function carriedArgs(args: string[]): string[] {
 
 /** Handoffs up to this many bytes go in the first message; larger ones go to a file. */
 const MAX_INLINE_HANDOFF = 100_000;
-
-const OWNER_AWAY =
-	"Owner away (automatic rollover). Continue the work in the note and the queue; the owner reads results later.";
 
 export interface LaunchOptions {
 	harness?: string;

@@ -52,6 +52,7 @@ score:
 rollover:
   enabled: true
   max_session_mb: 5
+  exit_grace_s: 20
 
 metrics:
   report_days: 7

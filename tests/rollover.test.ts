@@ -183,6 +183,7 @@ describe("rollover config", () => {
 		const cfg = loadConfig({ file: "/tmp/neurastream-home-rollover/missing.yml", home: "/tmp/neurastream-home-rollover", env: {} });
 		expect(cfg.rollover.enabled).toBe(true);
 		expect(cfg.rollover.max_session_mb).toBe(5);
+		expect(cfg.rollover.exit_grace_s).toBe(20);
 	});
 
 	test("overrides come from config.yml", () => {
@@ -204,6 +205,17 @@ describe("rollover config", () => {
 			const file = join(dir, "config.yml");
 			writeFileSync(file, "rollover:\n  max_session_mb: 0\n");
 			expect(() => loadConfig({ file, home: dir, env: {} })).toThrow("rollover.max_session_mb must be > 0");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("exit_grace_s must be positive", () => {
+		const dir = mkdtempSync(join(tmpdir(), "neurastream-rollover-cfg-"));
+		try {
+			const file = join(dir, "config.yml");
+			writeFileSync(file, "rollover:\n  exit_grace_s: 0\n");
+			expect(() => loadConfig({ file, home: dir, env: {} })).toThrow("rollover.exit_grace_s must be > 0");
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

@@ -116,7 +116,7 @@ export interface Config {
 		protected: string[];
 		ledger_command: string;
 	};
-	rollover: { enabled: boolean; max_session_mb: number };
+	rollover: { enabled: boolean; max_session_mb: number; exit_grace_s: number };
 	metrics: { report_days: number; correction_patterns: string[]; ci_pipelines_cmd: string };
 	/** Incident detectors (src/core/incident-detectors.ts): when a sighting becomes an incident. */
 	incidents: {
@@ -281,6 +281,7 @@ function check(cfg: Config): void {
 		throw new ConfigError("guards.sub_warn_calls must be <= guards.sub_max_calls");
 	}
 	if (!(cfg.rollover.max_session_mb > 0)) throw new ConfigError("rollover.max_session_mb must be > 0");
+	if (!(cfg.rollover.exit_grace_s > 0)) throw new ConfigError("rollover.exit_grace_s must be > 0");
 	if (!(cfg.metrics.report_days >= 1)) throw new ConfigError("metrics.report_days must be >= 1");
 	for (const p of cfg.metrics.correction_patterns) {
 		try {
