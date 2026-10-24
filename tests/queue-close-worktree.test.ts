@@ -5,12 +5,13 @@
 
 import { afterAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 const REPO = dirname(dirname(import.meta.path));
-const ROOT = join(tmpdir(), "neurastream-home-qclose-worktree");
+// realpath: macOS tmpdir() is a /var symlink to /private/var, and git reports worktrees by real path.
+const ROOT = join(realpathSync(tmpdir()), "neurastream-home-qclose-worktree");
 const PLAN = "20261024_1500_wt.md";
 const TODAY = new Date().toISOString().slice(0, 10);
 const MONTH = TODAY.slice(0, 7).replace("-", "");
