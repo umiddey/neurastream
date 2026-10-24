@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.4
 ### Fixed
 - brief-lint no longer fails a plan on paths from finished work. When the file has a `## Phases` heading, the path check scans only the live parts — the header lines, Goal, Forbidden, Blockers, unticked phase lines and Done check. Paths in ticked phase lines and in the history sections (`## Code read by Main`, `## Progress`, `## Background`) cite worktrees removed after their phases landed and are skipped; a plain brief without `## Phases` is still checked whole.
 
