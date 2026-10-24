@@ -49,37 +49,6 @@ function asObj(v: unknown): Record<string, unknown> | null {
 	return typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
 }
 
-/** The joined text of the session file's last assistant message, trimmed; "" when there is none
- *  (unreadable file, no assistant message, or a tool-use-only ending). */
-export function lastAssistantText(file: string): string {
-	let text: string;
-	try {
-		text = readFileSync(file, "utf8");
-	} catch {
-		return "";
-	}
-	let out = "";
-	for (const line of text.split("\n")) {
-		if (!line.trim()) continue;
-		let parsed: unknown;
-		try {
-			parsed = JSON.parse(line);
-		} catch {
-			continue;
-		}
-		const d = asObj(parsed);
-		if (!d) continue;
-		const m = asObj(d.message) ?? d;
-		if (m.role !== "assistant") continue;
-		const content = Array.isArray(m.content) ? m.content : [];
-		const texts = content
-			.filter((c): c is Record<string, unknown> => asObj(c) !== null && asObj(c)?.type === "text")
-			.map(c => String(c.text ?? ""));
-		out = texts.join("\n").trim();
-	}
-	return out;
-}
-
 function costOf(m: Record<string, unknown>): number {
 	const u = asObj(m.usage);
 	const c = u ? asObj(u.cost) : null;

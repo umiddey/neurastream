@@ -29,7 +29,7 @@ import { applyQueueEnv } from "../../core/queue/env.ts";
 import { mainStartText, runDailyCheck } from "../../core/main-start.ts";
 import { readBlocks } from "../../core/metrics.ts";
 import { buildHandoff, holdsBlock, notePath, noteRequest, OWNER_AWAY, ownerText, relaunchPath, rolloverState, spawnRefusal, type RolloverState } from "../../core/rollover.ts";
-import { defaultCompletedResults, defaultRunSource, lastAssistantText } from "./sessions.ts";
+import { defaultCompletedResults, defaultRunSource } from "./sessions.ts";
 import { packageJsonPath, packageVersion } from "./package-root.ts";
 import * as q from "../../core/queue/lib.ts";
 // Registers the plugin-command matcher into core's writeTargets (side effect).
@@ -58,6 +58,37 @@ function asRecord(v: unknown): Record<string, unknown> {
 
 function asString(v: unknown, fallback = ""): string {
 	return typeof v === "string" ? v : fallback;
+}
+
+/** The last assistant message of an omp event's `messages` array, as the adapter needs it: its
+ *  joined text-block text and the shape that tells a real hand-back from a mid-run continuation
+ *  (plan 20261025_0130). omp sends the reply in `session_stop.last_assistant_message` (falling
+ *  back to the last assistant entry of `messages`) and in `agent_end.messages`; reading the
+ *  session file instead lags a whole turn because session_stop fires BEFORE agent_end. */
+interface EventReply {
+	text: string;
+	stopReason: string | null;
+	toolCalls: number;
+}
+
+function lastAssistantIn(messages: unknown): EventReply | null {
+	const arr = Array.isArray(messages) ? messages : [];
+	for (let i = arr.length - 1; i >= 0; i--) {
+		const m = asRecord(arr[i]);
+		if (m.role !== "assistant") continue;
+		const content = Array.isArray(m.content) ? m.content : [];
+		const text = content
+			.filter(c => asRecord(c).type === "text")
+			.map(c => asString(asRecord(c).text))
+			.join("\n")
+			.trim();
+		return {
+			text,
+			stopReason: typeof m.stopReason === "string" ? m.stopReason : null,
+			toolCalls: content.filter(c => asRecord(c).type === "toolCall").length,
+		};
+	}
+	return null;
 }
 
 function asCtx(v: unknown): HostCtx {
@@ -354,10 +385,29 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	let inboxTimer: unknown;
 	const calls = new Map<string, number>(); // subagent call budget, by agent id
 	const pending = new Map<string, Map<string, string>>(); // toolCallId -> plan snapshots
-	// Chat notify (plan 20261024_2155): the last assistant text of the main session, and the text
-	// a stop already posted (attempted) — one post per distinct text, never a retry loop.
-	let lastReply: string | null = null;
+	// Chat notify (plans 20261024_2155, 20261025_0130): the text a hand-back already posted
+	// (attempted) — one post per distinct text, never a retry loop. The reply itself comes from
+	// the stop/agent_end event, never the session file (session_stop fires BEFORE agent_end, and
+	// omp skips it entirely while an async job is pending, so a file read lags a whole turn).
 	let postedReply: string | null = null;
+	// One guard-log line per notify decision: `notify: posted|skipped (<why>)`. Fire-and-forget:
+	// the decision never awaits the post; a failed or slow post logs one line and never blocks
+	// or retries.
+	const notifyHandback = (reply: EventReply | null, why: string): void => {
+		if (!reply || !reply.text) {
+			adapterLog(cfg, `notify: skipped (no reply text, ${why})`);
+			return;
+		}
+		if (reply.text === postedReply) {
+			adapterLog(cfg, `notify: skipped (duplicate, ${why})`);
+			return;
+		}
+		postedReply = reply.text;
+		adapterLog(cfg, `notify: posted (${why})`);
+		void postReply(reply.text, cfg).then(results => {
+			for (const r of results) if (!r.posted) adapterLog(cfg, `notify: ${r.provider}: ${r.error}`);
+		});
+	};
 
 	pi.on("session_start", (_e, ctx) => {
 		const c = asCtx(ctx);
@@ -510,22 +560,20 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		return undefined;
 	});
 
-	pi.on("session_stop", (_e, ctx) => {
+	pi.on("session_stop", (e, ctx) => {
 		const c = asCtx(ctx);
 		if (c.hasAgent && c.kind !== "main") return;
 		// A relaunch is requested: omp shuts down at the next idle, so the stop must not be continued.
-		if (relaunched) return undefined;
-		// The stop hands the turn back to the owner: post Main's final reply, once per distinct
-		// text. Fire-and-forget: the decision never awaits the post; a failed or slow post logs
-		// one line and never blocks or retries.
-		const notifyOwner = (): void => {
-			const text = lastReply;
-			if (!text || text === postedReply) return;
-			postedReply = text;
-			void postReply(text, cfg).then(results => {
-				for (const r of results) if (!r.posted) adapterLog(cfg, `notify: ${r.provider}: ${r.error}`);
-			});
-		};
+		if (relaunched) {
+			adapterLog(cfg, "notify: skipped (relaunch requested)");
+			return undefined;
+		}
+		// The stop hands the turn back to the owner: post the stop event's own final reply, once
+		// per distinct text. The reply comes from the event (last_assistant_message, falling back
+		// to the last assistant entry of messages), never the session file: omp fires session_stop
+		// BEFORE agent_end, so a file read would lag a whole turn.
+		const stopMsg = asRecord(e).last_assistant_message;
+		const reply = stopMsg ? lastAssistantIn([stopMsg]) : lastAssistantIn(asRecord(e).messages);
 		// A pending rollover decides the stop and checkStop is not consulted: its queue, incident and cancel
 		// blocks would hold Main at a wait the new session raises again through main-start, and its "spawn an
 		// agent" text is refused while the rollover is pending.
@@ -534,6 +582,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 			const snap = rolloverSnapshot(rc);
 			if (snap.state === "need-note") {
 				adapterLog(cfg, "BLOCK stop: rollover need-note");
+				adapterLog(cfg, "notify: skipped (stop blocked: rollover need-note)");
 				return { decision: "block", reason: noteRequestFor(rc, snap) };
 			}
 			if (snap.state === "ready" || snap.state === "wait-jobs") {
@@ -541,7 +590,8 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 				// Under the launcher a ready rollover starts now (not a hand-back to the owner);
 				// plain omp waits for the owner's next message.
 				const handsToOwner = !(snap.state === "ready" && process.env.NEURASTREAM_MAIN_LAUNCHER === "1" && requestRelaunch(rc, notePath(rc.sessionId)));
-				if (handsToOwner) notifyOwner();
+				if (handsToOwner) notifyHandback(reply, "allowed session_stop");
+				else adapterLog(cfg, "notify: skipped (relaunch requested)");
 				return undefined;
 			}
 		}
@@ -549,9 +599,10 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		callsSinceStop = d.state?.callsSinceStop ?? 0;
 		idleStops = d.state?.idleStops ?? idleStops;
 		if (d.allow) {
-			notifyOwner();
+			notifyHandback(reply, "allowed session_stop");
 			return undefined;
 		}
+		adapterLog(cfg, "notify: skipped (stop blocked by guard)");
 		return { decision: "block", reason: d.reason };
 	});
 
@@ -740,16 +791,27 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		}
 	};
 	pi.on("agent_end", (e, ctx) => onSizeCheck("agent_end", e, ctx));
-	// The text a later allowed stop posts: the last assistant message of each terminal run end in
-	// the main session (omp 18.11.1 sets willContinue on a non-terminal end). A blocked stop keeps
-	// Main talking, so the final run end overwrites this before the stop that really hands back.
+	// Hand-back without a session_stop (plan 20261025_0130): while an async job is pending omp
+	// fires agent_end with willContinue:true and SKIPS session_stop — this deferred hand-back
+	// posts from the event's own messages. A terminal end (willContinue unset) is not one: the
+	// session_stop that follows it decides. A mid-run continuation — tool calls, or a non-"stop"
+	// reason such as an auto-retry — is not a hand-back and posts nothing.
 	pi.on("agent_end", (e, ctx) => {
 		if (!isMain(ctx)) return;
-		if (asRecord(e).willContinue === true) return;
-		const rc = asRolloverCtx(ctx);
-		if (!rc) return;
-		const text = lastAssistantText(rc.sessionFile);
-		lastReply = text.trim() ? text : null;
+		if (asRecord(e).willContinue !== true) return;
+		const reply = lastAssistantIn(asRecord(e).messages);
+		if (!reply || !reply.text) {
+			adapterLog(cfg, "notify: skipped (no reply text, agent_end hand-back)");
+			return;
+		}
+		if (reply.stopReason !== "stop" || reply.toolCalls > 0) {
+			adapterLog(
+				cfg,
+				`notify: skipped (mid-run: stop reason ${reply.stopReason ?? "unknown"}${reply.toolCalls > 0 ? ` + ${reply.toolCalls} tool call(s)` : ""}, agent_end hand-back)`,
+			);
+			return;
+		}
+		notifyHandback(reply, "agent_end hand-back");
 	});
 	// Turn end: page answers that arrived during the turn go out now (P3b). Main only.
 	pi.on("agent_end", (_e, ctx) => {
