@@ -6,16 +6,18 @@
 // tests.
 
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { Run, RunSource } from "../src/core/adapter.ts";
+import type { Run, RunSource, ToolEvent } from "../src/core/adapter.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { nowSec } from "../src/core/clock.ts";
 import { addIncident } from "../src/core/incidents.ts";
 import { appendMetric } from "../src/core/metrics.ts";
+import { checkTool } from "../src/core/guards.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
+import { createOmpAdapter, ownerInboxCursorPath, type ExtensionHost } from "../src/adapters/omp/index.ts";
 import { inboxPath, startOwnerUi, type OwnerUiOptions, type OwnerUiServer } from "../src/core/owner-ui.ts";
 import { stateDirPath, unlockPath } from "../src/core/queue/lib.ts";
 import type { Tailscale } from "../src/core/tailscale.ts";
@@ -143,6 +145,7 @@ afterAll(() => {
 
 beforeEach(() => {
 	rmSync(inboxPath(), { force: true });
+	rmSync(ownerInboxCursorPath(), { force: true });
 	rmSync(unlockPath(), { force: true });
 	rmSync(CFG.paths.guard_log, { force: true });
 	rmSync(CFG.paths.plan_guard_log, { force: true });
@@ -464,4 +467,116 @@ test("an unreadable section shows unavailable and never fails the page", async (
 
 test("the owner inbox lives under the queue state dir", () => {
 	expect(inboxPath()).toBe(join(stateDirPath(), "owner-inbox.jsonl"));
+});
+
+// --- adapter: inbox delivery to Main (P3b) ---
+
+function fakePi(): { pi: ExtensionHost; sent: string[]; handlers: Map<string, (e: unknown, ctx: unknown) => unknown> } {
+	const sent: string[] = [];
+	const handlers = new Map<string, (e: unknown, ctx: unknown) => unknown>();
+	const pi: ExtensionHost = {
+		on: (event, cb) => handlers.set(event, cb as (e: unknown, ctx: unknown) => unknown),
+		registerCommand: () => {},
+		sendUserMessage: content => sent.push(content),
+		sendMessage: () => {},
+	};
+	return { pi, sent, handlers };
+}
+
+const rec = (answer: string) => JSON.stringify({ ts: nowSec(), plan: PLAN_W, question: QUESTION, answer, login: OWNER });
+
+const mainCtx = { agent: { kind: "main" } };
+const subCtx = { agent: { kind: "sub" } };
+
+test("the adapter delivers an undelivered inbox record to Main once; the cursor holds it back", () => {
+	const { pi, sent, handlers } = fakePi();
+	createOmpAdapter(pi, CFG);
+	appendFileSync(inboxPath(), `${rec("yes")}\n`);
+	handlers.get("agent_end")!({ willContinue: false }, mainCtx);
+	expect(sent).toEqual([`Owner answered on the phone page — 20261019_wait.md: ${QUESTION} → yes`]);
+	expect(readFileSync(ownerInboxCursorPath(), "utf8")).toBe("1\n");
+	// A second poll at the same cursor sends nothing.
+	handlers.get("agent_end")!({ willContinue: false }, mainCtx);
+	expect(sent.length).toBe(1);
+	// A new record delivers alone.
+	appendFileSync(inboxPath(), `${rec("no")}\n`);
+	handlers.get("agent_end")!({ willContinue: false }, mainCtx);
+	expect(sent.length).toBe(2);
+	expect(sent[1]).toContain("→ no");
+});
+
+test("a torn inbox tail waits for the write to complete and is never delivered twice", () => {
+	const { pi, sent, handlers } = fakePi();
+	createOmpAdapter(pi, CFG);
+	const full = `${rec("wait for it")}\n`;
+	appendFileSync(inboxPath(), full.slice(0, 20));
+	handlers.get("agent_end")!({}, mainCtx);
+	expect(sent).toEqual([]);
+	appendFileSync(inboxPath(), full.slice(20));
+	handlers.get("agent_end")!({}, mainCtx);
+	expect(sent).toEqual([`Owner answered on the phone page — 20261019_wait.md: ${QUESTION} → wait for it`]);
+});
+
+test("a malformed complete inbox row is consumed but skipped, so delivery never wedges", () => {
+	const { pi, sent, handlers } = fakePi();
+	createOmpAdapter(pi, CFG);
+	appendFileSync(inboxPath(), `not json\n${rec("after garbage")}\n`);
+	handlers.get("agent_end")!({}, mainCtx);
+	expect(sent).toEqual([`Owner answered on the phone page — 20261019_wait.md: ${QUESTION} → after garbage`]);
+	expect(readFileSync(ownerInboxCursorPath(), "utf8")).toBe("2\n");
+});
+
+test("a subagent session never delivers and never moves the cursor", () => {
+	const { pi, sent, handlers } = fakePi();
+	createOmpAdapter(pi, CFG);
+	appendFileSync(inboxPath(), `${rec("yes")}\n`);
+	handlers.get("agent_end")!({}, subCtx);
+	expect(sent).toEqual([]);
+	expect(existsSync(ownerInboxCursorPath())).toBe(false);
+});
+
+test("Main's session start arms a 15 s inbox poll; a subagent session arms none", () => {
+	const saved = process.env.QUEUE_CLOSE_BIN;
+	process.env.QUEUE_CLOSE_BIN = "true"; // autoClose (same handler) must spawn no real close
+	try {
+		const { pi, sent, handlers } = fakePi();
+		createOmpAdapter(pi, CFG);
+		let tick: (() => void) | null = null;
+		let ms = 0;
+		handlers.get("session_start")!(undefined, {
+			setInterval: (cb: () => void, every: number) => {
+				tick = cb;
+				ms = every;
+				return 7;
+			},
+		});
+		expect(ms).toBe(15_000);
+		appendFileSync(inboxPath(), `${rec("later")}\n`);
+		tick!();
+		expect(sent).toEqual([`Owner answered on the phone page — 20261019_wait.md: ${QUESTION} → later`]);
+		// A subagent session arms no timer (the handler returns before arming).
+		let subTimers = 0;
+		const sub = fakePi();
+		createOmpAdapter(sub.pi, CFG);
+		sub.handlers.get("session_start")!(undefined, {
+			agent: { kind: "sub" },
+			setInterval: () => {
+				subTimers++;
+				return 8;
+			},
+		});
+		expect(subTimers).toBe(0);
+	} finally {
+		if (saved === undefined) delete process.env.QUEUE_CLOSE_BIN;
+		else process.env.QUEUE_CLOSE_BIN = saved;
+	}
+});
+
+test("an agent write to the owner inbox is refused like any protected state file", () => {
+	const ev: ToolEvent = { tool: "write", input: { path: inboxPath() }, cwd: TMP, agent: "sub", agentId: "regress", calls: 0, paths: [], writes: [], command: "" };
+	const d = checkTool(ev, CFG);
+	expect(d.allow).toBe(false);
+	expect(d.reason).toContain("protected");
+	const main: ToolEvent = { ...ev, agent: "main", agentId: "regress-main" };
+	expect(checkTool(main, CFG).allow).toBe(false);
 });
