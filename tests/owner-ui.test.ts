@@ -7,6 +7,7 @@
 
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Run, RunSource } from "../src/core/adapter.ts";
@@ -21,6 +22,7 @@ import type { Tailscale } from "../src/core/tailscale.ts";
 
 const OWNER = "owner@example.com";
 const OWN_IP = "100.95.10.2"; // fixture: this machine's tailnet address
+const DNS_NAME = "ukd.tail4295de.ts.net"; // fixture: this machine's MagicDNS name
 const PEER = "100.95.10.9"; // fixture: the owner's phone
 const QUESTION = "restart the pm runner after the disk cleanup";
 
@@ -122,6 +124,8 @@ const RUNS: RunSource = {
 // tailnet peer resolves to someone else; everything else makes whois fail.
 const TS: Tailscale = {
 	ip4: () => OWN_IP,
+	// The seam's contract (like realTailscale): the MagicDNS name, trailing dot already stripped.
+	dnsName: () => DNS_NAME,
 	whois: (peer: string) => (peer === PEER ? OWNER : peer === "100.95.10.7" ? "other@example.com" : null),
 };
 
@@ -158,8 +162,40 @@ function ui(over: Partial<OwnerUiOptions> = {}): OwnerUiServer {
 	return svc;
 }
 
-function get(svc: OwnerUiServer, path = "/"): Promise<Response> {
-	return fetch(`http://127.0.0.1:${svc.port}${path}`);
+// Raw HTTP with a controllable Host header: the allowlist (P3a) reads Host, so the tests choose
+// it — fetch pins it to the connect host. Default Host: the tailnet address the allowlist names.
+function raw(
+	svc: OwnerUiServer,
+	method: string,
+	path: string,
+	opts: { host?: string | null; origin?: string | null; body?: Record<string, string> } = {},
+): Promise<Response> {
+	const host = opts.host === null ? null : (opts.host ?? `${OWN_IP}:${svc.port}`);
+	const headers: Record<string, string> = {};
+	if (host !== null) headers.host = host;
+	if (opts.origin) headers.origin = opts.origin;
+	const body = opts.body === undefined ? undefined : new URLSearchParams(opts.body).toString();
+	if (body !== undefined) headers["content-type"] = "application/x-www-form-urlencoded";
+	const { promise, resolve, reject } = Promise.withResolvers<Response>();
+	const req = request({ host: "127.0.0.1", port: svc.port, method, path, headers }, res => {
+		const chunks: Buffer[] = [];
+		res.on("data", (c: Buffer) => chunks.push(c));
+		res.on("end", () =>
+			resolve(
+				new Response(Buffer.concat(chunks).toString("utf8"), {
+					status: res.statusCode,
+					headers: { "content-type": String(res.headers["content-type"] ?? "") },
+				}),
+			),
+		);
+	});
+	req.on("error", reject);
+	req.end(body);
+	return promise;
+}
+
+function get(svc: OwnerUiServer, path = "/", host?: string | null): Promise<Response> {
+	return raw(svc, "GET", path, { host });
 }
 
 function post(
@@ -167,14 +203,12 @@ function post(
 	path: string,
 	fields: Record<string, string>,
 	origin?: string | null,
+	host?: string | null,
 ): Promise<Response> {
-	const headers: Record<string, string> = { "content-type": "application/x-www-form-urlencoded" };
-	if (origin !== null) headers.origin = origin ?? `http://127.0.0.1:${svc.port}`;
-	return fetch(`http://127.0.0.1:${svc.port}${path}`, {
-		method: "POST",
-		redirect: "manual",
-		headers,
-		body: new URLSearchParams(fields),
+	return raw(svc, "POST", path, {
+		origin: origin === undefined ? `http://${OWN_IP}:${svc.port}` : origin,
+		host,
+		body: fields,
 	});
 }
 
@@ -274,7 +308,7 @@ test("ui.enabled false refuses to start", () => {
 });
 
 test("a silent tailscale refuses to start on the default hostname", () => {
-	expect(() => ui({ tailscale: { ip4: () => null, whois: () => null }, hostname: undefined })).toThrow();
+	expect(() => ui({ tailscale: { ip4: () => null, dnsName: () => null, whois: () => null }, hostname: undefined })).toThrow();
 });
 
 test("a real loopback request (no peer injection) gets 403", async () => {
@@ -294,6 +328,33 @@ test("a POST with a foreign Origin gets 403 and appends nothing", async () => {
 test("a POST with no Origin gets 403", async () => {
 	const svc = ui();
 	const res = await post(svc, "/answer", { plan: PLAN_W, answer: "yes" }, null);
+	expect(res.status).toBe(403);
+	expect(inboxRecords()).toEqual([]);
+});
+
+// --- host allowlist (P3a): DNS rebinding is refused on every request, before whois ---
+
+test("a rebinding POST (Host and Origin evil.example) from the owner's phone gets 403 and appends nothing", async () => {
+	const svc = ui();
+	const res = await post(svc, "/answer", { plan: PLAN_W, answer: "yes" }, `http://evil.example:${svc.port}`, `evil.example:${svc.port}`);
+	expect(res.status).toBe(403);
+	expect(inboxRecords()).toEqual([]);
+});
+
+test("a rebinding GET (Host evil.example) from the owner's phone gets 403", async () => {
+	const svc = ui();
+	expect((await get(svc, "/", `evil.example:${svc.port}`)).status).toBe(403);
+});
+
+test("a Host without the page's port gets 403", async () => {
+	const svc = ui();
+	expect((await get(svc, "/", OWN_IP)).status).toBe(403);
+});
+
+test("the MagicDNS Host serves the owner; an Origin naming the other allowed host is refused", async () => {
+	const svc = ui();
+	expect((await get(svc, "/", `${DNS_NAME}:${svc.port}`)).status).toBe(200);
+	const res = await post(svc, "/answer", { plan: PLAN_W, answer: "yes" }, `http://${OWN_IP}:${svc.port}`, `${DNS_NAME}:${svc.port}`);
 	expect(res.status).toBe(403);
 	expect(inboxRecords()).toEqual([]);
 });
@@ -380,7 +441,7 @@ test("every request logs UI <method> <path> login=<l> → <code> to the guard lo
 	await get(svc, "/nope");
 	// A second server whose peer resolves to a different login: refused, so login stays "-" in the log.
 	const stranger = ui({ peerOf: () => "100.95.10.7" });
-	await fetch(`http://127.0.0.1:${stranger.port}/`);
+	await get(stranger);
 	const lines = guardLogLines();
 	expect(lines.length).toBe(3);
 	expect(lines[0]).toMatch(/^\S+ UI GET \/ login=owner@example\.com → 200$/);

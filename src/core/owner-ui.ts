@@ -276,6 +276,21 @@ export function startOwnerUi(opts: OwnerUiOptions): OwnerUiServer {
 	const hostname = opts.hostname ?? tailscale.ip4();
 	if (!hostname) throw new Error("owner ui: tailscale ip -4 did not answer — is tailscale up?");
 	const peerOf = opts.peerOf ?? ((req: Request, server: UiHttpServer) => server.requestIP(req)?.address ?? "");
+	// Host allowlist (plan P3a): a DNS-rebinding page sends evil.example's Host with a matching
+	// Origin from the owner's own phone, so the peer and Origin checks alone pass it. On every
+	// request, before whois, the Host header must name this page — the tailnet address or the
+	// MagicDNS name (dnsName(), trailing dot stripped) — with the served port. Anything else is a
+	// 403 no matter whose peer it is. Computed once, against the bound port (tests bind 0).
+	let allowedHosts: string[] | null = null;
+	const hostAllowed = (hostHeader: string, port: number | undefined): boolean => {
+		// No bound port (never expected): nothing is allowed — fail closed.
+		if (port === undefined) return false;
+		if (allowedHosts === null) {
+			const dns = tailscale.dnsName();
+			allowedHosts = [tailscale.ip4(), dns].filter((h): h is string => Boolean(h)).map(h => `${h}:${port}`);
+		}
+		return allowedHosts.includes(hostHeader);
+	};
 	const server = Bun.serve({
 		hostname,
 		port: opts.port ?? cfg.ui.port,
@@ -285,33 +300,39 @@ export function startOwnerUi(opts: OwnerUiOptions): OwnerUiServer {
 			let login: string | null = null;
 			let res: Response;
 			try {
-				const auth = authenticate(cfg, tailscale, peerOf(req, srv));
-				if (!auth.ok) {
-					res = textRes("forbidden: this page serves only the owner", 403);
+				const hostHeader = req.headers.get("host") ?? "";
+				if (!hostAllowed(hostHeader, srv.port)) {
+					res = textRes("forbidden: host is not this page", 403);
 					code = 403;
 				} else {
-					login = auth.login;
-					if (req.method === "POST" && req.headers.get("origin") !== `http://${req.headers.get("host") ?? ""}`) {
-						res = textRes("forbidden: origin is not this page", 403);
+					const auth = authenticate(cfg, tailscale, peerOf(req, srv));
+					if (!auth.ok) {
+						res = textRes("forbidden: this page serves only the owner", 403);
 						code = 403;
-					} else if (req.method === "GET" && url.pathname === "/") {
-						res = new Response(renderPage(buildSections(cfg, source)), {
-							status: 200,
-							headers: { "content-type": "text/html; charset=utf-8" },
-						});
-						code = 200;
-					} else if (req.method === "POST" && url.pathname === "/answer") {
-						res = handleAnswer(cfg, await fieldsOf(req), login);
-						code = res.status;
-					} else if (req.method === "POST" && url.pathname === "/unlock") {
-						res = handleUnlock(cfg, await fieldsOf(req), login);
-						code = res.status;
-					} else if (req.method === "POST" && url.pathname === "/lock") {
-						res = handleLock(cfg, login);
-						code = res.status;
 					} else {
-						res = textRes("not found", 404);
-						code = 404;
+						login = auth.login;
+						if (req.method === "POST" && req.headers.get("origin") !== `http://${hostHeader}`) {
+							res = textRes("forbidden: origin is not this page", 403);
+							code = 403;
+						} else if (req.method === "GET" && url.pathname === "/") {
+							res = new Response(renderPage(buildSections(cfg, source)), {
+								status: 200,
+								headers: { "content-type": "text/html; charset=utf-8" },
+							});
+							code = 200;
+						} else if (req.method === "POST" && url.pathname === "/answer") {
+							res = handleAnswer(cfg, await fieldsOf(req), login);
+							code = res.status;
+						} else if (req.method === "POST" && url.pathname === "/unlock") {
+							res = handleUnlock(cfg, await fieldsOf(req), login);
+							code = res.status;
+						} else if (req.method === "POST" && url.pathname === "/lock") {
+							res = handleLock(cfg, login);
+							code = res.status;
+						} else {
+							res = textRes("not found", 404);
+							code = 404;
+						}
 					}
 				}
 			} catch {
