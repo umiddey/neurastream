@@ -301,7 +301,7 @@ function subRules(e: ToolEvent, input: Record<string, unknown>, paths: string[],
 			return `${p} is a plan file: change its "## Progress" section only with the edit or write tool.`;
 	}
 	for (const plan of plans) {
-		const hit = paths.filter(p => !q.isOrchestrationPath(p, plans) && q.planCovers(plan, p));
+		const hit = paths.filter(p => !q.isOrchestrationPath(p, plans) && q.planCovers(plan, p, plans));
 		if (!hit.length) continue;
 		if (plan.errors.length) return `plan ${plan.file} is invalid (${plan.errors.join("; ")}). Stop and report to Main.`;
 		const why = runBlockers(plan, hit, e, cfg);
