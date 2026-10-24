@@ -120,6 +120,8 @@ export interface Config {
 		protected: string[];
 		ledger_command: string;
 	};
+	/** The owner's phone page (`neurastream ui`): binds the tailnet address only. */
+	ui: { enabled: boolean; port: number; owner_login: string };
 	rollover: { enabled: boolean; max_session_mb: number; exit_grace_s: number };
 	metrics: { report_days: number; correction_patterns: string[]; ci_pipelines_cmd: string };
 	/** Incident detectors (src/core/incident-detectors.ts): when a sighting becomes an incident. */
@@ -293,6 +295,7 @@ function check(cfg: Config): void {
 	if (!(cfg.rollover.max_session_mb > 0)) throw new ConfigError("rollover.max_session_mb must be > 0");
 	if (!(cfg.rollover.exit_grace_s > 0)) throw new ConfigError("rollover.exit_grace_s must be > 0");
 	if (!(cfg.metrics.report_days >= 1)) throw new ConfigError("metrics.report_days must be >= 1");
+	if (!(cfg.ui.port >= 1 && cfg.ui.port <= 65535)) throw new ConfigError("ui.port must be between 1 and 65535");
 	for (const p of cfg.metrics.correction_patterns) {
 		try {
 			new RegExp(p, "i");

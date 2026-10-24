@@ -1,0 +1,15 @@
+# User unit for the owner's phone page (neurastream ui). The installer copies this into
+# ~/.config/systemd/user/; agents never install or start it — the owner does, after setting
+# ui.enabled and ui.owner_login in the config.
+
+[Unit]
+Description=neurastream owner page (neurastream ui)
+After=network-online.target
+
+[Service]
+ExecStart=%h/.bun/bin/neurastream ui
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

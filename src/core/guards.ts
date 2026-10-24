@@ -352,6 +352,28 @@ function runsCloser(input: Record<string, unknown>): boolean {
 	});
 }
 
+// True when a command segment starts the owner page (plan 20261024_2230 P3c): `neurastream ui`
+// serves it and `systemctl --user start/restart/enable` of neurastream-ui relaunches it — the
+// owner's systemd moves, never an agent's, unlocked or not. Segment splitting and launcher
+// skipping match runsCloser, so `sh -c "neurastream ui"` and `sudo systemctl --user ...` are seen.
+function startsOwnerUi(input: Record<string, unknown>): boolean {
+	const text = Object.values(input).filter((v): v is string => typeof v === "string").join("\n");
+	const bin = (w: string | undefined) => (w ?? "").replace(/^["']+|["']+$/g, "").split("/").pop() ?? "";
+	return text.split(/&&|\|\||;|\||\n|\$\(|`/).some(seg => {
+		const words = seg.trim().split(/\s+/).filter(Boolean).map(w => w.replace(/^["'(]+|["')]+$/g, ""));
+		let i = 0;
+		while (i < words.length && (LAUNCHERS[words[i] ?? ""] === true || /^\w+=/.test(words[i] ?? "") || /(^|\/)main\.ts$/.test(words[i] ?? ""))) i++;
+		const cmd = bin(words[i]);
+		if ((cmd === "ui" && bin(words[i - 1]) === "neurastream") || (cmd === "neurastream" && bin(words[i + 1]) === "ui")) return true;
+		return (
+			cmd === "systemctl" &&
+			words.some(w => w === "--user") &&
+			words.some(w => w === "start" || w === "restart" || w === "enable") &&
+			words.some(w => bin(w) === "neurastream-ui" || w.startsWith("neurastream-ui."))
+		);
+	});
+}
+
 // Subagent half of a tool call (the original plan-guard checkCall without the main return).
 // `cap` is the sub's hard call cap: its recorded per-spawn budget, else the global sub_max_calls.
 function subRules(e: ToolEvent, input: Record<string, unknown>, paths: string[], writes: string[], cfg: Config, cap: number): string | null {
@@ -509,6 +531,14 @@ export const MAIN_PLAN_FILE = /\/docs\/plans\/(?!archive\/)[^/]+\.md$/;
 export function checkTool(e: ToolEvent, cfg: Config): Decision {
 	if (cfg.guards.skip_tools.includes(e.tool)) return ALLOW;
 	const input = e.input ?? {};
+	// Starting the owner page (plan 20261024_2230 P3c) is the owner's systemd move, never an
+	// agent's, unlocked or not: refused plan-guard style like a protected-file write.
+	if (cfg.guards.shell_tools.includes(e.tool) && startsOwnerUi(input)) {
+		log(cfg.paths.plan_guard_log, `BLOCK ${e.agent}:${e.agentId} tool=${e.tool} ui-start: ${String(input.command ?? "")}`);
+		return deny(
+			"plan-guard: starting the owner page (neurastream ui, or systemctl --user start/restart/enable of neurastream-ui) is the owner's move, not an agent's.",
+		);
+	}
 	// The caller may know paths the text search cannot see (structured edits); union, never shrink.
 	const paths: string[] = [];
 	for (const p of [...(e.paths ?? []), ...q.touchedPaths(e.tool, input, e.cwd)]) if (!paths.includes(p)) paths.push(p);

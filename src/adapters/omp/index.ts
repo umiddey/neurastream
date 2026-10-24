@@ -17,13 +17,14 @@
 
 import { execFileSync, spawn } from "node:child_process";
 import { appendFileSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { Decision } from "../../core/adapter.ts";
 import { loadConfig, type Config } from "../../core/config.ts";
 import { nowSec } from "../../core/clock.ts";
 import { runDetectorsGated } from "../../core/incident-detectors.ts";
 import { checkInject, checkPlanEdit, checkStop, checkTool, MAIN_PLAN_FILE, recordMainResult, rekeySpawnFile } from "../../core/guards.ts";
 import { postReply } from "../../core/notify.ts";
+import { inboxPath } from "../../core/owner-ui.ts";
 import { applyQueueEnv } from "../../core/queue/env.ts";
 import { mainStartText, runDailyCheck } from "../../core/main-start.ts";
 import { readBlocks } from "../../core/metrics.ts";
@@ -259,6 +260,89 @@ function sizeOf(path: string): number {
 	}
 }
 
+// ---- owner inbox delivery (plan 20261024_2230 P3b) ----
+// The phone page appends answers to <queue_state>/owner-inbox.jsonl — a protected state file, so
+// no agent can forge an owner answer (guards refuse the write). Main's session delivers each
+// record once as a user message (pi.sendUserMessage, no options: idle → a new turn, streaming →
+// the steer queue), at turn end and on a 15 s timer while idle. The consumed-row count lives in
+// <queue_state>/owner-inbox.cursor; subagent sessions never deliver and never move it.
+
+/** Idle-poll interval for the owner inbox. */
+export const OWNER_INBOX_POLL_MS = 15_000;
+
+/** The delivered cursor: how many owner-inbox rows Main's session has consumed. */
+export function ownerInboxCursorPath(): string {
+	return `${q.stateDirPath()}/owner-inbox.cursor`;
+}
+
+function readOwnerInboxCursor(): number {
+	try {
+		const n = Number(readFileSync(ownerInboxCursorPath(), "utf8").trim());
+		return Number.isInteger(n) && n >= 0 ? n : 0;
+	} catch {
+		return 0;
+	}
+}
+
+function writeOwnerInboxCursor(n: number): void {
+	try {
+		mkdirSync(q.stateDirPath(), { recursive: true });
+		writeFileSync(ownerInboxCursorPath(), `${n}\n`);
+	} catch {}
+}
+
+/** The user message one inbox record becomes, or null when it is not a page answer. */
+export function ownerInboxMessage(rec: Record<string, unknown>): string | null {
+	const plan = asString(rec.plan);
+	const question = asString(rec.question);
+	const answer = asString(rec.answer);
+	if (!plan || !question || !answer) return null;
+	return `Owner answered on the phone page — ${basename(plan)}: ${question} → ${answer}`;
+}
+
+/** The JSONL rows after `cursor` (a row count), as records, plus the new cursor. A torn last row
+ * (a page write that has not landed completely) stays unconsumed; a malformed complete row is
+ * consumed but skipped, so one bad line cannot wedge delivery. */
+export function pendingInboxRecords(text: string, cursor: number): { records: Record<string, unknown>[]; next: number } {
+	const endsClean = text === "" || text.endsWith("\n");
+	const rows = text.split("\n");
+	if (rows.length && rows[rows.length - 1] === "") rows.pop();
+	const records: Record<string, unknown>[] = [];
+	let next = Math.min(cursor, rows.length);
+	for (let i = cursor; i < rows.length; i++) {
+		const torn = i === rows.length - 1 && !endsClean;
+		try {
+			const rec: unknown = JSON.parse((rows[i] ?? "").trim());
+			if (rec !== null && typeof rec === "object" && !Array.isArray(rec)) records.push(rec as Record<string, unknown>);
+		} catch {}
+		if (!torn) next = i + 1;
+	}
+	return { records, next };
+}
+
+/** Deliver every inbox row past the cursor once, as a user message to Main; then store the cursor.
+ * Synchronous, so the turn-end path and the idle timer cannot interleave. */
+export function deliverOwnerInbox(pi: ExtensionHost, cfg: Config): void {
+	let text: string;
+	try {
+		text = readFileSync(inboxPath(), "utf8");
+	} catch {
+		return; // no inbox yet: nothing to deliver
+	}
+	const cursor = readOwnerInboxCursor();
+	const { records, next } = pendingInboxRecords(text, cursor);
+	if (next === cursor) return;
+	let delivered = 0;
+	for (const rec of records) {
+		const msg = ownerInboxMessage(rec);
+		if (msg === null) continue;
+		pi.sendUserMessage(msg);
+		delivered++;
+	}
+	writeOwnerInboxCursor(next);
+	adapterLog(cfg, `owner inbox: delivered ${delivered} answer(s) (cursor ${cursor} → ${next})`);
+}
+
 /** Register the guard handlers on one extension host. `cfg` is injectable for tests. */
 export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	// The queue library resolves its paths from env snapshots; point them at this config first.
@@ -267,6 +351,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	let callsSinceStop = 0;
 	let idleStops = 0;
 	let timer: unknown;
+	let inboxTimer: unknown;
 	const calls = new Map<string, number>(); // subagent call budget, by agent id
 	const pending = new Map<string, Map<string, string>>(); // toolCallId -> plan snapshots
 	// Chat notify (plan 20261024_2155): the last assistant text of the main session, and the text
@@ -286,6 +371,12 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 			: setInterval(() => autoClose(cfg), every);
 		if (t && typeof t === "object" && "unref" in t && typeof t.unref === "function") t.unref();
 		timer = t;
+		// The owner-inbox poll (P3b): Main's session only — this handler returned for every other.
+		const it: unknown = c.setInterval
+			? c.setInterval(() => deliverOwnerInbox(pi, cfg), OWNER_INBOX_POLL_MS)
+			: setInterval(() => deliverOwnerInbox(pi, cfg), OWNER_INBOX_POLL_MS);
+		if (it && typeof it === "object" && "unref" in it && typeof it.unref === "function") it.unref();
+		inboxTimer = it;
 	});
 
 	pi.on("before_agent_start", (event, ctx) => {
@@ -655,6 +746,10 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		if (!rc) return;
 		const text = lastAssistantText(rc.sessionFile);
 		lastReply = text.trim() ? text : null;
+	});
+	// Turn end: page answers that arrived during the turn go out now (P3b). Main only.
+	pi.on("agent_end", (_e, ctx) => {
+		if (isMain(ctx)) deliverOwnerInbox(pi, cfg);
 	});
 
 	// omp is really shutting down: the exit-grace fallback must not fire.

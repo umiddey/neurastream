@@ -8,6 +8,7 @@ import { runInit } from "./init.ts";
 import { PORTED, runMain, runPorted } from "./commands.ts";
 import { runMetrics } from "./metrics.ts";
 import { runIncident } from "./incident.ts";
+import { runUi } from "./ui.ts";
 import { runUninstall } from "../core/uninstall.ts";
 import { queueMigrate } from "../core/queue-migrate.ts";
 import { allowedAgents, subagentsPath } from "../core/queue/lib.ts";
@@ -60,6 +61,7 @@ export function helpText(): string {
 		"  neurastream main [args]       run omp under the launcher (automatic session rollover)",
 		"  neurastream metrics <cmd>     self-metrics: report, ci, false-alarm, rule (see README)",
 		"  neurastream incident <cmd>    incidents Main must act on: list, add, plan, dismiss (see README)",
+		"  neurastream ui                serve the owner's phone page on the tailnet address (ui.enabled, ui.owner_login)",
 		"  neurastream agents list | allow <slug>... | deny <slug>...",
 		"                                the subagent allow-list (## Allowed in notes/subagents.md)",
 		"",
@@ -80,6 +82,7 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 	if (cmd === "init") return runInit(args);
 	if (cmd === "metrics") return runMetrics(args);
 	if (cmd === "incident") return runIncident(args);
+	if (cmd === "ui") return runUi();
 	if (cmd === "adapter") return runAdapterInstall(args);
 	if (cmd === "config") {
 		try {

@@ -620,12 +620,13 @@ const CHAT_CMD = /^(unlock|lock)(?:\s+(\d+))?$/i;
 /**
  * Owner unlock by chat (guards.chat_unlock): the whole trimmed message, case-insensitive —
  * "unlock" (open for guards.unlock_minutes), "unlock N" (open for exactly N minutes, N clamped
- * to 1..unlock_minutes) or "lock" (close again). Only the adapter calls this, with text the
- * owner really typed; a model, a tool result or a machine prompt must never reach it. The file
- * is written or removed from the extension process, not through a tool call, so plan-guard does
- * not see the write. Every applied unlock/lock is logged to the plan-guard log.
+ * to 1..unlock_minutes) or "lock" (close again). Only the adapter and the owner page call this,
+ * with text the owner really typed or tapped; a model, a tool result or a machine prompt must
+ * never reach it. The file is written or removed from the extension process (or the ui server),
+ * not through a tool call, so plan-guard does not see the write. Every applied unlock/lock is
+ * logged to the plan-guard log with `word` naming the entry point ("chat" or "ui").
  */
-export function chatUnlock(text: string, cfg: Config, source: string): ChatUnlockResult {
+export function chatUnlock(text: string, cfg: Config, source: string, word: "chat" | "ui" = "chat"): ChatUnlockResult {
 	if (!cfg.guards.chat_unlock) return { applied: false };
 	const m = CHAT_CMD.exec(text.trim());
 	if (!m) return { applied: false };
@@ -633,7 +634,7 @@ export function chatUnlock(text: string, cfg: Config, source: string): ChatUnloc
 	if ((m[1] ?? "").toLowerCase() === "lock") {
 		rmSync(unlockPath(), { force: true });
 		try {
-			appendFileSync(cfg.paths.plan_guard_log, `${new Date().toISOString()} LOCK chat source=${source}\n`);
+			appendFileSync(cfg.paths.plan_guard_log, `${new Date().toISOString()} LOCK ${word} source=${source}\n`);
 		} catch {}
 		return { applied: true, command: "lock" };
 	}
@@ -646,7 +647,7 @@ export function chatUnlock(text: string, cfg: Config, source: string): ChatUnloc
 	const past = (Date.now() - (minutes - n) * 60_000) / 1000; // utimesSync takes seconds
 	utimesSync(file, past, past);
 	try {
-		appendFileSync(cfg.paths.plan_guard_log, `${new Date().toISOString()} UNLOCK chat source=${source} minutes=${n}\n`);
+		appendFileSync(cfg.paths.plan_guard_log, `${new Date().toISOString()} UNLOCK ${word} source=${source} minutes=${n}\n`);
 	} catch {}
 	return { applied: true, command: "unlock", minutes: n };
 }

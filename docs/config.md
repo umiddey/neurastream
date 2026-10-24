@@ -161,6 +161,11 @@ guards:
   protected: []
   ledger_command: "agent-ledger --hours 12"
 
+ui:
+  enabled: false        # the owner's phone page (neurastream ui); binds the tailnet address only
+  port: 7787
+  owner_login: ""       # the tailscale login that may open the page; empty = the page refuses to start
+
 machine:
   load_over_cores: 4
   load_max: 0                       # 0 = nproc + load_over_cores; env LOAD_MAX sets an absolute cap
@@ -239,6 +244,7 @@ The loader rejects:
 - `guards.sub_max_calls_cap` below `guards.sub_max_calls`
 - a `paths.*` value that is not a string
 - `metrics.report_days` below 1, or a `metrics.correction_patterns` entry that does not compile as a case-insensitive regex
+- `ui.port` outside 1..65535
 - a `brief.repo_rules` entry whose `match`, `require`, `first` or `unless` does not compile as a case-insensitive regex, or whose `message` is empty
 - YAML that does not parse
 
