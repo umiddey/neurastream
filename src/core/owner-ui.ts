@@ -280,7 +280,7 @@ export function startOwnerUi(opts: OwnerUiOptions): OwnerUiServer {
 	// Origin from the owner's own phone, so the peer and Origin checks alone pass it. On every
 	// request, before whois, the Host header must name this page — the tailnet address or the
 	// MagicDNS name (dnsName(), trailing dot stripped) — with the served port. Anything else is a
-	// 403 no matter whose peer it is. Computed once, against the bound port (tests bind 0).
+	// 403 no matter whose peer it is. Built once, against the bound port (tests bind 0).
 	let allowedHosts: string[] | null = null;
 	const hostAllowed = (hostHeader: string, port: number | undefined): boolean => {
 		// No bound port (never expected): nothing is allowed — fail closed.
