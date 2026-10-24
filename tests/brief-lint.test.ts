@@ -156,3 +156,120 @@ test("brief.repo_rules fire from config; first and unless gate on the title line
 	expect(briefLint([refactor], cfg)).toBe(0);
 	expect(briefLint([planOnly], cfg)).toBe(0);
 });
+
+// Plans cite worktrees removed after their phases land: the whole-file path scan then fails on
+// history. For a file with a `## Phases` heading only the live parts are scanned — header lines,
+// Goal, Forbidden, Blockers, unticked phase lines, Done check; ticked phase lines and the history
+// sections (Code read by Main, Progress, Background) are skipped. A plain brief (no `## Phases`)
+// is still checked whole.
+const GONE = join(TMP, "home", "projects", "gone-wt", "src", "deep", "gone.ts");
+
+function captureLint(files: string[]): { rc: number; out: string } {
+	const chunks: string[] = [];
+	const orig = process.stdout.write.bind(process.stdout);
+	process.stdout.write = ((chunk: string | Uint8Array) => {
+		chunks.push(String(chunk));
+		return true;
+	}) as typeof process.stdout.write;
+	try {
+		return { rc: briefLint(files, cfg), out: chunks.join("") };
+	} finally {
+		process.stdout.write = orig;
+	}
+}
+
+type Slot = "ticked" | "unticked" | "goal" | "done" | "read" | "progress" | "background";
+
+// A valid plan skeleton (passes every other rule); GONE — a path that is never created — goes into
+// exactly the one slot under test.
+function planWith(name: string, slot: Slot): string {
+	const phase =
+		slot === "ticked" ? `- [x] P1 old work — verify: \`cat ${GONE}\``
+		: slot === "unticked" ? `- [ ] P1 open work — verify: \`cat ${GONE}\``
+		: "- [x] P1 landed work — verify: `true`";
+	const lines = [
+		`# ${name.replace(/\.md$/, "")}`,
+		"",
+		"## Goal",
+		"Land the live-sections fix. Stop and report within ~60 calls.",
+		...(slot === "goal" ? [`Read ${GONE} for context.`, ""] : [""]),
+		"## Forbidden",
+		"- never push",
+		"",
+		"## Blockers",
+		"- no-push",
+		"",
+		"## Phases",
+		phase,
+		"",
+		"## Done check",
+		"`bun test exit 0`",
+		...(slot === "done" ? [GONE, ""] : [""]),
+		...(slot === "read" ? ["## Code read by Main", `- ${GONE}`, ""] : []),
+		...(slot === "background" ? ["## Background", `Old worktree note citing ${GONE}.`, ""] : []),
+		"## Progress",
+		"Status: open",
+		...(slot === "progress" ? [`- 2026-10-24 21:00: read ${GONE}. Findings: none`, ""] : [""]),
+	];
+	const p = join(TMP, name);
+	writeFileSync(p, lines.join("\n"));
+	return p;
+}
+
+test("a plan's ticked phase line is history: its missing path does not fail", () => {
+	expect(captureLint([planWith("20261024_2110_ticked.md", "ticked")]).rc).toBe(0);
+});
+
+test("a plan's Code read by Main section is history: its missing path does not fail", () => {
+	expect(captureLint([planWith("20261024_2111_read.md", "read")]).rc).toBe(0);
+});
+
+test("a plan's Progress section is history: its missing path does not fail", () => {
+	expect(captureLint([planWith("20261024_2112_progress.md", "progress")]).rc).toBe(0);
+});
+
+test("a plan's Background section is history: its missing path does not fail", () => {
+	expect(captureLint([planWith("20261024_2113_background.md", "background")]).rc).toBe(0);
+});
+
+test("a plan's unticked phase line is live: its missing path fails", () => {
+	const { rc, out } = captureLint([planWith("20261024_2120_unticked.md", "unticked")]);
+	expect(rc).toBe(1);
+	expect(out).toContain(GONE);
+});
+
+test("a plan's Goal is live: its missing path fails", () => {
+	const { rc, out } = captureLint([planWith("20261024_2121_goal.md", "goal")]);
+	expect(rc).toBe(1);
+	expect(out).toContain(GONE);
+});
+
+test("a plan's Done check is live: its missing path fails", () => {
+	const { rc, out } = captureLint([planWith("20261024_2122_done.md", "done")]);
+	expect(rc).toBe(1);
+	expect(out).toContain(GONE);
+});
+
+test("a plain brief without Phases is still checked whole", () => {
+	const p = join(TMP, "20261024_2130_plain.md");
+	writeFileSync(
+		p,
+		[
+			"# 20261024_2130_plain",
+			"",
+			"## Goal",
+			"Ship a small script fix. Stop and report within ~60 calls.",
+			`Read ${GONE} for context.`,
+			"",
+			"## Forbidden",
+			"- never push",
+			"",
+			"## Done check",
+			"`bun test exit 0`",
+			"",
+		].join("\n"),
+	);
+	const { rc, out } = captureLint([p]);
+	expect(rc).toBe(1);
+	expect(out).toContain(GONE);
+});

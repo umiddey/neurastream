@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+### Fixed
+- brief-lint no longer fails a plan on paths from finished work. When the file has a `## Phases` heading, the path check scans only the live parts — the header lines, Goal, Forbidden, Blockers, unticked phase lines and Done check. Paths in ticked phase lines and in the history sections (`## Code read by Main`, `## Progress`, `## Background`) cite worktrees removed after their phases landed and are skipped; a plain brief without `## Phases` is still checked whole.
+
 ## 0.2.3
 ### Fixed
 - Plan blockers no longer leak across worktrees of one repo (the 0.2.0 one-index regression). With every plan file living in the main checkout, `planCovers` fell back to "same repo", so the union of all open plans' blockers ran on every worktree of that repo: a subagent working in its own plan's worktree was refused by the `deny-path` rule of a different open plan. A path whose git worktree top is another open plan's `Worktree:` is now covered only by that plan (plus plans whose `## Applies to` lists it); paths in the main checkout and in worktrees no open plan names stay covered as before.

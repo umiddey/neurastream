@@ -2,8 +2,32 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import type { Config } from "./config.ts";
 import { exitText, helpDoc, printText } from "./help.ts";
+import { sections } from "./queue/lib.ts";
 
 const OUTPUT_HINT = /(report|progress|review|handoff|log|brief)[\w\-]*\.(md|log|txt|json)$|\.log$/;
+const TICKED_PHASE = /^\s*[-*]\s+\[[xX]\]/;
+
+// A plan's paths are live work only in the header lines, Goal, Forbidden, Blockers, unticked phase
+// lines and Done check. Ticked phases and the history sections (Code read by Main, Progress,
+// Background) cite worktrees removed after their work landed, so the path check skips them. A plain
+// brief (no `## Phases`) is checked whole.
+function liveText(text: string): string {
+	const secs = sections(text);
+	if (!secs.has("phases")) return text;
+	const header = text.slice(0, text.search(/^## /m));
+	const unticked = (secs.get("phases") ?? "")
+		.split("\n")
+		.filter(l => !TICKED_PHASE.test(l))
+		.join("\n");
+	return [
+		header,
+		secs.get("goal") ?? "",
+		secs.get("forbidden") ?? "",
+		secs.get("blockers") ?? "",
+		unticked,
+		secs.get("done check") ?? "",
+	].join("\n");
+}
 
 function escapeReg(s: string): string {
 	return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -41,9 +65,10 @@ function lint(path: string, cfg: Config): { errs: string[]; warns: string[] } {
 
 
 	const paths = new Set<string>();
+	const scan = liveText(text);
 	for (const prefix of cfg.brief.path_prefixes) {
 		const re = new RegExp(`(${escapeReg(prefix)}[\\w./\\-]+)`, "g");
-		for (const hit of text.matchAll(re)) paths.add(hit[1]!);
+		for (const hit of scan.matchAll(re)) paths.add(hit[1]!);
 	}
 	for (const raw of [...paths].sort()) {
 		let p = raw.replace(/[.,)]+$/, "");
