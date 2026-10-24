@@ -12,12 +12,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Run, RunSource, ToolEvent } from "../src/core/adapter.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
-import { nowSec } from "../src/core/clock.ts";
+import { nowSec, strftime } from "../src/core/clock.ts";
 import { addIncident } from "../src/core/incidents.ts";
 import { appendMetric } from "../src/core/metrics.ts";
 import { checkTool } from "../src/core/guards.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
-import { createOmpAdapter, ownerInboxCursorPath, type ExtensionHost } from "../src/adapters/omp/index.ts";
+import { createOmpAdapter, ownerInboxCursorPath, ownerInboxMessage, type ExtensionHost } from "../src/adapters/omp/index.ts";
 import { inboxPath, startOwnerUi, type OwnerUiOptions, type OwnerUiServer } from "../src/core/owner-ui.ts";
 import { runUi } from "../src/cli/ui.ts";
 import { stateDirPath, unlockPath } from "../src/core/queue/lib.ts";
@@ -436,6 +436,40 @@ test("unlock with the chat gate off is refused and logs nothing", async () => {
 	expect(res.status).toBe(409);
 	expect(existsSync(unlockPath())).toBe(false);
 	expect(planGuardLogLines().some(l => l.includes("UNLOCK"))).toBe(false);
+	expect(inboxRecords()).toEqual([]);
+});
+
+// --- unlock / lock append owner-inbox records for Main ---
+
+test("POST /unlock with chat_unlock on appends one unlock inbox record", async () => {
+	const svc = ui();
+	const before = nowSec();
+	const res = await post(svc, "/unlock", { minutes: "5" });
+	expect(res.status).toBe(303);
+	const recs = inboxRecords();
+	expect(recs.length).toBe(1);
+	expect(recs[0]).toEqual({
+		ts: expect.any(Number),
+		kind: "unlock",
+		minutes: 5,
+		until: expect.any(Number),
+		login: OWNER,
+	});
+	expect(Number(recs[0]!.ts)).toBeGreaterThanOrEqual(before);
+	expect(Number(recs[0]!.until)).toBeGreaterThan(Number(recs[0]!.ts));
+});
+
+test("POST /lock appends one lock inbox record", async () => {
+	const svc = ui();
+	const res = await post(svc, "/lock", {});
+	expect(res.status).toBe(303);
+	const recs = inboxRecords();
+	expect(recs.length).toBe(1);
+	expect(recs[0]).toEqual({
+		ts: expect.any(Number),
+		kind: "lock",
+		login: OWNER,
+	});
 });
 
 // --- every request is logged ---
@@ -487,6 +521,22 @@ function fakePi(): { pi: ExtensionHost; sent: string[]; handlers: Map<string, (e
 
 const rec = (answer: string) => JSON.stringify({ ts: nowSec(), plan: PLAN_W, question: QUESTION, answer, login: OWNER });
 
+test("ownerInboxMessage formats unlock, lock, answer, reorder and rejects unknown kinds", () => {
+	const until = nowSec() + 300;
+	expect(ownerInboxMessage({ ts: nowSec(), kind: "unlock", minutes: 5, until, login: OWNER })).toBe(
+		`Owner unlocked the guards from the phone page for 5 min (until ${strftime(until, "%H:%M")}). Do the step that waited on the unlock now.`,
+	);
+	expect(ownerInboxMessage({ ts: nowSec(), kind: "lock", login: OWNER })).toBe("Owner locked the guards from the phone page.");
+	expect(ownerInboxMessage({ ts: nowSec(), plan: PLAN_W, question: QUESTION, answer: "yes", login: OWNER })).toBe(
+		`Owner answered on the phone page — 20261019_wait.md: ${QUESTION} → yes`,
+	);
+	expect(ownerInboxMessage({ ts: nowSec(), kind: "reorder", plan: PLAN_W, from: 1, to: 2, login: OWNER })).toBe(
+		"Owner moved 20261019_wait.md from #1 to #2 on the phone page; INDEX.md has the new order — work by it.",
+	);
+	expect(ownerInboxMessage({ ts: nowSec(), kind: "reorder", plan: PLAN_W, to: 2, login: OWNER })).toBe(null);
+	expect(ownerInboxMessage({ ts: nowSec(), kind: "bogus", login: OWNER })).toBe(null);
+});
+
 const mainCtx = { agent: { kind: "main" } };
 const subCtx = { agent: { kind: "sub" } };
 
@@ -505,6 +555,21 @@ test("the adapter delivers an undelivered inbox record to Main once; the cursor 
 	handlers.get("agent_end")!({ willContinue: false }, mainCtx);
 	expect(sent.length).toBe(2);
 	expect(sent[1]).toContain("→ no");
+});
+
+test("deliverOwnerInbox sends answer then unlock in order and moves the cursor by 2", () => {
+	const { pi, sent, handlers } = fakePi();
+	createOmpAdapter(pi, CFG);
+	const until = nowSec() + 300;
+	const unlockLine = JSON.stringify({ ts: nowSec(), kind: "unlock", minutes: 5, until, login: OWNER });
+	appendFileSync(inboxPath(), `${rec("yes")}\n${unlockLine}\n`);
+	handlers.get("agent_end")!({ willContinue: false }, mainCtx);
+	expect(sent.length).toBe(2);
+	expect(sent[0]).toBe(`Owner answered on the phone page — 20261019_wait.md: ${QUESTION} → yes`);
+	expect(sent[1]).toBe(
+		`Owner unlocked the guards from the phone page for 5 min (until ${strftime(until, "%H:%M")}). Do the step that waited on the unlock now.`,
+	);
+	expect(readFileSync(ownerInboxCursorPath(), "utf8")).toBe("2\n");
 });
 
 test("a torn inbox tail waits for the write to complete and is never delivered twice", () => {
