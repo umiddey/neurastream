@@ -100,6 +100,7 @@ queue:
 guards:
   sub_warn_calls: 90
   sub_max_calls: 100
+  sub_max_calls_cap: 200
   main_edit_limit: 5
   main_window_min: 15
   unlock_minutes: 30

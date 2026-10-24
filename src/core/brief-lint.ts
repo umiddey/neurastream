@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import type { Config } from "./config.ts";
+import { briefBudget } from "./guards.ts";
 import { exitText, helpDoc, printText } from "./help.ts";
 import { sections } from "./queue/lib.ts";
 
@@ -82,8 +83,10 @@ function lint(path: string, cfg: Config): { errs: string[]; warns: string[] } {
 		}
 	}
 
+	// The brief's call-budget rule: either the classic "stop within ~N calls" line or a Main-set
+	// per-spawn `Call budget: <N>` line counts.
 	need(
-		/\b\d{1,3}\s*(tool\s*)?calls\b/.test(low),
+		/\b\d{1,3}\s*(tool\s*)?calls\b/.test(low) || briefBudget(text) !== null,
 		"missing: call budget line ('stop and report within ~100 calls'); long agents reread huge contexts",
 	);
 

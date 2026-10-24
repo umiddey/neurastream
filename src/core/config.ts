@@ -100,6 +100,8 @@ export interface Config {
 	guards: {
 		sub_warn_calls: number;
 		sub_max_calls: number;
+		/** Highest per-spawn `Call budget: <N>` a task brief may set. */
+		sub_max_calls_cap: number;
 		main_edit_limit: number;
 		main_window_min: number;
 		unlock_minutes: number;
@@ -279,6 +281,9 @@ function check(cfg: Config): void {
 	if (cfg.ledger.max_slots < 1) throw new ConfigError("ledger.max_slots must be >= 1");
 	if (cfg.guards.sub_warn_calls > cfg.guards.sub_max_calls) {
 		throw new ConfigError("guards.sub_warn_calls must be <= guards.sub_max_calls");
+	}
+	if (cfg.guards.sub_max_calls_cap < cfg.guards.sub_max_calls) {
+		throw new ConfigError("guards.sub_max_calls_cap must be >= guards.sub_max_calls");
 	}
 	if (!(cfg.rollover.max_session_mb > 0)) throw new ConfigError("rollover.max_session_mb must be > 0");
 	if (!(cfg.rollover.exit_grace_s > 0)) throw new ConfigError("rollover.exit_grace_s must be > 0");

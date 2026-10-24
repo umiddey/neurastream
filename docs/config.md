@@ -138,6 +138,7 @@ queue:
 guards:
   sub_warn_calls: 90
   sub_max_calls: 100
+  sub_max_calls_cap: 200
   main_edit_limit: 5
   main_window_min: 15
   unlock_minutes: 30
@@ -201,6 +202,8 @@ snapshot:
 
 `guards.protected` starts empty. Init and adapter install append the paths they own (package bins, notes, blockers, and, for the omp adapter, the pin dir and extension dir). Core does not hardcode those paths.
 
+`guards.sub_max_calls_cap` bounds the per-spawn call budget: a `Call budget: <N>` line in a `task` brief (the task's own text, or the shared `context` of the same call; the task's own line wins) gives that run a hard stop at N calls — warning at N − (`guards.sub_max_calls` − `guards.sub_warn_calls`), floored at 1 — instead of the global warn 90 / stop 100. At the stop only plan Progress reads and edits pass, as at the global limit. The spawn is refused when N is outside 10..`guards.sub_max_calls_cap` or the task has no `name`: the budget is keyed by the task name in `<queue_state>/spawn-budgets.json` (next to `spawns.json`), and the ledger flags a still-running sub `OVER-BUDGET` past its own N. A task without the line keeps the global values.
+
 `score.default_branch` has no default. It is config, not a core literal: set it here or pass `--branch`; with `score.default_repo` empty, `accept` / `check` require `--repo` and `--branch`.
 
 ## omp overlay (adapter install, not core)
@@ -227,6 +230,7 @@ The loader rejects:
 - a threshold that is not a number where this table says a number
 - `ledger.max_slots` below 1
 - `guards.sub_warn_calls` greater than `guards.sub_max_calls`
+- `guards.sub_max_calls_cap` below `guards.sub_max_calls`
 - a `paths.*` value that is not a string
 - `metrics.report_days` below 1, or a `metrics.correction_patterns` entry that does not compile as a case-insensitive regex
 - a `brief.repo_rules` entry whose `match`, `require`, `first` or `unless` does not compile as a case-insensitive regex, or whose `message` is empty
