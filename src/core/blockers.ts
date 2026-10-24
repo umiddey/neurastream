@@ -140,7 +140,8 @@ function matchesPath(p: string, glob: string, call: BlockerCall): boolean {
 // ---- Shell: a quote-aware splitter, not a shell parser ---------------------------------------
 // Splits on `;`, `&&`, `||`, `|`, `&`, `(`, `)` and newlines outside quotes. Each word keeps its
 // quote-removed text and whether any part was quoted; output-redirection targets are kept apart
-// from the words; heredoc bodies are dropped; the inside of `$(…)` and backticks becomes segments.
+// from the words; heredoc bodies are kept on their opening segment; the inside of `$(…)` and
+// backticks becomes segments.
 
 export interface ShellWord {
 	/** Text with quotes and escapes removed; a substitution contributes nothing (its segments are listed). */
@@ -156,6 +157,8 @@ export interface ShellSegment {
 	words: ShellWord[];
 	/** Targets of output redirections: `>`, `>>`, `>|`, `&>`, `&>>`, `<>`, and `>&file`. */
 	writes: string[];
+	/** Bodies of the heredocs this segment opens; for an interpreter they are its code. */
+	bodies: string[];
 }
 
 type WordBuf = { text: string; quoted: boolean; start: number };
@@ -176,7 +179,7 @@ function scan(src: string, out: ShellSegment[]): void {
 		redir: RedirKind | null;
 		tabs: boolean;
 		heredocs: { delim: string; tabs: boolean }[];
-	} = { seg: { words: [], writes: [] }, word: null, redir: null, tabs: false, heredocs: [] };
+	} = { seg: { words: [], writes: [], bodies: [] }, word: null, redir: null, tabs: false, heredocs: [] };
 	let i = 0;
 
 	const ensure = (): WordBuf => {
@@ -198,22 +201,27 @@ function scan(src: string, out: ShellSegment[]): void {
 		if (kind === "write" || (kind === "dup" && !/^(\d+|-)$/.test(word.text))) st.seg.writes.push(word.text);
 		else if (kind === "heredoc") st.heredocs.push({ delim: word.text, tabs: st.tabs });
 	};
-	const endSeg = (end: number): void => {
+	const endSeg = (end: number): ShellSegment | null => {
 		endWord(end);
 		st.redir = null;
-		if (st.seg.words.length || st.seg.writes.length) out.push(st.seg);
-		st.seg = { words: [], writes: [] };
+		const ended = st.seg.words.length || st.seg.writes.length ? st.seg : null;
+		if (ended) out.push(ended);
+		st.seg = { words: [], writes: [], bodies: [] };
+		return ended;
 	};
-	// Skips the bodies of the heredocs opened on the line before `from`; returns the index after them.
-	const skipHeredocs = (from: number): number => {
+	// Skips the bodies of the heredocs opened on the line before `from`, keeping their text in
+	// `into`; returns the index after them.
+	const skipHeredocs = (from: number, into: string[]): number => {
 		let j = from;
 		for (const h of st.heredocs) {
+			const start = j;
 			while (j < n) {
 				const e = src.indexOf("\n", j);
 				const line = src.slice(j, e < 0 ? n : e);
 				j = e < 0 ? n : e + 1;
 				if ((h.tabs ? line.replace(/^\t+/, "") : line) === h.delim) break;
 			}
+			into.push(src.slice(start, j));
 		}
 		st.heredocs = [];
 		return j;
@@ -281,8 +289,8 @@ function scan(src: string, out: ShellSegment[]): void {
 		} else if (c === "#" && !st.word) {
 			while (i < n && src.charAt(i) !== "\n") i++;
 		} else if (c === "\n") {
-			endSeg(i);
-			i = skipHeredocs(i + 1);
+			const ended = endSeg(i);
+			i = skipHeredocs(i + 1, ended ? ended.bodies : []);
 		} else if (c === ";" || c === "(" || c === ")") {
 			endSeg(i);
 			i++;
@@ -400,7 +408,10 @@ const INTERPRETERS: Record<string, true> = {
 const GIT_VALUE_OPTS: Record<string, true> = { "-C": true, "-c": true, "--git-dir": true, "--work-tree": true, "--namespace": true };
 const MUTATING_NAMES: Record<string, true> = { rm: true, mv: true, truncate: true, tee: true, patch: true };
 const GIT_MUTATING: Record<string, true> = { rm: true, mv: true, checkout: true, restore: true };
-const CODE_WRITE = /writeFile|Bun\.write|unlink/;
+// Code-write forms, one list for shell and eval: the code parts of queue/lib.ts MUTATING plus
+// Ruby's File.write. Never fork a second list.
+const CODE_WRITE =
+	/writeFile|appendFile|Bun\.write|unlink|rmSync|\.write_text\(|\.write_bytes\(|\bopen\([^)]*,\s*["'][wax]b?\+?["']|shutil\.|os\.(remove|rename|replace|unlink|chmod)|\.writelines\(|File\.write/;
 
 interface ShellCommand {
 	name: string;
@@ -490,7 +501,7 @@ function mutationTargets(seg: ShellSegment): string[] {
 	if (mutating) out.push(...ops);
 	else if (cmd.name === "cp" && ops.length) out.push(ops[ops.length - 1] ?? "");
 	else if (cmd.name === "sed" && cmd.args.some((a) => /^-[a-zA-Z]*i|^--in-place/.test(a.text))) out.push(...ops.slice(1));
-	const raw = seg.words.map((w) => w.raw).join(" ");
+	const raw = [...seg.words.map((w) => w.raw), ...seg.bodies].join(" ");
 	if (INTERPRETERS[cmd.name] === true && CODE_WRITE.test(raw)) {
 		out.push(...raw.split(/[\s;&|<>(),'"]+/).filter((t) => t !== "" && !t.startsWith("-")));
 	}
@@ -585,7 +596,8 @@ export function denyPath(env: BlockerEnv): void {
 	let targets: string[] = [];
 	if (env.writes) targets = (env.call.paths ?? []).filter((p) => !MAIN_PLAN_FILE.test(p));
 	else if (env.call.tool === "eval") {
-		if (CODE_MUTATING.test(env.command)) targets = [...(env.call.paths ?? []), ...evalPaths(env)];
+		if (CODE_MUTATING.test(env.command) || CODE_WRITE.test(env.command))
+			targets = [...(env.call.paths ?? []), ...evalPaths(env)];
 	} else if (env.shell) targets = shellTargets(env);
 	for (const p of targets) {
 		for (const g of env.args) {

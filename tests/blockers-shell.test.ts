@@ -46,7 +46,7 @@ describe("splitShell", () => {
 		expect(segs[1]?.words.map((w) => w.text)).toEqual(["echo", "ok"]);
 	});
 
-	test("drops heredoc bodies and reports the redirection target", () => {
+	test("keeps heredoc bodies out of the words and reports the redirection target", () => {
 		const segs = splitShell("cat > s.sh <<'EOF'\nuv lock --upgrade\nEOF\necho done");
 		expect(segs.some((s) => s.words.some((w) => w.text === "uv"))).toBe(false);
 		expect(segs[0]?.writes).toEqual(["s.sh"]);
