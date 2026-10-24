@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.5
 ### Added
 - Per-spawn call budget: a `Call budget: <N>` line in a `task` brief (the task's own text, or the shared `context`; the task's own line wins) gives that run a hard stop at N calls — warning at N − (`guards.sub_max_calls` − `guards.sub_warn_calls`), floored at 1 — instead of the global warn 90 / stop 100, and the ledger's OVER-BUDGET flag uses the same N. The spawn is refused when N is outside 10..`guards.sub_max_calls_cap` (new config key, default 200, must be ≥ `guards.sub_max_calls`) or the task has no `name` (the budget is keyed by it, stored as `<queue_state>/spawn-budgets.json`). A task without the line keeps the global values. brief-lint accepts the line as the brief's call-budget rule.
 
