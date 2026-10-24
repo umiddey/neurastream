@@ -84,7 +84,8 @@ test("queue migrate folds repo INDEX.md plans into the main index and deletes th
 	for (const p of [a1, a2, b1]) mkdirSync(dirname(p), { recursive: true });
 	const already = join(dir, "already.md");
 	for (const p of [a1, a2, b1, already]) writeFileSync(p, "# plan\nStatus: open\n");
-	writeFileSync(join(A, "INDEX.md"), `- ${a1}\n${a2}\n`);
+	// a2 is repo-relative, as old repo INDEX.md files wrote them: it resolves against repo-a, not the cwd.
+	writeFileSync(join(A, "INDEX.md"), `- ${a1}\ndocs/plans/a2.md\n`);
 	writeFileSync(join(B, "INDEX.md"), `- ${b1}\n`);
 	writeFileSync(join(home, ".omp/agent/INDEX.md"), `- ${A}\n- ${already}\n${B}\n`);
 

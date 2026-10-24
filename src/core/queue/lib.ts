@@ -73,8 +73,9 @@ function indexLines(file: string): string[] | null {
 		.filter(Boolean);
 }
 
-export function readIndex(file = indexPath()): string[] {
-	return [...new Set((indexLines(file) ?? []).map(l => path.resolve(expandHome(l))))];
+// Relative lines resolve against `base` (default: the cwd); a repo INDEX.md passes its repo dir.
+export function readIndex(file = indexPath(), base = process.cwd()): string[] {
+	return [...new Set((indexLines(file) ?? []).map(l => path.resolve(base, expandHome(l))))];
 }
 
 export function sections(text: string): Map<string, string> {

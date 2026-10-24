@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1
+### Fixed
+- `neurastream queue migrate` resolved repo-relative lines of an old repo `INDEX.md` (`docs/plans/x.md`) against the current directory instead of that repo, so the main index got wrong plan paths. They now resolve against the repo.
+
 ## 0.2.0
 ### Added
 - Plan-guard requires a `Findings:` line in every `## Progress` entry a subagent adds to a plan: `Findings: none`, or one item per finding (bug, workaround, improvement — any repo) with `file:line` evidence, items separated by `;`. An edit that adds an entry without the line is refused and the file restored. Each finding item of an allowed edit becomes an incident (source `findings`, kind `agent-finding`, evidence = plan path + agent); the same item text again dedupes into the open incident, and `Findings: none` records nothing. Main's own entries are unaffected. (The penalty for a false `Findings: none` needs the trace scan and is not part of this.)

@@ -40,7 +40,7 @@ export function queueMigrate(args: string[], cfg: Config): number {
 			continue;
 		}
 		folded++;
-		kept.push(...readIndex(repoIndex));
+		kept.push(...readIndex(repoIndex, l));
 		rmSync(repoIndex);
 	}
 	const unique = [...new Set(kept)];
