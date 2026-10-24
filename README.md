@@ -32,6 +32,7 @@ flowchart LR
 | Machine health (`machine-guard`, `main-start`, `heavy-run`) | Load, free memory, disk and `/tmp` limits; one heavy test run at a time. |
 | Unlanded work (`wip-check`, `wip-snapshot`, `wip-backup`) | Lists branches on no remote and dirty worktrees; snapshots them as hidden commits; can push them to a backup repo. |
 | Session rollover | When the main session file passes 5 MB, the next owner message starts a fresh session from a handoff note. |
+| Owner page (`neurastream ui`) | One phone-sized page over Tailscale (`ui.*` config): the plans waiting on the owner with answer buttons, the guard unlock, running agents, the queue, recent merges/CI, open incidents, agent scores, machine health. Serves only a tailnet peer whose `tailscale whois` login equals `ui.owner_login`, only with a Host header naming the tailnet address or the MagicDNS name — DNS rebinding and every other visitor get a 403. Answers land in the owner inbox and reach Main once each; agents cannot start the page or write the inbox. |
 
 ## Requirements
 
@@ -92,6 +93,14 @@ Owner rule: never write a plan when another agent is doing the research or readi
 ## Queue holds
 
 A plan parked for the owner has one line: `WAITING on owner: <what>`. That line is the only hold, and only Main writes it (plan-guard refuses subagents). The queue summary shows it as a flag on the plan, cut at 80 characters. Compaction and the rollover handoff read the same lines through `ownerHolds`: the compaction context lists each `<plan file>: WAITING on owner: <text>` line (or `none`) and says any other "needs the owner" or "paused" claim is unverified; the handoff's generated state carries the same lines. Main does not keep holds in a handoff note.
+
+## Owner page (`neurastream ui`)
+
+With `ui.enabled: true` and `ui.owner_login` set (`neurastream config`, `docs/config.md`), `neurastream ui` serves one page bound to this machine's tailnet address only (port `ui.port`, default 7787; `templates/systemd/neurastream-ui.service` runs it as a user unit). It shows the plans whose `WAITING on owner:` line is open, with answer buttons; the guard unlock (`unlock 5/15/30`, `lock now`); the running agents; the queue; recent merges/CI; open incidents; agent scores; and machine health. No chat, no plan editing, no shell.
+
+A request is served only when the peer is a tailnet address that is neither loopback nor this machine's own tailnet IP, `tailscale whois` names the `ui.owner_login` login — and the Host header is this machine: the tailnet address or the MagicDNS name, with the served port. The Host check runs on every request before whois, and a POST's Origin must match it, so a DNS-rebinding page (foreign Host, matching Origin, owner's phone) gets a 403 like everyone else. Every request logs one `UI <method> <path> login=<l> → <code>` line to the guard log.
+
+An answer appends one record to `<queue_state>/owner-inbox.jsonl` (plan, question, answer, login); unlock/lock go through the core unlock and log `UNLOCK ui source=ui:<login> minutes=N`. Main's session delivers each record once as a user message — at turn end and on a 15 s poll while idle — and marks the consumed rows in `<queue_state>/owner-inbox.cursor`; subagent sessions never deliver. Both files sit under the queue state dir, so guards refuse agent writes to them: an agent cannot forge an owner answer. Guards also refuse agent commands that start the page (`neurastream ui`, or `systemctl --user start/restart/enable` of `neurastream-ui`): starting it is the owner's move.
 
 ## Session rollover
 
