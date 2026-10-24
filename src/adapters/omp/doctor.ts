@@ -1,14 +1,17 @@
 // Reports hand-edited or missing live files the omp adapter installs, the managed block in
 // the owner's AGENTS.md, and a stale registry version. Offline `npm view` is a warning, not a failure.
-// Notes, INDEX, queue state and config are user state: not checked.
+// Notes, queue state and config are user state: not checked. The one exception is the layout of the
+// main index itself: repo-directory lines are the old two-level queue and get flagged until
+// `neurastream queue migrate` folds them.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { blockState, renderBlock } from "../../core/agents-md.ts";
 import { loadConfig } from "../../core/config.ts";
+import { readIndex } from "../../core/queue/lib.ts";
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
@@ -175,6 +178,20 @@ export function doctorReport(home: string, env: NodeJS.ProcessEnv = process.env)
 	const agents = liveAgentsMd(home);
 	const text = existsSync(agents) ? readFileSync(agents, "utf8") : "";
 	const cfg = loadConfig({ home, env });
+	// One index (20261024_1400_one_index): repo-directory lines in the main index are the old
+	// two-level queue; the plans they hold are invisible to queue-check until migrate folds them.
+	const idx = cfg.paths.queue_index;
+	const repoDirs = existsSync(idx)
+		? readIndex(idx).filter(l => {
+				try {
+					return statSync(l).isDirectory();
+				} catch {
+					return false;
+				}
+			})
+		: [];
+	if (repoDirs.length)
+		problems.push(`${idx} still lists ${repoDirs.length} repo director${repoDirs.length === 1 ? "y" : "ies"} (${repoDirs.join(", ")}); run neurastream queue migrate`);
 	const state = blockState(text, renderBlock(cfg));
 	if (state === "ok") ok.push(`${agents} neurastream block`);
 	else problems.push(`${state}: ${agents} neurastream block`);

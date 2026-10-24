@@ -8,6 +8,7 @@ import { PORTED, runMain, runPorted } from "./commands.ts";
 import { runMetrics } from "./metrics.ts";
 import { runIncident } from "./incident.ts";
 import { runUninstall } from "../core/uninstall.ts";
+import { queueMigrate } from "../core/queue-migrate.ts";
 import { allowedAgents, subagentsPath } from "../core/queue/lib.ts";
 import { allowAgents, denyAgents, invalidSlugs } from "../core/subagents.ts";
 
@@ -50,6 +51,7 @@ export function helpText(): string {
 		"                                template-identical pins and the AGENTS.md block (--purge adds",
 		"                                config + agent-dir state); prints the list, refuses outside HOME",
 		"  neurastream doctor            report hand-edited live files and a stale install",
+		"  neurastream queue migrate     fold the old repo INDEX.md files into the one main index",
 		"  neurastream config [--json]   print the merged config (defaults + file + env)",
 		"  neurastream guard <event> --json",
 		`                                (${GUARD_USAGE.slice(GUARD_USAGE.indexOf("(") + 1, -1)})`,
@@ -89,6 +91,14 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 	}
 	if (cmd === "doctor") return runDoctor();
 	if (cmd === "uninstall") return runUninstall(args);
+	if (cmd === "queue" && args[0] === "migrate") {
+		try {
+			return queueMigrate(args.slice(1), loadConfig());
+		} catch (err) {
+			console.error(err instanceof ConfigError ? err.message : String(err));
+			return 1;
+		}
+	}
 	if (cmd === "guard") {
 		return runGuard(args[0] ?? "");
 	}
