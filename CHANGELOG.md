@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.9
+### Fixed
+- `neurastream ui` (and the `neurastream-ui` user unit) exited with code 0 about 90 ms after starting, so the owner page was never reachable: the CLI exits with the command's return code, and `runUi` returned right after starting the server. Serving now never returns; the process runs until systemd or a signal stops it.
+
 ## 0.2.8
 ### Added
 - Owner phone page (`neurastream ui`, off until `ui.enabled: true`): one server-rendered page over Tailscale — plans waiting on the owner with answer buttons, guard unlock/lock, running agents, the queue, recent merges/CI, open incidents, agent scores, machine health — bound to the tailnet address only. A request is served only to a tailnet peer whose `tailscale whois` login equals `ui.owner_login`, and only with a Host header naming this machine (tailnet address or MagicDNS name from the new `dnsName()` Tailscale call, `tailscale status --self --json`) with the served port — checked on every request before whois, with the POST Origin matched against it, so DNS rebinding gets a 403. Answers append to `<queue_state>/owner-inbox.jsonl`; unlock/lock reuse the chat-unlock core function and log `UNLOCK ui source=ui:<login> minutes=N`. The omp adapter delivers each record once to Main (turn end and a 15 s idle poll, cursor in `<queue_state>/owner-inbox.cursor`; subagent sessions never deliver). Guards refuse agent writes to the inbox and cursor and refuse agent commands that start the page (`neurastream ui`, `systemctl --user start/restart/enable` of `neurastream-ui`). `neurastream doctor` checks `ui.enabled` against the login and a silent tailscale; README "Owner page" has the details.
