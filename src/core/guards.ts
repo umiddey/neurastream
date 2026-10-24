@@ -23,6 +23,7 @@ import path from "node:path";
 import type { Decision, InjectEvent, PlanEditEvent, SpawnEvent, StopEvent, ToolEvent } from "./adapter.ts";
 import type { Config } from "./config.ts";
 import { addIncident, openIncidents, type IncidentView } from "./incidents.ts";
+import { notifyProtectedPaths, notifySecretReadHit } from "./notify.ts";
 import * as q from "./queue/lib.ts";
 import type { Plan } from "./queue/lib.ts";
 
@@ -193,6 +194,9 @@ function protectedHit(paths: string[], cfg: Config): string | null {
 			const g = q.expandHome(raw);
 			if (g.endsWith("/") ? p.startsWith(g) || `${p}/` === g : p === g) return p;
 		}
+		// The user's config file and the configured notify secret files are guard surface too:
+		// an agent that could rewrite them could point notify at its own webhook.
+		if (notifyProtectedPaths(cfg).includes(p)) return p;
 	}
 	return null;
 }
@@ -510,6 +514,14 @@ export function checkTool(e: ToolEvent, cfg: Config): Decision {
 	for (const p of [...(e.paths ?? []), ...q.touchedPaths(e.tool, input, e.cwd)]) if (!paths.includes(p)) paths.push(p);
 	const writes: string[] = [];
 	for (const p of [...(e.writes ?? []), ...q.writeTargets(e.tool, input, e.cwd)]) if (!writes.includes(p)) writes.push(p);
+	// Notify secrets: no agent, main or sub, reads a webhook URL — with or without the unlock.
+	// A call that changes a secret is not a read: its target goes through the protected-write
+	// rule above, so the owner's unlock covers it like any guard file.
+	const secretHit = notifySecretReadHit(paths.filter(p => !writes.includes(p)), cfg);
+	if (secretHit) {
+		log(cfg.paths.plan_guard_log, `BLOCK ${e.agent}:${e.agentId} tool=${e.tool} notify secret: ${secretHit}`);
+		return deny(`plan-guard: ${secretHit} is a notify secret path. Only the owner touches the webhook files, in a terminal.`);
+	}
 	// Main writes its own rollover note unattended (the note turn has nobody to ask). Only a Write
 	// of a .md directly in <state>/rollover/ is exempt; shell writes, subagents and relaunch.json stay refused.
 	const rolloverDir = path.join(q.stateDirPath(), "rollover");

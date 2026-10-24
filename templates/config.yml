@@ -157,6 +157,11 @@ quota:
   reset_tz: "Asia/Shanghai"
   label: "quota"
 
+notify:
+  discord_webhook_file: ""   # file holding the Discord webhook URL; "" = off (README: Notify the owner)
+  slack_webhook_file: ""     # file holding the Slack webhook URL; "" = off
+  prefix: ""                 # optional label prepended to each posted reply, e.g. "Main:"
+
 priority:
   sleep_sec: 120
 

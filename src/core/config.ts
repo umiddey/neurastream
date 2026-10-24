@@ -148,6 +148,9 @@ export interface Config {
 		watch_streak: number;
 	};
 	quota: { reset_tz: string; label: string };
+	/** Chat notify (src/core/notify.ts): Main's final reply goes to these webhooks at session_stop.
+	 *  The values are paths to secret files holding the webhook URLs — never the URLs themselves. */
+	notify: { discord_webhook_file: string; slack_webhook_file: string; prefix: string };
 	priority: { sleep_sec: number };
 	alerts: { temp_c: number; mem_psi: number; io_psi: number; cooldown_sec: number };
 	snapshot: { tmp_dest: string; git_repo: string; git_backup: string; excludes: string[] };

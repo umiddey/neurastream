@@ -569,6 +569,9 @@ function protectedPaths(): string[] {
 		`${agent}/CANCELLED.md`,
 		`${stateDirPath()}/`,
 		`${agent}/config.yml`,
+		// The user's neurastream config file, even when agent_dir points elsewhere: an agent that
+		// could rewrite it could point notify at its own webhook.
+		`${HOME}/.config/neurastream/config.yml`,
 		`${agent}/notes/subagents.md`,
 		`${agent}/.guard-unlock`,
 		`${path.dirname(agent)}/git-no-verify-guard.mjs`,
