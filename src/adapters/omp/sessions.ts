@@ -3,6 +3,7 @@ import { basename, join } from "node:path";
 import type { Config } from "../../core/config.ts";
 import type { MainSession, Run, RunMessage, RunSource, RunStatus } from "../../core/adapter.ts";
 import { nowSec } from "../../core/clock.ts";
+import { readBudgets } from "../../core/guards.ts";
 import { pyDumps } from "../../core/pyjson.ts";
 
 function walk(dir: string, depth: number, out: string[]): void {
@@ -165,8 +166,9 @@ function build(file: string, cfg: Config, mtime: number): Run | null {
 		state = (waiting || "RUNNING") + (idle >= cfg.ledger.idle_show_min ? ` (idle ${idle}m)` : "");
 	} else if (id.startsWith("MAIN")) state = "done";
 	else state = `DIED: ${err || "exited without a result"}`;
-	if ((state.startsWith("RUNNING") || state.startsWith("WAITING")) && !id.startsWith("MAIN") && calls > cfg.guards.sub_max_calls) {
-		state += ` OVER-BUDGET(${calls}>${cfg.guards.sub_max_calls} calls)`;
+	if ((state.startsWith("RUNNING") || state.startsWith("WAITING")) && !id.startsWith("MAIN")) {
+		const cap = readBudgets(cfg.paths.queue_state)[id] ?? cfg.guards.sub_max_calls;
+		if (calls > cap) state += ` OVER-BUDGET(${calls}>${cap} calls)`;
 	}
 	let status: RunStatus = "done";
 	if (state.startsWith("WAITING")) status = "waiting";

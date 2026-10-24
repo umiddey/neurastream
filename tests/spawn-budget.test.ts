@@ -278,11 +278,10 @@ test("budgeted sub X: warning band opens at call 40, denial at 50, Progress work
 	expect(spent.code).toBe(2);
 	expect(spent.d.allow).toBe(false);
 	expect(spent.d.reason).toContain("call budget spent (50/50)");
-	// Only plan Progress reads and edits pass at the limit.
-	expect(sub("X", 50, "read", { path: PLAN }).code).toBe(0);
-	expect(
-		sub("X", 50, "edit", { path: PLAN, old_string: "- Started the toy work.", new_string: "- Started the toy work.\n- wrote progress. Findings: none." }).code,
-	).toBe(0);
+	// Only plan Progress reads and edits pass at the limit. The omp edit tool names its target as
+	// a `[path#id]` marker inside `input.input` (queue/lib.ts writeTargets), not a `path` key.
+	const editBody = `[${PLAN}#d1ff]\n- Started the toy work.\n+ Started the toy work.\n- wrote progress. Findings: none.`;
+	expect(sub("X", 50, "edit", { input: editBody }).code).toBe(0);
 	expect(sub("X", 50, "read", { path: join(TOY, "src/a.ts") }).code).toBe(2);
 });
 
@@ -352,7 +351,7 @@ test("the ledger flags a budgeted sub over its own budget and leaves one under i
 	expect(runById("Unbudgeted")!.statusDetail).toContain("OVER-BUDGET(101>100 calls)");
 });
 
-test("agent-ledger --cap reports each OVER-BUDGET run past its own budget", () => {
+test("agent-ledger --cap reports budgeted runs past their own budget; the global-only line stays the original's", () => {
 	const r = ledger(["--cap"], [
 		ledgerRow("BudgetedX", "RUNNING OVER-BUDGET(60>50 calls)"),
 		ledgerRow("Wide", "RUNNING OVER-BUDGET(120>100 calls)"),
@@ -360,4 +359,7 @@ test("agent-ledger --cap reports each OVER-BUDGET run past its own budget", () =
 	expect(r.code).toBe(1);
 	expect(r.out).toContain("BudgetedX (past 50 calls)");
 	expect(r.out).toContain("Wide (past 100 calls)");
+	const global = ledger(["--cap"], [ledgerRow("BudgetHog", "RUNNING OVER-BUDGET(101>100 calls)")]);
+	expect(global.code).toBe(1);
+	expect(global.out).toContain("BudgetHog past 100 calls: stop them");
 });

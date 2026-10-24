@@ -85,9 +85,16 @@ export function agentLedger(args: string[], cfg: Config, source: RunSource): num
 	}
 	let full = Object.entries(live).filter(([, v]) => v.length >= cfg.ledger.max_running_per_provider).map(([k]) => k);
 	for (const k of full) process.stdout.write(`FULL ${k}: ${live[k]!.join(", ")}\n`);
-	const over = rows.filter(r => r.statusDetail.includes("OVER-BUDGET")).map(r => r.id);
+	const over = rows.filter(r => r.statusDetail.includes("OVER-BUDGET"));
 	if (over.length) {
-		process.stdout.write(`OVER-BUDGET: ${over.join(", ")} past ${cfg.guards.sub_max_calls} calls: stop them (report + fresh agent with tight brief) before spawning more\n`);
+		// Each run reports the cap it was spawned with (its own per-spawn budget, else the global
+		// one); the cap is part of the statusDetail the session parser wrote. When every cap is the
+		// global one the line stays exactly the original's (golden parity).
+		const caps = over.map(r => /OVER-BUDGET\(\d+>(\d+) calls\)/.exec(r.statusDetail)?.[1] ?? String(cfg.guards.sub_max_calls));
+		const list = caps.every(c => c === String(cfg.guards.sub_max_calls))
+			? `${over.map(r => r.id).join(", ")} past ${cfg.guards.sub_max_calls} calls`
+			: `${over.map((r, i) => `${r!.id} (past ${caps[i]} calls)`).join(", ")}`;
+		process.stdout.write(`OVER-BUDGET: ${list}: stop them (report + fresh agent with tight brief) before spawning more\n`);
 	}
 	if (args.includes("--provider")) {
 		const provider = opt(args, "--provider");

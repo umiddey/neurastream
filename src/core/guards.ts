@@ -124,6 +124,53 @@ export function rekeySpawnFile(file: string, before: string, after: string): voi
 	}
 }
 
+// A per-spawn call budget: `Call budget: <N>` on its own line in a task brief (the task's own
+// text wins over the shared context). Main sets it at spawn time; the run's hard stop is N and
+// its warning band has the global width (sub_max_calls - sub_warn_calls), floored at 1.
+const BUDGET_LINE = /^\s*(?:[-*]\s+)?call budget:\s*(\d{1,4})\s*$/im;
+
+/** The first `Call budget: <N>` line of a brief, or null. */
+export function briefBudget(brief: string): number | null {
+	const m = BUDGET_LINE.exec(brief);
+	return m ? Number(m[1]) : null;
+}
+
+function budgetsFile(): string {
+	return path.join(q.STATE_DIR, "spawn-budgets.json");
+}
+
+/** The budgets recorded at spawn: task name → calls (next to the spawn hashes). */
+export function readBudgets(dir: string = q.STATE_DIR): Record<string, number> {
+	try {
+		const raw: unknown = JSON.parse(readFileSync(path.join(dir, "spawn-budgets.json"), "utf8"));
+		if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+		const out: Record<string, number> = {};
+		for (const [k, v] of Object.entries(raw)) if (typeof v === "number" && Number.isFinite(v)) out[k] = v;
+		return out;
+	} catch {
+		return {};
+	}
+}
+
+/** Remember the named tasks' call budgets; a name's old budget is replaced. */
+export function recordBudgets(entries: Record<string, number>): void {
+	const names = Object.keys(entries);
+	if (!names.length) return;
+	const budgets = readBudgets();
+	for (const n of names) budgets[n] = entries[n]!;
+	try {
+		mkdirSync(q.STATE_DIR, { recursive: true });
+		writeFileSync(budgetsFile(), JSON.stringify(budgets, null, 1));
+	} catch (err) {
+		log(`${q.STATE_DIR}/../main-guard.log`, `cannot write ${budgetsFile()}: ${err}`);
+	}
+}
+
+/** A sub's hard call cap: the budget recorded for its task name at spawn, else the global cap. */
+export function subCallCap(agentId: string, cfg: Config): number {
+	return readBudgets()[agentId] ?? cfg.guards.sub_max_calls;
+}
+
 // --- shared pieces ---
 
 function unlocked(cfg: Config): boolean {
@@ -231,18 +278,29 @@ export function planGate(text: string, label: string): [string | null, string[]]
 }
 
 /** Reason to refuse a `task` brief, or null; `files` receives the plans to record. */
-export function spawnProblem(input: Record<string, unknown>, files: string[] = []): string | null {
+export function spawnProblem(input: Record<string, unknown>, cfg: Config, files: string[] = []): string | null {
 	const tasks = Array.isArray(input?.tasks) ? input.tasks : [];
 	const context = String(input?.context ?? "");
 	const allowed = q.allowedAgents();
+	const shared = briefBudget(context);
+	const budgets: Record<string, number> = {};
 	for (const t of tasks) {
 		const agent = String(t?.agent ?? "task");
 		const label = String(t?.name ?? agent);
 		if (!allowed.has(agent)) return `${label}: agent "${agent}" is not in "## Allowed" of ${q.SUBAGENTS_MD} (no expensive or unpinned models).`;
 		const [why, named] = planGate(`${context}\n${String(t?.task ?? "")}`, label);
 		if (why) return why;
+		// The task's own `Call budget:` line wins over the shared context's.
+		const budget = briefBudget(String(t?.task ?? "")) ?? shared;
+		if (budget !== null) {
+			if (!t?.name) return `${label}: "Call budget: ${budget}" needs a task name (the budget is keyed by it).`;
+			if (budget < 10 || budget > cfg.guards.sub_max_calls_cap)
+				return `${label}: call budget ${budget} is outside the allowed range 10..${cfg.guards.sub_max_calls_cap}.`;
+			budgets[label] = budget;
+		}
 		files.push(...named);
 	}
+	recordBudgets(budgets);
 	return null;
 }
 
@@ -282,16 +340,17 @@ function runsCloser(input: Record<string, unknown>): boolean {
 }
 
 // Subagent half of a tool call (the original plan-guard checkCall without the main return).
-function subRules(e: ToolEvent, input: Record<string, unknown>, paths: string[], writes: string[], cfg: Config): string | null {
+// `cap` is the sub's hard call cap: its recorded per-spawn budget, else the global sub_max_calls.
+function subRules(e: ToolEvent, input: Record<string, unknown>, paths: string[], writes: string[], cfg: Config, cap: number): string | null {
 	// Closing and cancelling are Main's decisions: a shell that runs the tool is refused; one that only names its path is not.
 	if (cfg.guards.shell_tools.includes(e.tool) && runsCloser(input))
 		return 'queue-close and queue-cancel are Main\'s; report in your plan\'s "## Progress" instead.';
 	const plans = q.activePlans();
-	if (e.calls >= cfg.guards.sub_max_calls) {
+	if (e.calls >= cap) {
 		const planEdit = (e.tool === "write" || e.tool === "edit") && writes.length > 0 && writes.every(p => q.planAt(p, plans));
 		const planRead = cfg.guards.read_tools.includes(e.tool) && paths.length > 0 && paths.every(p => q.planAt(p, plans));
 		if (!planEdit && !planRead)
-			return `call budget spent (${e.calls}/${cfg.guards.sub_max_calls}). Only reading and editing your plan's "## Progress" is allowed now: write what you did, what is verified, what is next, then end your run.`;
+			return `call budget spent (${e.calls}/${cap}). Only reading and editing your plan's "## Progress" is allowed now: write what you did, what is verified, what is next, then end your run.`;
 	}
 	if (!plans.length || !paths.length) return null;
 	for (const p of writes) {
@@ -393,7 +452,7 @@ function mainTool(e: ToolEvent, input: Record<string, unknown>, cfg: Config): De
 			return deny(`main-guard: ${CANCEL_TODO} Flagged: "${pending.words}"`);
 		}
 		const files: string[] = [];
-		const why = spawnProblem(input, files);
+		const why = spawnProblem(input, cfg, files);
 		if (why) {
 			log(cfg.paths.guard_log, `BLOCK spawn: ${why}`);
 			return deny(`main-guard: ${why}`);
@@ -467,17 +526,21 @@ export function checkTool(e: ToolEvent, cfg: Config): Decision {
 		if (d.allow && e.tool !== "task") recordMainReads(paths.filter(p => !writes.includes(p)));
 		return d;
 	}
-	const why = subRules(e, input, paths, writes, cfg);
+	const cap = subCallCap(e.agentId, cfg);
+	const why = subRules(e, input, paths, writes, cfg, cap);
 	if (why) {
 		log(cfg.paths.plan_guard_log, `BLOCK sub:${e.agentId} tool=${e.tool} ${why}`);
 		return deny(`plan-guard: ${why}`);
 	}
 	const n = e.calls + 1;
-	if (n >= cfg.guards.sub_warn_calls && n < cfg.guards.sub_max_calls)
+	// The warn band has the global width (sub_max_calls - sub_warn_calls) ending at the cap;
+	// unbudgeted subs keep sub_warn_calls exactly.
+	const warn = cap === cfg.guards.sub_max_calls ? cfg.guards.sub_warn_calls : Math.max(1, cap - (cfg.guards.sub_max_calls - cfg.guards.sub_warn_calls));
+	if (n >= warn && n < cap)
 		return {
 			allow: true,
 			reason: "",
-			inject: `plan-guard: call ${n}/${cfg.guards.sub_max_calls}. Update your plan's "## Progress" now (done, verified, next); at ${cfg.guards.sub_max_calls} only that edit is allowed.`,
+			inject: `plan-guard: call ${n}/${cap}. Update your plan's "## Progress" now (done, verified, next); at ${cap} only that edit is allowed.`,
 		};
 	return ALLOW;
 }
