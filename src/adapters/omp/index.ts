@@ -23,8 +23,9 @@ import { loadConfig, type Config } from "../../core/config.ts";
 import { nowSec } from "../../core/clock.ts";
 import { runDetectorsGated } from "../../core/incident-detectors.ts";
 import { checkInject, checkPlanEdit, checkStop, checkTool, MAIN_PLAN_FILE, recordMainResult, revertMainEdit, rekeySpawnFile } from "../../core/guards.ts";
-import { postReply } from "../../core/notify.ts";
+import { notifyProviders, postReply } from "../../core/notify.ts";
 import { inboxPath } from "../../core/owner-ui.ts";
+import { realTailscale } from "../../core/tailscale.ts";
 import { applyQueueEnv } from "../../core/queue/env.ts";
 import { mainStartText, runDailyCheck } from "../../core/main-start.ts";
 import { readBlocks } from "../../core/metrics.ts";
@@ -413,6 +414,82 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		});
 	};
 
+	// "Needs you" pings (P3b): the owner learns on Discord that a decision or an unlock is his —
+	// deterministic, no model call, Main session only, the same webhook path, fire-and-forget, one
+	// guard-log line per decision (`notify: needs-you posted|skipped (<why>)`).
+	const needsYouPost = (text: string, why: string): void => {
+		if (notifyProviders(cfg).length === 0) {
+			adapterLog(cfg, `notify: needs-you skipped (notify off, ${why})`);
+			return;
+		}
+		adapterLog(cfg, `notify: needs-you posted (${why})`);
+		void postReply(text, cfg).then(results => {
+			for (const r of results) if (!r.posted) adapterLog(cfg, `notify: ${r.provider}: ${r.error}`);
+		});
+	};
+	// The phone-page link only when the page is on and this machine's MagicDNS name is known;
+	// computed at most once per process (tailscale status is a subprocess call).
+	let phonePageSuffix: string | null = null;
+	const phonePage = (): string => {
+		if (!cfg.ui.enabled) return "";
+		if (phonePageSuffix === null) {
+			const dns = realTailscale.dnsName();
+			phonePageSuffix = dns ? ` Answer on the phone page: http://${dns}:${cfg.ui.port}` : "";
+		}
+		return phonePageSuffix;
+	};
+	// WAITING: every Main turn end asks whether an open plan now waits on the owner (the same
+	// source the owner page lists). Keys are `plan file|waiting line`, remembered in
+	// <queue_state>/notify-waiting.json; a key whose line is gone is dropped, so the same question
+	// asked again later posts again. No waiting plans: no decision, no log line.
+	const waitingKeysFile = join(cfg.paths.queue_state, "notify-waiting.json");
+	const notifyWaitingPlans = (): void => {
+		const waiting = q.activePlans(cfg.paths.queue_index).filter(p => p.waiting && p.status === "open" && p.waitingLine);
+		let stored: string[] = [];
+		try {
+			const parsed: unknown = JSON.parse(readFileSync(waitingKeysFile, "utf8"));
+			if (Array.isArray(parsed)) stored = parsed.filter((k): k is string => typeof k === "string");
+		} catch {}
+		// Persist after reading: a key whose WAITING line is gone is dropped, so the same question
+		// asked again later posts again. No waiting plans: the set prunes to empty, no decision,
+		// no line.
+		const current: string[] = [];
+		const fresh: typeof waiting = [];
+		for (const p of waiting) {
+			const key = `${p.file}|${p.waitingLine}`;
+			current.push(key);
+			if (!stored.includes(key)) fresh.push(p);
+		}
+		try {
+			mkdirSync(cfg.paths.queue_state, { recursive: true });
+			writeFileSync(waitingKeysFile, JSON.stringify(current));
+		} catch {}
+		if (current.length === 0) return;
+		if (fresh.length === 0) {
+			adapterLog(cfg, "notify: needs-you skipped (no new waiting lines)");
+			return;
+		}
+		for (const p of fresh) {
+			const title = p.text.match(/^# (.+)$/m)?.[1] ?? basename(p.file);
+			needsYouPost(`🔔 Needs you — ${title}: ${p.waitingLine}.${phonePage()}`, `waiting: ${basename(p.file)}`);
+		}
+	};
+	// UNLOCK: a protected-file refusal of a Main tool call means Main sits blocked until the owner
+	// unlocks — ping, at most once per 30 min.
+	let unlockPingMs = -Infinity;
+	const notifyUnlockNeeded = (reason: string): void => {
+		if (Date.now() - unlockPingMs < 30 * 60_000) {
+			adapterLog(cfg, "notify: needs-you skipped (unlock ping sent recently)");
+			return;
+		}
+		unlockPingMs = Date.now();
+		const target = basename(asString(reason.match(/plan-guard: (.+) is a protected guard file/)?.[1] ?? "guard file"));
+		needsYouPost(
+			`🔓 Main needs an unlock to continue (${target}). Tap "unlock ${cfg.guards.unlock_minutes}" on the phone page.`,
+			"protected-file refusal",
+		);
+	};
+
 	pi.on("session_start", (_e, ctx) => {
 		const c = asCtx(ctx);
 		// Original: proceed only when no agent is set or it is the main session.
@@ -498,7 +575,11 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 			{ tool, input, cwd, agent, agentId: id, calls: n - 1, paths: [], writes: [], command: asString(input.command) },
 			cfg,
 		);
-		if (!d.allow) return { block: true, reason: d.reason };
+		if (!d.allow) {
+			// P3b: Main refused on a protected guard file sits blocked until the owner unlocks.
+			if (!isSub && d.reason.includes("is a protected guard file. Only the owner changes it")) notifyUnlockNeeded(d.reason);
+			return { block: true, reason: d.reason };
+		}
 		if (snap.size) pending.set(asString(e.toolCallId), snap);
 		// The originals return nothing on a clean call; only warn injects carry an object.
 		const out = toExtensionResult(d);
@@ -832,9 +913,12 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		}
 		notifyHandback(reply, "agent_end hand-back");
 	});
-	// Turn end: page answers that arrived during the turn go out now (P3b). Main only.
+	// Turn end: page answers that arrived during the turn go out (P3b), then open plans that now
+	// WAIT on the owner ping Discord (P3b). Main only.
 	pi.on("agent_end", (_e, ctx) => {
-		if (isMain(ctx)) deliverOwnerInbox(pi, cfg);
+		if (!isMain(ctx)) return;
+		deliverOwnerInbox(pi, cfg);
+		notifyWaitingPlans();
 	});
 
 	// omp is really shutting down: the exit-grace fallback must not fire.

@@ -559,7 +559,7 @@ test("needs-you (1): a new WAITING line posts one ping with the plan and the que
 	expect(discordHits[0]?.text).toContain("🔔 Needs you — Waiting toy: choose A or B.");
 	// ui is off in this config: no phone-page link.
 	expect(discordHits[0]?.text).not.toContain("http");
-	expect(needsYouLines().filter(l => l.includes("notify: needs-you posted (waiting:)")).length).toBe(1);
+	expect(needsYouLines().filter(l => l.includes("notify: needs-you posted (waiting: ")).length).toBe(1);
 });
 
 test("needs-you (2): the same WAITING line on the next turn posts nothing", async () => {
@@ -588,7 +588,7 @@ test("needs-you (3): the WAITING line removed then re-added posts again", async 
 	await host.emit("agent_end", {}, ctx);
 	await until(() => discordHits.length === 2 && slackHits.length === 2);
 	expect(discordHits[1]?.text).toContain("🔔 Needs you — Waiting toy: choose A or B.");
-	expect(needsYouLines().filter(l => l.includes("notify: needs-you posted (waiting:)")).length).toBe(2);
+	expect(needsYouLines().filter(l => l.includes("notify: needs-you posted (waiting: ")).length).toBe(2);
 });
 
 test("needs-you (4): a protected-file refusal pings for an unlock once per 30 min", async () => {
@@ -599,7 +599,7 @@ test("needs-you (4): a protected-file refusal pings for an unlock once per 30 mi
 	const first = await host.emit("tool_call", call(), ctx);
 	expect(String((first[0] as Record<string, unknown>).reason)).toContain("is a protected guard file");
 	await until(() => discordHits.length === 1 && slackHits.length === 1);
-	expect(discordHits[0]?.text).toContain('🔓 Main needs an unlock to continue (x.txt). Tap "unlock 15" on the phone page.');
+	expect(discordHits[0]?.text).toContain('🔓 Main needs an unlock to continue (x.txt). Tap "unlock 30" on the phone page.');
 	expect(needsYouLines().filter(l => l.includes("notify: needs-you posted (protected-file refusal)")).length).toBe(1);
 	await host.emit("tool_call", call(), ctx);
 	await expectNoMore(() => discordHits.length, 1);
@@ -631,5 +631,5 @@ test("needs-you (6): notify off pings nothing and does not throw", async () => {
 	await host.emit("agent_end", {}, ctx);
 	await expectNoMore(() => discordHits.length, 0);
 	await expectNoMore(() => slackHits.length, 0);
-	expect(needsYouLines().filter(l => l.includes("notify: needs-you skipped (notify off, waiting:)")).length).toBe(1);
+	expect(needsYouLines().filter(l => l.includes("notify: needs-you skipped (notify off, waiting: ")).length).toBe(1);
 });

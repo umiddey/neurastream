@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+### Added
+- "Needs you" pings: when a Main turn ends with an open plan whose `WAITING on owner:` line has not been pinged before, neurastream posts `🔔 Needs you — <plan title>: <question>` (plus the `neurastream ui` phone-page link when `ui.enabled: true` and the machine's MagicDNS name is known) to the configured Discord/Slack webhooks; and when the guard refuses a Main tool call because it touches a protected guard file, it posts `🔓 Main needs an unlock to continue (<file>). Tap "unlock N" on the phone page.` at most once per 30 minutes. Deterministic, no model call, Main session only, fire-and-forget; each waiting question posts once until its line changes or disappears (keys remembered in `<queue_state>/notify-waiting.json`), and every decision logs one `notify: needs-you posted|skipped (<why>)` guard-log line.
+
 ### Fixed
 - Chat notify missed most real hand-backs: omp fires `session_stop` BEFORE `agent_end` and skips it entirely while an async job (subagent, background bash) is pending, and the adapter read the reply from the session file, so it posted the previous turn's reply or nothing. The adapter now takes the reply from the event itself — the stop's `last_assistant_message` (falling back to the last assistant entry of `messages`) and the `agent_end` `messages` — and posts at an allowed `session_stop` and at a `willContinue: true` `agent_end` whose last assistant message ends with a `stop` reason, text and no tool call (the deferred hand-back). Still once per distinct text, never for a subagent, never on a blocked stop; every notify decision now logs one guard-log line `notify: posted|skipped (<why>)`.
 
