@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import { blockState, renderBlock } from "../../core/agents-md.ts";
 import { loadConfig } from "../../core/config.ts";
 import { readIndex } from "../../core/queue/lib.ts";
+import { realTailscale, type Tailscale } from "../../core/tailscale.ts";
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
@@ -155,7 +156,7 @@ function npmViewVersion(name: string, env: NodeJS.ProcessEnv): { version: string
 	return { version };
 }
 
-export function doctorReport(home: string, env: NodeJS.ProcessEnv = process.env): DoctorReport {
+export function doctorReport(home: string, env: NodeJS.ProcessEnv = process.env, tailscale: Tailscale = realTailscale): DoctorReport {
 	const pkg = readPackage(PACKAGE_ROOT);
 	const name = pkg.name ?? "neurastream";
 	const installed = pkg.version ?? "";
@@ -178,6 +179,13 @@ export function doctorReport(home: string, env: NodeJS.ProcessEnv = process.env)
 	const agents = liveAgentsMd(home);
 	const text = existsSync(agents) ? readFileSync(agents, "utf8") : "";
 	const cfg = loadConfig({ home, env });
+	// The owner page (plan 20261024_2230): when it is switched on, the login must be set and
+	// tailscale must answer, or the unit will start and refuse, or serve nobody.
+	if (cfg.ui.enabled) {
+		if (!cfg.ui.owner_login) problems.push("ui.enabled but ui.owner_login is empty");
+		else if (tailscale.ip4() === null) problems.push("ui.enabled but tailscale does not answer (tailscale ip -4)");
+		else ok.push(`ui owner page: login ${cfg.ui.owner_login}`);
+	}
 	// One index (20261024_1400_one_index): repo-directory lines in the main index are the old
 	// two-level queue; the plans they hold are invisible to queue-check until migrate folds them.
 	const idx = cfg.paths.queue_index;
