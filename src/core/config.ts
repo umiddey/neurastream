@@ -105,6 +105,8 @@ export interface Config {
 		main_edit_limit: number;
 		main_window_min: number;
 		unlock_minutes: number;
+		/** The owner's whole chat message ("unlock", "unlock N", "lock") moves the guard unlock file. */
+		chat_unlock: boolean;
 		plan_read_max_hours: number;
 		idle_stops: number;
 		blocker_timeout_ms: number;

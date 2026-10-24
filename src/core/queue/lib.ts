@@ -1,9 +1,10 @@
 // Queue model: ONE index — the main index lists plan files, one absolute path per line (templates/queue/TEMPLATE.md).
 
 import { createHash } from "node:crypto";
-import { accessSync, constants, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, appendFileSync, constants, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { Config } from "../config.ts";
 
 const HOME = os.homedir();
 // Base set by applyQueueEnv from paths.agent_dir. Specific QUEUE_* vars still win.
@@ -601,6 +602,50 @@ export function unlocked(): boolean {
 	} catch {
 		return false;
 	}
+}
+
+export interface ChatUnlockResult {
+	/** True when the text was a whole-message unlock/lock command that took effect. */
+	applied: boolean;
+	command?: "unlock" | "lock";
+	/** For an unlock: the minutes the existing mtime window stays open (for the owner notice). */
+	minutes?: number;
+}
+
+const CHAT_CMD = /^(unlock|lock)(?:\s+(\d+))?$/i;
+
+/**
+ * Owner unlock by chat (guards.chat_unlock): the whole trimmed message, case-insensitive —
+ * "unlock" (open for guards.unlock_minutes), "unlock N" (open for exactly N minutes, N clamped
+ * to 1..unlock_minutes) or "lock" (close again). Only the adapter calls this, with text the
+ * owner really typed; a model, a tool result or a machine prompt must never reach it. The file
+ * is written or removed from the extension process, not through a tool call, so plan-guard does
+ * not see the write. Every applied unlock/lock is logged to the plan-guard log.
+ */
+export function chatUnlock(text: string, cfg: Config, source: string): ChatUnlockResult {
+	if (!cfg.guards.chat_unlock) return { applied: false };
+	const m = CHAT_CMD.exec(text.trim());
+	if (!m) return { applied: false };
+	const minutes = cfg.guards.unlock_minutes;
+	if ((m[1] ?? "").toLowerCase() === "lock") {
+		rmSync(unlockPath(), { force: true });
+		try {
+			appendFileSync(cfg.paths.plan_guard_log, `${new Date().toISOString()} LOCK chat source=${source}\n`);
+		} catch {}
+		return { applied: true, command: "lock" };
+	}
+	const want = m[2] === undefined ? minutes : Number(m[2]);
+	if (want < 1) return { applied: false }; // "unlock 0" is no unlock
+	const n = Math.min(want, minutes);
+	const file = unlockPath();
+	writeFileSync(file, "");
+	// Backdate the mtime so the existing window (mtime + unlock_minutes) closes after exactly n minutes.
+	const past = (Date.now() - (minutes - n) * 60_000) / 1000; // utimesSync takes seconds
+	utimesSync(file, past, past);
+	try {
+		appendFileSync(cfg.paths.plan_guard_log, `${new Date().toISOString()} UNLOCK chat source=${source} minutes=${n}\n`);
+	} catch {}
+	return { applied: true, command: "unlock", minutes: n };
 }
 
 export function protectedHit(paths: string[]): string | null {

@@ -521,7 +521,9 @@ export function checkTool(e: ToolEvent, cfg: Config): Decision {
 	if (hit && !unlocked(cfg)) {
 		log(cfg.paths.plan_guard_log, `BLOCK ${e.agent}:${e.agentId} tool=${e.tool} protected: ${hit}`);
 		return deny(
-			`plan-guard: ${hit} is a protected guard file. Only the owner changes it (unlock: \`touch ${q.UNLOCK}\` in a terminal, valid ${cfg.guards.unlock_minutes} min).`,
+			`plan-guard: ${hit} is a protected guard file. Only the owner changes it (unlock: \`touch ${q.UNLOCK}\` in a terminal${
+				cfg.guards.chat_unlock ? `, or type \`unlock ${cfg.guards.unlock_minutes}\` in chat` : ""
+			}, valid ${cfg.guards.unlock_minutes} min).`,
 		);
 	}
 	if (e.agent === "main") {

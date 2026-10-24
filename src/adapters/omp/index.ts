@@ -653,6 +653,64 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		return null;
 	};
 
+	// Chat unlock (guards.chat_unlock): the owner's whole message "unlock"/"unlock N"/"lock" moves
+	// the guard unlock file (src/core/queue/lib.ts chatUnlock). Only prompts the owner really typed
+	// count: the local terminal (input event, source "interactive") and collab guest prompts from
+	// write peers. This handler is registered BEFORE the rollover input handler below, so the unlock
+	// wins while a rollover is ready or in flight (emitInput short-circuits on { handled: true }).
+	const notifyUnlock = (ctx: unknown, r: { command?: "unlock" | "lock"; minutes?: number }): void => {
+		const c = asRolloverCtx(ctx);
+		if (!c) return;
+		if (r.command === "unlock" && r.minutes !== undefined) {
+			const until = new Date(Date.now() + r.minutes * 60_000).toLocaleTimeString();
+			c.notify(`guard unlocked for ${r.minutes} min (until ${until})`);
+		} else if (r.command === "lock") {
+			c.notify("guard locked again");
+		}
+	};
+	pi.on("input", (event, ctx) => {
+		if (!cfg.guards.chat_unlock || !isMain(ctx)) return undefined;
+		const e = asRecord(event);
+		if (asString(e.source) !== "interactive") return undefined;
+		const r = q.chatUnlock(asString(e.text), cfg, "interactive");
+		if (!r.applied) return undefined;
+		notifyUnlock(ctx, r);
+		return { handled: true };
+	});
+	// A collab guest prompt (collab/host.ts #handlePrompt, write peers only) is NOT an input event:
+	// it is session.promptCustomMessage({ customType: "collab-prompt", details: { from },
+	// attribution: "user" }), which lands in the agent context — the adapter sees it on the
+	// "context" event (types.ts ContextEvent, the messages about to go to the LLM). The message
+	// stays in the transcript, so later LLM calls replay it: a seen key (timestamp + text) is acted
+	// on once, and a resumed session replaying old prompts is stopped by the age limit.
+	const seenChatPrompts = new Set<string>();
+	const CHAT_PROMPT_MAX_AGE_MS = 10 * 60_000;
+	pi.on("context", (event, ctx) => {
+		if (!cfg.guards.chat_unlock || !isMain(ctx)) return undefined;
+		const messages = asRecord(event).messages;
+		if (!Array.isArray(messages)) return undefined;
+		for (const raw of messages) {
+			const m = asRecord(raw);
+			if (m.role !== "custom" || m.customType !== "collab-prompt" || m.attribution !== "user") continue;
+			const from = asString(asRecord(m.details).from);
+			if (from === "") continue;
+			const text =
+				typeof m.content === "string"
+					? m.content
+					: Array.isArray(m.content)
+						? m.content.map(c => asString(asRecord(c).text)).join("")
+						: "";
+			const timestamp = typeof m.timestamp === "number" ? m.timestamp : 0;
+			if (Date.now() - timestamp > CHAT_PROMPT_MAX_AGE_MS) continue;
+			const key = `${timestamp}:${text}`;
+			if (seenChatPrompts.has(key)) continue;
+			seenChatPrompts.add(key);
+			const r = q.chatUnlock(text, cfg, `collab:${from}`);
+			if (r.applied) notifyUnlock(ctx, r);
+		}
+		return undefined;
+	});
+
 	// Under the launcher the relaunch is the only rollover path: a plain interactive message in the ready
 	// state requests it, and every such message joins the pending request's draft, in order. Plain omp keeps
 	// `/main-rollover <text>`: the message becomes the owner's first message of the new session.

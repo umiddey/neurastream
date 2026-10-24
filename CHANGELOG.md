@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+### Added
+- Chat unlock (`guards.chat_unlock`, default off): the owner's whole chat message `unlock` / `unlock N` / `lock` (trimmed, case-insensitive; N clamped to 1..`guards.unlock_minutes`, `unlock 0` and partial matches like "please unlock 30" do nothing) moves the guard unlock file the same way a terminal `touch` does — `unlock N` backdates the mtime so the existing window closes after exactly N minutes. Only two paths reach it: the omp input event with source `interactive` in the main session, and a collab guest prompt from a peer with write access (the `collab-prompt` custom message, seen on the `context` event; replays of the same message act once, stale ones not at all). Model output, tool results, machine prompts (`before_agent_start`), non-interactive sources and subagent contexts never unlock. Every applied unlock/lock is logged to `paths.plan_guard_log` as `UNLOCK chat source=<interactive|collab:NAME> minutes=N` / `LOCK chat …`, the protected-file refusal names `unlock 30` in chat when the flag is on, and the managed AGENTS.md block documents it.
+
 ## 0.2.6
 ### Fixed
 - `deny-path` catches file writes done through interpreter code (INCIDENT I-20261024-24): a refused subagent could still write or remove denied files with `python3 -c` / a `python3` heredoc / `ruby -e` running `Path(…).write_text()`, `open(…, "w")`, `os.remove/rename/replace/unlink`, `shutil.*`, `.writelines()`, `File.write`, `rmSync` or `appendFile`. These code-write forms are one shared list (the code parts of queue/lib.ts `MUTATING` plus `File.write`) used for both shell command targets and `eval` code, and heredoc bodies are kept as their interpreter segment's code — a heredoc to `cat` is still prose. Reading a denied file (`open('x')`, `Path('x').read_text()`) and writes outside the deny globs stay allowed.

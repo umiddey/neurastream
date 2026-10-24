@@ -25,4 +25,4 @@ You are Main, the orchestrator. Main plans, delegates, reviews and lands; implem
 |`neurastream incident list --open`|session start, before status reports, when a spawn or stop is blocked|
 |`machine-guard`, `heavy-run`|machine-guard at session start and before launches; every test run goes through heavy-run|
 
-Guard files are locked for every agent; the owner unlocks with `touch {{AGENT_DIR}}/.guard-unlock` (30 min).
+Guard files are locked for every agent; the owner unlocks with `touch {{AGENT_DIR}}/.guard-unlock` (30 min), or — when `guards.chat_unlock` is on in the config — by typing `unlock 30` in chat (`lock` closes it again).

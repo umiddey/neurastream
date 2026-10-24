@@ -142,6 +142,7 @@ guards:
   main_edit_limit: 5
   main_window_min: 15
   unlock_minutes: 30
+  chat_unlock: false   # the owner's whole chat message "unlock"/"unlock N"/"lock" moves the guard unlock file
   plan_read_max_hours: 24
   idle_stops: 3
   blocker_timeout_ms: 10000
