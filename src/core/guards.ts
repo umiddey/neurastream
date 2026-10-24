@@ -404,6 +404,9 @@ function editWindow(e: ToolEvent, input: Record<string, unknown>, cfg: Config): 
 				`(listed in ${q.INDEX}, phase-0 blockers first) and spawn an implementer. Changes so far: ${w.used.join(", ")}`,
 		);
 	}
+	if (!w.used.length) w.windowStart = now;
+	w.used.push(`${e.tool}:${files[0]!}`);
+	writeWindow(w);
 	const left = cfg.guards.main_edit_limit - w.used.length;
 	if (left <= 2)
 		return {
@@ -605,22 +608,22 @@ function recordMainReads(files: string[], now = Date.now()): void {
  * Main's tool result: each `path:line:` at a line start (grep -n / grep -rn output) names a file
  * Main read. Paths resolve against the directory the call ran in (its `cwd`, then any `cd`).
  */
-export function recordMainEdit(tool: string, input: Record<string, unknown>, cwd: string, cfg: Config): void {
+export function revertMainEdit(tool: string, input: Record<string, unknown>, cwd: string, cfg: Config): void {
 	const files = changedProjectFiles(tool, input, cwd, cfg);
 	if (!files.length) return;
-	const now = Date.now();
 	const w = readWindow();
-	if (w.used.length && now - w.windowStart >= cfg.guards.main_window_min * 60_000) w.used = [];
-	if (!w.used.length) w.windowStart = now;
-	w.used.push(`${tool}:${files[0]!}`);
-	writeWindow(w);
+	const entry = `${tool}:${files[0]!}`;
+	const idx = w.used.lastIndexOf(entry);
+	if (idx >= 0) {
+		w.used.splice(idx, 1);
+		writeWindow(w);
+	}
 }
 
-export function recordMainResult(tool: string, input: Record<string, unknown>, cwd: string, text: string, cfg?: Config): void {
+export function recordMainResult(tool: string, input: Record<string, unknown>, cwd: string, text: string): void {
 	const base = typeof input.cwd === "string" ? path.resolve(cwd, q.expandHome(input.cwd)) : cwd;
 	const dir = q.shellCwd(String(input.command ?? input.code ?? ""), base);
 	recordMainReads([...text.matchAll(GREP_LINE)].map(m => path.resolve(dir, m[1] ?? "")));
-	if (cfg) recordMainEdit(tool, input, cwd, cfg);
 }
 
 /**

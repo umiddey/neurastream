@@ -2,7 +2,7 @@ import { afterAll, beforeEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkTool, readWindow, recordMainResult, writeWindow } from "../src/core/guards.ts";
+import { checkTool, readWindow, revertMainEdit, writeWindow } from "../src/core/guards.ts";
 import type { Config } from "../src/core/config.ts";
 import { loadConfig } from "../src/core/config.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
@@ -91,8 +91,9 @@ test("(b) a failed edit (tool result is an error) does not count", () => {
   const editInput = { path: target, input: `[${target}#1234]\nPUT 1:=1:\n+broken\n` };
   const d = checkTool(mainEvent("edit", editInput), cfg);
   expect(d.allow).toBe(true);
-  // Tool failed (isError: true), so recordMainResult is not called (or error is handled)
-  // Window must remain at 0 edits
+  expect(readWindow().used.length).toBe(1);
+  // Tool failed (isError: true), so adapter reverts the edit
+  revertMainEdit("edit", editInput, repo, cfg);
   expect(readWindow().used.length).toBe(0);
 });
 
@@ -110,13 +111,11 @@ test("(d) a real echo x > file and a successful edit still count once each", () 
   expect(changesFiles("bash", { command: echoCmd })).toBe(true);
   const d1 = checkTool(mainEvent("bash", { command: echoCmd }), cfg);
   expect(d1.allow).toBe(true);
-  recordMainResult("bash", { command: echoCmd }, repo, "", cfg);
   expect(readWindow().used.length).toBe(1);
 
   const f2 = join(repo, "src/code.ts");
   const editInput = { path: f2, input: `[${f2}#1234]\nPUT 1:=1:\n+export const a = 2;\n` };
   const d2 = checkTool(mainEvent("edit", editInput), cfg);
   expect(d2.allow).toBe(true);
-  recordMainResult("edit", editInput, repo, "", cfg);
   expect(readWindow().used.length).toBe(2);
 });

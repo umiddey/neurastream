@@ -363,14 +363,14 @@ export function touchedPaths(toolName: string, input: Record<string, unknown>, c
 export const MUTATING =
 	/(\brm\b|\bmv\b|\bcp\b|\btouch\b|\btruncate\b|\bchmod\b|\bln\b|\bsed\s+(-\w*\s+)*-i|\bperl\s+(-\w*\s+)*-[a-z]*i|\btee\b|(^|[^0-9&>=\-])>{1,2}\s*[^\s&>]|\bgit\s+(rm|mv|checkout|restore|apply|am|stash|reset|clean)\b|\bpatch\b|\binstall\b|\bdd\b|writeFile|appendFile|Bun\.write|unlink|rmSync|\.write_text\(|\.write_bytes\(|\bopen\([^)]*,\s*["'][wax]b?\+?["']|shutil\.|os\.(remove|rename|replace|unlink|chmod)|\.writelines\()/;
 
-export function withoutQuotes(code: string): string {
-	return code.replace(/'[^']*'/g, "''").replace(/"(?:[^"\\]|\\.)*"/g, '""');
+export function withoutQuotedRedirects(code: string): string {
+	return code.replace(/'[^']*'/g, m => m.replace(/>/g, " ")).replace(/"(?:[^"\\]|\\.)*"/g, m => m.replace(/>/g, " "));
 }
 
 export function changesFiles(toolName: string, input: Record<string, unknown>): boolean {
 	if (toolName === "edit" || toolName === "ast_edit") return true;
 	if (toolName === "write") return true;
-	return SHELL_TOOLS.has(toolName) && MUTATING.test(withoutQuotes(String(input?.command ?? input?.code ?? "")));
+	return SHELL_TOOLS.has(toolName) && MUTATING.test(withoutQuotedRedirects(String(input?.command ?? input?.code ?? "")));
 }
 
 // P8: package-manager and cutover commands change the running guard package.
@@ -497,23 +497,23 @@ export function writeTargets(toolName: string, input: Record<string, unknown>, c
 	}
 	if (!SHELL_TOOLS.has(toolName)) return [];
 	const code = String(input?.command ?? input?.code ?? "");
-	const unquoted = withoutQuotes(withoutHeredocBodies(code));
 	// A package/plugin/cutover command is a write even though none of the
 	// generic mutating heuristics fire on its text.
 	const pkgOp = packageOpTarget(code);
 	const subOp = subagentsOpWrites(code);
-	if (!MUTATING.test(unquoted) && !pkgOp && !subOp) return [];
+	if (!MUTATING.test(withoutQuotedRedirects(code)) && !pkgOp && !subOp) return [];
 	let dir = typeof input?.cwd === "string" ? path.resolve(cwd, expandHome(input.cwd)) : cwd;
-	for (const seg of unquoted.split(/&&|\|\||;|\n|\|/)) {
+	for (const seg of withoutHeredocBodies(code).split(/&&|\|\||;|\n|\|/)) {
 		const s = seg.trim();
 		const cd = s.match(/^cd\s+(\S+)/);
 		if (cd) {
 			dir = path.resolve(dir, expandHome((cd[1] ?? "").replace(/^["']|["']$/g, "")));
 			continue;
 		}
-		for (const m of s.matchAll(/(?:^|[^0-9&>=\-])>{1,2}\s*([^\s&|;)<>]+)/g)) {
+		const noQuotedRedirect = withoutQuotedRedirects(s);
+		for (const m of noQuotedRedirect.matchAll(/(?:^|[^0-9&>=\-])>{1,2}\s*([^\s&|;)<>]+)/g)) {
 			// A target with no letter, digit, `.` or `/` (`>,`) is prose, not a file.
-			const target = m[1] ?? "";
+			const target = (m[1] ?? "").replace(/^["']|["']$/g, "");
 			if (/[\p{L}\p{N}./]/u.test(target)) add(target, dir);
 		}
 		const words = s.split(/\s+/).filter(Boolean);
