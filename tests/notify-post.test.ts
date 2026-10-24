@@ -146,6 +146,24 @@ function decisionOf(r: unknown): string {
 	return "";
 }
 
+// Plan 20261025_0130: the reply a stop or agent_end posts comes from the event itself, not from
+// the session file (omp fires session_stop BEFORE agent_end, and skips it entirely while an async
+// job is pending — a file read lags a whole turn or never happens). `msg` builds one assistant
+// AgentMessage as omp's events carry it; `stopEvent` a session_stop payload.
+type MsgOpts = { stopReason?: string; toolCall?: boolean };
+
+function msg(text: string, opts: MsgOpts = {}): Record<string, unknown> {
+	return {
+		role: "assistant",
+		stopReason: opts.stopReason ?? "stop",
+		content: [{ type: "text", text }, ...(opts.toolCall ? [{ type: "toolCall", id: "c1", name: "bash" }] : [])],
+	};
+}
+
+function stopEvent(text: string): Record<string, unknown> {
+	return { last_assistant_message: msg(text), messages: [msg("an earlier turn"), msg(text)] };
+}
+
 // --- fake extension host (same shape as tests/rollover-omp.test.ts) ---
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
@@ -421,3 +439,75 @@ test(
 	},
 	20000,
 );
+
+// --- plan 20261025_0130: every hand-back to the owner reaches Discord ---
+
+test("handback (a): an allowed stop posts its own event reply B, not the earlier agent_end reply A", async () => {
+	reset();
+	const host = adapterWith(stopCfg(bothCfg()));
+	const ctx = ctxFor("main");
+	await host.emit("agent_end", { messages: [msg("reply A from the last run")] }, ctx);
+	expect(await host.emit("session_stop", stopEvent("reply B from this run"), ctx)).toEqual([]);
+	await until(() => discordHits.length === 1 && slackHits.length === 1);
+	expect(discordHits.map(h => h.text)).toEqual(["reply B from this run"]);
+	expect(slackHits.map(h => h.text)).toEqual(["reply B from this run"]);
+	expect(notifyLogLines().filter(l => l.includes("notify: posted (allowed session_stop)")).length).toBe(1);
+});
+
+test("handback (b): the first stop of a session, no earlier agent_end, posts the reply from messages", async () => {
+	reset();
+	const host = adapterWith(stopCfg(bothCfg()));
+	const ctx = ctxFor("main");
+	expect(await host.emit("session_stop", { messages: [msg("earlier"), msg(REPLY)] }, ctx)).toEqual([]);
+	await until(() => discordHits.length === 1 && slackHits.length === 1);
+	expect(discordHits[0]?.text).toBe(REPLY);
+	expect(slackHits[0]?.text).toBe(REPLY);
+	expect(notifyLogLines().filter(l => l.includes("notify: posted (allowed session_stop)")).length).toBe(1);
+});
+
+test("handback (c): agent_end willContinue with an async job pending and no stop follows posts the text-only reply once", async () => {
+	reset();
+	const host = adapterWith(stopCfg(bothCfg()));
+	const ctx = ctxFor("main", [{ label: "bg-1" }]);
+	await host.emit("agent_end", { willContinue: true, messages: [msg(REPLY)] }, ctx);
+	await until(() => discordHits.length === 1 && slackHits.length === 1);
+	expect(discordHits[0]?.text).toBe(REPLY);
+	expect(notifyLogLines().filter(l => l.includes("notify: posted (agent_end hand-back)")).length).toBe(1);
+	await host.emit("agent_end", { willContinue: true, messages: [msg(REPLY)] }, ctx);
+	await expectNoMore(() => discordHits.length, 1);
+});
+
+test("handback (d): the same reply seen by both agent_end and session_stop is posted once", async () => {
+	reset();
+	const host = adapterWith(stopCfg(bothCfg()));
+	const ctx = ctxFor("main");
+	await host.emit("agent_end", { willContinue: true, messages: [msg(REPLY)] }, ctx);
+	await until(() => discordHits.length === 1 && slackHits.length === 1);
+	await host.emit("session_stop", stopEvent(REPLY), ctx);
+	await expectNoMore(() => discordHits.length, 1);
+	await expectNoMore(() => slackHits.length, 1);
+	expect(notifyLogLines().filter(l => l.includes("notify: posted")).length).toBe(1);
+	expect(notifyLogLines().filter(l => l.includes("notify: skipped (duplicate, allowed session_stop)")).length).toBe(1);
+});
+
+test("handback (e): a blocked stop posts nothing and logs the skip", async () => {
+	reset();
+	writeFileSync(INDEX, `${PLAN}\n`);
+	const host = adapterWith(stopCfg(bothCfg()));
+	const ctx = ctxFor("main");
+	const blocked = await host.emit("session_stop", stopEvent(BLOCKED_REPLY), ctx);
+	expect(blocked.map(decisionOf)).toEqual(["block"]);
+	await expectNoMore(() => discordHits.length, 0);
+	await expectNoMore(() => slackHits.length, 0);
+	expect(notifyLogLines().filter(l => l.includes("notify: skipped (stop blocked by guard)")).length).toBe(1);
+});
+
+test("handback (f): a willContinue agent_end whose last message has tool calls posts nothing and logs the skip", async () => {
+	reset();
+	const host = adapterWith(stopCfg(bothCfg()));
+	const ctx = ctxFor("main", [{ label: "bg-1" }]);
+	await host.emit("agent_end", { willContinue: true, messages: [msg("running the check now", { stopReason: "toolUse", toolCall: true })] }, ctx);
+	await expectNoMore(() => discordHits.length, 0);
+	await expectNoMore(() => slackHits.length, 0);
+	expect(notifyLogLines().filter(l => l.includes("notify: skipped (mid-run: stop reason toolUse + 1 tool call(s), agent_end hand-back)")).length).toBe(1);
+});
