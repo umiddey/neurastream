@@ -2,6 +2,7 @@ import { afterAll, expect, test } from "bun:test";
 import {
 	chmodSync,
 	copyFileSync,
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
@@ -235,13 +236,12 @@ function initToyRepo(home: string, env: NodeJS.ProcessEnv): { repo: string; plan
 	git(["config", "user.email", "t@example.com"]);
 	git(["config", "user.name", "t"]);
 	writeFileSync(join(repo, "README.md"), "toy\n");
-	writeFileSync(join(repo, ".git/info/exclude"), "/INDEX.md\n");
 	git(["add", "README.md"]);
 	git(["commit", "-m", "init"], { GIT_AUTHOR_DATE: "2026-10-18T00:00:00", GIT_COMMITTER_DATE: "2026-10-18T00:00:00" });
 	writeFileSync(plan, toyPlan("open"));
-	writeFileSync(join(repo, "INDEX.md"), `- ${plan}\n`);
+	// One index: the main index lists the plan file directly; there is no repo INDEX.md.
 	mkdirSync(dirname(join(home, ".omp/agent/INDEX.md")), { recursive: true });
-	writeFileSync(join(home, ".omp/agent/INDEX.md"), `- ${repo}\n`);
+	writeFileSync(join(home, ".omp/agent/INDEX.md"), `- ${plan}\n`);
 	return { repo, plan };
 }
 
@@ -249,8 +249,6 @@ function setupQueue(home: string, env: NodeJS.ProcessEnv, status: "open" | "comp
 	pinOmp(home);
 	installQueueLib(home);
 	installBlockers(home);
-	installQueueBin("queue-check", home);
-	installQueueBin("queue-close", home);
 	installQueueBin("queue-cancel", home);
 	const { plan } = initToyRepo(home, env);
 	if (status !== "open") writeFileSync(plan, toyPlan(status));
@@ -369,51 +367,52 @@ test.skipIf(process.platform !== "linux")("tmp-snapshot matches the original", (
 	expect(port.code).toBe(py.code);
 }, 120_000);
 
-test("queue-check matches the original", () => {
+// The 0.2.0 queue format change (one index, plan 20261024_1400_one_index) supersedes the frozen
+// queue-check/queue-close oracles: they implement the retired two-level INDEX layout, so there is
+// nothing left to compare against. These tests pin the port's behaviour instead; queue-cancel still
+// has a live oracle below.
+test("queue-check reports a one-index queue and the open plan's priority id", () => {
 	const home = homeFor("qcheck");
 	const env = envFor(home);
-	setupQueue(home, env, "open");
-	const oracle = join(home, ".local/bin/queue-check");
-	match(runBun(oracle, [], env), runPort("queue-check", [], env));
-	match(runBun(oracle, ["--priority-ids"], env), runPort("queue-check", ["--priority-ids"], env));
+	const plan = setupQueue(home, env, "open");
+	const full = runPort("queue-check", [], env);
+	expect(full.code).toBe(0);
+	expect(full.stdout).toContain(plan);
+	const ids = runPort("queue-check", ["--priority-ids"], env);
+	expect(ids.code).toBe(0);
+	expect(ids.stdout).toBe("");
 });
 
-test("queue-close refusal paths match the original", () => {
+test("queue-close refusal paths", () => {
 	const home = homeFor("qclose-ref");
 	const env = envFor(home);
 	const plan = setupQueue(home, env, "open");
-	const oracle = join(home, ".local/bin/queue-close");
-	match(runBun(oracle, [], env), runPort("queue-close", [], env));
-	match(runBun(oracle, [plan], env), runPort("queue-close", [plan], env));
+	const noArgs = runPort("queue-close", [], env);
+	expect(noArgs.code).toBe(1);
+	expect(noArgs.stderr).toContain("usage: queue-close <plan file>");
+	const open = runPort("queue-close", [plan], env);
+	expect(open.code).toBe(1);
+	expect(open.stderr).toContain('"Status: open"');
+	expect(existsSync(plan)).toBe(true);
 });
 
-test("queue-close complete plan matches the original", () => {
-	// Closing mutates the repo (plan archived, INDEX lines removed), so the oracle and the
-	// port each get their own sandbox and the outputs are compared modulo the home path.
-	const pyHome = homeFor("qclose-done-py");
-	const portHome = homeFor("qclose-done-port");
-	const pyEnv = envFor(pyHome);
-	const portEnv = envFor(portHome);
-	const pyPlan = setupQueue(pyHome, pyEnv, "complete");
-	const portPlan = setupQueue(portHome, portEnv, "complete");
-	const py = runBun(join(pyHome, ".local/bin/queue-close"), [pyPlan], pyEnv);
-	const port = runPort("queue-close", [portPlan], portEnv);
-	expect(port.code).toBe(py.code);
-	expect(port.stderr).toBe(py.stderr);
-	expect(stripTs(port.stdout.split(portHome).join(pyHome))).toBe(stripTs(py.stdout));
+test("queue-close archives a complete plan and removes it from the main index", () => {
+	const home = homeFor("qclose-done");
+	const env = envFor(home);
+	const plan = setupQueue(home, env, "complete");
+	const port = runPort("queue-close", [plan], env);
+	expect(port.code).toBe(0);
+	expect(port.stderr).toBe("");
+	expect(existsSync(plan)).toBe(false);
+	expect(readFileSync(join(home, ".omp/agent/INDEX.md"), "utf8")).not.toContain(plan);
 });
 
 // P1 (2026-10-19): the live bin gained landed detection beyond `merge-base --is-ancestor`:
 // squashMerged (c) — merging the branch into a first-parent commit of base since the fork point
 // (`git merge-tree --write-tree`) changes nothing — and declaredLanded (d), a verified
 // "Landed: <commit on base> from <pre-squash commit>" plan line. Each scenario builds that
-// history in a temp repo; the oracle and the port each get their own repo and the outputs are
-// compared modulo the home path and commit SHAs (the two runs commit seconds apart, so the
-// archive commit hashes differ).
-function stripShas(s: string): string {
-	// The two runs commit seconds apart, so archive commit hashes differ; compare the lines, not the hashes.
-	return s.replace(/\b[0-9a-f]{7,40}\b/g, "SHA");
-}
+// history in a temp repo; the close either lands (exit 0, plan archived) or stays AWAITING
+// (exit 4, plan and index untouched).
 
 function landedRepo(
 	home: string,
@@ -515,13 +514,12 @@ Status: complete
 ## Background
 note
 ${landed}`);
-	writeFileSync(join(repo, "INDEX.md"), `- ${plan}\n`);
 	mkdirSync(dirname(join(home, ".omp/agent/INDEX.md")), { recursive: true });
-	writeFileSync(join(home, ".omp/agent/INDEX.md"), `- ${repo}\n`);
+	writeFileSync(join(home, ".omp/agent/INDEX.md"), `- ${plan}\n`);
 	return plan;
 }
 
-test("queue-close landed detection (squash, stacked, unmerged, forged) matches the original", () => {
+test("queue-close landed detection (squash, stacked, unmerged, forged)", () => {
 	const cases: Array<{ kind: "squash-later-edit" | "stacked" | "unmerged" | "forged"; code: number }> = [
 		{ kind: "squash-later-edit", code: 0 },
 		{ kind: "stacked", code: 0 },
@@ -529,26 +527,19 @@ test("queue-close landed detection (squash, stacked, unmerged, forged) matches t
 		{ kind: "forged", code: 4 },
 	];
 	for (const { kind, code } of cases) {
-		const pyHome = homeFor(`qclose-${kind}-py`);
-		const portHome = homeFor(`qclose-${kind}-port`);
-		const pyEnv = envFor(pyHome);
-		const portEnv = envFor(portHome);
-		for (const home of [pyHome, portHome]) {
-			pinOmp(home);
-			installQueueLib(home);
-			installBlockers(home);
-			installQueueBin("queue-check", home);
-			installQueueBin("queue-close", home);
-			installQueueBin("queue-cancel", home);
-		}
-		const pyPlan = landedRepo(pyHome, pyEnv, kind);
-		const portPlan = landedRepo(portHome, portEnv, kind);
-		const py = runBun(join(pyHome, ".local/bin/queue-close"), [pyPlan], pyEnv);
-		const port = runPort("queue-close", [portPlan], portEnv);
+		const home = homeFor(`qclose-${kind}`);
+		const env = envFor(home);
+		pinOmp(home);
+		installQueueLib(home);
+		installBlockers(home);
+		installQueueBin("queue-cancel", home);
+		const plan = landedRepo(home, env, kind);
+		const port = runPort("queue-close", [plan], env);
 		expect(port.code).toBe(code);
-		expect(port.code).toBe(py.code);
-		expect(port.stderr).toBe(py.stderr);
-		expect(stripShas(stripTs(port.stdout.split(portHome).join(pyHome)))).toBe(stripShas(stripTs(py.stdout)));
+		// A landed branch closes: the plan leaves its path and the main index. An unmerged or
+		// forged Landed line stays AWAITING: the plan and its index line stay as they are.
+		expect(existsSync(plan)).toBe(code !== 0);
+		expect(readFileSync(join(home, ".omp/agent/INDEX.md"), "utf8").includes(plan)).toBe(code !== 0);
 	}
 }, 120_000);
 
@@ -577,20 +568,16 @@ test("queue-cancel matches the original", () => {
 	);
 });
 
-test("queue-close cancelled plan matches the original", () => {
-	const pyHome = homeFor("qclose-py");
-	const portHome = homeFor("qclose-port");
-	const pyEnv = envFor(pyHome);
-	const portEnv = envFor(portHome);
-	const pyPlan = setupQueue(pyHome, pyEnv, "cancelled");
-	const portPlan = setupQueue(portHome, portEnv, "cancelled");
-	const pyOracle = join(pyHome, ".local/bin/queue-close");
-	const portOracle = join(portHome, ".local/bin/queue-close");
-	const py = runBun(pyOracle, [pyPlan], pyEnv);
-	const port = runPort("queue-close", [portPlan], portEnv);
-	expect(port.code).toBe(py.code);
-	expect(port.stderr).toBe(py.stderr);
-	expect(stripTs(port.stdout.split(portHome).join(pyHome))).toBe(stripTs(py.stdout));
+test("queue-close archives a cancelled plan and records it in the repo's CANCELLED list", () => {
+	const home = homeFor("qclose-cancel");
+	const env = envFor(home);
+	const plan = setupQueue(home, env, "cancelled");
+	const port = runPort("queue-close", [plan], env);
+	expect(port.code).toBe(0);
+	expect(port.stderr).toBe("");
+	expect(existsSync(plan)).toBe(false);
+	expect(readFileSync(join(dirname(plan), "CANCELLED.md"), "utf8")).toContain("owner said stop");
+	expect(readFileSync(join(home, ".omp/agent/INDEX.md"), "utf8")).not.toContain(plan);
 });
 
 // The oracle needs Linux tools (flock, /proc, nproc); the port itself runs on macOS too.

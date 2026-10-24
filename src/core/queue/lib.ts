@@ -1,4 +1,4 @@
-// Queue model: main index, repo INDEX.md, plan shape (templates/queue/TEMPLATE.md).
+// Queue model: ONE index — the main index lists plan files, one absolute path per line (templates/queue/TEMPLATE.md).
 
 import { createHash } from "node:crypto";
 import { accessSync, constants, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
@@ -24,7 +24,6 @@ export function stateDirPath(): string {
 export let INDEX = indexPath();
 export let BLOCKERS_DIR = blockersDirPath();
 export let STATE_DIR = stateDirPath();
-export const REPO_INDEX = "INDEX.md";
 export const BACKGROUND_MAX_LINES = 40;
 export const SUB_WARN_CALLS = 90;
 export const SUB_MAX_CALLS = 100;
@@ -76,10 +75,6 @@ function indexLines(file: string): string[] | null {
 
 export function readIndex(file = indexPath()): string[] {
 	return [...new Set((indexLines(file) ?? []).map(l => path.resolve(expandHome(l))))];
-}
-
-export function readRepoIndex(repo: string): string[] {
-	return [...new Set((indexLines(path.join(repo, REPO_INDEX)) ?? []).map(l => path.resolve(repo, expandHome(l))))];
 }
 
 export function sections(text: string): Map<string, string> {
@@ -183,7 +178,7 @@ function headerField(text: string, name: string): string | null {
 
 export function parsePlan(repo: string, file: string, text: string | null, blockersDir = blockersDirPath()): Plan {
 	const empty = { repo, file, text: "", status: null, blockers: [], doneCheck: null, worktree: null, branch: null, appliesTo: [], waiting: false, waitingLine: null, priorityId: null };
-	if (text === null) return { ...empty, errors: ["plan file listed in INDEX.md does not exist"] };
+	if (text === null) return { ...empty, errors: ["plan file listed in the index does not exist"] };
 	const errors: string[] = [];
 	const secs = sections(text);
 	for (const s of REQUIRED) {
@@ -232,23 +227,30 @@ export function parsePlan(repo: string, file: string, text: string | null, block
 	};
 }
 
-export function readPlans(repo: string, blockersDir = blockersDirPath()): Plan[] {
-	return readRepoIndex(repo).map(file => {
+/** A plan's repo: the main checkout holding the plan file; a linked worktree resolves to its main repo. */
+export function planRepo(file: string): string {
+	return repoRoot(file) ?? path.dirname(file);
+}
+
+export function readPlans(files: string[], blockersDir = blockersDirPath()): Plan[] {
+	return files.map(file => {
 		let text: string | null = null;
 		try {
 			text = readFileSync(file, "utf8");
 		} catch {}
-		return parsePlan(repo, file, text, blockersDir);
+		return parsePlan(planRepo(file), file, text, blockersDir);
 	});
 }
 
 export function activePlans(index = indexPath(), blockersDir = blockersDirPath()): Plan[] {
-	return readIndex(index).flatMap(r => readPlans(r, blockersDir));
+	return readPlans(readIndex(index), blockersDir);
 }
 
 /** Owner holds: one line per plan with a WAITING on owner line. The only real holds; the summary, the rollover context and the handoff all read them here. */
 export function ownerHolds(index = INDEX): string[] {
-	return readIndex(index).flatMap(r => readPlans(r)).filter(p => p.waiting).map(p => `${p.file}: WAITING on owner: ${p.waitingLine ?? ""}`);
+	return activePlans(index)
+		.filter(p => p.waiting)
+		.map(p => `${p.file}: WAITING on owner: ${p.waitingLine ?? ""}`);
 }
 
 export function gitTop(p: string): { top: string; repo: string } | null {
@@ -295,7 +297,7 @@ export function planAt(p: string, plans: Plan[]): Plan | null {
 }
 
 export function isOrchestrationPath(p: string, plans: Plan[] = activePlans()): boolean {
-	if (path.basename(p) === REPO_INDEX && existsSync(path.join(path.dirname(p), ".git"))) return true;
+	if (p === INDEX || p === indexPath()) return true;
 	if (planAt(p, plans)) return true;
 	return plans.some(pl => pl.blockers.some(b => b.script === p));
 }
@@ -689,7 +691,7 @@ export function cancelledProblem(plan: Plan, c: CancelledEntry): string {
 	const what = c.name.startsWith("ban-")
 		? `work the owner said NEVER to do: ${c.name} (${c.date}, owner: ${c.owner}; list ${c.list})`
 		: `a plan the owner CANCELLED: ${c.name} (${c.date}, owner: ${c.owner}; archived under ${path.dirname(plan.file)}/archive/)`;
-	return `resembles ${what}. Check it before going on. Same work: drop this plan (remove it from ${REPO_INDEX}) and don't do it. Different work: add the line "False positive: ${c.name} — <why it differs>" to this plan.`;
+	return `resembles ${what}. Check it before going on. Same work: drop this plan (remove it from ${INDEX}) and don't do it. Different work: add the line "False positive: ${c.name} — <why it differs>" to this plan.`;
 }
 
 export const CANCEL_WORDS =
@@ -738,32 +740,35 @@ export interface QueueProblem {
 export function queueProblems(index = INDEX, blockersDir = BLOCKERS_DIR): QueueProblem[] {
 	const probs: QueueProblem[] = [];
 	if (!existsSync(index)) probs.push({ where: index, problem: "main index missing: create it (empty = no open work)" });
-	for (const repo of readIndex(index)) {
-		if (!existsSync(repo)) {
-			probs.push({ where: repo, problem: "indexed repo does not exist: remove the line" });
-			continue;
+	const byWorktree = new Map<string, Plan[]>();
+	for (const p of readPlans(readIndex(index), blockersDir)) {
+		for (const e of p.errors) probs.push({ where: p.file, problem: e });
+		if ((p.status === "complete" || p.status === "cancelled") && !awaitingMerge(p)) {
+			const last = lastCloseResult(p.file);
+			probs.push({ where: p.file, problem: `says ${p.status} but is still indexed; auto-close runs at every prompt, every 15 min and after a push${last ? ` (last: ${last.replace(/^queue-close: /, "")})` : ""}` });
 		}
-		const plans = readPlans(repo, blockersDir);
-		if (!plans.length) probs.push({ where: repo, problem: `indexed but ${REPO_INDEX} lists no plan: remove the repo from ${index}` });
-		for (const p of plans) {
-			for (const e of p.errors) probs.push({ where: p.file, problem: e });
-			if ((p.status === "complete" || p.status === "cancelled") && !awaitingMerge(p)) {
-				const last = lastCloseResult(p.file);
-				probs.push({ where: p.file, problem: `says ${p.status} but is still indexed; auto-close runs at every prompt, every 15 min and after a push${last ? ` (last: ${last.replace(/^queue-close: /, "")})` : ""}` });
-			}
-			for (const c of cancelledMatches(p)) probs.push({ where: p.file, problem: cancelledProblem(p, c) });
-		}
+		for (const c of cancelledMatches(p)) probs.push({ where: p.file, problem: cancelledProblem(p, c) });
+		// A plan file must live in a main checkout, never in a linked worktree.
+		const g = gitTop(p.file);
+		if (g && g.top !== g.repo)
+			probs.push({ where: p.file, problem: `plan file lives in the linked worktree ${g.top}; move it to the main checkout ${g.repo}` });
+		// One plan = one worktree: two open plans naming the same worktree is a splitting bug.
+		if (p.status === "open" && p.worktree) byWorktree.set(p.worktree, [...(byWorktree.get(p.worktree) ?? []), p]);
 	}
+	for (const [wt, ps] of byWorktree)
+		if (ps.length > 1)
+			probs.push({ where: wt, problem: `${ps.length} open plans name this worktree (${ps.map(p => p.file).join(", ")}); one plan = one worktree` });
 	return probs;
 }
 
 export function queueSummary(index = INDEX): string {
-	const repos = readIndex(index);
-	const lines = [`Queue (${index}): ${repos.length ? `${repos.length} repo(s)` : "empty, no open work"}`];
+	const plans = activePlans(index);
+	const repos = [...new Set(plans.map(p => p.repo))];
+	const lines = [`Queue (${index}): ${plans.length ? `${plans.length} plan(s) in ${repos.length} repo(s)` : "empty, no open work"}`];
 	for (const repo of repos) {
 		const nCancelled = readCancelled(repo).length;
 		lines.push(`- ${repo}${nCancelled ? ` (${nCancelled} cancelled)` : ""}`);
-		for (const p of readPlans(repo)) {
+		for (const p of plans.filter(pl => pl.repo === repo)) {
 			const status = awaitingMerge(p) ? "complete, awaiting merge" : (p.status ?? "INVALID");
 			const hold = p.waiting ? `WAITING on owner: ${(p.waitingLine ?? "").slice(0, 80)}` : "";
 			const flags = [status, hold, p.priorityId ?? ""].filter(Boolean).join(", ");

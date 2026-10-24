@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import type { Config } from "./config.ts";
 import { applyQueueEnv } from "./queue/env.ts";
-import { activePlans, cancelledFile, cancelledLine, closeLog, INDEX, readIndex, readRepoIndex, REPO_INDEX, sha, STATE_DIR } from "./queue/lib.ts";
+import { activePlans, cancelledFile, cancelledLine, closeLog, INDEX, readIndex, sha, STATE_DIR } from "./queue/lib.ts";
 import { fixedIncident } from "./incidents.ts";
 
 export function queueClose(args: string[], cfg: Config): number {
@@ -105,7 +105,7 @@ export function queueClose(args: string[], cfg: Config): number {
 	process.on("exit", () => rmSync(lock, { force: true }));
 
 	const plan = activePlans().find(p => p.file === file);
-	if (!plan) die(`${file} is not listed in any repo INDEX.md of a repo in ${INDEX}`);
+	if (!plan) die(`${file} is not listed in the main index ${INDEX}`);
 	if (plan.errors.length) die(`plan does not match the template: ${plan.errors.join("; ")}`);
 	if (plan.status !== "complete" && plan.status !== "cancelled") die(`plan says "Status: ${plan.status}", not complete or cancelled`);
 	const cancelling = plan.status === "cancelled";
@@ -284,20 +284,11 @@ export function queueClose(args: string[], cfg: Config): number {
 		console.log(`queue-close: plan moved to ${dest}`);
 	}
 
-	const repoIndexFile = path.join(plan.repo, REPO_INDEX);
-	const remaining = readRepoIndex(plan.repo).filter(p => p !== file);
-	const rawLines = readFileSync(repoIndexFile, "utf8").split("\n").filter(l => l.trim());
-	writeLines(
-		repoIndexFile,
-		rawLines.filter(l => path.resolve(plan.repo, l.trim().replace(/^[-*]\s+/, "").replace(/`/g, "")) !== file),
-	);
-	console.log(`queue-close: removed from ${repoIndexFile}${remaining.length ? ` (${remaining.length} plan(s) left)` : " (now empty: deleted)"}`);
-	if (!remaining.length) {
-		const lines = readFileSync(INDEX, "utf8").split("\n").filter(l => l.trim());
-		const keep = lines.filter(l => path.resolve(l.trim().replace(/^[-*]\s+/, "").replace(/`/g, "").replace(/^~(?=\/)/, os.homedir())) !== plan.repo);
-		writeFileSync(INDEX, keep.length ? `${keep.join("\n")}\n` : "");
-		console.log(`queue-close: ${plan.repo} removed from ${INDEX} (${readIndex().length} repo(s) left)`);
-	}
+	// One index: the closed plan's line leaves the main index; there is no repo INDEX.md.
+	const lines = readFileSync(INDEX, "utf8").split("\n").filter(l => l.trim());
+	const keep = lines.filter(l => path.resolve(l.trim().replace(/^[-*]\s+/, "").replace(/`/g, "").replace(/^~(?=\/)/, os.homedir())) !== file);
+	writeFileSync(INDEX, keep.length ? `${keep.join("\n")}\n` : "");
+	console.log(`queue-close: removed from ${INDEX} (${keep.length} plan(s) left)`);
 	try {
 		const sp = path.join(STATE_DIR, "spawns.json");
 		const s = JSON.parse(readFileSync(sp, "utf8"));

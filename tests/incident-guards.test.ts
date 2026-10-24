@@ -67,8 +67,7 @@ const baseCfg: Config = (() => {
 	for (const d of [join(AGENT, "blockers"), join(AGENT, "notes"), join(TOY, "docs/plans"), join(TOY, "src"), join(HOME, ".config/neurastream"), STATE, join(HOME, ".local/bin")])
 		mkdirSync(d, { recursive: true });
 	for (const f of [TOY_PLAN, FIX, FIX2, FIX3]) writeFileSync(f, planText());
-	writeFileSync(join(TOY, "INDEX.md"), "docs/plans/20261020_toy.md\ndocs/plans/20261020_fix.md\ndocs/plans/20261020_fix2.md\ndocs/plans/20261020_fix3.md\n");
-	writeFileSync(join(AGENT, "INDEX.md"), `${TOY}\n`);
+	writeFileSync(join(AGENT, "INDEX.md"), `${TOY_PLAN}\n${FIX}\n${FIX2}\n${FIX3}\n`);
 	writeFileSync(EMPTY_INDEX, "");
 	writeFileSync(join(AGENT, "notes/subagents.md"), "## Allowed\n\n- `toy-worker`\n");
 	writeFileSync(join(AGENT, "CANCELLED.md"), "");

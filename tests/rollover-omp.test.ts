@@ -8,7 +8,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, ut
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createOmpAdapter } from "../src/adapters/omp/index.ts";
-import { blockersDirPath, indexPath, REPO_INDEX } from "../src/core/queue/lib.ts";
+import { spawnSync } from "node:child_process";
+import { blockersDirPath, indexPath } from "../src/core/queue/lib.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { notePath, relaunchPath } from "../src/core/rollover.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
@@ -662,10 +663,11 @@ function openPlanFixture(): () => void {
 	const plan = join(repo, "docs/plans/20261023_open.md");
 	mkdirSync(dirname(plan), { recursive: true });
 	writeFileSync(plan, OPEN_PLAN);
-	writeFileSync(join(repo, REPO_INDEX), "docs/plans/20261023_open.md\n");
+	// The plan's repo is the main checkout holding the plan file: the sandbox repo needs .git.
+	spawnSync("git", ["init", "-q", "-b", "main"], { cwd: repo });
 	mkdirSync(blockersDirPath(), { recursive: true });
 	mkdirSync(dirname(indexPath()), { recursive: true });
-	writeFileSync(indexPath(), `${repo}\n`);
+	writeFileSync(indexPath(), `${plan}\n`);
 	return () => {
 		rmSync(indexPath(), { force: true });
 		rmSync(repo, { recursive: true, force: true });

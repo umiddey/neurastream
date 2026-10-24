@@ -4,7 +4,7 @@
 
 import { afterAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { strftime } from "../src/core/clock.ts";
@@ -37,8 +37,7 @@ function seed(): Config {
 	const blocker = join(AGENT, "blockers/no-push");
 	writeFileSync(blocker, "#!/bin/sh\nexit 0\n");
 	chmodSync(blocker, 0o755);
-	writeFileSync(join(AGENT, "INDEX.md"), `${TOY}\n`);
-	writeFileSync(join(TOY, "INDEX.md"), "docs/plans/20261020_1200_fix.md\n");
+	writeFileSync(join(AGENT, "INDEX.md"), `${join(TOY, "docs/plans/20261020_1200_fix.md")}\n`);
 	writeFileSync(
 		join(HOME, ".config/neurastream/config.yml"),
 		`paths:
@@ -134,11 +133,12 @@ function closedPlan(id: string, cites: number): string {
 
 test("an incident with a plan record becomes FIXED when a plan citing it closes; a later plan is refused once", () => {
 	const cfg = seed();
-	writeFileSync(join(TOY, "INDEX.md"), "docs/plans/20261021_0900_plan-a.md\ndocs/plans/20261021_0930_plan-b.md\n");
-	const { incident } = addIncident(cfg, { source: "realtime", kind: "ledger-contradiction", summary: "ledger says RUNNING for a second finished agent" }, NOW);
-	const id = incident.id;
 	const planA = join(TOY, "docs/plans/20261021_0900_plan-a.md");
 	const planB = join(TOY, "docs/plans/20261021_0930_plan-b.md");
+	const index = join(AGENT, "INDEX.md");
+	writeFileSync(index, `${readFileSync(index, "utf8")}${planA}\n${planB}\n`);
+	const { incident } = addIncident(cfg, { source: "realtime", kind: "ledger-contradiction", summary: "ledger says RUNNING for a second finished agent" }, NOW);
+	const id = incident.id;
 	writeFileSync(planA, closedPlan(id, 2));
 	writeFileSync(planB, closedPlan(id, 1));
 	expect(planIncident(cfg, id, planA)).toBeNull();
