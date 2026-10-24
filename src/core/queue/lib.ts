@@ -297,11 +297,12 @@ export function planCovers(plan: Plan, p: string, plans: Plan[] = []): boolean {
 }
 
 export function planAt(p: string, plans: Plan[]): Plan | null {
-	const exact = plans.find(pl => pl.file === p);
+	const clean = p.replace(/:[\d+\-,]*(:raw)?$|:raw(:[\d+\-,]+)?$/, "");
+	const exact = plans.find(pl => pl.file === clean || pl.file === p);
 	if (exact) return exact;
-	const g = gitTop(p);
+	const g = gitTop(clean);
 	if (!g) return null;
-	const rel = path.relative(g.top, p);
+	const rel = path.relative(g.top, clean);
 	return plans.find(pl => pl.repo === g.repo && path.relative(pl.repo, pl.file) === rel) ?? null;
 }
 
@@ -329,7 +330,7 @@ export function touchedPaths(toolName: string, input: Record<string, unknown>, c
 	const out = new Set<string>();
 	const base = typeof input?.cwd === "string" ? path.resolve(cwd, expandHome(input.cwd)) : cwd;
 	const add = (raw: string, from = base) => {
-		const s = expandHome(raw.trim());
+		const s = expandHome(raw.trim().replace(/:[\d+\-,]*(:raw)?$|:raw(:[\d+\-,]+)?$/, ""));
 		if (!s || s.includes("://")) return;
 		out.add(path.resolve(from, s));
 	};
@@ -362,10 +363,14 @@ export function touchedPaths(toolName: string, input: Record<string, unknown>, c
 export const MUTATING =
 	/(\brm\b|\bmv\b|\bcp\b|\btouch\b|\btruncate\b|\bchmod\b|\bln\b|\bsed\s+(-\w*\s+)*-i|\bperl\s+(-\w*\s+)*-[a-z]*i|\btee\b|(^|[^0-9&>=\-])>{1,2}\s*[^\s&>]|\bgit\s+(rm|mv|checkout|restore|apply|am|stash|reset|clean)\b|\bpatch\b|\binstall\b|\bdd\b|writeFile|appendFile|Bun\.write|unlink|rmSync|\.write_text\(|\.write_bytes\(|\bopen\([^)]*,\s*["'][wax]b?\+?["']|shutil\.|os\.(remove|rename|replace|unlink|chmod)|\.writelines\()/;
 
+export function withoutQuotedRedirects(code: string): string {
+	return code.replace(/'[^']*'/g, m => m.replace(/>/g, " ")).replace(/"(?:[^"\\]|\\.)*"/g, m => m.replace(/>/g, " "));
+}
+
 export function changesFiles(toolName: string, input: Record<string, unknown>): boolean {
 	if (toolName === "edit" || toolName === "ast_edit") return true;
 	if (toolName === "write") return true;
-	return SHELL_TOOLS.has(toolName) && MUTATING.test(String(input?.command ?? input?.code ?? ""));
+	return SHELL_TOOLS.has(toolName) && MUTATING.test(withoutQuotedRedirects(String(input?.command ?? input?.code ?? "")));
 }
 
 // P8: package-manager and cutover commands change the running guard package.
@@ -481,6 +486,8 @@ export function writeTargets(toolName: string, input: Record<string, unknown>, c
 		return [...out];
 	}
 	if (toolName === "edit") {
+		const target = typeof input?.path === "string" ? input.path : typeof input?.file === "string" ? input.file : "";
+		if (target) add(target, cwd);
 		for (const m of String(input?.input ?? "").matchAll(/^\[([^\]\n]+?)#[0-9A-Fa-f]{4}\]/gm)) add(m[1] ?? "", cwd);
 		return [...out];
 	}
@@ -494,7 +501,7 @@ export function writeTargets(toolName: string, input: Record<string, unknown>, c
 	// generic mutating heuristics fire on its text.
 	const pkgOp = packageOpTarget(code);
 	const subOp = subagentsOpWrites(code);
-	if (!MUTATING.test(code) && !pkgOp && !subOp) return [];
+	if (!MUTATING.test(withoutQuotedRedirects(code)) && !pkgOp && !subOp) return [];
 	let dir = typeof input?.cwd === "string" ? path.resolve(cwd, expandHome(input.cwd)) : cwd;
 	for (const seg of withoutHeredocBodies(code).split(/&&|\|\||;|\n|\|/)) {
 		const s = seg.trim();
@@ -503,9 +510,10 @@ export function writeTargets(toolName: string, input: Record<string, unknown>, c
 			dir = path.resolve(dir, expandHome((cd[1] ?? "").replace(/^["']|["']$/g, "")));
 			continue;
 		}
-		for (const m of s.matchAll(/(?:^|[^0-9&>=\-])>{1,2}\s*([^\s&|;)<>]+)/g)) {
+		const noQuotedRedirect = withoutQuotedRedirects(s);
+		for (const m of noQuotedRedirect.matchAll(/(?:^|[^0-9&>=\-])>{1,2}\s*([^\s&|;)<>]+)/g)) {
 			// A target with no letter, digit, `.` or `/` (`>,`) is prose, not a file.
-			const target = m[1] ?? "";
+			const target = (m[1] ?? "").replace(/^["']|["']$/g, "");
 			if (/[\p{L}\p{N}./]/u.test(target)) add(target, dir);
 		}
 		const words = s.split(/\s+/).filter(Boolean);

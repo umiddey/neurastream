@@ -58,7 +58,7 @@ function windowFile(): string {
 	return path.join(q.STATE_DIR, "edit-window.json");
 }
 
-function readWindow(): EditWindow {
+export function readWindow(): EditWindow {
 	try {
 		const w = JSON.parse(readFileSync(windowFile(), "utf8")) as EditWindow;
 		if (Array.isArray(w.used) && typeof w.windowStart === "number") return w;
@@ -66,7 +66,7 @@ function readWindow(): EditWindow {
 	return { used: [], windowStart: 0 };
 }
 
-function writeWindow(w: EditWindow): void {
+export function writeWindow(w: EditWindow): void {
 	try {
 		mkdirSync(q.STATE_DIR, { recursive: true });
 		writeFileSync(windowFile(), JSON.stringify(w, null, 1));
@@ -382,7 +382,11 @@ function subRules(e: ToolEvent, input: Record<string, unknown>, paths: string[],
 		return 'queue-close and queue-cancel are Main\'s; report in your plan\'s "## Progress" instead.';
 	const plans = q.activePlans();
 	if (e.calls >= cap) {
-		const planEdit = (e.tool === "write" || e.tool === "edit") && writes.length > 0 && writes.every(p => q.planAt(p, plans));
+		// Plan edit targets come from writeTargets (write and structured/hashline edit)
+		// with touchedPaths as fallback; plan reads match any read tool.
+		const planEdit =
+			(e.tool === "write" || e.tool === "edit") &&
+			(writes.length > 0 ? writes.every(p => q.planAt(p, plans)) : paths.length > 0 && paths.every(p => q.planAt(p, plans)));
 		const planRead = cfg.guards.read_tools.includes(e.tool) && paths.length > 0 && paths.every(p => q.planAt(p, plans));
 		if (!planEdit && !planRead)
 			return `call budget spent (${e.calls}/${cap}). Only reading and editing your plan's "## Progress" is allowed now: write what you did, what is verified, what is next, then end your run.`;
@@ -634,6 +638,18 @@ function recordMainReads(files: string[], now = Date.now()): void {
  * Main's tool result: each `path:line:` at a line start (grep -n / grep -rn output) names a file
  * Main read. Paths resolve against the directory the call ran in (its `cwd`, then any `cd`).
  */
+export function revertMainEdit(tool: string, input: Record<string, unknown>, cwd: string, cfg: Config): void {
+	const files = changedProjectFiles(tool, input, cwd, cfg);
+	if (!files.length) return;
+	const w = readWindow();
+	const entry = `${tool}:${files[0]!}`;
+	const idx = w.used.lastIndexOf(entry);
+	if (idx >= 0) {
+		w.used.splice(idx, 1);
+		writeWindow(w);
+	}
+}
+
 export function recordMainResult(tool: string, input: Record<string, unknown>, cwd: string, text: string): void {
 	const base = typeof input.cwd === "string" ? path.resolve(cwd, q.expandHome(input.cwd)) : cwd;
 	const dir = q.shellCwd(String(input.command ?? input.code ?? ""), base);

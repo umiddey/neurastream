@@ -22,7 +22,7 @@ import type { Decision } from "../../core/adapter.ts";
 import { loadConfig, type Config } from "../../core/config.ts";
 import { nowSec } from "../../core/clock.ts";
 import { runDetectorsGated } from "../../core/incident-detectors.ts";
-import { checkInject, checkPlanEdit, checkStop, checkTool, MAIN_PLAN_FILE, recordMainResult, rekeySpawnFile } from "../../core/guards.ts";
+import { checkInject, checkPlanEdit, checkStop, checkTool, MAIN_PLAN_FILE, recordMainResult, revertMainEdit, rekeySpawnFile } from "../../core/guards.ts";
 import { postReply } from "../../core/notify.ts";
 import { inboxPath } from "../../core/owner-ui.ts";
 import { applyQueueEnv } from "../../core/queue/env.ts";
@@ -479,6 +479,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 						if (d.restore.text === null) rmSync(d.restore.path, { force: true });
 						else writeFileSync(d.restore.path, d.restore.text);
 					} catch {}
+					revertMainEdit(asString(e.toolName), asRecord(e.input), c.cwd ?? process.cwd(), cfg);
 					return { isError: true, content: [{ type: "text", text: d.reason }] };
 				}
 				if (d.allow && (!c.hasAgent || c.kind === "main") && q.doneCount(after) > q.doneCount(before) && q.planAt(file, q.activePlans())) {
@@ -494,6 +495,9 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 			const content = Array.isArray(e.content) ? e.content : [];
 			const text = content.map(p => asString(asRecord(p).text)).join("\n");
 			recordMainResult(asString(e.toolName), asRecord(e.input), c.cwd ?? process.cwd(), text);
+		}
+		if ((!c.hasAgent || c.kind === "main") && e.isError) {
+			revertMainEdit(asString(e.toolName), asRecord(e.input), c.cwd ?? process.cwd(), cfg);
 		}
 		// Real-time detectors after each Main bash result, crashes included (D2 wants the stack).
 		if ((!c.hasAgent || c.kind === "main") && asString(e.toolName) === "bash") {
