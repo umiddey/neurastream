@@ -390,6 +390,10 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	// the stop/agent_end event, never the session file (session_stop fires BEFORE agent_end, and
 	// omp skips it entirely while an async job is pending, so a file read lags a whole turn).
 	let postedReply: string | null = null;
+	// Set by every session_stop path that returns block; the willContinue agent_end that omp then
+	// emits (sessionStopWillContinue) consumes it and posts nothing — a blocked stop's reply is a
+	// mid-work report, never a hand-back.
+	let stopBlocked = false;
 	// One guard-log line per notify decision: `notify: posted|skipped (<why>)`. Fire-and-forget:
 	// the decision never awaits the post; a failed or slow post logs one line and never blocks
 	// or retries.
@@ -583,6 +587,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 			if (snap.state === "need-note") {
 				adapterLog(cfg, "BLOCK stop: rollover need-note");
 				adapterLog(cfg, "notify: skipped (stop blocked: rollover need-note)");
+				stopBlocked = true;
 				return { decision: "block", reason: noteRequestFor(rc, snap) };
 			}
 			if (snap.state === "ready" || snap.state === "wait-jobs") {
@@ -603,6 +608,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 			return undefined;
 		}
 		adapterLog(cfg, "notify: skipped (stop blocked by guard)");
+		stopBlocked = true;
 		return { decision: "block", reason: d.reason };
 	});
 
@@ -793,12 +799,25 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	pi.on("agent_end", (e, ctx) => onSizeCheck("agent_end", e, ctx));
 	// Hand-back without a session_stop (plan 20261025_0130): while an async job is pending omp
 	// fires agent_end with willContinue:true and SKIPS session_stop — this deferred hand-back
-	// posts from the event's own messages. A terminal end (willContinue unset) is not one: the
-	// session_stop that follows it decides. A mid-run continuation — tool calls, or a non-"stop"
-	// reason such as an auto-retry — is not a hand-back and posts nothing.
+	// posts from the event's own messages. omp also sets willContinue after a BLOCKED stop
+	// (sessionStopWillContinue) and for todo/plan-mode/rewind continuations, so a post here needs
+	// both: no blocked stop just decided (the flag), and an async job really pending. A terminal
+	// end (willContinue unset) is not a hand-back: the session_stop that follows it decides. A
+	// mid-run continuation — tool calls, or a non-"stop" reason such as an auto-retry — posts
+	// nothing.
 	pi.on("agent_end", (e, ctx) => {
 		if (!isMain(ctx)) return;
 		if (asRecord(e).willContinue !== true) return;
+		if (stopBlocked) {
+			stopBlocked = false;
+			adapterLog(cfg, "notify: skipped (stop blocked, agent_end)");
+			return;
+		}
+		const jobCount = asRolloverCtx(ctx)?.runningJobs().length ?? 0;
+		if (jobCount === 0) {
+			adapterLog(cfg, "notify: skipped (no pending job, agent_end)");
+			return;
+		}
 		const reply = lastAssistantIn(asRecord(e).messages);
 		if (!reply || !reply.text) {
 			adapterLog(cfg, "notify: skipped (no reply text, agent_end hand-back)");
