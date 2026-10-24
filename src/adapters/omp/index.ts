@@ -612,7 +612,8 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 				{ customType: "main-guard.rollover", content: noteRequestFor(c, snap), display: false },
 				{ triggerTurn: true, deliverAs: "nextTurn" },
 			);
-		} else if (terminal && snap.state === "ready" && process.env.NEURASTREAM_MAIN_LAUNCHER === "1" && !relaunched) {
+		} else if (terminal && snap.state === "ready" && process.env.NEURASTREAM_MAIN_LAUNCHER === "1" && !relaunched && flight === null) {
+			// flight !== null: an in-process rollover (fallback or /main-rollover) owns this session's end.
 			requestRelaunch(c, notePath(c.sessionId));
 		} else if (terminal && relaunched) {
 			// A tool result mid-run never restarts the session (I-20261024-4), and omp's interactive

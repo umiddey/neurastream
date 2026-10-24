@@ -472,6 +472,34 @@ test("launcher: omp really shutting down (session_shutdown) cancels the in-proce
 	expect(existsSync(relaunchPath())).toBe(true);
 });
 
+test("launcher: a terminal run end during the in-process rollover does not request a new relaunch", async () => {
+	resetState();
+	const host = fakeHost();
+	createOmpAdapter(host, graceCfg());
+	const { promise: idling, resolve: atIdle } = Promise.withResolvers<void>();
+	const { promise: idleGate, resolve: releaseIdle } = Promise.withResolvers<void>();
+	const { ctx, opened } = ctxAwaitingOpen({
+		waitForIdle: () => {
+			atIdle();
+			return idleGate;
+		},
+	});
+	await withLauncher("1", async () => {
+		await armReady(host, ctx, "## In progress\nstep");
+		await host.emit("agent_end", {}, ctx); // the relaunch is requested; omp does not exit
+		await idling; // the fallback's in-process rollover is waiting for idle
+		// A terminal run end now must not start a second relaunch: it would abort the running
+		// rollover, re-arm the grace and loop every exit_grace_s.
+		await host.emit("agent_end", {}, ctx);
+		expect(shutdowns).toBe(1);
+		expect(existsSync(relaunchPath())).toBe(false);
+		releaseIdle();
+		await opened;
+	});
+	expect(newSessions).toEqual([{ parentSession: SESSION_FILE }]);
+	expect(host.sent.length).toBe(1);
+}, 60_000);
+
 test("launcher unset, ready: no shutdown and no relaunch.json", async () => {
 	resetState();
 	const host = fakeHost();
