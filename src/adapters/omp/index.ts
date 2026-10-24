@@ -23,11 +23,12 @@ import { loadConfig, type Config } from "../../core/config.ts";
 import { nowSec } from "../../core/clock.ts";
 import { runDetectorsGated } from "../../core/incident-detectors.ts";
 import { checkInject, checkPlanEdit, checkStop, checkTool, MAIN_PLAN_FILE, recordMainResult, rekeySpawnFile } from "../../core/guards.ts";
+import { postReply } from "../../core/notify.ts";
 import { applyQueueEnv } from "../../core/queue/env.ts";
 import { mainStartText, runDailyCheck } from "../../core/main-start.ts";
 import { readBlocks } from "../../core/metrics.ts";
 import { buildHandoff, holdsBlock, notePath, noteRequest, OWNER_AWAY, ownerText, relaunchPath, rolloverState, spawnRefusal, type RolloverState } from "../../core/rollover.ts";
-import { defaultCompletedResults, defaultRunSource } from "./sessions.ts";
+import { defaultCompletedResults, defaultRunSource, lastAssistantText } from "./sessions.ts";
 import { packageJsonPath, packageVersion } from "./package-root.ts";
 import * as q from "../../core/queue/lib.ts";
 // Registers the plugin-command matcher into core's writeTargets (side effect).
@@ -268,6 +269,10 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	let timer: unknown;
 	const calls = new Map<string, number>(); // subagent call budget, by agent id
 	const pending = new Map<string, Map<string, string>>(); // toolCallId -> plan snapshots
+	// Chat notify (plan 20261024_2155): the last assistant text of the main session, and the text
+	// a stop already posted (attempted) — one post per distinct text, never a retry loop.
+	let lastReply: string | null = null;
+	let postedReply: string | null = null;
 
 	pi.on("session_start", (_e, ctx) => {
 		const c = asCtx(ctx);
@@ -415,6 +420,17 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		if (c.hasAgent && c.kind !== "main") return;
 		// A relaunch is requested: omp shuts down at the next idle, so the stop must not be continued.
 		if (relaunched) return undefined;
+		// The stop hands the turn back to the owner: post Main's final reply, once per distinct
+		// text. Fire-and-forget: the decision never awaits the post; a failed or slow post logs
+		// one line and never blocks or retries.
+		const notifyOwner = (): void => {
+			const text = lastReply;
+			if (!text || text === postedReply) return;
+			postedReply = text;
+			void postReply(text, cfg).then(results => {
+				for (const r of results) if (!r.posted) adapterLog(cfg, `notify: ${r.provider}: ${r.error}`);
+			});
+		};
 		// A pending rollover decides the stop and checkStop is not consulted: its queue, incident and cancel
 		// blocks would hold Main at a wait the new session raises again through main-start, and its "spawn an
 		// agent" text is refused while the rollover is pending.
@@ -427,15 +443,21 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 			}
 			if (snap.state === "ready" || snap.state === "wait-jobs") {
 				adapterLog(cfg, `ALLOW stop: rollover ${snap.state}`);
-				// Under the launcher a ready rollover starts now; plain omp waits for the owner's next message.
-				if (snap.state === "ready" && process.env.NEURASTREAM_MAIN_LAUNCHER === "1") requestRelaunch(rc, notePath(rc.sessionId));
+				// Under the launcher a ready rollover starts now (not a hand-back to the owner);
+				// plain omp waits for the owner's next message.
+				const handsToOwner = !(snap.state === "ready" && process.env.NEURASTREAM_MAIN_LAUNCHER === "1" && requestRelaunch(rc, notePath(rc.sessionId)));
+				if (handsToOwner) notifyOwner();
 				return undefined;
 			}
 		}
 		const d = checkStop({ agent: "main", callsSinceStop, idleStops, ledgerText: ledgerText(cfg) }, cfg);
 		callsSinceStop = d.state?.callsSinceStop ?? 0;
 		idleStops = d.state?.idleStops ?? idleStops;
-		return d.allow ? undefined : { decision: "block", reason: d.reason };
+		if (d.allow) {
+			notifyOwner();
+			return undefined;
+		}
+		return { decision: "block", reason: d.reason };
 	});
 
 	// Session rollover (src/core/rollover.ts). Main's session size decides when a handoff note is
@@ -623,6 +645,17 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		}
 	};
 	pi.on("agent_end", (e, ctx) => onSizeCheck("agent_end", e, ctx));
+	// The text a later allowed stop posts: the last assistant message of each terminal run end in
+	// the main session (omp 18.11.1 sets willContinue on a non-terminal end). A blocked stop keeps
+	// Main talking, so the final run end overwrites this before the stop that really hands back.
+	pi.on("agent_end", (e, ctx) => {
+		if (!isMain(ctx)) return;
+		if (asRecord(e).willContinue === true) return;
+		const rc = asRolloverCtx(ctx);
+		if (!rc) return;
+		const text = lastAssistantText(rc.sessionFile);
+		lastReply = text.trim() ? text : null;
+	});
 
 	// omp is really shutting down: the exit-grace fallback must not fire.
 	pi.on("session_shutdown", () => clearGrace?.());

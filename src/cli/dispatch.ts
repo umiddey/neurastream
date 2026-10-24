@@ -1,4 +1,5 @@
-import { ConfigError, configFile, loadConfig } from "../core/config.ts";
+import { ConfigError, configFile, loadConfig, type Config } from "../core/config.ts";
+import { postReply } from "../core/notify.ts";
 import { applyQueueEnv } from "../core/queue/env.ts";
 import { runAdapterInstall } from "../adapters/omp/install.ts";
 import { runDoctor } from "../adapters/omp/doctor.ts";
@@ -51,6 +52,7 @@ export function helpText(): string {
 		"                                template-identical pins and the AGENTS.md block (--purge adds",
 		"                                config + agent-dir state); prints the list, refuses outside HOME",
 		"  neurastream doctor            report hand-edited live files and a stale install",
+		"  neurastream notify test       post a test message to the configured Discord/Slack webhooks",
 		"  neurastream queue migrate     fold the old repo INDEX.md files into the one main index",
 		"  neurastream config [--json]   print the merged config (defaults + file + env)",
 		"  neurastream guard <event> --json",
@@ -90,6 +92,7 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 		}
 	}
 	if (cmd === "doctor") return runDoctor();
+	if (cmd === "notify") return runNotify(args);
 	if (cmd === "uninstall") return runUninstall(args);
 	if (cmd === "queue" && args[0] === "migrate") {
 		try {
@@ -114,6 +117,35 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 	}
 	console.error(`unknown command ${cmd}\n${helpText()}`);
 	return 2;
+}
+
+const NOTIFY_USAGE = "usage: neurastream notify test";
+
+/** `neurastream notify test`: post one line to every configured provider; exit 1 when any fails. */
+function runNotify(args: string[]): number | Promise<number> {
+	if (args[0] !== "test" || args.length !== 1) {
+		console.error(NOTIFY_USAGE);
+		return 2;
+	}
+	let cfg: Config;
+	try {
+		cfg = loadConfig();
+	} catch (err) {
+		console.error(err instanceof ConfigError ? err.message : String(err));
+		return 1;
+	}
+	return postReply("neurastream notify test", cfg).then(results => {
+		let failed = 0;
+		for (const r of results) {
+			if (r.posted) console.log(`notify ${r.provider}: posted (${r.chunks} chunk${r.chunks === 1 ? "" : "s"})`);
+			else {
+				failed++;
+				console.error(`notify ${r.provider}: ${r.error}`);
+			}
+		}
+		if (results.length === 0) console.log("notify: no provider configured (notify.discord_webhook_file / notify.slack_webhook_file)");
+		return failed > 0 ? 1 : 0;
+	});
 }
 
 const AGENTS_USAGE = "usage: neurastream agents list | allow <slug>... | deny <slug>...";
