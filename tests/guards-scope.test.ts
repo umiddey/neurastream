@@ -6,11 +6,12 @@
 
 import { afterAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 const REPO = dirname(dirname(import.meta.path));
-const HOME = "/tmp/neurastream-home-scope";
+// realpath: macOS /tmp is a symlink to /private/tmp, and git reports worktrees by real path.
+const HOME = join(realpathSync("/tmp"), "neurastream-home-scope");
 const AGENT = join(HOME, ".omp/agent");
 const TOY = join(HOME, "projects/toy");
 const WT_A = join(HOME, "projects/toy-wt-a");
