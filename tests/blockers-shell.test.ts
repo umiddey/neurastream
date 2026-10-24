@@ -46,7 +46,7 @@ describe("splitShell", () => {
 		expect(segs[1]?.words.map((w) => w.text)).toEqual(["echo", "ok"]);
 	});
 
-	test("drops heredoc bodies and reports the redirection target", () => {
+	test("keeps heredoc bodies out of the words and reports the redirection target", () => {
 		const segs = splitShell("cat > s.sh <<'EOF'\nuv lock --upgrade\nEOF\necho done");
 		expect(segs.some((s) => s.words.some((w) => w.text === "uv"))).toBe(false);
 		expect(segs[0]?.writes).toEqual(["s.sh"]);
@@ -157,5 +157,41 @@ describe("plan files (plan P4): Progress edits are not blocked by deny-path", ()
 	test("archived plans are not exempt", () => {
 		const file = path.join(root, "docs/plans/archive/20261022_1930_x.md");
 		expect(refused(denyPath, call("write", { path: file }, "sub", [file]), PLANS)).toBe(true);
+	});
+});
+
+describe("deny-path interpreter writes (I-20261024-24): code an interpreter runs is judged", () => {
+	const SECRET = ["secret/**"];
+
+	test("refuses python code writing or removing a denied file", () => {
+		expect(
+			refused(denyPath, bash(`python3 -c "from pathlib import Path; p=Path('secret/a.py'); p.write_text('x')"`), SECRET),
+		).toBe(true);
+		expect(refused(denyPath, bash(`python3 -c "import os; os.remove('secret/a.py')"`), SECRET)).toBe(true);
+		expect(refused(denyPath, bash(`python3 -c "import shutil; shutil.copy('ok.txt','secret/a.py')"`), SECRET)).toBe(true);
+	});
+
+	test("refuses a python heredoc whose body writes a denied file", () => {
+		expect(refused(denyPath, bash("python3 << 'PY'\nopen('secret/a.py','w').write('x')\nPY"), SECRET)).toBe(true);
+	});
+
+	test("refuses eval code writing a denied file", () => {
+		expect(refused(denyPath, call("eval", { code: `Path('secret/a.py').write_text('x')` }), SECRET)).toBe(true);
+	});
+
+	test("refuses ruby File.write to a denied file", () => {
+		expect(refused(denyPath, bash(`ruby -e "File.write('secret/a.rb','x')"`), SECRET)).toBe(true);
+	});
+
+	test("reading a denied file with python stays allowed", () => {
+		expect(refused(denyPath, bash(`python3 -c "print(open('secret/a.py').read())"`), SECRET)).toBe(false);
+	});
+
+	test("python writes outside the deny globs stay allowed", () => {
+		expect(refused(denyPath, bash(`python3 -c "Path('other/b.py').write_text('x')"`), SECRET)).toBe(false);
+	});
+
+	test("a heredoc to cat is prose, not interpreter code", () => {
+		expect(refused(denyPath, bash("cat << 'EOF'\nsecret/a.py is denied\nEOF"), SECRET)).toBe(false);
 	});
 });
