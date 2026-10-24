@@ -402,7 +402,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		if ((!c.hasAgent || c.kind === "main") && !e.isError) {
 			const content = Array.isArray(e.content) ? e.content : [];
 			const text = content.map(p => asString(asRecord(p).text)).join("\n");
-			recordMainResult(asString(e.toolName), asRecord(e.input), c.cwd ?? process.cwd(), text);
+			recordMainResult(asString(e.toolName), asRecord(e.input), c.cwd ?? process.cwd(), text, cfg);
 		}
 		// Real-time detectors after each Main bash result, crashes included (D2 wants the stack).
 		if ((!c.hasAgent || c.kind === "main") && asString(e.toolName) === "bash") {
