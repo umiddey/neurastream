@@ -76,8 +76,8 @@ interface OnResult {
 	calls: string[][];
 }
 
-function doOn(opts: { port?: number | null; tailscale?: Tailscale; runner?: Runner } = {}): OnResult {
-	const { runner, calls } = opts.runner ? { runner: opts.runner, calls: [] as string[][] } : fakeRunner();
+function doOn(opts: { port?: number | null; tailscale?: Tailscale; fail?: { call?: number; stderr?: string } } = {}): OnResult {
+	const { runner, calls } = fakeRunner(opts.fail);
 	const out: string[] = [];
 	const err: string[] = [];
 	const code = uiOn({
@@ -163,8 +163,7 @@ test("ui on: installs the user unit from the package template", () => {
 
 test("ui on: daemon-reload, enable, restart — in that order", () => {
 	writeConfig(`ui:\n  enabled: false\n`);
-	const { runner } = fakeRunner();
-	const r = doOn({ runner });
+	const r = doOn();
 	expect(r.code).toBe(0);
 	expect(r.calls).toEqual([
 		["systemctl", "--user", "daemon-reload"],
@@ -218,8 +217,7 @@ test("ui on: an unknown login exits 1 naming the logins seen, and writes and run
 
 test("ui on: a failed restart exits 1 with its stderr and says the config was already written", () => {
 	const stderr = "Failed to restart neurastream-ui.service: Unit neurastream-ui.service not found.";
-	const { runner } = fakeRunner({ call: 3, stderr });
-	const r = doOn({ runner });
+	const r = doOn({ fail: { call: 3, stderr } });
 	expect(r.code).toBe(1);
 	expect(r.err.join("\n")).toContain(stderr);
 	expect(r.err.join("\n")).toContain("already written");
@@ -236,8 +234,6 @@ test("ui off: disables the unit and sets enabled false, keeping owner_login", ()
 	const code = uiOff({
 		home: HOME,
 		runner,
-		tailscale: fixtureTailscale(),
-		print: () => {},
 		error: l => err.push(l),
 	});
 	expect(code).toBe(0);

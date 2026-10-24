@@ -162,9 +162,11 @@ guards:
   ledger_command: "agent-ledger --hours 12"
 
 ui:
-  enabled: false        # the owner's phone page (neurastream ui); binds the tailnet address only
-  port: 7787
-  owner_login: ""       # the tailscale login that may open the page; empty = the page refuses to start
+  enabled: false        # the owner's phone page (neurastream ui); binds the tailnet address only;
+                        # `neurastream ui on` sets it true, `neurastream ui off` back to false
+  port: 7787            # `neurastream ui on --port N` writes it here
+  owner_login: ""       # the tailscale login that may open the page; empty = the page refuses to start;
+                        # `neurastream ui on --login <email>` sets it (kept on `ui off`)
 
 machine:
   load_over_cores: 4

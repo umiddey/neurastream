@@ -130,6 +130,7 @@ const TS: Tailscale = {
 	// The seam's contract (like realTailscale): the MagicDNS name, trailing dot already stripped.
 	dnsName: () => DNS_NAME,
 	whois: (peer: string) => (peer === PEER ? OWNER : peer === "100.95.10.7" ? "other@example.com" : null),
+	logins: () => [OWNER, "other@example.com"],
 };
 
 let stopFns: (() => void)[] = [];
@@ -312,7 +313,7 @@ test("ui.enabled false refuses to start", () => {
 });
 
 test("a silent tailscale refuses to start on the default hostname", () => {
-	expect(() => ui({ tailscale: { ip4: () => null, dnsName: () => null, whois: () => null }, hostname: undefined })).toThrow();
+	expect(() => ui({ tailscale: { ip4: () => null, dnsName: () => null, whois: () => null, logins: () => null }, hostname: undefined })).toThrow();
 });
 
 test("a real loopback request (no peer injection) gets 403", async () => {
@@ -607,7 +608,7 @@ test("guards refuse agent shell commands that start the owner page", () => {
 
 test("runUi never resolves once the page is started, so the CLI does not exit and kill the server", async () => {
 	let started = 0;
-	const served = runUi({ cfg: CFG, start: () => (started++, { stop() {}, hostname: "127.0.0.1", port: 0 }) });
+	const served = runUi([], { cfg: CFG, start: () => (started++, { stop() {}, hostname: "127.0.0.1", port: 0 }) });
 	// An async runUi that returns a code is already settled here, so its .then is queued ahead of
 	// the second racer; one that never resolves loses to it. No clock involved.
 	const winner = await Promise.race([served.then(code => `exited ${code}`), Promise.resolve().then(() => "still serving")]);
@@ -617,7 +618,7 @@ test("runUi never resolves once the page is started, so the CLI does not exit an
 
 test("runUi refuses with exit 1 and starts nothing when the page is off", async () => {
 	let started = 0;
-	const code = await runUi({ cfg: { ...CFG, ui: { ...CFG.ui, enabled: false } }, start: () => (started++, { stop() {}, hostname: "", port: 0 }) });
+	const code = await runUi([], { cfg: { ...CFG, ui: { ...CFG.ui, enabled: false } }, start: () => (started++, { stop() {}, hostname: "", port: 0 }) });
 	expect(code).toBe(1);
 	expect(started).toBe(0);
 });
