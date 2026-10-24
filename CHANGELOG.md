@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+### Fixed
+- Chat notify missed most real hand-backs: omp fires `session_stop` BEFORE `agent_end` and skips it entirely while an async job (subagent, background bash) is pending, and the adapter read the reply from the session file, so it posted the previous turn's reply or nothing. The adapter now takes the reply from the event itself — the stop's `last_assistant_message` (falling back to the last assistant entry of `messages`) and the `agent_end` `messages` — and posts at an allowed `session_stop` and at a `willContinue: true` `agent_end` whose last assistant message ends with a `stop` reason, text and no tool call (the deferred hand-back). Still once per distinct text, never for a subagent, never on a blocked stop; every notify decision now logs one guard-log line `notify: posted|skipped (<why>)`.
+
 ## 0.2.10
 ### Fixed
 - The owner page answered 403 to the owner's own phone: the real `tailscale whois --json` reader parsed only the first stdout line (`{`) and looked for the login under `User` instead of `UserProfile`, so every peer's login was empty. It now parses the whole output and reads `UserProfile.LoginName`.
