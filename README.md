@@ -170,6 +170,18 @@ Guard rules around it:
 - A stop the guard blocks posts nothing; when Main continues and really hands back later, that later stop posts the final text. A subagent session never posts, and a relaunch (the launcher's rollover) posts nothing.
 - The post never delays the stop decision: it times out at 5 seconds per chunk, makes one attempt, and writes one guard-log line when a channel fails. Long replies are split per channel (Discord 2000, Slack 3000 characters) on line boundaries where possible.
 
+## Trace claims (`neurastream traces claims`)
+
+Agents' final reports assert results — "530 passed", "exit 0", commit SHAs, heavy-run labels, changed files. This command reads a run's trace (its session file, read-only) and checks each claim in the run's last assistant message against what the run's own tool activity shows: a count or exit code must appear in some tool output, a commit SHA must be printed by the output of a git command the run itself ran, a heavy-run label must appear in a quoted heavy-run call, and a changed path must be carried by an edit/write call or a shell write in the path's own command segment. A claim nothing shows becomes a `claim-unbacked` finding.
+
+```
+neurastream traces claims --since 24h            # every run touched in the window
+neurastream traces claims NsTracesVerifyGlm      # one run, by id
+neurastream traces claims --since 24h --json     # machine-readable
+```
+
+Known boundary: a report that cites other runs' work (Main quoting a subagent, a relaunched agent quoting its predecessor) can produce `claim-unbacked` findings that are true in this run's trace but provable only in the cited run's own trace.
+
 ## Self-metrics
 
 `neurastream metrics report [--days N]` compares this window (the last `metrics.report_days`, default 7) with the one before it, writes `<paths.notes>/metrics.md`, and prints the same report. Worst change is marked `◀ worst`. The five numbers:

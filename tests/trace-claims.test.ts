@@ -70,6 +70,37 @@ describe("changed paths", () => {
 	});
 });
 
+describe("P4 tunings from the real-session smoke (2026-10-25)", () => {
+	test("dotted API symbols and emails are never changed-path claims", () => {
+		// Real false positives: `Bun.sleep` (NsUiOnOff2Glm), `os.remove` + `entry.kind`
+		// (PmLint1Composer / GfRc0183PmGlm), `x@y.z` (NsUiOnOff2Glm) — none is a file.
+		const line = "Tailscale fixture records argv; retry via `Bun.sleep`, unlink via `os.remove`, reads `entry.kind`, login x@y.z; changed src/core/ui-setup.ts";
+		const paths = extractClaims(line).filter((c) => c.kind === "changed-path").map((c) => c.value);
+		expect(paths).toEqual(["src/core/ui-setup.ts"]);
+	});
+
+	test("numbered 'Run …' instruction lines claim no heavy-run label", () => {
+		// Real false positive: NsUnlockNoticeComposer's TODO step read as a label claim.
+		const todo = `3. Run \`/home/ukd/Work/heavy-run.sh agent "unlock notice full" -- sh -c 'bun test && bun run typecheck'\``;
+		expect(extractClaims(todo).filter((c) => c.kind === "heavy-label")).toEqual([]);
+		const done = `Ran \`heavy-run.sh agent "unlock notice full"\` → exit 0`;
+		expect(extractClaims(done)).toContainEqual(expect.objectContaining({ kind: "heavy-label", value: "unlock notice full" }));
+	});
+
+	test("hex runs hyphen-joined to more hex are session UUID fragments, not SHAs", () => {
+		// Real false positives exposed by the P4 pairing change: MAIN 21-57-29's report cites
+		// its own session file …_01a16feb-3a5d-738a-838c-c9ebe65c7a73.jsonl and both fragments
+		// read as commit SHAs.
+		const line = "handoff: sessions/-projects/2026-10-25T21-57-29-309Z_01a16feb-3a5d-738a-838c-c9ebe65c7a73.jsonl, commit abc12d4 landed";
+		const shas = extractClaims(line).filter((c) => c.kind === "sha").map((c) => c.value);
+		expect(shas).toEqual(["abc12d4"]);
+		// Same class from the pairing demotions: gateforge catalog ids and digests read as SHAs
+		// (PmContractorEditGlm: …-accounts-991b4d35, CpSecP8ProofGlm: sha256:e61c0a9d2f47…).
+		const ids = "seed claim tenant.http-post-api-v2-accounts-991b4d35 verified, digest sha256:e61c0a9d2f47 ok; commit feed987 landed";
+		expect(extractClaims(ids).filter((c) => c.kind === "sha").map((c) => c.value)).toEqual(["feed987"]);
+	});
+});
+
 describe("dedupe and evidence safety", () => {
 	test("same claim twice collapses to one", () => {
 		const cs = extractClaims("12 passed\nlater 12 passed again");
@@ -190,11 +221,35 @@ test("a sha is backed only by the output of a git command the run actually ran",
 	expect(verifyClaims([claim], withGit)[0]!.backed).toBe(true);
 });
 
-test("a changed path is backed only by an edit/write call carrying it", () => {
+test("a sha in a non-git result stays unbacked even when another call ran git (P4)", () => {
+	// The real weak spot from the 2026-10-25 smoke: NsOwnerNotifyGlm's plan-edit tool echoed a
+	// progress line carrying the sha while an unrelated `git status` had run — the old check
+	// took any sha in any result once any git call existed. The sha must come from the result
+	// of the very call that ran git.
+	const claim: Claim = { kind: "sha", value: "abc12d4", evidence: "x" };
+	const mixed = [
+		callEv("bash", { command: "git status --short" }),
+		resultEv(" M src/demo.ts"),
+		callEv("edit", { path: "PLAN.md", content: "progress: landed abc12d4" }),
+		resultEv("plan progress now says landed abc12d4"),
+	];
+	expect(verifyClaims([claim], mixed)[0]!.backed).toBe(false);
+	expect(
+		verifyClaims([claim], [mixed[0]!, mixed[1]!, callEv("bash", { command: "git log -1" }), resultEv("abc12d4 demo")])[0]!
+			.backed,
+	).toBe(true);
+});
+
+test("a changed path is backed by an edit/write call, or by a shell write in its own segment", () => {
 	const claim: Claim = { kind: "changed-path", value: "src/a.ts", evidence: "x" };
-	expect(verifyClaims([claim], [callEv("bash", { command: "touch src/a.ts" })])[0]!.backed).toBe(false);
 	expect(verifyClaims([claim], [callEv("edit", { path: "src/a.ts" })])[0]!.backed).toBe(true);
 	expect(verifyClaims([claim], [callEv("write", { file_path: "src/a.ts" })])[0]!.backed).toBe(true);
+	// P4 tuning: agents create real files through the shell (`cat > f <<EOF` — PmLint1Composer's
+	// tmp/patch_ruff_integrity.py was flagged unbacked though a heredoc wrote it). A write
+	// operator before the path inside one command segment is a write; a bare mention is not.
+	expect(verifyClaims([claim], [callEv("bash", { command: "cat > src/a.ts <<'EOF'\nx\nEOF" })])[0]!.backed).toBe(true);
+	expect(verifyClaims([claim], [callEv("bash", { command: "touch src/a.ts" })])[0]!.backed).toBe(true);
+	expect(verifyClaims([claim], [callEv("bash", { command: "grep -rn todo src/a.ts; cat src/a.ts" })])[0]!.backed).toBe(false);
 });
 
 test("a heavy-run label is backed only by a heavy-run call quoting it", () => {

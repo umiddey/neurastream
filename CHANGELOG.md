@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+### Added
+- `neurastream traces claims <runId|--since 24h> [--json]`: check what a run's final report claims (test counts, exit codes, commit SHAs, heavy-run labels, changed paths) against what the same run's tool output actually shows; anything nothing backs becomes a `claim-unbacked` finding. A SHA only counts when the git command whose output printed it is the call the run itself made (results pair with their own tool calls), paths must end in a real file extension (dotted API symbols and session-UUID fragments are not files), and files agents wrote through the shell (redirect, heredoc, `tee`/`touch`/`cp`/`mv`) back changed-path claims like edit/write calls do.
+
 ## 0.2.11
 ### Fixed
 - Tapping unlock or lock on the owner page did not tell Main; the owner had to say it in chat. The page now writes an `unlock`/`lock` record to the owner inbox, and Main gets it as a user message ("Owner unlocked the guards from the phone page for 5 min (until 01:12)…"). The inbox also understands a `reorder` record for the coming drag-and-drop queue.
