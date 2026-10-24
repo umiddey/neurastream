@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+### Changed
+- The queue is one file (incident I-20261024-7): the main index (`paths.queue_index`) lists plan files, one absolute path per line; the per-repo `INDEX.md` files are gone. A plan file must live in a main checkout, never in a linked worktree, and two open plans may not name one worktree — `queue-check` reports both. Release as 0.2.0 (queue format change): run `neurastream queue migrate` once, it folds the old repo `INDEX.md` lines into the main index, deletes them and is idempotent; plans still inside a worktree are reported, not moved. `neurastream doctor` flags a main index that still lists repo directories.
+### Fixed
+- queue-close removes the plan's worktree after a successful close only when it is clean and its branch landed, with a plain `git worktree remove` — never `--force`, no `rm -rf`, no docker fallback. A dirty, unmerged or unremovable worktree and the repo's main checkout are kept and the reason printed. Branches leave only via `git branch -d`: when git cannot see the merge (a stale upstream hides the landing), the branch stays. The uncommitted-work stash and the queue-archive branch copy are gone — what is kept is kept in place. The done check for a missing worktree runs in a throwaway shared clone instead of a registered worktree; a scratch the check dirtied is kept, never force-removed.
+
 ## 0.1.28
 ### Fixed
 - The relaunch is requested only at a run's real end (incident I-20261024-4). A tool result mid-run no longer writes `relaunch.json` and shuts the session down while Main keeps working; while a relaunch is pending, every later terminal run end calls `shutdown()` again, because omp 18.11.1 re-runs its deferred exit check only then.

@@ -201,7 +201,7 @@ export function planGate(text: string, label: string): [string | null, string[]]
 	const named = plans.filter(p => text.includes(p.file));
 	if (!named.length)
 		return [
-			`${label}: an implementer needs an open plan. Name the plan's absolute path in the brief; the plan must be listed in <repo>/INDEX.md and the repo in ${q.INDEX}.`,
+			`${label}: an implementer needs an open plan. Name the plan's absolute path in the brief; the plan must be listed in ${q.INDEX}.`,
 			[],
 		];
 	if (RESEARCH_ASK.test(text) && PLAN_WRITE.test(text))
@@ -296,7 +296,7 @@ function subRules(e: ToolEvent, input: Record<string, unknown>, paths: string[],
 	if (!plans.length || !paths.length) return null;
 	for (const p of writes) {
 		if (!q.isOrchestrationPath(p, plans)) continue;
-		if (!q.planAt(p, plans)) return `${p} belongs to Main (repo index / blocker script); read it, never change it. Report instead.`;
+		if (!q.planAt(p, plans)) return `${p} belongs to Main (main index / blocker script); read it, never change it. Report instead.`;
 		if (e.tool !== "write" && e.tool !== "edit")
 			return `${p} is a plan file: change its "## Progress" section only with the edit or write tool.`;
 	}
@@ -325,7 +325,7 @@ function editWindow(e: ToolEvent, input: Record<string, unknown>, cfg: Config): 
 		return deny(
 			`main-guard: Main already changed project files ${w.used.length} times in this ${cfg.guards.main_window_min}-minute window ` +
 				`(owner limit ${cfg.guards.main_edit_limit}; resets in ${mins} min). Main writes plans, not code: put the work in a plan ` +
-				`(listed in <repo>/INDEX.md, phase-0 blockers first) and spawn an implementer. Changes so far: ${w.used.join(", ")}`,
+				`(listed in ${q.INDEX}, phase-0 blockers first) and spawn an implementer. Changes so far: ${w.used.join(", ")}`,
 		);
 	}
 	if (!w.used.length) w.windowStart = now;
@@ -380,7 +380,7 @@ function incidentSpawnProblem(label: string, brief: string, namedPlans: string[]
 	log(cfg.paths.guard_log, `BLOCK ${label}: open incidents: ${ids}`);
 	return (
 		`open incident(s) ${ids} must be acted on before other work. Write a plan that contains "INCIDENT <id>" ` +
-		`(listed in its repo INDEX.md) and record it: \`neurastream incident plan <id> <plan.md>\`, or dismiss the ` +
+		`(listed in ${q.INDEX}) and record it: \`neurastream incident plan <id> <plan.md>\`, or dismiss the ` +
 		'incident: `neurastream incident dismiss <id> --why "<text>"`. Fix work goes through: name that plan in the brief.'
 	);
 }
@@ -592,7 +592,7 @@ export function checkInject(e: InjectEvent, cfg: Config): Decision {
 	return {
 		allow: true,
 		reason: "",
-		inject: `${summary}\n(main-guard: read ${q.INDEX} and the listed repo INDEX.md files are summarised above; work the open plans, close finished ones with queue-close.)${editLimit}${cancel}${incidentText}`,
+		inject: `${summary}\n(main-guard: read ${q.INDEX}; the listed plans are summarised above; work the open plans, close finished ones with queue-close.)${editLimit}${cancel}${incidentText}`,
 		...(continuation ? {} : { state: { callsSinceStop: 0, idleStops: 0 } }),
 	};
 }

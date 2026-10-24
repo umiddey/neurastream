@@ -79,8 +79,7 @@ function fresh(): void {
 	])
 		mkdirSync(d, { recursive: true });
 	writeFileSync(PLAN, TOY_PLAN);
-	writeFileSync(join(TOY, "INDEX.md"), "docs/plans/20261019_toy.md\n");
-	writeFileSync(join(AGENT, "INDEX.md"), `${TOY}\n`);
+	writeFileSync(join(AGENT, "INDEX.md"), `${PLAN}\n`);
 	writeFileSync(SUBAGENTS, "## Allowed\n\n- `toy-worker`\n");
 	writeFileSync(join(AGENT, "CANCELLED.md"), "");
 	writeFileSync(join(TOY, "src/a.ts"), "export const a = 1;\n");
@@ -502,7 +501,7 @@ test("session.compacting: one WAITING on owner line per plan that waits on the o
 	const second = join(TOY, "docs/plans/20261020_second.md");
 	writeFileSync(PLAN, TOY_PLAN.replace("Status: open\n", "Status: open\nWAITING on owner: hold the rollover fix until the owner says go\n"));
 	writeFileSync(second, TOY_PLAN.replace("Status: open\n", "Status: open\nWAITING on owner: ship the OI fix only after the owner's okay\n"));
-	writeFileSync(join(TOY, "INDEX.md"), "docs/plans/20261019_toy.md\ndocs/plans/20261020_second.md\n");
+	writeFileSync(join(AGENT, "INDEX.md"), `${PLAN}\n${second}\n`);
 	const out = adapterRun(`${REGISTER}
 const out = [];
 out.push(await h["session.compacting"]({ type: "session.compacting", sessionId: "s1", messages: [] }, ${MAIN_CTX}));

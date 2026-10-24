@@ -65,8 +65,7 @@ function fresh(): void {
 	for (const d of [join(TOY, "docs/plans"), join(TOY, "src"), join(TOY, "secret"), join(AGENT, "blockers"), join(AGENT, "notes"), join(HOME, ".config/neurastream"), STATE])
 		mkdirSync(d, { recursive: true });
 	writeFileSync(PLAN, TOY_PLAN);
-	writeFileSync(join(TOY, "INDEX.md"), "docs/plans/20261019_toy.md\n");
-	writeFileSync(join(AGENT, "INDEX.md"), `${TOY}\n`);
+	writeFileSync(join(AGENT, "INDEX.md"), `${PLAN}\n`);
 	// Original allowedAgents only accepts "- `name`" lines (queue/lib.ts match on backticks).
 	writeFileSync(SUBAGENTS, "## Allowed\n\n- `toy-worker`\n");
 	writeFileSync(join(AGENT, "CANCELLED.md"), "");
@@ -179,40 +178,25 @@ test("help names the guard command", () => {
 	expect(helpText()).toContain("guard <event>");
 });
 
-test("denied command: same refusal as the original blocker run, clean command allowed", () => {
+test("denied command: a sub's bash matching a deny-command blocker is refused; clean command allowed", () => {
 	fresh();
 	const bad = "bun test --grep thing test.skip";
-	const orig = origRun(`
-const mod = await import(${JSON.stringify(join(ORIG_EXT, "plan-guard.ts"))});
-const out = [];
-out.push(mod.checkCall("bash", { command: ${JSON.stringify(bad)} }, ${JSON.stringify(TOY)}, "sub", 0, undefined));
-out.push(mod.checkCall("bash", { command: "bun test --grep thing" }, ${JSON.stringify(TOY)}, "sub", 0, undefined));
-console.log(JSON.stringify(out));
-`) as [string, null];
 	const refused = guardCli("pre-tool", toolEvent("bash", { command: bad }, "sub"));
 	expect(refused.code).toBe(2);
 	expect(refused.d.allow).toBe(false);
-	expect(refused.d.reason).toBe(`plan-guard: ${orig[0]}`);
-	expect(orig[0]).toContain("deny-command: command matches forbidden pattern /test\\.skip/");
+	expect(refused.d.reason).toContain("deny-command: command matches forbidden pattern /test\\.skip/");
 	const allowed = guardCli("pre-tool", toolEvent("bash", { command: "bun test --grep thing" }, "sub"));
 	expect(allowed.code).toBe(0);
 	expect(allowed.d).toEqual({ allow: true, reason: "" });
 });
 
-test("denied path: same refusal as the original, other writes allowed", () => {
+test("denied path: a write under a deny-path glob is refused; other writes allowed", () => {
 	fresh();
 	const bad = join(TOY, "secret/x.md");
-	const orig = origRun(`
-const mod = await import(${JSON.stringify(join(ORIG_EXT, "plan-guard.ts"))});
-const out = [];
-out.push(mod.checkCall("write", { path: ${JSON.stringify(bad)}, content: "x" }, ${JSON.stringify(TOY)}, "sub", 0, undefined));
-out.push(mod.checkCall("write", { path: ${JSON.stringify(join(TOY, "src/ok.ts"))}, content: "x" }, ${JSON.stringify(TOY)}, "sub", 0, undefined));
-console.log(JSON.stringify(out));
-`) as [string, null];
 	const refused = guardCli("pre-tool", toolEvent("write", { path: bad, content: "x" }, "sub"));
 	expect(refused.code).toBe(2);
-	expect(refused.d.reason).toBe(`plan-guard: ${orig[0]}`);
-	expect(orig[0]).toContain("is forbidden by the plan (deny-path secret/**)");
+	expect(refused.d.allow).toBe(false);
+	expect(refused.d.reason).toContain(`${bad} is forbidden by the plan (deny-path secret/**)`);
 	expect(guardCli("pre-tool", toolEvent("write", { path: join(TOY, "src/ok.ts"), content: "x" }, "sub")).code).toBe(0);
 });
 
@@ -329,32 +313,19 @@ test("a Main Progress-only edit needs no Code read by Main section", () => {
 	expect(guardCli("plan-edit", { path: PLAN, before: TOY_PLAN, after, agent: "main" }).code).toBe(0);
 });
 
-test("spawn gates: same refusals as the original task-tool gate; a valid spawn records and then demands new progress", () => {
+test("spawn gates: an unknown subagent is refused; a valid spawn records and then demands new progress", () => {
 	fresh();
 	const brief = `Work ${PLAN} P1 now.`;
-	const orig = origRun(`
-const mod = await import(${JSON.stringify(join(ORIG_EXT, "main-guard.ts"))});
-const h = {};
-mod.default({ on: (ev, cb) => { h[ev] = cb; } });
-const out = [];
-out.push(await h["tool_call"]({ toolName: "task", input: { tasks: [{ agent: "ghost", name: "ghost", task: ${JSON.stringify(PLAN)} }] } }, ${JSON.stringify(MAIN_CTX)}));
-out.push(await h["tool_call"]({ toolName: "task", input: { tasks: [{ agent: "toy-worker", task: ${JSON.stringify(PLAN)} }] } }, ${JSON.stringify(MAIN_CTX)}));
-out.push(await h["tool_call"]({ toolName: "task", input: { tasks: [{ agent: "toy-worker", task: ${JSON.stringify(PLAN)} }] } }, ${JSON.stringify(MAIN_CTX)}));
-console.log(JSON.stringify(out));
-`) as unknown[];
-	const ghostOrig = (orig[0] as { reason: string }).reason; // original refusal object
-	const againOrig = (orig[2] as { reason: string }).reason;
-	fresh();
 	const ghost = guardCli("spawn", { agent: "ghost", invocationKind: "task", brief });
 	expect(ghost.code).toBe(2);
-	expect(ghost.d.reason).toBe(ghostOrig);
+	expect(ghost.d.allow).toBe(false);
+	expect(ghost.d.reason).toContain("ghost");
 	const first = guardCli("spawn", { agent: "toy-worker", invocationKind: "task", brief });
 	expect(first.code).toBe(0);
 	expect(readFileSync(join(STATE, "spawns.json"), "utf8")).toContain("20261019_toy.md");
 	const second = guardCli("spawn", { agent: "toy-worker", invocationKind: "task", brief });
 	expect(second.code).toBe(2);
-	expect(second.d.reason).toBe(againOrig);
-	expect(againOrig).toContain('no new "## Progress" entry');
+	expect(second.d.reason).toContain('no new "## Progress" entry');
 	writeFileSync(PLAN, TOY_PLAN.replace("- Started the toy work.", "- Started the toy work.\n- Ran once."));
 	expect(guardCli("spawn", { agent: "toy-worker", invocationKind: "task", brief }).code).toBe(0);
 	writeFileSync(PLAN, TOY_PLAN.replace("Status: open\n", "Status: open\nWAITING on owner: feedback\n"));
@@ -386,40 +357,23 @@ test("spawn brief that asks for research for a plan to be written is refused, qu
 	expect(guardCli("spawn", { agent: "toy-worker", invocationKind: "task", brief: `Investigate src/a.ts, then do ${PLAN} P1.` }).code).toBe(0);
 });
 
-test("6th counted change in the window: same block as the original; .md writes stay free; an owner message resets", () => {
+test("6th counted change in the window is blocked; .md writes stay free; an owner message resets", () => {
 	fresh();
 	const aTs = join(TOY, "src/a.ts");
 	const noteMd = join(TOY, "docs/note.md");
-	const origScript = `
-const mod = await import(${JSON.stringify(join(ORIG_EXT, "main-guard.ts"))});
-const h = {};
-mod.default({ on: (ev, cb) => { h[ev] = cb; } });
-const ctx = ${JSON.stringify(MAIN_CTX)};
-const w = (p, c) => ({ toolName: "write", input: { path: p, content: c } });
-const out = [];
-for (let i = 0; i < 6; i++) out.push(await h["tool_call"](w(${JSON.stringify(aTs)}, "v" + i), ctx));
-out.push(await h["tool_call"](w(${JSON.stringify(noteMd)}, "x"), ctx));
-await h["before_agent_start"]({ prompt: "continue" }, ctx);
-out.push(await h["tool_call"](w(${JSON.stringify(aTs)}, "after reset"), ctx));
-console.log(JSON.stringify(out));
-`;
-	const orig = origRun(origScript) as unknown[];
-	fresh();
 	const writeMain = (path: string, content: string) =>
 		guardCli("pre-tool", toolEvent("write", { path, content }, "main"));
 	const results = Array.from({ length: 6 }, (_, i) => writeMain(aTs, `v${i}`));
 	expect(results.slice(0, 5).map(r => r.code)).toEqual([0, 0, 0, 0, 0]);
-	const warnOf = (x: unknown) => (x as { additionalContext?: string }).additionalContext;
-	expect(results[2]!.d.inject).toBe(warnOf(orig[2]));
-	expect(results[4]!.d.inject).toBe(warnOf(orig[4]));
+	expect(results[2]!.d.inject).toContain("2 project-file change(s) left in this 15-minute window");
+	expect(results[4]!.d.inject).toContain("0 project-file change(s) left in this 15-minute window");
 	expect(results[5]!.code).toBe(2);
-	expect(results[5]!.d.reason).toBe((orig[5] as { reason: string }).reason);
+	expect(results[5]!.d.allow).toBe(false);
 	expect(results[5]!.d.reason).toContain("Main already changed project files 5 times in this 15-minute window");
+	expect(results[5]!.d.reason).toContain(join(AGENT, "INDEX.md"));
 	expect(writeMain(noteMd, "x").code).toBe(0); // .md never counts
 	expect(guardCli("inject", { prompt: "continue", agent: "main" }).code).toBe(0);
 	expect(writeMain(aTs, "after reset").code).toBe(0); // owner message reset the window
-	expect(orig[6]).toBeNull();
-	expect(orig[7]).toBeNull();
 });
 
 test("call budget: warn at 90, refusal at 100 unless reading or editing the plan", () => {
@@ -504,18 +458,13 @@ test("rollover notes: Main may write <state>/rollover/<id>.md, the rest of the s
 	expect(sub.d.reason).toContain("is a protected guard file");
 });
 
-test("bypass launch: same plan gate as the original", () => {
+test("bypass launch: a main bash that skips the queue is refused with the plan gate", () => {
 	fresh();
-	const orig = origRun(`
-const mod = await import(${JSON.stringify(join(ORIG_EXT, "main-guard.ts"))});
-const h = {};
-mod.default({ on: (ev, cb) => { h[ev] = cb; } });
-console.log(JSON.stringify([await h["tool_call"]({ toolName: "bash", input: { command: "opencode run fix things" } }, ${JSON.stringify(MAIN_CTX)})]));
-`) as unknown[];
 	const refused = guardCli("pre-tool", toolEvent("bash", { command: "opencode run fix things" }, "main"));
 	expect(refused.code).toBe(2);
-	expect(refused.d.reason).toBe((orig[0] as { reason: string }).reason);
+	expect(refused.d.allow).toBe(false);
 	expect(refused.d.reason).toContain("an implementer needs an open plan");
+	expect(refused.d.reason).toContain(join(AGENT, "INDEX.md"));
 });
 
 test("cancel flag: owner wording blocks spawns until recorded", () => {

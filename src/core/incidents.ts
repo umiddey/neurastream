@@ -169,20 +169,8 @@ export function addIncident(cfg: Config, input: IncidentInput, now = nowSec()): 
 }
 
 /**
- * The repo a plan belongs to: the nearest directory from the plan's folder upward that holds the
- * repo INDEX.md. Plans live at any depth under the repo (docs/plans/immediate/…), so a fixed
- * number of dirname steps lands short of the root.
- */
-function repoForPlan(abs: string): string | null {
-	for (let dir = dirname(abs); ; dir = dirname(dir)) {
-		if (existsSync(join(dir, q.REPO_INDEX))) return dir;
-		if (dirname(dir) === dir) return null;
-	}
-}
-
-/**
- * Records the plan that fixes an incident: refused unless the file exists, is listed in its repo
- * INDEX.md, and contains `INCIDENT <id>` (the spawn gates look for that text). Returns the
+ * Records the plan that fixes an incident: refused unless the file exists, is listed in the main
+ * index, and contains `INCIDENT <id>` (the spawn gates look for that text). Returns the
  * refusal reason, or null when recorded.
  */
 export function planIncident(cfg: Config, id: string, planPath: string): string | null {
@@ -193,9 +181,7 @@ export function planIncident(cfg: Config, id: string, planPath: string): string 
 	if (res) return `incident ${id} already has a ${res.type} record`;
 	const abs = resolve(q.expandHome(planPath));
 	if (!existsSync(abs)) return `plan file not found: ${abs}`;
-	const repo = repoForPlan(abs);
-	if (!repo) return `${abs} is not under a directory holding ${q.REPO_INDEX}`;
-	if (!q.readRepoIndex(repo).includes(abs)) return `${abs} is not listed in ${join(repo, q.REPO_INDEX)}`;
+	if (!q.readIndex(cfg.paths.queue_index).includes(abs)) return `${abs} is not listed in ${cfg.paths.queue_index}`;
 	let text: string;
 	try {
 		text = readFileSync(abs, "utf8");

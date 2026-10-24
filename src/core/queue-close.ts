@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import type { Config } from "./config.ts";
 import { applyQueueEnv } from "./queue/env.ts";
-import { activePlans, cancelledFile, cancelledLine, closeLog, INDEX, readIndex, readRepoIndex, REPO_INDEX, sha, STATE_DIR } from "./queue/lib.ts";
+import { activePlans, cancelledFile, cancelledLine, closeLog, INDEX, readIndex, sha, STATE_DIR } from "./queue/lib.ts";
 import { fixedIncident } from "./incidents.ts";
 
 export function queueClose(args: string[], cfg: Config): number {
@@ -61,10 +61,6 @@ export function queueClose(args: string[], cfg: Config): number {
 			git(repo, "merge-base", "--is-ancestor", ref, m[2]).ok &&
 			contains(repo, m[1], m[2]);
 	}
-	function writeLines(file: string, lines: string[]) {
-		if (lines.length) writeFileSync(file, `${lines.join("\n")}\n`);
-		else rmSync(file, { force: true });
-	}
 	// A clone of a clone judges "landed" against the middle copy's default branch, which can be
 	// stale. Follow local-path origins (at most 3 hops) to the upstream repo and fetch its default
 	// branch: that commit is the base. No local origin: the existing base, unchanged.
@@ -105,22 +101,27 @@ export function queueClose(args: string[], cfg: Config): number {
 	process.on("exit", () => rmSync(lock, { force: true }));
 
 	const plan = activePlans().find(p => p.file === file);
-	if (!plan) die(`${file} is not listed in any repo INDEX.md of a repo in ${INDEX}`);
+	if (!plan) die(`${file} is not listed in the main index ${INDEX}`);
 	if (plan.errors.length) die(`plan does not match the template: ${plan.errors.join("; ")}`);
 	if (plan.status !== "complete" && plan.status !== "cancelled") die(`plan says "Status: ${plan.status}", not complete or cancelled`);
 	const cancelling = plan.status === "cancelled";
-	if (plan.worktree && (plan.file === plan.worktree || plan.file.startsWith(`${plan.worktree}/`)))
-		die("the indexed plan file lives inside its worktree; index the copy in the main checkout");
+	if (plan.worktree && (plan.file === plan.worktree || plan.file.startsWith(`${plan.worktree}/`))) {
+		// The plan file may sit under the named worktree when that worktree IS the main checkout
+		// (the main checkout is every plan's repo); only a linked worktree is refused.
+		let linked = true;
+		try { linked = realpathSync(plan.worktree) !== realpathSync(plan.repo); } catch {}
+		if (linked) die("the indexed plan file lives inside its worktree; index the copy in the main checkout");
+	}
 
 	git(plan.repo, "fetch", "-q", "origin");
 	const head = git(plan.repo, "symbolic-ref", "-q", "refs/remotes/origin/HEAD");
 	const base = upstreamBase(plan.repo, head.ok ? head.out : "refs/remotes/origin/main");
 	// git reports worktree paths through symlinks resolved (macOS: /tmp -> /private/tmp); match resolved paths on both sides.
 	const real = (p: string): string => { try { return realpathSync(p); } catch { return path.resolve(p); } };
-	const worktrees = (): { path: string; branch: string | null; head: string }[] => {
-		const list: { path: string; branch: string | null; head: string }[] = [];
+	const worktrees = (): { path: string; branch: string | null; head: string; main: boolean }[] => {
+		const list: { path: string; branch: string | null; head: string; main: boolean }[] = [];
 		for (const line of git(plan.repo, "worktree", "list", "--porcelain").out.split("\n")) {
-			if (line.startsWith("worktree ")) list.push({ path: real(line.slice(9)), branch: null, head: "" });
+			if (line.startsWith("worktree ")) list.push({ path: real(line.slice(9)), branch: null, head: "", main: list.length === 0 });
 			const cur = list.at(-1);
 			if (!cur) continue;
 			if (line.startsWith("HEAD ")) cur.head = line.slice(5);
@@ -156,8 +157,10 @@ export function queueClose(args: string[], cfg: Config): number {
 		else {
 			let scratch: string | undefined;
 			if (detached) {
+				// A shared clone of the base, deliberately NOT a registered worktree: it never shows up
+				// in `git worktree list` and can be dropped with a plain delete when it stays clean.
 				scratch = mkdtempSync(path.join(STATE_DIR, "done-base-"));
-				const add = git(plan.repo, "worktree", "add", "--detach", scratch, base);
+				const add = git(plan.repo, "clone", "-q", "--shared", ".", scratch) && git(scratch, "checkout", "-q", "--detach", base);
 				if (!add.ok) {
 					rmSync(scratch, { recursive: true, force: true });
 					die(`could not check out ${base} for the done check: ${add.out}`);
@@ -166,9 +169,10 @@ export function queueClose(args: string[], cfg: Config): number {
 			console.log(`queue-close: done check in ${detached ? `${base} (temporary worktree)` : runIn}: ${plan.doneCheck}`);
 			const dc = spawnSync("bash", ["-lc", plan.doneCheck!], { cwd: scratch ?? runIn, stdio: "inherit", timeout: 3600_000 });
 			if (scratch) {
-				git(plan.repo, "worktree", "remove", "--force", scratch);
-				rmSync(scratch, { recursive: true, force: true });
-				git(plan.repo, "worktree", "prune");
+				// Whatever the check left behind stays: a dirty scratch is kept for inspection, a clean
+				// one equals the base commit and is deleted outright.
+				if (git(scratch, "status", "--porcelain").out) console.log(`queue-close: kept the check scratch ${scratch}: the done check left changes in it`);
+				else rmSync(scratch, { recursive: true, force: true });
 			}
 			if (dc.status !== 0) {
 				rmSync(doneCache, { force: true });
@@ -192,44 +196,34 @@ export function queueClose(args: string[], cfg: Config): number {
 		const [ref, t] = line.split(" ");
 		if (ref && Number(t) < cutoff) git(plan.repo, "update-ref", "-d", ref);
 	}
-	if (owned) {
-		const stash = git(plan.worktree!, "stash", "create", `queue-close: uncommitted work of ${path.basename(file)}`);
-		const saved = stash.ok ? stash.out : "";
-		if (saved) {
-			const ref = `refs/queue-archive/${path.basename(file, ".md")}-${today}`;
-			if (!git(plan.repo, "update-ref", ref, saved).ok || !git(plan.repo, "stash", "show", "-p", ref).out)
-				die(`could not save the worktree's uncommitted changes to ${ref}; nothing removed`);
-			console.log(`queue-close: uncommitted changes saved as ${ref} (restore: git -C ${plan.repo} stash apply ${ref}; pruned after ${ARCHIVE_DAYS} days)`);
+	// One plan = one worktree (20261024_1400_one_index): a successful close removes the plan's
+	// worktree with a plain `git worktree remove`, only when it is clean and its branch landed.
+	// Dirty, unmerged, unremovable worktrees and main checkouts are kept and the reason printed.
+	// Nothing is ever forced: no --force, no rm -rf, no branch -D, no uncommitted work destroyed.
+	const list = worktrees();
+	const named = wtExists && owned ? list.find(w => w.path === real(plan.worktree!)) : undefined;
+	// The plan's worktrees: the one it names plus any registered worktree on the plan's branch.
+	const mine = list.filter(w => (plan.branch && w.branch === plan.branch) || w === named);
+	const landed = !branchExists || merged;
+	for (const w of mine) {
+		if (w.main) console.log(`queue-close: worktree ${w.path} kept: it is the repo's main checkout`);
+		else if (git(w.path, "status", "--porcelain").out) console.log(`queue-close: worktree ${w.path} kept: it has uncommitted changes`);
+		else if (!landed) console.log(`queue-close: worktree ${w.path} kept: branch ${branch} is not merged`);
+		else {
+			const rm = git(plan.repo, "worktree", "remove", w.path);
+			if (!rm.ok || existsSync(w.path)) console.log(`queue-close: worktree ${w.path} kept: git worktree remove failed (${rm.out})`);
+			else console.log(`queue-close: worktree ${w.path} removed`);
 		}
-	}
-	if (branchExists && !merged) {
-		const tip = git(plan.repo, "rev-parse", `refs/heads/${branch}`).out;
-		const keep = git(plan.repo, "commit-tree", `${tip}^{tree}`, "-p", tip, "-m", `queue-close: branch ${branch} of cancelled ${path.basename(file)}`);
-		const ref = `refs/queue-archive/${path.basename(file, ".md")}-${today}-branch`;
-		if (!keep.ok || !git(plan.repo, "update-ref", ref, keep.out).ok) die(`could not save branch ${branch} to ${ref}; nothing removed`);
-		console.log(`queue-close: branch ${branch} saved as ${ref} (restore: git -C ${plan.repo} branch ${branch} ${ref}^; pruned after ${ARCHIVE_DAYS} days)`);
-	}
-	if (owned) {
-		let rm = git(plan.repo, "worktree", "remove", "--force", plan.worktree!);
-		if (!rm.ok && existsSync(plan.worktree!)) {
-			spawnSync("docker", ["run", "--rm", "-v", `${plan.worktree}:/w`, "alpine", "chown", "-R", `${os.userInfo().uid}:${os.userInfo().gid}`, "/w"], { stdio: "ignore" });
-			rm = git(plan.repo, "worktree", "remove", "--force", plan.worktree!);
-			if (!rm.ok && existsSync(plan.worktree!)) {
-				rmSync(plan.worktree!, { recursive: true, force: true });
-				git(plan.repo, "worktree", "prune");
-				rm = { ok: !existsSync(plan.worktree!), out: rm.out };
-			}
-		}
-		if (!rm.ok) die(`could not remove worktree ${plan.worktree}: ${rm.out}`);
-		console.log(`queue-close: worktree ${plan.worktree} removed`);
 	}
 	if (branchExists) {
 		const holder = worktrees().find(w => w.branch === branch);
 		if (holder) console.log(`queue-close: branch ${branch} kept: checked out in ${holder.path}`);
 		else {
-			const d = git(plan.repo, "branch", "-D", branch!);
-			if (!d.ok) die(`could not delete branch ${branch}: ${d.out}`);
-			console.log(`queue-close: branch ${branch} deleted`);
+			// git refuses -d when it cannot see the branch merged (a stale upstream hides the landing);
+			// the branch then stays instead of being deleted behind git's back.
+			const d = git(plan.repo, "branch", "-d", branch!);
+			if (!d.ok) console.log(`queue-close: branch ${branch} kept: git would not delete it (${d.out.split("\n")[0]})`);
+			else console.log(`queue-close: branch ${branch} deleted`);
 		}
 	}
 
@@ -284,20 +278,11 @@ export function queueClose(args: string[], cfg: Config): number {
 		console.log(`queue-close: plan moved to ${dest}`);
 	}
 
-	const repoIndexFile = path.join(plan.repo, REPO_INDEX);
-	const remaining = readRepoIndex(plan.repo).filter(p => p !== file);
-	const rawLines = readFileSync(repoIndexFile, "utf8").split("\n").filter(l => l.trim());
-	writeLines(
-		repoIndexFile,
-		rawLines.filter(l => path.resolve(plan.repo, l.trim().replace(/^[-*]\s+/, "").replace(/`/g, "")) !== file),
-	);
-	console.log(`queue-close: removed from ${repoIndexFile}${remaining.length ? ` (${remaining.length} plan(s) left)` : " (now empty: deleted)"}`);
-	if (!remaining.length) {
-		const lines = readFileSync(INDEX, "utf8").split("\n").filter(l => l.trim());
-		const keep = lines.filter(l => path.resolve(l.trim().replace(/^[-*]\s+/, "").replace(/`/g, "").replace(/^~(?=\/)/, os.homedir())) !== plan.repo);
-		writeFileSync(INDEX, keep.length ? `${keep.join("\n")}\n` : "");
-		console.log(`queue-close: ${plan.repo} removed from ${INDEX} (${readIndex().length} repo(s) left)`);
-	}
+	// One index: the closed plan's line leaves the main index; there is no repo INDEX.md.
+	const lines = readFileSync(INDEX, "utf8").split("\n").filter(l => l.trim());
+	const keep = lines.filter(l => path.resolve(l.trim().replace(/^[-*]\s+/, "").replace(/`/g, "").replace(/^~(?=\/)/, os.homedir())) !== file);
+	writeFileSync(INDEX, keep.length ? `${keep.join("\n")}\n` : "");
+	console.log(`queue-close: removed from ${INDEX} (${keep.length} plan(s) left)`);
 	try {
 		const sp = path.join(STATE_DIR, "spawns.json");
 		const s = JSON.parse(readFileSync(sp, "utf8"));

@@ -37,7 +37,7 @@ const NOW7 = 1765000000;
 function seed(): Config {
 	for (const d of [join(AGENT, "notes"), join(TOY, "docs/plans"), join(HOME, ".config/neurastream"), QUEUE_STATE])
 		mkdirSync(d, { recursive: true });
-	writeFileSync(join(TOY, "INDEX.md"), "docs/plans/20261020_fix.md\n");
+	writeFileSync(join(AGENT, "INDEX.md"), `${join(TOY, "docs/plans/20261020_fix.md")}\n`);
 	writeFileSync(
 		join(HOME, ".config/neurastream/config.yml"),
 		`paths:
@@ -110,16 +110,16 @@ test("after a resolution the same fingerprint opens a new incident", () => {
 	expect(b.incident.fingerprint).toBe(a.incident.fingerprint);
 });
 
-test("incident plan refusals: unknown id, missing file, missing citation, not in repo INDEX", () => {
+test("incident plan refusals: unknown id, missing file, missing citation, not in the main index", () => {
 	const { incident } = addIncident(cfg, { source: "realtime", kind: "k", summary: "s" }, NOW4);
 	const id = incident.id;
 	const ok = join(TOY, "docs/plans/20261020_ok.md");
 	expect(planIncident(cfg, "I-19990101-9", ok)).toBe("unknown incident I-19990101-9");
 	expect(planIncident(cfg, id, join(TOY, "docs/plans/nope.md"))).toBe(`plan file not found: ${join(TOY, "docs/plans/nope.md")}`);
 	writeFileSync(ok, "# fix\n\nno citation yet\n");
-	// refusal order follows the plan: exists → listed in repo INDEX → cites INCIDENT <id>
+	// refusal order follows the plan: exists → listed in the main index → cites INCIDENT <id>
 	expect(planIncident(cfg, id, ok)).toContain("is not listed in");
-	writeFileSync(join(TOY, "INDEX.md"), "docs/plans/20261020_fix.md\ndocs/plans/20261020_ok.md\n");
+	writeFileSync(join(AGENT, "INDEX.md"), `${join(TOY, "docs/plans/20261020_fix.md")}\n${ok}\n`);
 	expect(planIncident(cfg, id, ok)).toContain('must contain "INCIDENT ' + id + '"');
 	writeFileSync(ok, `# fix\n\nINCIDENT ${id}\n`);
 	expect(planIncident(cfg, id, ok)).toBe(null);
@@ -129,17 +129,17 @@ test("incident plan refusals: unknown id, missing file, missing citation, not in
 	expect(planIncident(cfg, id, ok)).toBe(`incident ${id} already has a plan record`);
 });
 
-// Plans live at any depth under the repo (docs/plans/immediate/…): the repo is found by walking up
-// to the directory holding INDEX.md, not by a fixed number of dirname steps (which landed on docs/).
-test("incident plan accepts a plan nested under docs/plans/immediate/ listed in the root INDEX", () => {
+// Plans live at any depth under the repo (docs/plans/immediate/…): the main index lists plan
+// paths, so a nested plan is accepted like any other once the index lists it.
+test("incident plan accepts a plan nested under docs/plans/immediate/ listed in the main index", () => {
 	const { incident } = addIncident(cfg, { source: "realtime", kind: "k", summary: "nested fix" }, NOW7);
 	const id = incident.id;
 	const nested = join(TOY, "docs/plans/immediate/20261206_nested.md");
 	mkdirSync(dirname(nested), { recursive: true });
 	writeFileSync(nested, `# fix\n\nINCIDENT ${id}\n`);
 	writeFileSync(
-		join(TOY, "INDEX.md"),
-		"docs/plans/20261020_fix.md\ndocs/plans/20261020_ok.md\ndocs/plans/immediate/20261206_nested.md\n",
+		join(AGENT, "INDEX.md"),
+		`${join(TOY, "docs/plans/20261020_fix.md")}\n${join(TOY, "docs/plans/20261020_ok.md")}\n${nested}\n`,
 	);
 	expect(planIncident(cfg, id, nested)).toBe(null);
 	const v = readIncidents(cfg).find(x => x.id === id);

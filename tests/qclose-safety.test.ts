@@ -157,10 +157,8 @@ function chain(dir: string, landed: boolean, worktree = "-", done = "true"): str
 	git(R, "checkout", "-q", "-b", "F", "origin/main");
 	commit(R, "F.txt", "feature\n", "feature F");
 	git(R, "checkout", "-q", "chore/other");
-	writeFileSync(join(R, ".git/info/exclude"), "/INDEX.md\n");
 	mkdirSync(join(R, "docs/plans"), { recursive: true });
 	writeFileSync(join(R, "docs/plans", PLAN), planText("complete", "F", worktree, done));
-	writeFileSync(join(R, "INDEX.md"), `- ${join(R, "docs/plans", PLAN)}\n`);
 	git(R, "add", join("docs/plans", PLAN));
 	git(R, "commit", "-q", "-m", "plan");
 	if (landed) {
@@ -170,29 +168,30 @@ function chain(dir: string, landed: boolean, worktree = "-", done = "true"): str
 	return R;
 }
 
-function indexHome(home: string, repo: string): void {
-	writeFileSync(join(home, ".omp/agent/INDEX.md"), `- ${repo}\n`);
+function indexHome(home: string, plan: string): void {
+	writeFileSync(join(home, ".omp/agent/INDEX.md"), `- ${plan}\n`);
 }
 
 test("P1: base follows a local origin chain to the upstream default branch (merged)", () => {
 	const dir = fresh("p1-merged");
 	const home = makeHome(dir);
 	const R = chain(dir, true);
-	indexHome(home, R);
+	indexHome(home, join(R, "docs/plans", PLAN));
 	const r = runClose(home, join(R, "docs/plans", PLAN));
 	expect(r.stderr + r.stdout).not.toContain("AWAITING");
-	expect(r.stdout).toContain("branch F deleted");
+	expect(r.stdout).toContain("queue-close: branch F kept");
 	expect(r.stdout).toContain("queue-close: CLOSED");
 	expect(r.code).toBe(0);
 	expect(existsSync(join(R, "docs/plans/archive", MONTH, PLAN))).toBe(true);
-	expect(gitOk(R, "rev-parse", "--verify", "-q", "refs/heads/F")).toBe(false);
+	// git's -d cannot see the landing on the stale upstream, so the branch stays.
+	expect(gitOk(R, "rev-parse", "--verify", "-q", "refs/heads/F")).toBe(true);
 });
 
 test("P1: base follows a local origin chain; unmerged branch stays AWAITING merge", () => {
 	const dir = fresh("p1-awaiting");
 	const home = makeHome(dir);
 	const R = chain(dir, false);
-	indexHome(home, R);
+	indexHome(home, join(R, "docs/plans", PLAN));
 	const r = runClose(home, join(R, "docs/plans", PLAN));
 	expect(r.stderr).toContain("AWAITING merge");
 	expect(r.code).toBe(4);
@@ -206,10 +205,10 @@ test("P2: a plan worktree on another branch is kept intact; the plan is still ar
 	const W = join(dir, "wt-g");
 	const R = chain(dir, true, W);
 	git(R, "worktree", "add", "-q", "-b", "G", W, "origin/main");
-	indexHome(home, R);
+	indexHome(home, join(R, "docs/plans", PLAN));
 	const r = runClose(home, join(R, "docs/plans", PLAN));
 	expect(r.stdout).toContain(`queue-close: worktree ${W} kept: it is on G`);
-	expect(r.stdout).toContain("branch F deleted");
+	expect(r.stdout).toContain("queue-close: branch F kept");
 	expect(r.stdout).toContain("queue-close: CLOSED");
 	expect(r.code).toBe(0);
 	expect(existsSync(join(W, ".git"))).toBe(true);
@@ -218,7 +217,7 @@ test("P2: a plan worktree on another branch is kept intact; the plan is still ar
 	expect(existsSync(join(R, "docs/plans/archive", MONTH, PLAN))).toBe(true);
 });
 
-test("P2: a plan worktree git cannot remove is docker-chowned, then deleted and pruned", () => {
+test("P2: a worktree git cannot remove is kept; no docker, no force, branch included", () => {
 	const dir = fresh("p2-leftover");
 	const home = makeHome(dir);
 	const W = join(dir, "wt-f");
@@ -230,15 +229,16 @@ test("P2: a plan worktree git cannot remove is docker-chowned, then deleted and 
 	const log = join(home, "docker.log");
 	writeFileSync(join(bin, "docker"), `#!/bin/sh\necho "$@" >> ${log}\nexit 0\n`);
 	chmodSync(join(bin, "docker"), 0o755);
-	indexHome(home, R);
+	indexHome(home, join(R, "docs/plans", PLAN));
 	const r = runClose(home, join(R, "docs/plans", PLAN), bin);
 	expect(r.stderr).toBe("");
-	expect(r.stdout).toContain(`queue-close: worktree ${W} removed`);
-	expect(r.stdout).toContain("branch F deleted");
+	expect(r.stdout).toContain(`queue-close: worktree ${W} kept`);
+	expect(r.stdout).toContain("queue-close: branch F kept");
 	expect(r.code).toBe(0);
-	expect(readFileSync(log, "utf8")).toContain("chown");
-	expect(existsSync(W)).toBe(false);
-	expect(git(R, "worktree", "list", "--porcelain")).not.toContain(W);
+	expect(existsSync(log)).toBe(false);
+	expect(existsSync(W)).toBe(true);
+	expect(git(R, "worktree", "list", "--porcelain")).toContain(W);
+	expect(gitOk(R, "rev-parse", "--verify", "-q", "refs/heads/F")).toBe(true);
 });
 
 test("P3: a missing plan worktree is checked on the upstream base; the file is there, so CLOSED", () => {
@@ -246,7 +246,7 @@ test("P3: a missing plan worktree is checked on the upstream base; the file is t
 	const home = makeHome(dir);
 	// F.txt lands on upstream main only; R's checkout (chore/other) does not have it.
 	const R = chain(dir, true, join(dir, "gone"), "test -f F.txt");
-	indexHome(home, R);
+	indexHome(home, join(R, "docs/plans", PLAN));
 	const r = runClose(home, join(R, "docs/plans", PLAN));
 	expect(r.stdout).toContain("temporary worktree");
 	expect(r.stdout).toContain("queue-close: CLOSED");
@@ -258,7 +258,7 @@ test("P3: a missing plan worktree is checked on the upstream base; the file is a
 	const dir = fresh("p3-absent");
 	const home = makeHome(dir);
 	const R = chain(dir, true, join(dir, "gone"), "test -f NOT_ON_MAIN.txt");
-	indexHome(home, R);
+	indexHome(home, join(R, "docs/plans", PLAN));
 	const r = runClose(home, join(R, "docs/plans", PLAN));
 	expect(r.code).toBe(1);
 	expect(r.stderr).toContain("plan reopened (Status: open)");

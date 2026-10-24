@@ -2,6 +2,8 @@
 Worktree: <work root>/<repo>-<topic> (configure paths.work_roots, e.g. {{HOME}}/work)
 Branch: <type>/<topic>
 PRIORITY-ID: <optional, e.g. PR01>
+<!-- One plan = one worktree: this file lives in the main checkout (<main checkout>/docs/plans/), never
+     inside its worktree, and the main index (paths.queue_index) lists its absolute path, one line per plan. -->
 
 ## Goal
 - <owner's words, 1-3 lines: what must be true when this is done>
@@ -31,7 +33,9 @@ Status: open
 <!-- The implementer may only append dated entries here: what was done, what was verified (command +
      result), commits, what is next. It never changes the Status line or adds "WAITING on owner".
      Main reviews the work and then writes "Status: complete"; main-guard auto-runs queue-close, which
-     closes the plan once the branch is on main and the done check passes (else reopens it).
+     closes the plan once the branch is on main and the done check passes (else reopens it), then removes
+     the plan's worktree with a plain git worktree remove when it is clean and its branch landed — a dirty,
+     unmerged or unremovable worktree (or the repo's main checkout) is kept and the reason printed.
      Owner calls it off: Main writes "Status: cancelled" + "Cancelled by owner: <date> "<words>"";
      queue-close archives it and adds it to docs/plans/CANCELLED.md. A new plan resembling a cancelled
      one is refused until Main checks and writes "False positive: <cancelled file> — <why>". -->
