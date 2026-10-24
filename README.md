@@ -106,6 +106,8 @@ A relaunch keeps the flags of the first run (`--model`, `--session-dir`, …) an
 In both modes:
 
 - If omp does not exit within `rollover.exit_grace_s` seconds (default 20, `docs/config.md`) after a relaunch was requested, the adapter stops waiting and rolls over in-process: the fresh session opens in the same process and carries the owner's typed messages in its handoff. A real shutdown (`session_shutdown`) cancels the fallback.
+- The relaunch is requested only when Main's run has really ended: a tool result mid-run never restarts the session, and while a relaunch is pending every later terminal run end calls `shutdown()` again (omp re-checks its deferred exit only then).
+- The launcher prints one stderr line while it collects the handoff state (`neurastream: starting a new session from the handoff (collecting state, about a minute)…`) and removes the request only after the handoff message is built; a fresh `neurastream main` with no message of its own continues an interrupted rollover whose request is at most one hour old.
 - A note counts only if it was written after the threshold was crossed and is at most one hour old.
 - The running plugin going stale counts as over the threshold too: at every check the adapter re-reads the `package.json` it was loaded from, and a different (or unreadable) version asks for the handoff note even below `rollover.max_session_mb`, naming both versions (`NEURASTREAM_PACKAGE_JSON` overrides the path it watches).
 - While a rollover is pending (no fresh note, own jobs still running, or the handoff is ready and waiting for idle), Main cannot start new subagents: a `task` call is refused until the running jobs finish and the session rolls over.

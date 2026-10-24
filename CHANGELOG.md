@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+### Fixed
+- The relaunch is requested only at a run's real end (incident I-20261024-4). A tool result mid-run no longer writes `relaunch.json` and shuts the session down while Main keeps working; while a relaunch is pending, every later terminal run end calls `shutdown()` again, because omp 18.11.1 re-runs its deferred exit check only then.
+- A relaunch omp does not exit falls back to an in-process rollover. If omp still has not exited `rollover.exit_grace_s` seconds (default 20, new config key) after the request, the adapter rolls over in the running process — fresh session, handoff, the owner's typed messages included — instead of leaving a dead UI that swallows every message. A real shutdown cancels the fallback.
+- The launcher says what it is doing (`neurastream: starting a new session from the handoff (collecting state, about a minute)…`) and removes `relaunch.json` only after the handoff message is built, so a kill during main-start no longer costs the owner's messages. A fresh `neurastream main` with no message of its own continues an interrupted rollover whose request is at most an hour old.
+
 ## 0.1.27
 ### Fixed
 - An upgrade while the launcher runs no longer crashes it (incident I-20261023-6). A relaunch request left after an upgrade goes to a fresh launcher from the installed package, so the handoff is built with the new code. Version helpers live in `src/adapters/omp/package-root.ts`.
