@@ -62,6 +62,10 @@ export function helpText(): string {
 		"  neurastream metrics <cmd>     self-metrics: report, ci, false-alarm, rule (see README)",
 		"  neurastream incident <cmd>    incidents Main must act on: list, add, plan, dismiss (see README)",
 		"  neurastream ui                serve the owner's phone page on the tailnet address (ui.enabled, ui.owner_login)",
+		"  neurastream ui on --login <tailscale login> [--port N]",
+		"                                one go: writes ui.enabled/owner_login (and port) into the config,",
+		"                                installs and restarts the neurastream-ui user unit, prints the phone",
+		"                                link; `neurastream ui off` stops and disables it, sets enabled: false",
 		"  neurastream agents list | allow <slug>... | deny <slug>...",
 		"                                the subagent allow-list (## Allowed in notes/subagents.md)",
 		"",
@@ -82,7 +86,7 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 	if (cmd === "init") return runInit(args);
 	if (cmd === "metrics") return runMetrics(args);
 	if (cmd === "incident") return runIncident(args);
-	if (cmd === "ui") return runUi();
+	if (cmd === "ui") return runUi(args);
 	if (cmd === "adapter") return runAdapterInstall(args);
 	if (cmd === "config") {
 		try {

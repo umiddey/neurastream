@@ -11,6 +11,8 @@ export interface Tailscale {
 	dnsName(): string | null;
 	/** The login that owns the peer address (`User.LoginName` of `tailscale whois --json <peer>`), or null on failure. */
 	whois(peer: string): string | null;
+	/** Every `User[*].LoginName` of `tailscale status --json`, or null when tailscale fails or the answer is unreadable — callers then skip their login check with a printed warning, never refuse on a tailscale failure. */
+	logins(): string[] | null;
 }
 
 function firstStdoutLine(args: string[]): string | null {
@@ -42,6 +44,23 @@ export const realTailscale: Tailscale = {
 			const parsed = JSON.parse(line) as { User?: { LoginName?: unknown } };
 			const login = parsed.User?.LoginName;
 			return typeof login === "string" && login ? login : null;
+		} catch {
+			return null;
+		}
+	},
+	logins() {
+		try {
+			const r = spawnSync("tailscale", ["status", "--json"], { encoding: "utf8", timeout: 8000 });
+			if (r.error || r.status !== 0) return null;
+			const parsed = JSON.parse(r.stdout ?? "") as { User?: unknown };
+			const users = parsed.User;
+			if (typeof users !== "object" || users === null || Array.isArray(users)) return null;
+			const names: string[] = [];
+			for (const user of Object.values(users)) {
+				const login = (user as { LoginName?: unknown } | null)?.LoginName;
+				if (typeof login === "string" && login) names.push(login);
+			}
+			return names;
 		} catch {
 			return null;
 		}

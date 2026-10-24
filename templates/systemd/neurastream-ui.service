@@ -1,6 +1,7 @@
-# User unit for the owner's phone page (neurastream ui). The installer copies this into
-# ~/.config/systemd/user/; agents never install or start it — the owner does, after setting
-# ui.enabled and ui.owner_login in the config.
+# User unit for the owner's phone page (neurastream ui). `neurastream ui on --login <email>`
+# copies this into ~/.config/systemd/user/ and enables + restarts it; `neurastream ui off`
+# stops and disables it. Agents never install or start it — that is the owner's move, refused
+# by the guards.
 
 [Unit]
 Description=neurastream owner page (neurastream ui)
