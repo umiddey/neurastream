@@ -104,9 +104,12 @@ function fresh(): void {
 
 // Inherited QUEUE_* would override the sandbox config in the child (env beats config.yml).
 function guardCli(event: string, payload: unknown): { code: number; d: Decision } {
-	const env: NodeJS.ProcessEnv = { HOME };
+	const env: NodeJS.ProcessEnv = {};
 	for (const [k, v] of Object.entries(process.env)) if (!k.startsWith("QUEUE_")) env[k] = v;
+	// HOME after the copy: the real HOME must not win over the sandbox home, or the child guard
+	// CLI writes its BLOCK lines to the real plan-guard log (INCIDENT I-20261024-26).
 	Object.assign(env, {
+		HOME,
 		QUEUE_AGENT: AGENT,
 		QUEUE_INDEX: join(AGENT, "INDEX.md"),
 		QUEUE_BLOCKERS: join(AGENT, "blockers"),
