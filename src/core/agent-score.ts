@@ -312,6 +312,53 @@ function board(days: number, cfg: Config, source: RunSource): void {
 	printText(text);
 }
 
+function exitUsage(cmd: string): number {
+	const doc = helpDoc("agent-score");
+	const line = doc.split("\n").find(l => l.trim().startsWith(`agent-score ${cmd}`));
+	const usage = line ? `usage: ${line.trim()}` : `usage: agent-score ${cmd}`;
+	process.stderr.write(`${usage}\n`);
+	return 2;
+}
+
+const CMD_OPTS: Record<string, { val: Record<string, true>; bool: Record<string, true> }> = {
+	accept: {
+		val: { "--plan": true, "--phase": true, "--commits": true, "--repo": true, "--branch": true, "--weight": true, "--units": true, "--note": true },
+		bool: { "--rework": true },
+	},
+	diagnose: {
+		val: { "--plan": true, "--phase": true, "--evidence": true, "--weight": true, "--note": true, "--repo": true, "--branch": true },
+		bool: {},
+	},
+	validate: {
+		val: { "--plan": true, "--phase": true, "--evidence": true, "--section": true, "--weight": true, "--note": true, "--repo": true, "--branch": true },
+		bool: { "--rework": true },
+	},
+	penalty: {
+		val: { "--kind": true, "--note": true, "--plan": true, "--repo": true, "--branch": true },
+		bool: {},
+	},
+};
+
+function parseScoreTarget(cmd: string, rest: string[]): { agent: string } | number {
+	const spec = CMD_OPTS[cmd];
+	if (!spec) return 0;
+	if (rest.length === 0 || rest[0]!.startsWith("-")) return exitUsage(cmd);
+	const agent = rest[0]!;
+	let i = 1;
+	while (i < rest.length) {
+		const arg = rest[i]!;
+		if (!arg.startsWith("-")) return exitUsage(cmd);
+		if (spec.bool[arg]) {
+			i++;
+		} else if (spec.val[arg]) {
+			i += 2;
+		} else {
+			return exitUsage(cmd);
+		}
+	}
+	return { agent };
+}
+
 export function agentScore(args: string[], cfg: Config, source: RunSource): number {
 	mkdirSync(cfg.paths.score_state, { recursive: true });
 	if (args.length < 1 || args[0] === "-h" || args[0] === "--help") {
@@ -324,10 +371,12 @@ export function agentScore(args: string[], cfg: Config, source: RunSource): numb
 	const branch = rest.includes("--branch") ? needOpt(rest, "--branch") : cfg.score.default_branch;
 	try {
 		if (cmd === "accept") {
-			const agent = rest[0];
+			const target = parseScoreTarget(cmd, rest);
+			if (typeof target === "number") return target;
+			const agent = target.agent;
 			const plan = opt(rest, "--plan");
 			const phase = opt(rest, "--phase");
-			if (!agent || !plan || !phase || !rest.includes("--commits")) return exitText("accept needs --plan, --phase, --commits");
+			if (!plan || !phase || !rest.includes("--commits")) return exitText("accept needs --plan, --phase, --commits");
 			if (!repo) return exitText("accept needs --repo");
 			const commits = expandCommits(repo, needOpt(rest, "--commits"));
 			const bad = commits.filter(c => gitRaw(repo, ["merge-base", "--is-ancestor", c, branch]).code).map(c => c.slice(0, 10));
@@ -341,11 +390,13 @@ export function agentScore(args: string[], cfg: Config, source: RunSource): numb
 			return 0;
 		}
 		if (cmd === "diagnose") {
-			const agent = rest[0];
+			const target = parseScoreTarget(cmd, rest);
+			if (typeof target === "number") return target;
+			const agent = target.agent;
 			const plan = opt(rest, "--plan");
 			const phase = opt(rest, "--phase");
 			const ev = opt(rest, "--evidence");
-			if (!agent || !plan || !phase || !ev || !existsSync(ev)) return exitText("diagnose needs --plan, --phase and an existing --evidence file");
+			if (!plan || !phase || !ev || !existsSync(ev)) return exitText("diagnose needs --plan, --phase and an existing --evidence file");
 			const weighted = rest.includes("--weight") ? weightFor(rest, plan, phase, cfg, cfg.score.diagnose_weight) : { w: cfg.score.diagnose_weight, src: "default" };
 			record({
 				type: "diagnose", agent, plan, phase, weight: weighted.w, weight_src: weighted.src, evidence: ev, note: opt(rest, "--note") ?? "",
@@ -353,12 +404,14 @@ export function agentScore(args: string[], cfg: Config, source: RunSource): numb
 			return 0;
 		}
 		if (cmd === "validate") {
-			const agent = rest[0];
+			const target = parseScoreTarget(cmd, rest);
+			if (typeof target === "number") return target;
+			const agent = target.agent;
 			const plan = opt(rest, "--plan");
 			const phase = opt(rest, "--phase");
 			const ev = opt(rest, "--evidence");
 			const section = opt(rest, "--section");
-			if (!agent || !plan || !phase || !ev || !section) return exitText("validate needs --plan, --phase, --evidence and --section");
+			if (!plan || !phase || !ev || !section) return exitText("validate needs --plan, --phase, --evidence and --section");
 			if (!phaseTicked(plan, phase)) return exitText(`refused: ${phase} not ticked in ${plan}`);
 			const { w, src } = weightFor(rest, plan, phase, cfg, null);
 			if (!existsSync(ev)) return exitText(`refused: evidence file not found: ${ev}`);
@@ -376,11 +429,14 @@ export function agentScore(args: string[], cfg: Config, source: RunSource): numb
 			return 0;
 		}
 		if (cmd === "penalty") {
+			const target = parseScoreTarget(cmd, rest);
+			if (typeof target === "number") return target;
+			const agent = target.agent;
 			const kind = opt(rest, "--kind");
 			const note = opt(rest, "--note");
 			const kinds = Object.keys(cfg.score.penalties);
 			if (!kind || !kinds.includes(kind) || !note) return exitText(`penalty needs --kind ${kinds.join("|")} and --note`);
-			record({ type: "penalty", agent: rest[0], kind, plan: opt(rest, "--plan") ?? "", note }, cfg);
+			record({ type: "penalty", agent, kind, plan: opt(rest, "--plan") ?? "", note }, cfg);
 			return 0;
 		}
 		if (cmd === "exempt") {
