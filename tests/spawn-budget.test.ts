@@ -296,6 +296,16 @@ test("a sub without a recorded budget keeps the global warn 90 / stop 100", () =
 	expect(spent.d.reason).toContain("call budget spent (100/100)");
 });
 
+// A name respawned without a budget line drops its old budget: the global cap applies again.
+test("respawning a name without a Call budget line restores the global 100 stop", () => {
+	fresh();
+	expect(spawn("X", brief("50")).code).toBe(0);
+	writeFileSync(PLAN, `${TOY_PLAN}- respawn after a report. Findings: none\n`); // Progress changed: a respawn is allowed
+	expect(spawn("X", `Work ${PLAN} P1 now.`).d).toEqual(ALLOW);
+	expect(sub("X", 50).code).toBe(0);
+	expect(sub("X", 100).code).toBe(2);
+});
+
 // (d) `Call budget: 5` and `Call budget: 500` (cap 200) are refused at spawn with the allowed range.
 test("budgets outside [10, cap 200] are refused at spawn and nothing is recorded", () => {
 	fresh();

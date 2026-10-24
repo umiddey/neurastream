@@ -152,12 +152,16 @@ export function readBudgets(dir: string = q.STATE_DIR): Record<string, number> {
 	}
 }
 
-/** Remember the named tasks' call budgets; a name's old budget is replaced. */
-export function recordBudgets(entries: Record<string, number>): void {
+/** Remember the named tasks' call budgets; a name's old budget is replaced, a null one removed. */
+export function recordBudgets(entries: Record<string, number | null>): void {
 	const names = Object.keys(entries);
 	if (!names.length) return;
 	const budgets = readBudgets();
-	for (const n of names) budgets[n] = entries[n]!;
+	for (const n of names) {
+		const b = entries[n];
+		if (b == null) delete budgets[n];
+		else budgets[n] = b;
+	}
 	try {
 		mkdirSync(q.STATE_DIR, { recursive: true });
 		writeFileSync(budgetsFile(), JSON.stringify(budgets, null, 1));
@@ -277,18 +281,23 @@ export function planGate(text: string, label: string): [string | null, string[]]
 	return [null, named.map(p => p.file)];
 }
 
-/** Reason to refuse a `task` brief, or null; `files` receives the plans to record. */
-export function spawnProblem(input: Record<string, unknown>, cfg: Config, files: string[] = []): string | null {
+/** Reason to refuse a `task` brief, or null; `files` receives the plans to record, `budgets` every named task's call budget (null = none). */
+export function spawnProblem(
+	input: Record<string, unknown>,
+	cfg: Config,
+	files: string[] = [],
+	budgets: Record<string, number | null> = {},
+): string | null {
 	const tasks = Array.isArray(input?.tasks) ? input.tasks : [];
 	const context = String(input?.context ?? "");
 	const allowed = q.allowedAgents();
 	const shared = briefBudget(context);
-	const budgets: Record<string, number> = {};
+	const named: Record<string, number | null> = {};
 	for (const t of tasks) {
 		const agent = String(t?.agent ?? "task");
 		const label = String(t?.name ?? agent);
 		if (!allowed.has(agent)) return `${label}: agent "${agent}" is not in "## Allowed" of ${q.SUBAGENTS_MD} (no expensive or unpinned models).`;
-		const [why, named] = planGate(`${context}\n${String(t?.task ?? "")}`, label);
+		const [why, plans] = planGate(`${context}\n${String(t?.task ?? "")}`, label);
 		if (why) return why;
 		// The task's own `Call budget:` line wins over the shared context's.
 		const budget = briefBudget(String(t?.task ?? "")) ?? shared;
@@ -296,11 +305,11 @@ export function spawnProblem(input: Record<string, unknown>, cfg: Config, files:
 			if (!t?.name) return `${label}: "Call budget: ${budget}" needs a task name (the budget is keyed by it).`;
 			if (budget < 10 || budget > cfg.guards.sub_max_calls_cap)
 				return `${label}: call budget ${budget} is outside the allowed range 10..${cfg.guards.sub_max_calls_cap}.`;
-			budgets[label] = budget;
 		}
-		files.push(...named);
+		if (t?.name) named[label] = budget;
+		files.push(...plans);
 	}
-	recordBudgets(budgets);
+	Object.assign(budgets, named);
 	return null;
 }
 
@@ -452,7 +461,8 @@ function mainTool(e: ToolEvent, input: Record<string, unknown>, cfg: Config): De
 			return deny(`main-guard: ${CANCEL_TODO} Flagged: "${pending.words}"`);
 		}
 		const files: string[] = [];
-		const why = spawnProblem(input, cfg, files);
+		const budgets: Record<string, number | null> = {};
+		const why = spawnProblem(input, cfg, files, budgets);
 		if (why) {
 			log(cfg.paths.guard_log, `BLOCK spawn: ${why}`);
 			return deny(`main-guard: ${why}`);
@@ -460,6 +470,7 @@ function mainTool(e: ToolEvent, input: Record<string, unknown>, cfg: Config): De
 		const inc = incidentSpawnProblem("spawn", JSON.stringify(input), files, cfg);
 		if (inc) return deny(`main-guard: ${inc}`);
 		recordSpawns(files);
+		recordBudgets(budgets);
 		return ALLOW;
 	}
 	if (cfg.guards.shell_tools.includes(e.tool)) {
