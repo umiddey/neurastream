@@ -591,6 +591,10 @@ test("guards refuse agent shell commands that start the owner page", () => {
 		!checkTool({ tool: "bash", input: { command }, cwd: TMP, agent, agentId: "uistart", calls: 0, paths: [], writes: [], command: "" }, cfg).allow;
 	expect(denies("neurastream ui")).toBe(true);
 	expect(denies("neurastream ui --port 1234")).toBe(true);
+	// ui on/off are the one-command setup of the page itself (plan 20261025_0300): refused like
+	// every other `neurastream ui` command, with any arguments.
+	expect(denies("neurastream ui on --login x@y.z")).toBe(true);
+	expect(denies("neurastream ui off")).toBe(true);
 	expect(denies('sh -c "neurastream ui"', "main")).toBe(true);
 	expect(denies("bun ~/.bun/bin/neurastream ui")).toBe(true);
 	expect(denies("systemctl --user start neurastream-ui")).toBe(true);
