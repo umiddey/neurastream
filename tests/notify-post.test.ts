@@ -470,7 +470,7 @@ test("handback (c): agent_end willContinue with an async job pending and no stop
 test("handback (d): the same reply seen by both agent_end and session_stop is posted once", async () => {
 	reset();
 	const host = adapterWith(stopCfg(bothCfg()));
-	const ctx = ctxFor("main");
+	const ctx = ctxFor("main", [{ label: "bg-1" }]);
 	await host.emit("agent_end", { willContinue: true, messages: [msg(REPLY)] }, ctx);
 	await until(() => discordHits.length === 1 && slackHits.length === 1);
 	await host.emit("session_stop", stopEvent(REPLY), ctx);
@@ -500,4 +500,27 @@ test("handback (f): a willContinue agent_end whose last message has tool calls p
 	await expectNoMore(() => discordHits.length, 0);
 	await expectNoMore(() => slackHits.length, 0);
 	expect(notifyLogLines().filter(l => l.includes("notify: skipped (mid-run: stop reason toolUse + 1 tool call(s), agent_end hand-back)")).length).toBe(1);
+});
+
+test("handback (g): a blocked stop followed by a willContinue agent_end posts nothing", async () => {
+	reset();
+	writeFileSync(INDEX, `${PLAN}\n`);
+	const host = adapterWith(stopCfg(bothCfg()));
+	const ctx = ctxFor("main", [{ label: "bg-1" }]);
+	const blocked = await host.emit("session_stop", stopEvent(BLOCKED_REPLY), ctx);
+	expect(blocked.map(decisionOf)).toEqual(["block"]);
+	await host.emit("agent_end", { willContinue: true, messages: [msg(BLOCKED_REPLY)] }, ctx);
+	await expectNoMore(() => discordHits.length, 0);
+	await expectNoMore(() => slackHits.length, 0);
+	expect(notifyLogLines().filter(l => l.includes("notify: skipped (stop blocked, agent_end)")).length).toBe(1);
+});
+
+test("handback (h): a willContinue agent_end with no pending async job posts nothing", async () => {
+	reset();
+	const host = adapterWith(stopCfg(bothCfg()));
+	const ctx = ctxFor("main");
+	await host.emit("agent_end", { willContinue: true, messages: [msg(REPLY)] }, ctx);
+	await expectNoMore(() => discordHits.length, 0);
+	await expectNoMore(() => slackHits.length, 0);
+	expect(notifyLogLines().filter(l => l.includes("notify: skipped (no pending job, agent_end)")).length).toBe(1);
 });
