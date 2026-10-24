@@ -21,7 +21,7 @@ import { createOmpAdapter, ownerInboxCursorPath, type ExtensionHost } from "../s
 import { inboxPath, startOwnerUi, type OwnerUiOptions, type OwnerUiServer } from "../src/core/owner-ui.ts";
 import { runUi } from "../src/cli/ui.ts";
 import { stateDirPath, unlockPath } from "../src/core/queue/lib.ts";
-import type { Tailscale } from "../src/core/tailscale.ts";
+import { parseWhoisLogin, type Tailscale } from "../src/core/tailscale.ts";
 
 const OWNER = "owner@example.com";
 const OWN_IP = "100.95.10.2"; // fixture: this machine's tailnet address
@@ -620,4 +620,21 @@ test("runUi refuses with exit 1 and starts nothing when the page is off", async 
 	const code = await runUi({ cfg: { ...CFG, ui: { ...CFG.ui, enabled: false } }, start: () => (started++, { stop() {}, hostname: "", port: 0 }) });
 	expect(code).toBe(1);
 	expect(started).toBe(0);
+});
+
+// Regression (2026-10-25): the real seam read only the first stdout line ("{") and looked under
+// `User`, so every real peer's login was null and the owner's own phone got 403.
+test("parseWhoisLogin reads UserProfile.LoginName from the multi-line `tailscale whois --json` output", () => {
+	const out = JSON.stringify(
+		{
+			Node: { Name: "phone.example.ts.net.", Addresses: ["100.68.9.81/32"] },
+			UserProfile: { ID: 1, LoginName: "owner@example.com", DisplayName: "Owner" },
+			CapMap: {},
+		},
+		null,
+		"\t",
+	);
+	expect(parseWhoisLogin(out)).toBe("owner@example.com");
+	expect(parseWhoisLogin(JSON.stringify({ User: { LoginName: "owner@example.com" } }))).toBeNull();
+	expect(parseWhoisLogin("not json")).toBeNull();
 });
