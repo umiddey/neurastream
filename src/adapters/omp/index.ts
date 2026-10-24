@@ -364,7 +364,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	};
 
 	pi.on("tool_result", (event, ctx) => {
-		onSizeCheck(event, ctx);
+		onSizeCheck("tool_result", event, ctx);
 		const e = asRecord(event);
 		const c = asCtx(ctx);
 		const id = asString(e.toolCallId);
@@ -521,22 +521,29 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		}
 	};
 
-	const onSizeCheck = (_e: unknown, ctx: unknown): void => {
+	const onSizeCheck = (kind: "tool_result" | "agent_end", e: unknown, ctx: unknown): void => {
 		const c = asRolloverCtx(ctx);
 		if (!cfg.rollover.enabled || !c || !isMain(ctx)) return;
 		const snap = rolloverSnapshot(c);
 		const key = `${c.sessionFile}:${snap.noteMtimeMs ?? "none"}`;
+		// A terminal run end: omp 18.11.1 sets willContinue on a non-terminal agent_end.
+		const terminal = kind === "agent_end" && asRecord(e).willContinue !== true;
 		if (snap.state === "need-note" && asked !== key) {
 			asked = key;
 			pi.sendMessage(
 				{ customType: "main-guard.rollover", content: noteRequestFor(c, snap), display: false },
 				{ triggerTurn: true, deliverAs: "nextTurn" },
 			);
-		} else if (snap.state === "ready" && process.env.NEURASTREAM_MAIN_LAUNCHER === "1" && !relaunched) {
+		} else if (terminal && snap.state === "ready" && process.env.NEURASTREAM_MAIN_LAUNCHER === "1" && !relaunched) {
 			requestRelaunch(c, notePath(c.sessionId));
+		} else if (terminal && relaunched) {
+			// A tool result mid-run never restarts the session (I-20261024-4), and omp's interactive
+			// mode re-runs its deferred exit check only when shutdown() is called again: re-arm at
+			// every later terminal run end instead of waiting for an owner message.
+			c.shutdown();
 		}
 	};
-	pi.on("agent_end", onSizeCheck);
+	pi.on("agent_end", (e, ctx) => onSizeCheck("agent_end", e, ctx));
 
 	// Compaction keeps the owner's holds true: a summary may state a hold only as a plans' WAITING on owner line says it.
 	pi.on("session.compacting", (_e, ctx) => {

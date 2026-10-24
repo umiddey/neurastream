@@ -349,7 +349,7 @@ async function withLauncher(value: string | undefined, fn: () => Promise<void>):
 	}
 }
 
-test("launcher set, ready: relaunch.json has the three fields and omp shuts down once", async () => {
+test("launcher set, ready: relaunch.json has the three fields, omp shuts down and re-arms at the next run end", async () => {
 	resetState();
 	draft = "half-typed";
 	const host = fakeHost();
@@ -360,11 +360,38 @@ test("launcher set, ready: relaunch.json has the three fields and omp shuts down
 		await host.emit("agent_end", {}, ctx);
 		await host.emit("agent_end", {}, ctx);
 	});
-	expect(shutdowns).toBe(1);
+	// omp 18.11.1 re-runs its deferred exit check only when shutdown() is called again: the second
+	// terminal run end re-arms the exit instead of leaving the request to a dead UI.
+	expect(shutdowns).toBe(2);
 	expect(JSON.parse(readFileSync(relaunchPath(), "utf8"))).toEqual({
 		previousSessionFile: SESSION_FILE,
 		notePath: NOTE,
 		draft: "half-typed",
+	});
+});
+
+test("launcher set: the relaunch is requested only at a real run end and re-armed at later ones", async () => {
+	resetState();
+	const host = fakeHost();
+	createOmpAdapter(host, overCfg);
+	const ctx = mainCtx();
+	await withLauncher("1", async () => {
+		await armReady(host, ctx, "## In progress\nstep");
+		// A tool result mid-run (the live incident: a wait result) never requests the relaunch.
+		await host.emit("tool_result", { toolName: "read", toolCallId: "t1" }, ctx);
+		expect(shutdowns).toBe(0);
+		expect(existsSync(relaunchPath())).toBe(false);
+		// A non-terminal run end (omp 18.11.1 sets willContinue) does not either.
+		await host.emit("agent_end", { willContinue: true }, ctx);
+		expect(shutdowns).toBe(0);
+		expect(existsSync(relaunchPath())).toBe(false);
+		// The run's real end requests the relaunch once.
+		await host.emit("agent_end", {}, ctx);
+		expect(shutdowns).toBe(1);
+		expect(existsSync(relaunchPath())).toBe(true);
+		// Every later terminal run end re-arms the exit.
+		await host.emit("agent_end", {}, ctx);
+		expect(shutdowns).toBe(2);
 	});
 });
 
