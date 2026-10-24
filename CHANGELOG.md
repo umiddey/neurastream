@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.6
 ### Fixed
 - `deny-path` catches file writes done through interpreter code (INCIDENT I-20261024-24): a refused subagent could still write or remove denied files with `python3 -c` / a `python3` heredoc / `ruby -e` running `Path(…).write_text()`, `open(…, "w")`, `os.remove/rename/replace/unlink`, `shutil.*`, `.writelines()`, `File.write`, `rmSync` or `appendFile`. These code-write forms are one shared list (the code parts of queue/lib.ts `MUTATING` plus `File.write`) used for both shell command targets and `eval` code, and heredoc bodies are kept as their interpreter segment's code — a heredoc to `cat` is still prose. Reading a denied file (`open('x')`, `Path('x').read_text()`) and writes outside the deny globs stay allowed.
 
