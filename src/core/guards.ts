@@ -360,7 +360,11 @@ function subRules(e: ToolEvent, input: Record<string, unknown>, paths: string[],
 		return 'queue-close and queue-cancel are Main\'s; report in your plan\'s "## Progress" instead.';
 	const plans = q.activePlans();
 	if (e.calls >= cap) {
-		const planEdit = (e.tool === "write" || e.tool === "edit") && writes.length > 0 && writes.every(p => q.planAt(p, plans));
+		// Plan edit targets come from writeTargets (write and structured/hashline edit)
+		// with touchedPaths as fallback; plan reads match any read tool.
+		const planEdit =
+			(e.tool === "write" || e.tool === "edit") &&
+			(writes.length > 0 ? writes.every(p => q.planAt(p, plans)) : paths.length > 0 && paths.every(p => q.planAt(p, plans)));
 		const planRead = cfg.guards.read_tools.includes(e.tool) && paths.length > 0 && paths.every(p => q.planAt(p, plans));
 		if (!planEdit && !planRead)
 			return `call budget spent (${e.calls}/${cap}). Only reading and editing your plan's "## Progress" is allowed now: write what you did, what is verified, what is next, then end your run.`;

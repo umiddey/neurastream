@@ -297,11 +297,12 @@ export function planCovers(plan: Plan, p: string, plans: Plan[] = []): boolean {
 }
 
 export function planAt(p: string, plans: Plan[]): Plan | null {
-	const exact = plans.find(pl => pl.file === p);
+	const clean = p.replace(/:[\d+\-,]*(:raw)?$|:raw(:[\d+\-,]+)?$/, "");
+	const exact = plans.find(pl => pl.file === clean || pl.file === p);
 	if (exact) return exact;
-	const g = gitTop(p);
+	const g = gitTop(clean);
 	if (!g) return null;
-	const rel = path.relative(g.top, p);
+	const rel = path.relative(g.top, clean);
 	return plans.find(pl => pl.repo === g.repo && path.relative(pl.repo, pl.file) === rel) ?? null;
 }
 
@@ -329,7 +330,7 @@ export function touchedPaths(toolName: string, input: Record<string, unknown>, c
 	const out = new Set<string>();
 	const base = typeof input?.cwd === "string" ? path.resolve(cwd, expandHome(input.cwd)) : cwd;
 	const add = (raw: string, from = base) => {
-		const s = expandHome(raw.trim());
+		const s = expandHome(raw.trim().replace(/:[\d+\-,]*(:raw)?$|:raw(:[\d+\-,]+)?$/, ""));
 		if (!s || s.includes("://")) return;
 		out.add(path.resolve(from, s));
 	};
@@ -481,6 +482,8 @@ export function writeTargets(toolName: string, input: Record<string, unknown>, c
 		return [...out];
 	}
 	if (toolName === "edit") {
+		const target = typeof input?.path === "string" ? input.path : typeof input?.file === "string" ? input.file : "";
+		if (target) add(target, cwd);
 		for (const m of String(input?.input ?? "").matchAll(/^\[([^\]\n]+?)#[0-9A-Fa-f]{4}\]/gm)) add(m[1] ?? "", cwd);
 		return [...out];
 	}
