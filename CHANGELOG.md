@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.2
+### Fixed
+- The spawn guard did not see lettered sub-phases (`- [ ] P4a …`): a plan whose only open phases were `P4a`–`P4e` was refused with "no unticked phase left". Phase ids now include one trailing letter.
+
 ## 0.2.1
 ### Fixed
 - `neurastream queue migrate` resolved repo-relative lines of an old repo `INDEX.md` (`docs/plans/x.md`) against the current directory instead of that repo, so the main index got wrong plan paths. They now resolve against the repo.

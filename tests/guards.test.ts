@@ -351,6 +351,15 @@ test("spawn brief must name an unticked phase of the plan", () => {
 	expect(guardCli("spawn", { agent: "toy-worker", invocationKind: "task", brief: `Work ${PLAN} P2 now.` }).code).toBe(0);
 });
 
+test("spawn brief may name a lettered sub-phase (P4a) of the plan", () => {
+	fresh();
+	writeFileSync(PLAN, TOY_PLAN.replace("- [ ] P1 do the thing — verify: \`test -f src/a.ts\`", "- [x] P1 do the thing — verify: \`test -f src/a.ts\`\n- [ ] P2a do the next thing — verify: \`test -f src/a.ts\`\n- [ ] P2b then this — verify: \`test -f src/a.ts\`"));
+	const onlyTicked = guardCli("spawn", { agent: "toy-worker", invocationKind: "task", brief: `Work ${PLAN} P1 now.` });
+	expect(onlyTicked.code).toBe(2);
+	expect(onlyTicked.d.reason).toContain("P2a, P2b");
+	expect(guardCli("spawn", { agent: "toy-worker", invocationKind: "task", brief: `Work ${PLAN} P2a now.` }).code).toBe(0);
+});
+
 test("spawn brief that asks for research for a plan to be written is refused, quoting the owner rule", () => {
 	fresh();
 	for (const ask of ["Research the code under src/", "Investigate src/a.ts", "Find where src/a.ts is used", "Map the code under src/", "Read the code for src/a.ts"]) {

@@ -183,10 +183,10 @@ export function bypassRegExp(entry: string): RegExp {
 const RESEARCH_ASK = /\b(research|investigate|find where|map the code|read the code for)\b/i;
 const PLAN_WRITE = /\b(write|writing|draft|drafting|author)\b[^\n]*\bplan\b/i;
 
-// Phase ids (P1, P2 ...) in the plan's Phases section that are not ticked yet.
+// Phase ids (P1, P2, P4a ...) in the plan's Phases section that are not ticked yet.
 function unticked(p: Plan): string[] {
 	const phases = q.sections(p.text).get("phases") ?? "";
-	return [...phases.matchAll(/^\s*[-*]\s+\[ \]\s+(P\d+)\b/gm)].map(m => m[1]!);
+	return [...phases.matchAll(/^\s*[-*]\s+\[ \]\s+(P\d+[a-z]?)\b/gm)].map(m => m[1]!);
 }
 
 // Plans an implementer brief may run on; returns [reason, null] or [null, plan files].
