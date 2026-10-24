@@ -22,7 +22,7 @@ import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from
 import path from "node:path";
 import type { Decision, InjectEvent, PlanEditEvent, SpawnEvent, StopEvent, ToolEvent } from "./adapter.ts";
 import type { Config } from "./config.ts";
-import { openIncidents, type IncidentView } from "./incidents.ts";
+import { addIncident, openIncidents, type IncidentView } from "./incidents.ts";
 import * as q from "./queue/lib.ts";
 import type { Plan } from "./queue/lib.ts";
 
@@ -630,7 +630,28 @@ export function checkPlanEdit(e: PlanEditEvent, cfg: Config): Decision {
 			restore: { path: e.path, text: e.before },
 		};
 	}
+	recordFindings(e, cfg);
 	return ALLOW;
+}
+
+/**
+ * Each finding item of an allowed subagent edit becomes an incident (source "findings", kind
+ * "agent-finding", evidence = plan path + agent; the default fingerprint dedupes the same item
+ * text). A store failure is logged and swallowed: it must not break the verified edit.
+ */
+function recordFindings(e: PlanEditEvent, cfg: Config): void {
+	try {
+		const evidence = `${e.path} (${e.agent})`;
+		for (const block of newProgressEntries(e.before, e.after)) {
+			const value = findingsValue(block);
+			if (!value || /^none\.?$/i.test(value)) continue;
+			for (const item of value.split(";")) {
+				if (item.trim()) addIncident(cfg, { source: "findings", kind: "agent-finding", summary: item.trim(), evidence });
+			}
+		}
+	} catch (err) {
+		log(cfg.paths.plan_guard_log, `findings: cannot record incidents for ${e.path}: ${err}`);
+	}
 }
 
 /** One "## Progress" entry: its "- " line plus indented continuation lines (trimProgressBody's entry rule). */
