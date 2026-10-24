@@ -170,6 +170,8 @@ Guard rules around it:
 - A stop the guard blocks posts nothing; when Main continues and really hands back later, that later stop posts the final text. A subagent session never posts, and a relaunch (the launcher's rollover) posts nothing.
 - The post never delays the stop decision: it times out at 5 seconds per chunk, makes one attempt, and writes one guard-log line when a channel fails. Long replies are split per channel (Discord 2000, Slack 3000 characters) on line boundaries where possible.
 
+"Needs you" pings use the same channels so the owner learns on the phone that a decision is his: when a Main turn ends with an open plan whose `WAITING on owner:` line was not pinged before, neurastream posts `🔔 Needs you — <plan>: <question>` (with the `neurastream ui` phone-page link when `ui.enabled: true`), and when the guard refuses a Main tool call because it touches a protected guard file, it posts `🔓 Main needs an unlock to continue (<file>)` — the unlock ping at most once per 30 minutes, each waiting question once until its line changes or disappears, remembered in `<queue_state>/notify-waiting.json`. Every decision logs one `notify: needs-you posted|skipped (<why>)` guard-log line.
+
 ## Self-metrics
 
 `neurastream metrics report [--days N]` compares this window (the last `metrics.report_days`, default 7) with the one before it, writes `<paths.notes>/metrics.md`, and prints the same report. Worst change is marked `◀ worst`. The five numbers:
