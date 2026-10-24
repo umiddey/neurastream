@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.2.10
+### Fixed
+- The owner page answered 403 to the owner's own phone: the real `tailscale whois --json` reader parsed only the first stdout line (`{`) and looked for the login under `User` instead of `UserProfile`, so every peer's login was empty. It now parses the whole output and reads `UserProfile.LoginName`.
+
 ### Added
 - `neurastream ui on --login <tailscale login> [--port N]` and `neurastream ui off`: one command instead of the hand-rolled cp + systemctl recipe. `on` writes `ui.enabled: true` and `ui.owner_login` (and `ui.port` with `--port`) into the user config — line-based, every other line of the file kept byte-for-byte, nothing written if the edited file would not load — copies `templates/systemd/neurastream-ui.service` to `~/.config/systemd/user/neurastream-ui.service`, runs `systemctl --user daemon-reload`, `enable` and `restart`, and prints the phone link `http://<MagicDNS name>:<port>`; the login is checked against the tailnet's logins (new `logins()` Tailscale call, `tailscale status --json`) and a tailscale failure only prints a warning, never refuses. `off` runs `systemctl --user disable --now neurastream-ui` and sets `ui.enabled: false`, keeping `owner_login`. Both stay refused to agents like every `neurastream ui` command.
 
