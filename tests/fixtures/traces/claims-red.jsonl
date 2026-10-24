@@ -1,0 +1,4 @@
+{"type":"session","timestamp":"2026-10-25T09:00:00.000Z","id":"claims-red"}
+{"type":"message","timestamp":"2026-10-25T09:00:01.000Z","message":{"role":"assistant","model":"m1","provider":"p1","content":[{"type":"toolCall","id":"r1","name":"bash","arguments":{"command":"bun test"}}]}}
+{"type":"message","timestamp":"2026-10-25T09:00:02.000Z","message":{"role":"toolResult","toolCallId":"r1","toolName":"bash","isError":false,"content":[{"type":"text","text":"3 pass, 1 fail"}]}}
+{"type":"message","timestamp":"2026-10-25T09:00:03.000Z","message":{"role":"assistant","model":"m1","provider":"p1","content":[{"type":"text","text":"All green: 13 passed, exit 0."}]}}

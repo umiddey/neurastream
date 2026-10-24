@@ -8,6 +8,7 @@ import { runInit } from "./init.ts";
 import { PORTED, runMain, runPorted } from "./commands.ts";
 import { runMetrics } from "./metrics.ts";
 import { runIncident } from "./incident.ts";
+import { runTraces } from "./traces.ts";
 import { runUi } from "./ui.ts";
 import { runUninstall } from "../core/uninstall.ts";
 import { queueMigrate } from "../core/queue-migrate.ts";
@@ -61,6 +62,10 @@ export function helpText(): string {
 		"  neurastream main [args]       run omp under the launcher (automatic session rollover)",
 		"  neurastream metrics <cmd>     self-metrics: report, ci, false-alarm, rule (see README)",
 		"  neurastream incident <cmd>    incidents Main must act on: list, add, plan, dismiss (see README)",
+		"  neurastream traces claims <runId|--since 24h> [--json]",
+		"                                check a run's final-report claims (test counts, exit codes,",
+		"                                SHAs, heavy-run labels, changed paths) against the run's own",
+		"                                tool activity; unmatched ones print as claim-unbacked findings",
 		"  neurastream ui                serve the owner's phone page on the tailnet address (ui.enabled, ui.owner_login)",
 		"  neurastream ui on --login <tailscale login> [--port N]",
 		"                                one go: writes ui.enabled/owner_login (and port) into the config,",
@@ -86,6 +91,7 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 	if (cmd === "init") return runInit(args);
 	if (cmd === "metrics") return runMetrics(args);
 	if (cmd === "incident") return runIncident(args);
+	if (cmd === "traces") return runTraces(args);
 	if (cmd === "ui") return runUi(args);
 	if (cmd === "adapter") return runAdapterInstall(args);
 	if (cmd === "config") {

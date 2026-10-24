@@ -111,29 +111,29 @@ export function parseTraceFile(file: string, runId: string): TraceEvent[] {
 	return out;
 }
 
+/** Every run id with a trace under the root, each mapped to its newest file. */
+export function ompTraceRuns(root: string): { runId: string; file: string; mtimeSec: number }[] {
+	const newest: Record<string, { file: string; mtimeSec: number }> = {};
+	for (const file of [...jsonlAt(root, 1), ...jsonlAt(root, 2)]) {
+		let mt: number;
+		try {
+			mt = statSync(file).mtimeMs;
+		} catch {
+			continue;
+		}
+		const mtimeSec = mt / 1000;
+		const id = runIdOf(file);
+		const prev = newest[id];
+		if (!prev || mtimeSec > prev.mtimeSec) newest[id] = { file, mtimeSec };
+	}
+	return Object.entries(newest).map(([runId, v]) => ({ runId, file: v.file, mtimeSec: v.mtimeSec }));
+}
+
 /** TraceSource over a sessions root: dated main files at depth 1, subagent files at depth 2. */
 export function ompTraceSource(root: string): TraceSource {
-	function fileFor(runId: string): string | null {
-		let best: string | null = null;
-		let bestMt = -1;
-		for (const file of [...jsonlAt(root, 1), ...jsonlAt(root, 2)]) {
-			if (runIdOf(file) !== runId) continue;
-			let mt: number;
-			try {
-				mt = statSync(file).mtimeMs;
-			} catch {
-				continue;
-			}
-			if (mt > bestMt) {
-				best = file;
-				bestMt = mt;
-			}
-		}
-		return best;
-	}
 	return {
 		events(runId: string): TraceEvent[] {
-			const file = fileFor(runId);
+			const file = ompTraceRuns(root).find((r) => r.runId === runId)?.file;
 			return file ? parseTraceFile(file, runId) : [];
 		},
 	};

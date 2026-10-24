@@ -4,6 +4,8 @@
 // turns unmatched claims into findings. Evidence is capped at 160 chars and long token-like
 // runs are masked, so a claim line can never carry a secret into findings or logs.
 
+import type { TraceEvent } from "./adapter.ts";
+
 export type ClaimKind =
 	| "tests-passed"
 	| "tests-failed"
@@ -73,4 +75,82 @@ export function extractClaims(text: string): Claim[] {
 		}
 	}
 	return out;
+}
+
+// ---- P3 verifier: every claim must be backed by the same run's tool activity ----
+
+/** One claim's check result; backed verdicts carry where the proof was found. */
+export interface ClaimVerdict {
+	claim: Claim;
+	backed: boolean;
+	/** Where the proof came from, "" when unbacked. */
+	how: string;
+}
+
+/** Every string an args object carries (commands, paths, labels), joined for substring checks. */
+function argsText(args: Record<string, unknown> | undefined): string {
+	const parts: string[] = [];
+	const walk = (v: unknown): void => {
+		if (typeof v === "string") parts.push(v);
+		else if (Array.isArray(v)) for (const x of v) walk(x);
+		else if (v !== null && typeof v === "object") for (const x of Object.values(v as object)) walk(x);
+	};
+	walk(args ?? {});
+	return parts.join("\n");
+}
+
+/**
+ * The claims of one run, read from its last assistant text — the final report. Runs with no
+ * assistant text at all claim nothing.
+ */
+export function claimsFromEvents(events: TraceEvent[]): Claim[] {
+	for (let i = events.length - 1; i >= 0; i--) {
+		const e = events[i];
+		if (e?.kind === "assistantText" && e.text?.trim()) return extractClaims(e.text);
+	}
+	return [];
+}
+
+/**
+ * Checks each claim against the events of the same run:
+ *   tests-passed / tests-failed / exit — the same result line in some toolResult's output;
+ *   sha — printed in the output of a git command the run actually ran;
+ *   heavy-label — the label, quoted, in a heavy-run call the run actually made;
+ *   changed-path — carried by an edit/write tool call's arguments.
+ */
+export function verifyClaims(claims: Claim[], events: TraceEvent[]): ClaimVerdict[] {
+	const results = events.filter((e) => e.kind === "toolResult").map((e) => e.text ?? "");
+	const calls = events
+		.filter((e) => e.kind === "toolCall")
+		.map((e) => ({ tool: e.tool ?? "", args: argsText(e.args) }));
+	const hasGit = calls.some((c) => /\bgit\b/.test(c.args));
+	const verdict = (c: Claim): ClaimVerdict => {
+		const unbacked: ClaimVerdict = { claim: c, backed: false, how: "" };
+		switch (c.kind) {
+			case "tests-passed":
+			case "tests-failed": {
+				const word = c.kind === "tests-passed" ? "pass" : "fail";
+				if (results.some((t) => new RegExp(`\\b${c.count}\\s+${word}(?:ed)?\\b`, "i").test(t)))
+					return { claim: c, backed: true, how: "count in a toolResult" };
+				return unbacked;
+			}
+			case "exit":
+				if (results.some((t) => new RegExp(`\\bexit(?:\\s+code)?\\s*[:=]?\\s*${c.count}\\b`, "i").test(t)))
+					return { claim: c, backed: true, how: "exit line in a toolResult" };
+				return unbacked;
+			case "sha":
+				if (hasGit && results.some((t) => t.includes(c.value ?? "\u0000")))
+					return { claim: c, backed: true, how: "in a git command's output" };
+				return unbacked;
+			case "heavy-label":
+				if (calls.some((c2) => c2.args.includes("heavy-run") && c2.args.includes(`"${c.value}"`)))
+					return { claim: c, backed: true, how: "label in a heavy-run call" };
+				return unbacked;
+			case "changed-path":
+				if (calls.some((c2) => /edit|write/i.test(c2.tool) && c2.args.includes(c.value ?? "\u0000")))
+					return { claim: c, backed: true, how: "path in an edit/write call" };
+				return unbacked;
+		}
+	};
+	return claims.map(verdict);
 }

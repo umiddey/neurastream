@@ -3,8 +3,17 @@
 // heavy-run labels, changed paths; plus evidence masking of long token-like runs and the
 // 160-char evidence cap so a claim can never carry a secret forward.
 
-import { describe, expect, test } from "bun:test";
-import { extractClaims, maskEvidence } from "../src/core/trace-claims.ts";
+import { afterAll, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import type { TraceEvent } from "../src/core/adapter.ts";
+import type { Config } from "../src/core/config.ts";
+import { loadConfig } from "../src/core/config.ts";
+import { parseTraceFile } from "../src/adapters/omp/traces.ts";
+import { claimUnbacked, runDetectors } from "../src/core/incident-detectors.ts";
+import { claimsFromEvents, extractClaims, maskEvidence, verifyClaims } from "../src/core/trace-claims.ts";
+import type { Claim } from "../src/core/trace-claims.ts";
 
 describe("test result lines", () => {
 	test("passed and failed counts with evidence", () => {
@@ -91,3 +100,124 @@ test("maskEvidence masks and caps on its own", () => {
 test("empty text: no claims", () => {
 	expect(extractClaims("")).toEqual([]);
 });
+
+// ---- P3 verifier: claims checked against the same run's tool activity ----
+
+const REPO = dirname(dirname(import.meta.path));
+const FIX = join(REPO, "tests", "fixtures", "traces");
+const redEvents = parseTraceFile(join(FIX, "claims-red.jsonl"), "claims-red");
+const redClaims = claimsFromEvents(redEvents);
+const greenEvents = parseTraceFile(join(FIX, "claims-green.jsonl"), "claims-green");
+const greenClaims = claimsFromEvents(greenEvents);
+
+const TMP_ROOTS: string[] = [];
+afterAll(() => {
+	for (const dir of TMP_ROOTS) rmSync(dir, { recursive: true, force: true });
+});
+
+const NOW = 1_760_000_000;
+let n = 0;
+function cfg(): Config {
+	const root = mkdtempSync(join(tmpdir(), "ns-claims-"));
+	TMP_ROOTS.push(root);
+	const home = join(root, `home-${++n}`);
+	const queueState = join(home, ".local/state/queue");
+	mkdirSync(join(home, ".config/neurastream"), { recursive: true });
+	mkdirSync(queueState, { recursive: true });
+	writeFileSync(
+		join(home, ".config/neurastream/config.yml"),
+		`paths:
+  home: "${home}"
+  queue_state: "${queueState}"
+  guard_log: "${join(home, "main-guard.log")}"
+  plan_guard_log: "${join(home, "plan-guard.log")}"
+`,
+	);
+	return loadConfig({ home, env: {} });
+}
+
+test("red fixture: the fake '13 passed' and 'exit 0' claims have no tool output behind them", () => {
+	expect(redEvents.length).toBeGreaterThan(0);
+	expect(redClaims).toContainEqual(expect.objectContaining({ kind: "tests-passed", count: 13 }));
+	const unbacked = verifyClaims(redClaims, redEvents).filter((v) => !v.backed);
+	expect(unbacked.map((v) => v.claim.kind).sort()).toEqual(["exit", "tests-passed"]);
+});
+
+test("red fixture: unbacked claims become claim-unbacked findings via the detector", () => {
+	const findings = claimUnbacked(redClaims, redEvents);
+	expect(findings).toHaveLength(2);
+	expect(findings.every((f) => f.kind === "claim-unbacked")).toBe(true);
+	expect(findings.some((f) => f.summary.includes("tests-passed 13"))).toBe(true);
+	expect(findings.every((f) => (f.evidence ?? "").length <= 160)).toBe(true);
+	expect(findings.every((f) => typeof f.fingerprint === "string" && f.fingerprint.length > 0)).toBe(true);
+});
+
+test("green fixture: every claim is backed by the run's own tool activity", () => {
+	expect(greenClaims.length).toBeGreaterThanOrEqual(5);
+	expect(verifyClaims(greenClaims, greenEvents).every((v) => v.backed)).toBe(true);
+	expect(claimUnbacked(greenClaims, greenEvents)).toEqual([]);
+});
+
+test("runDetectors folds claim-unbacked when given claims and events", () => {
+	const views = runDetectors(cfg(), { claims: redClaims, events: redEvents }, NOW);
+	expect(views.filter((v) => v.kind === "claim-unbacked")).toHaveLength(2);
+});
+
+function callEv(tool: string, args: Record<string, unknown>): TraceEvent {
+	return { kind: "toolCall", ts: 1, runId: "r", tool, args };
+}
+
+function resultEv(text: string): TraceEvent {
+	return { kind: "toolResult", ts: 2, runId: "r", tool: "bash", isError: false, text };
+}
+
+test("counts and exit codes are backed by any toolResult line showing them", () => {
+	const evs = [callEv("bash", { command: "bun test" }), resultEv("530 passed, 0 failed"), resultEv("heavy job exit 0")];
+	const cs: Claim[] = [
+		{ kind: "tests-passed", count: 530, evidence: "x" },
+		{ kind: "tests-failed", count: 0, evidence: "x" },
+		{ kind: "exit", count: 0, evidence: "x" },
+		{ kind: "tests-passed", count: 13, evidence: "x" },
+	];
+	expect(verifyClaims(cs, evs).map((v) => v.backed)).toEqual([true, true, true, false]);
+});
+
+test("a sha is backed only by the output of a git command the run actually ran", () => {
+	const claim: Claim = { kind: "sha", value: "abc12d4", evidence: "x" };
+	const noGit = [callEv("bash", { command: "bun test" }), resultEv("landed abc12d4")];
+	const withGit = [callEv("bash", { command: "git log --oneline" }), resultEv("abc12d4 demo commit")];
+	expect(verifyClaims([claim], noGit)[0]!.backed).toBe(false);
+	expect(verifyClaims([claim], withGit)[0]!.backed).toBe(true);
+});
+
+test("a changed path is backed only by an edit/write call carrying it", () => {
+	const claim: Claim = { kind: "changed-path", value: "src/a.ts", evidence: "x" };
+	expect(verifyClaims([claim], [callEv("bash", { command: "touch src/a.ts" })])[0]!.backed).toBe(false);
+	expect(verifyClaims([claim], [callEv("edit", { path: "src/a.ts" })])[0]!.backed).toBe(true);
+	expect(verifyClaims([claim], [callEv("write", { file_path: "src/a.ts" })])[0]!.backed).toBe(true);
+});
+
+test("a heavy-run label is backed only by a heavy-run call quoting it", () => {
+	const claim: Claim = { kind: "heavy-label", value: "traces p3", evidence: "x" };
+	const other = [callEv("bash", { command: 'heavy-run.sh NsX "other label" -- bun test' })];
+	const same = [callEv("bash", { command: 'heavy-run.sh NsX "traces p3" -- bun test' })];
+	expect(verifyClaims([claim], other)[0]!.backed).toBe(false);
+	expect(verifyClaims([claim], same)[0]!.backed).toBe(true);
+});
+
+test("claimsFromEvents reads only the last assistant text (the final report)", () => {
+	const evs: TraceEvent[] = [
+		{ kind: "assistantText", ts: 1, runId: "r", text: "early: 99 passed" },
+		resultEv("2 pass, 0 fail"),
+		{ kind: "assistantText", ts: 3, runId: "r", text: "Done: 2 passed." },
+	];
+	const cs = claimsFromEvents(evs);
+	expect(cs).toContainEqual(expect.objectContaining({ kind: "tests-passed", count: 2 }));
+	expect(cs.some((c) => c.count === 99)).toBe(false);
+});
+
+test("claimsFromEvents on a run without assistant text: no claims", () => {
+	expect(claimsFromEvents([resultEv("2 pass")])).toEqual([]);
+});
+
+
