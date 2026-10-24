@@ -19,6 +19,7 @@ import { checkTool } from "../src/core/guards.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { createOmpAdapter, ownerInboxCursorPath, type ExtensionHost } from "../src/adapters/omp/index.ts";
 import { inboxPath, startOwnerUi, type OwnerUiOptions, type OwnerUiServer } from "../src/core/owner-ui.ts";
+import { runUi } from "../src/cli/ui.ts";
 import { stateDirPath, unlockPath } from "../src/core/queue/lib.ts";
 import type { Tailscale } from "../src/core/tailscale.ts";
 
@@ -600,4 +601,23 @@ test("guards refuse agent shell commands that start the owner page", () => {
 	expect(denies("grep neurastream ui notes.md")).toBe(false);
 	// The refusal is logged plan-guard style.
 	expect(planGuardLogLines().some(l => l.includes("ui-start"))).toBe(true);
+});
+
+// --- CLI: `neurastream ui` keeps serving (the 0.2.8 unit exited 0 after 90 ms) ---
+
+test("runUi never resolves once the page is started, so the CLI does not exit and kill the server", async () => {
+	let started = 0;
+	const served = runUi({ cfg: CFG, start: () => (started++, { stop() {}, hostname: "127.0.0.1", port: 0 }) });
+	// An async runUi that returns a code is already settled here, so its .then is queued ahead of
+	// the second racer; one that never resolves loses to it. No clock involved.
+	const winner = await Promise.race([served.then(code => `exited ${code}`), Promise.resolve().then(() => "still serving")]);
+	expect(started).toBe(1);
+	expect(winner).toBe("still serving");
+});
+
+test("runUi refuses with exit 1 and starts nothing when the page is off", async () => {
+	let started = 0;
+	const code = await runUi({ cfg: { ...CFG, ui: { ...CFG.ui, enabled: false } }, start: () => (started++, { stop() {}, hostname: "", port: 0 }) });
+	expect(code).toBe(1);
+	expect(started).toBe(0);
 });
