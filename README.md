@@ -119,6 +119,46 @@ In both modes:
 - The previous session file stays where it is.
 - `rollover.enabled: false` turns the feature off.
 
+## Notify the owner
+
+When Main's turn ends and the session stop hands back to the owner, neurastream posts Main's final reply to the configured chat channels — deterministic code in the adapter, no model call, no tokens, never forgotten. Discord, Slack, both, or neither: notify is off until a webhook file exists.
+
+The webhook URL is a secret (anyone holding it can post as the bot), so it never goes into `config.yml`. The config holds the file's path only (`docs/config.md`):
+
+```yaml
+notify:
+  discord_webhook_file: "~/.config/neurastream/secrets/discord-webhook"   # "" = off
+  slack_webhook_file: "~/.config/neurastream/secrets/slack-webhook"       # "" = off
+  prefix: ""                 # optional label prepended to each post, e.g. "Main:"
+```
+
+Set a channel up:
+
+- Discord: Server Settings → Integrations → Webhooks → New Webhook → copy the URL.
+- Slack: add the "Incoming Webhooks" app to your workspace → copy the webhook URL for your channel.
+
+Then write the URL into its secret file — as the owner, in a terminal (the guard refuses agents; the examples show the path, never a URL):
+
+```sh
+umask 077
+mkdir -p ~/.config/neurastream/secrets
+printf '%s' '<url>' > ~/.config/neurastream/secrets/discord-webhook
+chmod 600 ~/.config/neurastream/secrets/discord-webhook
+```
+
+Repeat for `slack-webhook`, then check:
+
+```sh
+neurastream doctor        # problems: a loose file mode, a raw URL in config.yml, a secret next to config.yml; warning: a missing file
+neurastream notify test   # posts one line to every configured channel; exit 1 when one fails
+```
+
+Guard rules around it:
+
+- No agent (Main included) can read a configured secret file, list its directory, or glob over it — unlock or not. Writes to the secret files and to `~/.config/neurastream/config.yml` need the owner's unlock like any guard file.
+- A stop the guard blocks posts nothing; when Main continues and really hands back later, that later stop posts the final text. A subagent session never posts, and a relaunch (the launcher's rollover) posts nothing.
+- The post never delays the stop decision: it times out at 5 seconds per chunk, makes one attempt, and writes one guard-log line when a channel fails. Long replies are split per channel (Discord 2000, Slack 3000 characters) on line boundaries where possible.
+
 ## Self-metrics
 
 `neurastream metrics report [--days N]` compares this window (the last `metrics.report_days`, default 7) with the one before it, writes `<paths.notes>/metrics.md`, and prints the same report. Worst change is marked `◀ worst`. The five numbers:
