@@ -2,7 +2,7 @@
 // session starts a fresh run whose only argument is the handoff. A fake harness script stands in
 // for omp; the real omp is never run. Sandbox home, like tests/rollover-omp.test.ts.
 
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, expect, spyOn, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -193,4 +193,132 @@ test("a main-start failure does not stop the relaunch: the note still reaches th
 	expect(handoff).toContain("main-start failed during the rollover (ENOENT: no such file or directory, open '/proc/loadavg'); run main-start yourself.");
 	expect(code).toBe(7);
 	expect(readFileSync(cfg.paths.guard_log, "utf8")).toContain("rollover: main-start failed: ENOENT");
+}, 60_000);
+
+const HANDOFF_LINE = "neurastream: starting a new session from the handoff (collecting state, about a minute)…";
+
+/** A gated main-start: `entered` resolves when the launcher is inside nextMessage, `release` lets it finish. */
+function gatedMainStart(): { mainStart: LaunchOptions["mainStart"]; entered: Promise<void>; release: () => void } {
+	const { promise: entered, resolve: seen } = Promise.withResolvers<void>();
+	const { promise: gate, resolve: release } = Promise.withResolvers<void>();
+	const mainStart: LaunchOptions["mainStart"] = async () => {
+		seen();
+		await gate;
+		return "=== gated generated state";
+	};
+	return { mainStart, entered, release };
+}
+
+test("the launcher says what it is doing before building the handoff", async () => {
+	const dir = newCase();
+	const errs = spyOn(console, "error");
+	let lines: string[] = [];
+	let code: number;
+	try {
+		code = await launch(["--model", "m", "hi"], dir);
+		lines = errs.mock.calls.map(call => call.map(String).join(" "));
+	} finally {
+		errs.mockRestore();
+	}
+	expect(code).toBe(7);
+	expect(lines.filter(l => l.includes(HANDOFF_LINE))).toHaveLength(1);
+}, 60_000);
+
+test("a kill during main-start leaves the request: it is removed only after the message is built", async () => {
+	const dir = newCase();
+	const { mainStart, entered, release } = gatedMainStart();
+	const run = launch([], dir, {}, { mainStart });
+	await entered;
+	// The live incident: a kill while main-start collects state must not cost the owner's messages.
+	expect(existsSync(relaunchPath())).toBe(true);
+	release();
+	expect(await run).toBe(7);
+	expect(existsSync(relaunchPath())).toBe(false);
+}, 60_000);
+
+test("the handover path also keeps the request until the message is built", async () => {
+	const dir = newCase();
+	mkdirSync(dirname(relaunchPath()), { recursive: true });
+	writeFileSync(NOTE, "Note: continue the parser work; the next step is the tests.");
+	writeFileSync(relaunchPath(), JSON.stringify({ previousSessionFile: SESSION_FILE, notePath: NOTE, draft: "d" }));
+	writeFileSync(join(dir, "mark"), ""); // the run itself writes no new request
+	const { mainStart, entered, release } = gatedMainStart();
+	const before = process.env.NEURASTREAM_RELAUNCH_SINCE;
+	process.env.NEURASTREAM_RELAUNCH_SINCE = String(Date.now() - 60_000);
+	const run = launch([], dir, {}, { mainStart }).finally(() => {
+		if (before === undefined) delete process.env.NEURASTREAM_RELAUNCH_SINCE;
+		else process.env.NEURASTREAM_RELAUNCH_SINCE = before;
+	});
+	await entered;
+	expect(existsSync(relaunchPath())).toBe(true);
+	release();
+	expect(await run).toBe(7);
+	expect(existsSync(relaunchPath())).toBe(false);
+}, 60_000);
+
+test("a fresh launcher with no message continues an interrupted rollover from the request", async () => {
+	const dir = newCase();
+	mkdirSync(dirname(NOTE), { recursive: true });
+	writeFileSync(NOTE, "Note: continue the parser work; the next step is the tests.");
+	writeFileSync(relaunchPath(), JSON.stringify({ previousSessionFile: SESSION_FILE, notePath: NOTE, draft: "typed earlier" }));
+	writeFileSync(join(dir, "mark"), ""); // the run itself writes no new request
+	const errs = spyOn(console, "error");
+	let lines: string[] = [];
+	let code: number;
+	try {
+		code = await launch(["--model", "m"], dir);
+		lines = errs.mock.calls.map(call => call.map(String).join(" "));
+	} finally {
+		errs.mockRestore();
+	}
+	const runs = runsOf(dir);
+	expect(runs.length).toBe(1);
+	expect(runs[0]?.flag).toBe("1");
+	expect(runs[0]?.argv[0]).toBe("--model");
+	const message = String(runs[0]?.argv.at(-1));
+	expect(message).toContain("Note: continue the parser work");
+	expect(message).toContain("Owner's messages during the rollover (and any unsent draft): typed earlier");
+	expect(lines.some(l => l.includes(`neurastream: continuing the interrupted rollover from ${SESSION_FILE}`))).toBe(true);
+	expect(lines.filter(l => l.includes(HANDOFF_LINE))).toHaveLength(1);
+	expect(existsSync(relaunchPath())).toBe(false);
+	expect(code).toBe(7);
+}, 60_000);
+
+test("an interrupted rollover older than an hour is left alone: the run starts plain", async () => {
+	const dir = newCase();
+	mkdirSync(dirname(NOTE), { recursive: true });
+	writeFileSync(NOTE, "Note: stale");
+	writeFileSync(relaunchPath(), JSON.stringify({ previousSessionFile: SESSION_FILE, notePath: NOTE, draft: "" }));
+	const old = (Date.now() - 2 * 3_600_000) / 1000;
+	utimesSync(relaunchPath(), old, old);
+	writeFileSync(join(dir, "mark"), "");
+	const code = await launch([], dir);
+	expect(runsOf(dir)[0]?.argv).toEqual([]);
+	expect(existsSync(relaunchPath())).toBe(true);
+	expect(code).toBe(7);
+}, 60_000);
+
+test("an unreadable interrupted request is left alone: the run starts plain", async () => {
+	const dir = newCase();
+	writeFileSync(relaunchPath(), "{not json");
+	writeFileSync(join(dir, "mark"), "");
+	const code = await launch([], dir);
+	expect(runsOf(dir)[0]?.argv).toEqual([]);
+	expect(existsSync(relaunchPath())).toBe(true);
+	expect(code).toBe(7);
+});
+
+test("a fresh launcher with a positional message does not continue an interrupted rollover", async () => {
+	const dir = newCase();
+	mkdirSync(dirname(NOTE), { recursive: true });
+	writeFileSync(NOTE, "Note: x");
+	writeFileSync(relaunchPath(), JSON.stringify({ previousSessionFile: SESSION_FILE, notePath: NOTE, draft: "" }));
+	// Older than the run's start: the in-loop read must not pick it up and consume it.
+	const past = (Date.now() - 5_000) / 1000;
+	utimesSync(relaunchPath(), past, past);
+	writeFileSync(join(dir, "mark"), "");
+	const code = await launch(["hello"], dir);
+	expect(runsOf(dir)[0]?.argv).toEqual(["hello"]);
+	expect(existsSync(relaunchPath())).toBe(true);
+	expect(code).toBe(7);
 }, 60_000);

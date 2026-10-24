@@ -10,7 +10,7 @@ import type { Config } from "../../core/config.ts";
 import { mainStartText } from "../../core/main-start.ts";
 import { applyQueueEnv } from "../../core/queue/env.ts";
 import * as q from "../../core/queue/lib.ts";
-import { buildHandoff, holdsBlock, OWNER_AWAY, relaunchPath } from "../../core/rollover.ts";
+import { buildHandoff, holdsBlock, MAX_NOTE_AGE_MS, OWNER_AWAY, relaunchPath } from "../../core/rollover.ts";
 import { adapterLog } from "./index.ts";
 import { PACKAGE_ROOT, packageJsonPath, packageVersion } from "./package-root.ts";
 import { defaultCompletedResults, defaultRunSource } from "./sessions.ts";
@@ -68,6 +68,22 @@ export function carriedArgs(args: string[]): string[] {
 /** Handoffs up to this many bytes go in the first message; larger ones go to a file. */
 const MAX_INLINE_HANDOFF = 100_000;
 
+/** Printed before the launcher builds a handoff: main-start collects state, which takes about a minute. */
+const HANDOFF_PENDING_LINE = "neurastream: starting a new session from the handoff (collecting state, about a minute)…";
+
+/** Whether `args` carry a positional (the first message): flags with their values do not count. */
+function hasPositional(args: string[]): boolean {
+	for (let i = 0; i < args.length; i++) {
+		const arg = args[i] ?? "";
+		if (arg === "--") return true;
+		if (!arg.startsWith("-")) return true;
+		const eq = arg.indexOf("=");
+		const flag = eq === -1 ? arg : arg.slice(0, eq);
+		if (eq === -1 && takesValue(flag, args[i + 1])) i++;
+	}
+	return false;
+}
+
 export interface LaunchOptions {
 	harness?: string;
 	/** The main-start text generator for the handoff (default: src/core/main-start.ts). Tests inject a failing one. */
@@ -100,14 +116,30 @@ export async function runMainLauncher(args: string[], cfg: Config, opts: LaunchO
 	if (Number.isFinite(since)) {
 		const req = readRequest(since, cfg);
 		if (req !== null) {
-			rmSync(relaunchPath(), { force: true });
+			console.error(HANDOFF_PENDING_LINE);
 			const message = await nextMessage(req, cfg, mainStart);
 			if (message === null) return 1;
+			// The request is removed only once its message exists: a kill during main-start
+			// (I-20261024-4) must leave it for the next launcher to continue.
+			rmSync(relaunchPath(), { force: true });
 			runArgs = [...carried, message];
+		}
+	} else if (!hasPositional(args)) {
+		// A fresh start with no message of its own continues a rollover a killed launcher left
+		// behind: the request counts while it is at most MAX_NOTE_AGE_MS old, like a note. An
+		// older or unreadable one is left alone.
+		const req = readRequest(Date.now() - MAX_NOTE_AGE_MS, cfg);
+		if (req !== null) {
+			console.error(`neurastream: continuing the interrupted rollover from ${req.previousSessionFile}`);
+			console.error(HANDOFF_PENDING_LINE);
+			const message = await nextMessage(req, cfg, mainStart);
+			if (message !== null) {
+				rmSync(relaunchPath(), { force: true });
+				runArgs = [...carried, message];
+			}
 		}
 	}
 	for (;;) {
-		rmSync(relaunchPath(), { force: true });
 		const started = Date.now();
 		const code = await runChild(harness, runArgs, { ...process.env, NEURASTREAM_MAIN_LAUNCHER: "1" });
 		const req = readRequest(started, cfg);
@@ -121,9 +153,10 @@ export async function runMainLauncher(args: string[], cfg: Config, opts: LaunchO
 				NEURASTREAM_RELAUNCH_SINCE: String(started),
 			});
 		}
-		rmSync(relaunchPath(), { force: true });
+		console.error(HANDOFF_PENDING_LINE);
 		const message = await nextMessage(req, cfg, mainStart);
 		if (message === null) return code;
+		rmSync(relaunchPath(), { force: true });
 		runArgs = [...carried, message];
 	}
 }
