@@ -9,7 +9,7 @@ export interface Tailscale {
 	ip4(): string | null;
 	/** This machine's MagicDNS name (`Self.DNSName` of `tailscale status --self --json`), trailing dot stripped, or null on failure. */
 	dnsName(): string | null;
-	/** The login that owns the peer address (`User.LoginName` of `tailscale whois --json <peer>`), or null on failure. */
+	/** The login that owns the peer address (`UserProfile.LoginName` of `tailscale whois --json <peer>`), or null on failure. */
 	whois(peer: string): string | null;
 	/** Every `User[*].LoginName` of `tailscale status --json`, or null when tailscale fails or the answer is unreadable — callers then skip their login check with a printed warning, never refuse on a tailscale failure. */
 	logins(): string[] | null;
@@ -20,6 +20,17 @@ function firstStdoutLine(args: string[]): string | null {
 	if (r.error || r.status !== 0) return null;
 	const line = (r.stdout ?? "").split("\n").map(l => l.trim()).filter(Boolean)[0];
 	return line || null;
+}
+
+/** The login in `tailscale whois --json` output: multi-line JSON with the login at `UserProfile.LoginName`. Null when absent or unparseable. */
+export function parseWhoisLogin(stdout: string): string | null {
+	try {
+		const parsed = JSON.parse(stdout) as { UserProfile?: { LoginName?: unknown } };
+		const login = parsed.UserProfile?.LoginName;
+		return typeof login === "string" && login ? login : null;
+	} catch {
+		return null;
+	}
 }
 
 export const realTailscale: Tailscale = {
@@ -38,15 +49,9 @@ export const realTailscale: Tailscale = {
 		}
 	},
 	whois(peer) {
-		const line = firstStdoutLine(["whois", "--json", peer]);
-		if (!line) return null;
-		try {
-			const parsed = JSON.parse(line) as { User?: { LoginName?: unknown } };
-			const login = parsed.User?.LoginName;
-			return typeof login === "string" && login ? login : null;
-		} catch {
-			return null;
-		}
+		const r = spawnSync("tailscale", ["whois", "--json", peer], { encoding: "utf8", timeout: 8000 });
+		if (r.error || r.status !== 0) return null;
+		return parseWhoisLogin(r.stdout ?? "");
 	},
 	logins() {
 		try {
