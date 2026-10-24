@@ -8,6 +8,8 @@ import { initHome } from "../src/cli/init.ts";
 const HOME = "/tmp/neurastream-home-doctor";
 const REPO = join(import.meta.dir, "..");
 const CLI = join(REPO, "src/cli/main.ts");
+// The live session exports QUEUE_* paths (QUEUE_INDEX ...); drop them so install and doctor use HOME only.
+for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
 
 afterAll(() => {
 	rmSync(HOME, { recursive: true, force: true });
