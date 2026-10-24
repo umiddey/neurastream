@@ -114,6 +114,7 @@ function reset(): void {
 	delete process.env.NEURASTREAM_MAIN_LAUNCHER;
 	rmSync(GUARD_LOG, { force: true });
 	rmSync(notePath(SESSION_ID), { force: true });
+	rmSync(join(QUEUE_STATE, "notify-waiting.json"), { force: true });
 	writeSession("");
 	seedSecrets();
 }
@@ -523,4 +524,112 @@ test("handback (h): a willContinue agent_end with no pending async job posts not
 	await expectNoMore(() => discordHits.length, 0);
 	await expectNoMore(() => slackHits.length, 0);
 	expect(notifyLogLines().filter(l => l.includes("notify: skipped (no pending job, agent_end)")).length).toBe(1);
+});
+
+// --- plan 20261025_0130 P3b: "Needs you" pings ---
+
+const WAIT_PLAN = join(TMP, "docs/plans/20261025_waiting.md");
+const WAIT_TEXT = `# Waiting toy
+
+## Goal
+- needs-you toy
+
+## Phases
+- [ ] P1 not done
+
+## Progress
+Status: open
+WAITING on owner: choose A or B
+`;
+
+const needsYouLines = (): string[] => notifyLogLines().filter(l => l.includes("notify: needs-you"));
+
+function listWaitPlan(): void {
+	writeFileSync(WAIT_PLAN, WAIT_TEXT);
+	writeFileSync(INDEX, `${WAIT_PLAN}\n`);
+}
+
+test("needs-you (1): a new WAITING line posts one ping with the plan and the question", async () => {
+	reset();
+	listWaitPlan();
+	const host = adapterWith(stopCfg(bothCfg()));
+	const ctx = ctxFor("main");
+	await host.emit("agent_end", {}, ctx);
+	await until(() => discordHits.length === 1 && slackHits.length === 1);
+	expect(discordHits[0]?.text).toContain("🔔 Needs you — Waiting toy: choose A or B.");
+	// ui is off in this config: no phone-page link.
+	expect(discordHits[0]?.text).not.toContain("http");
+	expect(needsYouLines().filter(l => l.includes("notify: needs-you posted (waiting:)")).length).toBe(1);
+});
+
+test("needs-you (2): the same WAITING line on the next turn posts nothing", async () => {
+	reset();
+	listWaitPlan();
+	const host = adapterWith(stopCfg(bothCfg()));
+	const ctx = ctxFor("main");
+	await host.emit("agent_end", {}, ctx);
+	await until(() => discordHits.length === 1 && slackHits.length === 1);
+	await host.emit("agent_end", {}, ctx);
+	await expectNoMore(() => discordHits.length, 1);
+	await expectNoMore(() => slackHits.length, 1);
+	expect(needsYouLines().filter(l => l.includes("notify: needs-you skipped (no new waiting lines)")).length).toBe(1);
+});
+
+test("needs-you (3): the WAITING line removed then re-added posts again", async () => {
+	reset();
+	listWaitPlan();
+	const host = adapterWith(stopCfg(bothCfg()));
+	const ctx = ctxFor("main");
+	await host.emit("agent_end", {}, ctx);
+	await until(() => discordHits.length === 1 && slackHits.length === 1);
+	writeFileSync(INDEX, "");
+	await host.emit("agent_end", {}, ctx);
+	writeFileSync(INDEX, `${WAIT_PLAN}\n`);
+	await host.emit("agent_end", {}, ctx);
+	await until(() => discordHits.length === 2 && slackHits.length === 2);
+	expect(discordHits[1]?.text).toContain("🔔 Needs you — Waiting toy: choose A or B.");
+	expect(needsYouLines().filter(l => l.includes("notify: needs-you posted (waiting:)")).length).toBe(2);
+});
+
+test("needs-you (4): a protected-file refusal pings for an unlock once per 30 min", async () => {
+	reset();
+	const host = adapterWith(stopCfg(bothCfg()));
+	const ctx = ctxFor("main");
+	const call = (): Record<string, unknown> => ({ toolName: "write", input: { path: join(QUEUE_STATE, "x.txt") }, toolCallId: "t1" });
+	const first = await host.emit("tool_call", call(), ctx);
+	expect(String((first[0] as Record<string, unknown>).reason)).toContain("is a protected guard file");
+	await until(() => discordHits.length === 1 && slackHits.length === 1);
+	expect(discordHits[0]?.text).toContain('🔓 Main needs an unlock to continue (x.txt). Tap "unlock 15" on the phone page.');
+	expect(needsYouLines().filter(l => l.includes("notify: needs-you posted (protected-file refusal)")).length).toBe(1);
+	await host.emit("tool_call", call(), ctx);
+	await expectNoMore(() => discordHits.length, 1);
+	expect(needsYouLines().filter(l => l.includes("notify: needs-you skipped (unlock ping sent recently)")).length).toBe(1);
+});
+
+test("needs-you (5): a subagent session never pings", async () => {
+	reset();
+	listWaitPlan();
+	const host = adapterWith(stopCfg(bothCfg()));
+	await host.emit("agent_end", {}, ctxFor("main"));
+	await until(() => discordHits.length === 1 && slackHits.length === 1);
+	discordHits.length = 0;
+	slackHits.length = 0;
+	await host.emit("agent_end", {}, ctxFor("sub", [{ label: "bg-1" }]));
+	await expectNoMore(() => discordHits.length, 0);
+	await expectNoMore(() => slackHits.length, 0);
+	expect(needsYouLines().filter(l => l.includes("notify: needs-you posted")).length).toBe(1);
+});
+
+test("needs-you (6): notify off pings nothing and does not throw", async () => {
+	reset();
+	listWaitPlan();
+	const host = adapterWith(
+		writeConfig(`  discord_webhook_file: ""
+  slack_webhook_file: ""`),
+	);
+	const ctx = ctxFor("main");
+	await host.emit("agent_end", {}, ctx);
+	await expectNoMore(() => discordHits.length, 0);
+	await expectNoMore(() => slackHits.length, 0);
+	expect(needsYouLines().filter(l => l.includes("notify: needs-you skipped (notify off, waiting:)")).length).toBe(1);
 });
