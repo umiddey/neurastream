@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+### Fixed
+- Tapping unlock or lock on the owner page did not tell Main; the owner had to say it in chat. The page now writes an `unlock`/`lock` record to the owner inbox, and Main gets it as a user message ("Owner unlocked the guards from the phone page for 5 min (until 01:12)…"). The inbox also understands a `reorder` record for the coming drag-and-drop queue.
+
 ## 0.2.10
 ### Fixed
 - The owner page answered 403 to the owner's own phone: the real `tailscale whois --json` reader parsed only the first stdout line (`{`) and looked for the login under `User` instead of `UserProfile`, so every peer's login was empty. It now parses the whole output and reads `UserProfile.LoginName`.

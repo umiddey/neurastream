@@ -20,7 +20,7 @@ import { appendFileSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, 
 import { basename, dirname, join } from "node:path";
 import type { Decision } from "../../core/adapter.ts";
 import { loadConfig, type Config } from "../../core/config.ts";
-import { nowSec } from "../../core/clock.ts";
+import { nowSec, strftime } from "../../core/clock.ts";
 import { runDetectorsGated } from "../../core/incident-detectors.ts";
 import { checkInject, checkPlanEdit, checkStop, checkTool, MAIN_PLAN_FILE, recordMainResult, revertMainEdit, rekeySpawnFile } from "../../core/guards.ts";
 import { postReply } from "../../core/notify.ts";
@@ -291,13 +291,37 @@ function writeOwnerInboxCursor(n: number): void {
 	} catch {}
 }
 
-/** The user message one inbox record becomes, or null when it is not a page answer. */
+/** The user message one inbox record becomes, or null when the record is not one Main can act on.
+ * Records without `kind` are page answers (the original shape). */
 export function ownerInboxMessage(rec: Record<string, unknown>): string | null {
-	const plan = asString(rec.plan);
-	const question = asString(rec.question);
-	const answer = asString(rec.answer);
-	if (!plan || !question || !answer) return null;
-	return `Owner answered on the phone page — ${basename(plan)}: ${question} → ${answer}`;
+	const kind = rec.kind === undefined ? "answer" : asString(rec.kind);
+	const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
+	switch (kind) {
+		case "answer": {
+			const plan = asString(rec.plan);
+			const question = asString(rec.question);
+			const answer = asString(rec.answer);
+			if (!plan || !question || !answer) return null;
+			return `Owner answered on the phone page — ${basename(plan)}: ${question} → ${answer}`;
+		}
+		case "unlock": {
+			const minutes = num(rec.minutes);
+			const until = num(rec.until);
+			if (minutes === null || until === null) return null;
+			return `Owner unlocked the guards from the phone page for ${minutes} min (until ${strftime(until, "%H:%M")}). Do the step that waited on the unlock now.`;
+		}
+		case "lock":
+			return "Owner locked the guards from the phone page.";
+		case "reorder": {
+			const plan = asString(rec.plan);
+			const from = num(rec.from);
+			const to = num(rec.to);
+			if (!plan || from === null || to === null) return null;
+			return `Owner moved ${basename(plan)} from #${from} to #${to} on the phone page; INDEX.md has the new order — work by it.`;
+		}
+		default:
+			return null;
+	}
 }
 
 /** The JSONL rows after `cursor` (a row count), as records, plus the new cursor. A torn last row

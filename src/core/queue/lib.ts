@@ -621,6 +621,8 @@ export interface ChatUnlockResult {
 	command?: "unlock" | "lock";
 	/** For an unlock: the minutes the existing mtime window stays open (for the owner notice). */
 	minutes?: number;
+	/** For an unlock: epoch seconds when the guard window closes (mtime + unlock_minutes). */
+	until?: number;
 }
 
 const CHAT_CMD = /^(unlock|lock)(?:\s+(\d+))?$/i;
@@ -657,7 +659,7 @@ export function chatUnlock(text: string, cfg: Config, source: string, word: "cha
 	try {
 		appendFileSync(cfg.paths.plan_guard_log, `${new Date().toISOString()} UNLOCK ${word} source=${source} minutes=${n}\n`);
 	} catch {}
-	return { applied: true, command: "unlock", minutes: n };
+	return { applied: true, command: "unlock", minutes: n, until: Math.floor(past + minutes * 60) };
 }
 
 export function protectedHit(paths: string[]): string | null {

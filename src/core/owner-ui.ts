@@ -259,12 +259,19 @@ function handleUnlock(cfg: Config, fields: Record<string, string>, login: string
 	if (minutes !== "" && !/^\d+$/.test(minutes)) return textRes("minutes must be a number", 400);
 	const result = chatUnlock(minutes === "" ? "unlock" : `unlock ${minutes}`, cfg, `ui:${login}`, "ui");
 	if (!result.applied) return textRes("unlock refused: guards.chat_unlock is off", 409);
+	mkdirSync(stateDirPath(), { recursive: true });
+	appendFileSync(
+		inboxPath(),
+		`${JSON.stringify({ ts: nowSec(), kind: "unlock", minutes: result.minutes, until: result.until, login })}\n`,
+	);
 	return redirect();
 }
 
 function handleLock(cfg: Config, login: string): Response {
 	const result = chatUnlock("lock", cfg, `ui:${login}`, "ui");
 	if (!result.applied) return textRes("lock refused: guards.chat_unlock is off", 409);
+	mkdirSync(stateDirPath(), { recursive: true });
+	appendFileSync(inboxPath(), `${JSON.stringify({ ts: nowSec(), kind: "lock", login })}\n`);
 	return redirect();
 }
 
