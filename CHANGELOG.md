@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.11
 ### Fixed
 - Tapping unlock or lock on the owner page did not tell Main; the owner had to say it in chat. The page now writes an `unlock`/`lock` record to the owner inbox, and Main gets it as a user message ("Owner unlocked the guards from the phone page for 5 min (until 01:12)…"). The inbox also understands a `reorder` record for the coming drag-and-drop queue.
 
