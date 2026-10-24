@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.12
+### Fixed
+- Chat notify missed most real hand-backs: omp fires `session_stop` BEFORE `agent_end` and skips it entirely while an async job (subagent, background bash) is pending, and the adapter read the reply from the session file, so it posted the previous turn's reply or nothing. The adapter now takes the reply from the event itself — the stop's `last_assistant_message` (falling back to the last assistant entry of `messages`) and the `agent_end` `messages` — and posts at an allowed `session_stop` and at a `willContinue: true` `agent_end` whose last assistant message ends with a `stop` reason, text and no tool call (the deferred hand-back). Still once per distinct text, never for a subagent, never on a blocked stop; every notify decision now logs one guard-log line `notify: posted|skipped (<why>)`.
+
 ## 0.2.11
 ### Fixed
 - Tapping unlock or lock on the owner page did not tell Main; the owner had to say it in chat. The page now writes an `unlock`/`lock` record to the owner inbox, and Main gets it as a user message ("Owner unlocked the guards from the phone page for 5 min (until 01:12)…"). The inbox also understands a `reorder` record for the coming drag-and-drop queue.

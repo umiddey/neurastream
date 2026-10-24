@@ -13,7 +13,6 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, w
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createOmpAdapter } from "../src/adapters/omp/index.ts";
-import { lastAssistantText } from "../src/adapters/omp/sessions.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { postReply } from "../src/core/notify.ts";
 import { notePath } from "../src/core/rollover.ts";
@@ -146,6 +145,24 @@ function decisionOf(r: unknown): string {
 	return "";
 }
 
+// Plan 20261025_0130: the reply a stop or agent_end posts comes from the event itself, not from
+// the session file (omp fires session_stop BEFORE agent_end, and skips it entirely while an async
+// job is pending — a file read lags a whole turn or never happens). `msg` builds one assistant
+// AgentMessage as omp's events carry it; `stopEvent` a session_stop payload.
+type MsgOpts = { stopReason?: string; toolCall?: boolean };
+
+function msg(text: string, opts: MsgOpts = {}): Record<string, unknown> {
+	return {
+		role: "assistant",
+		stopReason: opts.stopReason ?? "stop",
+		content: [{ type: "text", text }, ...(opts.toolCall ? [{ type: "toolCall", id: "c1", name: "bash" }] : [])],
+	};
+}
+
+function stopEvent(text: string): Record<string, unknown> {
+	return { last_assistant_message: msg(text), messages: [msg("an earlier turn"), msg(text)] };
+}
+
 // --- fake extension host (same shape as tests/rollover-omp.test.ts) ---
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
@@ -256,21 +273,12 @@ afterAll(() => {
 	Object.assign(process.env, queueEnvBefore);
 });
 
-test("the session parser finds the last assistant text", () => {
-	writeSession(REPLY);
-	expect(lastAssistantText(SESSION_FILE)).toBe(REPLY);
-	writeSession("a later reply");
-	expect(lastAssistantText(SESSION_FILE)).toBe("a later reply");
-	expect(lastAssistantText(join(TMP, "missing.jsonl"))).toBe("");
-});
-
 test("an allowed stop posts the text to each configured provider once, with the right JSON key", async () => {
 	reset();
-	writeSession(REPLY);
 	const host = adapterWith(stopCfg(bothCfg()));
 	const ctx = ctxFor("main");
-	await host.emit("agent_end", {}, ctx);
-	expect(await host.emit("session_stop", {}, ctx)).toEqual([]);
+	await host.emit("agent_end", { messages: [msg(REPLY)] }, ctx);
+	expect(await host.emit("session_stop", stopEvent(REPLY), ctx)).toEqual([]);
 	await until(() => discordHits.length === 1 && slackHits.length === 1);
 	expect(discordHits[0]).toEqual({ key: "content", text: REPLY });
 	expect(slackHits[0]).toEqual({ key: "text", text: REPLY });
@@ -288,18 +296,18 @@ test("the rollover-ready allow path posts too", async () => {
 	writeFileSync(notePath(SESSION_ID), "## In progress\nstep");
 	const later = (Date.now() + 5_000) / 1000;
 	utimesSync(notePath(SESSION_ID), later, later);
-	expect(await host.emit("session_stop", {}, ctx)).toEqual([]);
+	expect(await host.emit("session_stop", stopEvent(REPLY), ctx)).toEqual([]);
 	await until(() => discordHits.length === 1 && slackHits.length === 1);
+	expect(notifyLogLines().filter(l => l.includes("notify: posted (allowed session_stop)")).length).toBe(1);
 });
 
 test("a 4500-char reply is 3 discord and 2 slack chunks, in order, nothing lost", async () => {
 	reset();
 	const big = "x".repeat(4500);
-	writeSession(big);
 	const host = adapterWith(stopCfg(bothCfg()));
 	const ctx = ctxFor("main");
 	await host.emit("agent_end", {}, ctx);
-	await host.emit("session_stop", {}, ctx);
+	await host.emit("session_stop", stopEvent(big), ctx);
 	await until(() => discordHits.length === 3 && slackHits.length === 2);
 	expect(discordHits.map(h => h.key)).toEqual(["content", "content", "content"]);
 	expect(discordHits.every(h => h.text.length <= 2000)).toBe(true);
@@ -312,54 +320,52 @@ test("a 4500-char reply is 3 discord and 2 slack chunks, in order, nothing lost"
 test("a blocked stop posts nothing; the later allowed stop posts the final text", async () => {
 	reset();
 	writeFileSync(INDEX, `${PLAN}\n`);
-	writeSession(BLOCKED_REPLY);
 	const host = adapterWith(stopCfg(bothCfg()));
 	const ctx = ctxFor("main");
 	await host.emit("agent_end", {}, ctx);
-	const blocked = await host.emit("session_stop", {}, ctx);
+	const blocked = await host.emit("session_stop", stopEvent(BLOCKED_REPLY), ctx);
 	expect(blocked.map(decisionOf)).toEqual(["block"]);
-	// The run continues; its real end updates the remembered text, the queue clears, the stop is
+	// The run continues; its next end carries the final text, the queue clears, the stop is
 	// allowed — and only the final text may ever reach the fakes.
-	writeSession(REPLY);
 	await host.emit("agent_end", {}, ctx);
 	writeFileSync(INDEX, "");
-	expect(await host.emit("session_stop", {}, ctx)).toEqual([]);
+	expect(await host.emit("session_stop", stopEvent(REPLY), ctx)).toEqual([]);
 	await until(() => discordHits.length === 1 && slackHits.length === 1);
 	expect(discordHits.map(h => h.text)).toEqual([REPLY]);
 	expect(slackHits.map(h => h.text)).toEqual([REPLY]);
+	expect(notifyLogLines().filter(l => l.includes("notify: skipped (stop blocked by guard)")).length).toBe(1);
+	expect(notifyLogLines().filter(l => l.includes("notify: posted (allowed session_stop)")).length).toBe(1);
 });
 
 test("the same text is posted once across two allowed stops", async () => {
 	reset();
-	writeSession(REPLY);
 	const host = adapterWith(stopCfg(bothCfg()));
 	const ctx = ctxFor("main");
-	await host.emit("agent_end", {}, ctx);
-	await host.emit("session_stop", {}, ctx);
+	await host.emit("session_stop", stopEvent(REPLY), ctx);
 	await until(() => discordHits.length === 1 && slackHits.length === 1);
-	await host.emit("session_stop", {}, ctx);
+	await host.emit("session_stop", stopEvent(REPLY), ctx);
 	await expectNoMore(() => discordHits.length, 1);
 	await expectNoMore(() => slackHits.length, 1);
+	expect(notifyLogLines().filter(l => l.includes("notify: posted (allowed session_stop)")).length).toBe(1);
+	expect(notifyLogLines().filter(l => l.includes("notify: skipped (duplicate, allowed session_stop)")).length).toBe(1);
 });
 
 test("a subagent session never posts", async () => {
 	reset();
-	writeSession(REPLY);
 	const host = adapterWith(stopCfg(bothCfg()));
 	const ctx = ctxFor("sub");
-	await host.emit("agent_end", {}, ctx);
-	expect(await host.emit("session_stop", {}, ctx)).toEqual([]);
+	await host.emit("agent_end", { willContinue: true, messages: [msg(REPLY)] }, ctx);
+	expect(await host.emit("session_stop", stopEvent(REPLY), ctx)).toEqual([]);
 	await expectNoMore(() => discordHits.length, 0);
 	await expectNoMore(() => slackHits.length, 0);
+	expect(notifyLogLines().filter(l => l.includes("notify:")).length).toBe(0);
 });
 
 test("only the configured provider is posted to", async () => {
 	reset();
-	writeSession(REPLY);
 	const host = adapterWith(stopCfg(slackOnlyCfg()));
 	const ctx = ctxFor("main");
-	await host.emit("agent_end", {}, ctx);
-	expect(await host.emit("session_stop", {}, ctx)).toEqual([]);
+	expect(await host.emit("session_stop", stopEvent(REPLY), ctx)).toEqual([]);
 	await until(() => slackHits.length === 1);
 	await expectNoMore(() => discordHits.length, 0);
 });
@@ -372,19 +378,21 @@ test(
 		// Slack hangs: a fake that accepts the connection and never answers; the client aborts at 5s.
 		const hang = Bun.serve({ port: 0, fetch: () => new Promise(() => {}) as unknown as Response });
 		writeFileSync(SLACK_FILE, `http://127.0.0.1:${hang.port}/hook\n`);
-		writeSession(REPLY);
 		try {
 			const host = adapterWith(stopCfg(bothCfg()));
 			const ctx = ctxFor("main");
 			await host.emit("agent_end", {}, ctx);
 			const t0 = Date.now();
-			expect(await host.emit("session_stop", {}, ctx)).toEqual([]);
+			expect(await host.emit("session_stop", stopEvent(REPLY), ctx)).toEqual([]);
 			expect(Date.now() - t0).toBeLessThan(2000);
-			// Discord failed at once, Slack hangs until the 5s abort: one log line per provider, no retry.
-			await until(() => notifyLogLines().length === 2);
+			// The decision logs its posted line at once; each failing provider logs one error line
+			// (Discord at once, Slack at the 5s abort): three notify lines in total, no retry.
+			await until(() => notifyLogLines().filter(l => l.includes("notify: posted (allowed session_stop)")).length === 1);
+			await until(() => notifyLogLines().filter(l => l.includes("notify: discord:")).length === 1);
 			expect(discordHits.length).toBe(1);
 			expect(slackHits.length).toBe(0);
-			await expectNoMore(() => notifyLogLines().length, 2);
+			await until(() => notifyLogLines().filter(l => l.includes("notify: slack:")).length === 1);
+			await expectNoMore(() => notifyLogLines().length, 3);
 			await expectNoMore(() => discordHits.length, 1);
 		} finally {
 			hang.stop(true);
@@ -421,3 +429,98 @@ test(
 	},
 	20000,
 );
+
+// --- plan 20261025_0130: every hand-back to the owner reaches Discord ---
+
+test("handback (a): an allowed stop posts its own event reply B, not the earlier agent_end reply A", async () => {
+	reset();
+	const host = adapterWith(stopCfg(bothCfg()));
+	const ctx = ctxFor("main");
+	await host.emit("agent_end", { messages: [msg("reply A from the last run")] }, ctx);
+	expect(await host.emit("session_stop", stopEvent("reply B from this run"), ctx)).toEqual([]);
+	await until(() => discordHits.length === 1 && slackHits.length === 1);
+	expect(discordHits.map(h => h.text)).toEqual(["reply B from this run"]);
+	expect(slackHits.map(h => h.text)).toEqual(["reply B from this run"]);
+	expect(notifyLogLines().filter(l => l.includes("notify: posted (allowed session_stop)")).length).toBe(1);
+});
+
+test("handback (b): the first stop of a session, no earlier agent_end, posts the reply from messages", async () => {
+	reset();
+	const host = adapterWith(stopCfg(bothCfg()));
+	const ctx = ctxFor("main");
+	expect(await host.emit("session_stop", { messages: [msg("earlier"), msg(REPLY)] }, ctx)).toEqual([]);
+	await until(() => discordHits.length === 1 && slackHits.length === 1);
+	expect(discordHits[0]?.text).toBe(REPLY);
+	expect(slackHits[0]?.text).toBe(REPLY);
+	expect(notifyLogLines().filter(l => l.includes("notify: posted (allowed session_stop)")).length).toBe(1);
+});
+
+test("handback (c): agent_end willContinue with an async job pending and no stop follows posts the text-only reply once", async () => {
+	reset();
+	const host = adapterWith(stopCfg(bothCfg()));
+	const ctx = ctxFor("main", [{ label: "bg-1" }]);
+	await host.emit("agent_end", { willContinue: true, messages: [msg(REPLY)] }, ctx);
+	await until(() => discordHits.length === 1 && slackHits.length === 1);
+	expect(discordHits[0]?.text).toBe(REPLY);
+	expect(notifyLogLines().filter(l => l.includes("notify: posted (agent_end hand-back)")).length).toBe(1);
+	await host.emit("agent_end", { willContinue: true, messages: [msg(REPLY)] }, ctx);
+	await expectNoMore(() => discordHits.length, 1);
+});
+
+test("handback (d): the same reply seen by both agent_end and session_stop is posted once", async () => {
+	reset();
+	const host = adapterWith(stopCfg(bothCfg()));
+	const ctx = ctxFor("main", [{ label: "bg-1" }]);
+	await host.emit("agent_end", { willContinue: true, messages: [msg(REPLY)] }, ctx);
+	await until(() => discordHits.length === 1 && slackHits.length === 1);
+	await host.emit("session_stop", stopEvent(REPLY), ctx);
+	await expectNoMore(() => discordHits.length, 1);
+	await expectNoMore(() => slackHits.length, 1);
+	expect(notifyLogLines().filter(l => l.includes("notify: posted")).length).toBe(1);
+	expect(notifyLogLines().filter(l => l.includes("notify: skipped (duplicate, allowed session_stop)")).length).toBe(1);
+});
+
+test("handback (e): a blocked stop posts nothing and logs the skip", async () => {
+	reset();
+	writeFileSync(INDEX, `${PLAN}\n`);
+	const host = adapterWith(stopCfg(bothCfg()));
+	const ctx = ctxFor("main");
+	const blocked = await host.emit("session_stop", stopEvent(BLOCKED_REPLY), ctx);
+	expect(blocked.map(decisionOf)).toEqual(["block"]);
+	await expectNoMore(() => discordHits.length, 0);
+	await expectNoMore(() => slackHits.length, 0);
+	expect(notifyLogLines().filter(l => l.includes("notify: skipped (stop blocked by guard)")).length).toBe(1);
+});
+
+test("handback (f): a willContinue agent_end whose last message has tool calls posts nothing and logs the skip", async () => {
+	reset();
+	const host = adapterWith(stopCfg(bothCfg()));
+	const ctx = ctxFor("main", [{ label: "bg-1" }]);
+	await host.emit("agent_end", { willContinue: true, messages: [msg("running the check now", { stopReason: "toolUse", toolCall: true })] }, ctx);
+	await expectNoMore(() => discordHits.length, 0);
+	await expectNoMore(() => slackHits.length, 0);
+	expect(notifyLogLines().filter(l => l.includes("notify: skipped (mid-run: stop reason toolUse + 1 tool call(s), agent_end hand-back)")).length).toBe(1);
+});
+
+test("handback (g): a blocked stop followed by a willContinue agent_end posts nothing", async () => {
+	reset();
+	writeFileSync(INDEX, `${PLAN}\n`);
+	const host = adapterWith(stopCfg(bothCfg()));
+	const ctx = ctxFor("main", [{ label: "bg-1" }]);
+	const blocked = await host.emit("session_stop", stopEvent(BLOCKED_REPLY), ctx);
+	expect(blocked.map(decisionOf)).toEqual(["block"]);
+	await host.emit("agent_end", { willContinue: true, messages: [msg(BLOCKED_REPLY)] }, ctx);
+	await expectNoMore(() => discordHits.length, 0);
+	await expectNoMore(() => slackHits.length, 0);
+	expect(notifyLogLines().filter(l => l.includes("notify: skipped (stop blocked, agent_end)")).length).toBe(1);
+});
+
+test("handback (h): a willContinue agent_end with no pending async job posts nothing", async () => {
+	reset();
+	const host = adapterWith(stopCfg(bothCfg()));
+	const ctx = ctxFor("main");
+	await host.emit("agent_end", { willContinue: true, messages: [msg(REPLY)] }, ctx);
+	await expectNoMore(() => discordHits.length, 0);
+	await expectNoMore(() => slackHits.length, 0);
+	expect(notifyLogLines().filter(l => l.includes("notify: skipped (no pending job, agent_end)")).length).toBe(1);
+});
