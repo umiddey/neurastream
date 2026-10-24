@@ -580,3 +580,24 @@ test("an agent write to the owner inbox is refused like any protected state file
 	const main: ToolEvent = { ...ev, agent: "main", agentId: "regress-main" };
 	expect(checkTool(main, CFG).allow).toBe(false);
 });
+
+// --- guards: agents must not start the owner page (P3c) ---
+
+test("guards refuse agent shell commands that start the owner page", () => {
+	const cfg: Config = { ...CFG, guards: { ...CFG.guards, shell_tools: ["bash"] } };
+	const denies = (command: string, agent: "main" | "sub" = "sub"): boolean =>
+		!checkTool({ tool: "bash", input: { command }, cwd: TMP, agent, agentId: "uistart", calls: 0, paths: [], writes: [], command: "" }, cfg).allow;
+	expect(denies("neurastream ui")).toBe(true);
+	expect(denies("neurastream ui --port 1234")).toBe(true);
+	expect(denies('sh -c "neurastream ui"', "main")).toBe(true);
+	expect(denies("bun ~/.bun/bin/neurastream ui")).toBe(true);
+	expect(denies("systemctl --user start neurastream-ui")).toBe(true);
+	expect(denies("systemctl --user restart neurastream-ui.service")).toBe(true);
+	expect(denies("sudo systemctl --user enable neurastream-ui.timer")).toBe(true);
+	// Reads and unrelated commands stay allowed.
+	expect(denies("neurastream doctor")).toBe(false);
+	expect(denies("systemctl --user status neurastream-ui")).toBe(false);
+	expect(denies("grep neurastream ui notes.md")).toBe(false);
+	// The refusal is logged plan-guard style.
+	expect(planGuardLogLines().some(l => l.includes("ui-start"))).toBe(true);
+});
