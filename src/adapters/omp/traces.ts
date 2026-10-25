@@ -5,9 +5,10 @@
 // trace-relevant data is mapped; anything else (session banners, custom lines, compaction
 // notes, unparseable lines) is skipped.
 
-import { readFileSync, statSync } from "node:fs";
-import { dirname } from "node:path";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { TraceEvent, TraceSource, TraceUsage } from "../../core/adapter.ts";
+import type { DumpParts } from "../../core/trace-bloat.ts";
 import { asObj, jsonlAt, parseTs, runIdOf } from "./sessions.ts";
 
 function str(v: unknown): string | undefined {
@@ -167,6 +168,59 @@ export function offeredFromDump(file: string): string[] {
 	const tools = body?.tools;
 	if (!Array.isArray(tools)) return [];
 	return tools.map((t) => str(asObj(t)?.name)).filter((n): n is string => n !== undefined);
+}
+
+/** The harness log dir holding the whole failed requests (http-4xx dumps), named by epoch ms. */
+export function ompDumpDir(home: string): string {
+	return join(home, ".omp", "logs", "http-400-requests");
+}
+
+/**
+ * Every request dump under the harness log dir, oldest first. Dumps are named
+ * `<epoch ms of the failed request>-<request id>.json`; anything else in the dir is not a dump.
+ */
+export function ompDumps(home: string): { file: string; ms: number }[] {
+	let names: string[];
+	try {
+		names = readdirSync(ompDumpDir(home));
+	} catch {
+		return [];
+	}
+	const out: { file: string; ms: number }[] = [];
+	for (const name of names) {
+		const m = /^(\d+)-[A-Za-z0-9]+\.json$/.exec(name);
+		if (m) out.push({ file: join(ompDumpDir(home), name), ms: Number(m[1]) });
+	}
+	return out.sort((a, b) => a.ms - b.ms);
+}
+
+/**
+ * What a dumped request's prompt is made of, in JSON.stringify characters: body.system,
+ * body.messages and every body.tools[] entry with its name (a nameless tool keeps its bytes
+ * as "?"). A dump the reader cannot open or parse breaks down to zeros — a broken dump must
+ * not look like a prompt that was mostly empty.
+ */
+export function dumpParts(file: string): DumpParts {
+	let text: string;
+	try {
+		text = readFileSync(file, "utf8");
+	} catch {
+		return { system: 0, messages: 0, tools: [] };
+	}
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(text);
+	} catch {
+		return { system: 0, messages: 0, tools: [] };
+	}
+	const o = asObj(parsed);
+	const body = asObj(o?.body) ?? o ?? {};
+	const tools = Array.isArray(body.tools) ? body.tools : [];
+	return {
+		system: body.system === undefined ? 0 : JSON.stringify(body.system).length,
+		messages: body.messages === undefined ? 0 : JSON.stringify(body.messages).length,
+		tools: tools.map((t) => ({ name: str(asObj(t)?.name) ?? "?", bytes: JSON.stringify(t).length })),
+	};
 }
 
 /** TraceSource over a sessions root: dated main files at depth 1, subagent files at depth 2. */

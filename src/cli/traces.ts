@@ -14,13 +14,15 @@ import { ConfigError, loadConfig, type Config } from "../core/config.ts";
 import { claimUnbacked } from "../core/incident-detectors.ts";
 import { claimsFromEvents, type RelatedRun } from "../core/trace-claims.ts";
 import { actionsRules, suspiciousActions, type ActionsRules, type SuspiciousAction } from "../core/trace-actions.ts";
-import { ompTraceRuns, ompTraceSource, subagentTraces } from "../adapters/omp/traces.ts";
+import { bloatBreakdown, bloatFindings, bloatRules, callSizes, type BloatBreakdown, type BloatRules } from "../core/trace-bloat.ts";
+import { dumpParts, ompDumps, ompTraceRuns, ompTraceSource, subagentTraces } from "../adapters/omp/traces.ts";
 
 export const TRACES_USAGE = [
 	"usage: neurastream traces claims <runId> [--json]",
 	"       neurastream traces claims --since <N m|h|d> [--json]",
 	"       neurastream traces actions <runId> [--json]",
 	"       neurastream traces actions --since <N m|h|d> [--json]",
+	"       neurastream traces bloat [<runId>] [--since <N m|h|d>] [--json]   # default window 24h",
 ].join("\n");
 
 const SINCE = /^(\d+)(m|h|d)$/;
@@ -59,10 +61,56 @@ export function actionsReport(src: TraceSource, runId: string, rules: ActionsRul
 	return { runId, actions: suspiciousActions(src.events(runId), rules) };
 }
 
-/** `neurastream traces claims|actions`: one run by id, or every run touched inside a --since window. */
+export interface RunBloatReport {
+	runId: string;
+	/** Model calls in the run (usage-bearing assistant messages, folded per response id). */
+	calls: number;
+	/** Prompt tokens (input + cacheRead + cacheWrite) of the first call; null when the run made none. */
+	firstPrompt: number | null;
+	maxPrompt: number | null;
+	/** prompt-bloat findings; evidence masked and capped. */
+	findings: { kind: string; summary: string; evidence?: string }[];
+	/** What filled the prompt, from the run's dumped failed request; present only when a dump sits in the run's window. */
+	breakdown?: BloatBreakdown;
+}
+
+/**
+ * Scan one run: per-call prompt sizes and the bloat findings — plus, when a dump of the run's
+ * failed request exists, what filled the prompt. Dumps are named by the epoch ms of the failed
+ * request; a dump belongs to the run whose trace window covers that instant: first readable
+ * event ts <= dump <= trace file mtime (the file keeps growing while the run lives, so the
+ * dump of a request that never produced an event is still inside). A run with no readable
+ * timestamps matches no dump.
+ */
+export function bloatReport(src: TraceSource, runId: string, rules: BloatRules, groupRegex: string, dumps: { file: string; ms: number }[], mtimeSec: number): RunBloatReport {
+	const events = src.events(runId);
+	const sizes = callSizes(events);
+	let breakdown: BloatBreakdown | undefined;
+	let first: number | undefined;
+	for (const e of events) {
+		if (e.ts !== null) {
+			first = e.ts;
+			break;
+		}
+	}
+	if (first !== undefined) {
+		const dump = dumps.find((d) => d.ms >= first * 1000 && d.ms <= Math.round(mtimeSec * 1000));
+		if (dump) breakdown = bloatBreakdown(dumpParts(dump.file), groupRegex);
+	}
+	return {
+		runId,
+		calls: sizes.length,
+		firstPrompt: sizes[0]?.prompt ?? null,
+		maxPrompt: sizes.length > 0 ? sizes.reduce((m, c) => Math.max(m, c.prompt), 0) : null,
+		findings: bloatFindings(events, rules).map((f) => ({ kind: f.kind, summary: f.summary, evidence: f.evidence })),
+		...(breakdown ? { breakdown } : {}),
+	};
+}
+
+/** `neurastream traces claims|actions|bloat`: one run by id, or every run touched inside a --since window. */
 export async function runTraces(args: string[], opts: { home?: string } = {}): Promise<number> {
 	const sub = args[0];
-	if (sub !== "claims" && sub !== "actions") {
+	if (sub !== "claims" && sub !== "actions" && sub !== "bloat") {
 		console.error(TRACES_USAGE);
 		return 2;
 	}
@@ -97,21 +145,28 @@ export async function runTraces(args: string[], opts: { home?: string } = {}): P
 			runId = a;
 		}
 	}
+	// `bloat` without a selector scans the plan's default window instead of demanding one.
+	if (sub === "bloat" && runId === undefined && windowSec === undefined) windowSec = 24 * 3600;
 	if ((runId !== undefined) === (windowSec !== undefined)) {
 		console.error(TRACES_USAGE);
 		return 2;
 	}
 	const runs = ompTraceRuns(root);
 	const src = ompTraceSource(root);
-	const rules = sub === "actions" ? actionsRules(cfg) : null;
+	const rules: ActionsRules | BloatRules | null = sub === "actions" ? actionsRules(cfg) : sub === "bloat" ? bloatRules(cfg) : null;
 	// A Main run's report cites its subagents' results: their traces under the Main session dir
 	// back the pure result-line claims (P5). No time filter — the text match is the guard, and
 	// a sub's file keeps being written while its Main run lives, inside whatever window.
 	const relatedOf = (id: string): RelatedRun[] =>
 		sub === "claims" ? subagentTraces(root, id).map(({ name, events }) => ({ name, events })) : [];
-	const reports: (RunClaimsReport | RunActionsReport)[] = [];
-	const reportOf = (id: string): RunClaimsReport | RunActionsReport =>
-		sub === "claims" ? claimsReport(src, id, relatedOf(id)) : actionsReport(src, id, rules!);
+	const dumps = sub === "bloat" ? ompDumps(cfg.paths.home) : [];
+	const mtimeOf = (id: string): number => runs.find((r) => r.runId === id)?.mtimeSec ?? 0;
+	const reports: (RunClaimsReport | RunActionsReport | RunBloatReport)[] = [];
+	const reportOf = (id: string): RunClaimsReport | RunActionsReport | RunBloatReport => {
+		if (sub === "claims") return claimsReport(src, id, relatedOf(id));
+		if (sub === "actions") return actionsReport(src, id, rules as ActionsRules);
+		return bloatReport(src, id, rules as BloatRules, cfg.traces.bloat.tool_group, dumps, mtimeOf(id));
+	};
 	if (windowSec !== undefined) {
 		const cutoff = nowSec() - windowSec;
 		for (const r of runs) {
@@ -139,6 +194,20 @@ export async function runTraces(args: string[], opts: { home?: string } = {}): P
 			for (const u of r.unbacked) {
 				console.log(`  ${u.kind}: ${u.summary}`);
 				if (u.evidence) console.log(`    evidence: ${u.evidence}`);
+			}
+		} else if ("calls" in r) {
+			if (r.calls === 0) {
+				console.log(`${r.runId}: no model calls in the trace`);
+				continue;
+			}
+			console.log(`${r.runId}: ${r.calls} calls, first ${r.firstPrompt}, max ${r.maxPrompt} (${r.findings.length === 0 ? "no prompt-bloat" : `${r.findings.length} prompt-bloat`})`);
+			for (const f of r.findings) {
+				console.log(`  ${f.kind}: ${f.summary}`);
+				if (f.evidence) console.log(`    evidence: ${f.evidence}`);
+			}
+			if (r.breakdown) {
+				console.log(`  prompt parts: ${r.breakdown.parts.map((p) => `${p.name} ${p.bytes}`).join(", ")}`);
+				console.log(`  top tools: ${r.breakdown.tools.map((t) => `${t.name} ${t.bytes}`).join(", ")}`);
 			}
 		} else {
 			if (r.actions.length === 0) {

@@ -5,7 +5,7 @@
 // with two content parts, which is one call, not two.
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { parseTraceFile } from "../src/adapters/omp/traces.ts";
@@ -162,14 +162,6 @@ traces:
 		});
 	});
 
-	const bad = (yaml: string): string =>
-		`paths:
-  home: "${join(TMP, "cfg-bad")}"
-traces:
-  bloat:
-${yaml}
-`;
-
 	test("check() rejects an out-of-range ratio, non-positive numbers and a bad group regex", () => {
 		const cases: [string, RegExp][] = [
 			["    ratio_of_limit: 0", /ratio_of_limit/],
@@ -182,7 +174,15 @@ ${yaml}
 		for (const [yaml, rx] of cases) {
 			const home = join(TMP, `cfg-bad-${Math.abs(hash(yaml))}`);
 			mkdirSync(join(home, ".config", "neurastream"), { recursive: true });
-			writeFileSync(join(home, ".config", "neurastream", "config.yml"), bad(yaml));
+			writeFileSync(
+				join(home, ".config", "neurastream", "config.yml"),
+				`paths:
+  home: "${home}"
+traces:
+  bloat:
+${yaml}
+`,
+			);
 			let err: unknown = null;
 			try {
 				loadConfig({ home, env: {} });
@@ -201,3 +201,185 @@ function hash(s: string): number {
 	for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
 	return h;
 }
+
+// ---- P2: the dumped-request breakdown and the `traces bloat` CLI ----
+
+import { dumpParts, ompDumpDir, ompDumps } from "../src/adapters/omp/traces.ts";
+import { bloatBreakdown } from "../src/core/trace-bloat.ts";
+import { runTraces } from "../src/cli/traces.ts";
+
+describe("dumpParts (P2)", () => {
+	test("bytes are the JSON.stringify length of each body part", () => {
+		const file = join(TMP, "tiny-dump.json");
+		writeFileSync(file, JSON.stringify({ api: "a", body: { system: "ab", messages: [{ r: 1 }], tools: [{ name: "t1", x: 1 }], model: "m" } }));
+		// "ab" -> '"ab"' (4); [{r:1}] -> '[{"r":1}]' (9); the tool -> '{"name":"t1","x":1}' (19)
+		expect(dumpParts(file)).toEqual({ system: 4, messages: 9, tools: [{ name: "t1", bytes: 19 }] });
+	});
+
+	test("the synthetic fixture dump: 21 tools, two MCP groups, one huge schema", () => {
+		const parts = dumpParts(join(FIX, "bloat-dump.json"));
+		expect(parts.tools).toHaveLength(21);
+		expect(parts.tools.reduce((s, t) => s + t.bytes, 0)).toBe(18400);
+		expect(parts.tools[0]).toEqual({ name: "mcp__zoho_getthing0", bytes: 651 });
+		expect(parts.tools[11]).toEqual({ name: "mcp__zoho_createworkflowrules", bytes: 4740 });
+		expect(parts.system).toBe(1077);
+		expect(parts.messages).toBe(594);
+	});
+
+	test("missing parts are zero; a broken dump reads as empty, never throws", () => {
+		const empty = join(TMP, "empty-body.json");
+		writeFileSync(empty, JSON.stringify({ body: {} }));
+		expect(dumpParts(empty)).toEqual({ system: 0, messages: 0, tools: [] });
+		const noTools = join(TMP, "no-tools.json");
+		writeFileSync(noTools, JSON.stringify({ body: { system: "x", messages: [] } }));
+		expect(dumpParts(noTools)).toEqual({ system: 3, messages: 2, tools: [] });
+		expect(dumpParts(join(TMP, "missing.json"))).toEqual({ system: 0, messages: 0, tools: [] });
+		const junk = join(TMP, "junk.json");
+		writeFileSync(junk, "not json {");
+		expect(dumpParts(junk)).toEqual({ system: 0, messages: 0, tools: [] });
+	});
+
+	test("a nameless tool keeps its bytes as ?", () => {
+		const file = join(TMP, "nameless.json");
+		writeFileSync(file, JSON.stringify({ body: { tools: [{ schema: "s" }, { name: "t", schema: "s" }] } }));
+		const parts = dumpParts(file);
+		expect(parts.tools).toEqual([
+			{ name: "?", bytes: JSON.stringify({ schema: "s" }).length },
+			{ name: "t", bytes: JSON.stringify({ name: "t", schema: "s" }).length },
+		]);
+	});
+});
+
+describe("bloatBreakdown (P2)", () => {
+	const GROUP = "^mcp__([A-Za-z0-9]+)_";
+
+	test("tools group by the first capture; parts come back largest first", () => {
+		const b = bloatBreakdown(dumpParts(join(FIX, "bloat-dump.json")), GROUP);
+		expect(b.parts).toEqual([
+			{ name: "zoho", bytes: 11902 },
+			{ name: "brightdata", bytes: 5635 },
+			{ name: "system", bytes: 1077 },
+			{ name: "builtin", bytes: 863 },
+			{ name: "messages", bytes: 594 },
+		]);
+	});
+
+	test("top tools are the five largest, largest first", () => {
+		const b = bloatBreakdown(dumpParts(join(FIX, "bloat-dump.json")), GROUP);
+		expect(b.tools).toHaveLength(5);
+		expect(b.tools[0]!.name).toBe("mcp__zoho_createworkflowrules");
+		expect(b.tools[0]!.bytes).toBe(4740);
+		const sizes = b.tools.map((t) => t.bytes);
+		expect([...sizes].sort((x, y) => y - x)).toEqual(sizes);
+	});
+
+	test("a regex without a match or a capture groups the tool as builtin; a bad regex disables grouping", () => {
+		const tiny = { system: 0, messages: 0, tools: [{ name: "mcp__zoho_a", bytes: 10 }, { name: "bash", bytes: 5 }] };
+		expect(bloatBreakdown(tiny, "^zzz").parts.map((p) => p.name)).toEqual(["builtin", "system", "messages"]);
+		expect(bloatBreakdown(tiny, "^mcp__").parts.map((p) => p.name)).toEqual(["builtin", "system", "messages"]);
+		expect(bloatBreakdown(tiny, "(").parts.map((p) => p.name)).toEqual(["builtin", "system", "messages"]);
+	});
+});
+
+describe("traces bloat CLI (P2)", () => {
+	const P9 = mkdtempSync(join(tmpdir(), "ns-trace-bloat-cli-"));
+	const P9SESSIONS = join(P9, ".omp/agent/sessions/bloat-proj");
+	const P9DUMPS = ompDumpDir(P9);
+	mkdirSync(P9SESSIONS, { recursive: true });
+	mkdirSync(P9DUMPS, { recursive: true });
+	mkdirSync(join(P9, ".config/neurastream"), { recursive: true });
+	writeFileSync(
+		join(P9, ".config/neurastream/config.yml"),
+		`paths:
+  home: "${P9}"
+traces:
+  bloat:
+    context_limits:
+      test-model: 100000
+`,
+	);
+	writeFileSync(join(P9SESSIONS, "2026-10-25T10-00-00-000Z_bloat.jsonl"), readFileSync(join(FIX, "bloat-run.jsonl"), "utf8"));
+	writeFileSync(join(P9SESSIONS, "2026-10-25T09-00-00-000Z_bloat.jsonl"), readFileSync(join(FIX, "bloat-run.jsonl"), "utf8"));
+	// one dump inside the fresh run's window (after its first event, before its mtime), one
+	// an hour before any run of the fixture, named like the real ones: <epoch-ms>-<id>.json
+	const IN_MS = parseTs("2026-10-24T10:00:05.000Z")! * 1000 + 5000;
+	const OUT_MS = parseTs("2026-10-24T10:00:01.000Z")! * 1000 - 3_600_000;
+	writeFileSync(join(P9DUMPS, `${IN_MS}-synthtic01.json`), readFileSync(join(FIX, "bloat-dump.json"), "utf8"));
+	writeFileSync(join(P9DUMPS, `${OUT_MS}-synthtic02.json`), readFileSync(join(FIX, "bloat-dump.json"), "utf8"));
+	// the 09-00-00 file was written "now" too; backdate it outside the default 24h window
+	const oldMs = Date.now() - 30 * 3600 * 1000;
+	utimesSync(join(P9SESSIONS, "2026-10-25T09-00-00-000Z_bloat.jsonl"), oldMs / 1000, oldMs / 1000);
+	afterAll(() => rmSync(P9, { recursive: true, force: true }));
+
+	async function jsonReports(args: string[]): Promise<Record<string, unknown>[]> {
+		const logs: string[] = [];
+		const orig = console.log;
+		console.log = (line: string) => logs.push(line);
+		let rc = -1;
+		try {
+			rc = await runTraces(["bloat", ...args, "--json"], { home: P9 });
+		} finally {
+			console.log = orig;
+		}
+		expect(rc).toBe(0);
+		return JSON.parse(logs.join("\n")) as Record<string, unknown>[];
+	}
+
+	test("--since 48h lists both runs; only the run whose window holds the dump gets a breakdown", async () => {
+		const reports = await jsonReports(["--since", "48h"]);
+		expect(reports.map((r) => r.runId).sort()).toEqual(["MAIN 09-00-00", "MAIN 10-00-00"]);
+		const fresh = reports.find((r) => r.runId === "MAIN 10-00-00")!;
+		expect(fresh.calls).toBe(8);
+		expect(fresh.firstPrompt).toBe(40000);
+		expect(fresh.maxPrompt).toBe(85000);
+		expect((fresh.findings as { summary: string }[]).map((f) => f.summary)).toEqual([
+			"run MAIN 10-00-00: call 7 (test-model) prompt 85000 tokens is 85% of its 100000 context limit",
+		]);
+		const breakdown = fresh.breakdown as { parts: { name: string; bytes: number }[]; tools: { name: string }[] };
+		expect(breakdown.parts[0]).toEqual({ name: "zoho", bytes: 11902 });
+		expect(breakdown.tools[0]!.name).toBe("mcp__zoho_createworkflowrules");
+		expect(reports.find((r) => r.runId === "MAIN 09-00-00")!.breakdown).toBeUndefined();
+	});
+
+	test("without --since the window defaults to 24h", async () => {
+		const reports = await jsonReports([]);
+		expect(reports.map((r) => r.runId)).toEqual(["MAIN 10-00-00"]);
+	});
+
+	test("one run by id gets the same report; selector rules match claims and actions", async () => {
+		const reports = await jsonReports(["MAIN 10-00-00"]);
+		const one = reports[0]!;
+		expect(one.runId).toBe("MAIN 10-00-00");
+		expect(one.breakdown).toBeDefined();
+		expect(await runTraces(["bloat", "MAIN 10-00-00", "--since", "24h"], { home: P9 })).toBe(2);
+		expect(await runTraces(["nope"], { home: P9 })).toBe(2);
+	});
+
+	test("text output prints counts, findings, parts and top tools", async () => {
+		const logs: string[] = [];
+		const orig = console.log;
+		console.log = (line: string) => logs.push(line);
+		let rc = -1;
+		try {
+			rc = await runTraces(["bloat", "MAIN 10-00-00"], { home: P9 });
+		} finally {
+			console.log = orig;
+		}
+		expect(rc).toBe(0);
+		expect(logs[0]).toBe("MAIN 10-00-00: 8 calls, first 40000, max 85000 (1 prompt-bloat)");
+		expect(logs[1]).toBe("  prompt-bloat: run MAIN 10-00-00: call 7 (test-model) prompt 85000 tokens is 85% of its 100000 context limit");
+		expect(logs[2]).toMatch(/^    evidence: call 7 of 8 \(model test-model\) prompt 85000; limit 100000/);
+		expect(logs[3]).toBe("  prompt parts: zoho 11902, brightdata 5635, system 1077, builtin 863, messages 594");
+		expect(logs[4]).toMatch(/^  top tools: mcp__zoho_createworkflowrules 4740, /);
+	});
+
+	test("ompDumps lists only <epoch-ms>-<id>.json files, oldest first", () => {
+		const stray = join(P9DUMPS, "not-a-dump.txt");
+		writeFileSync(stray, "x");
+		const dumps = ompDumps(P9);
+		expect(dumps.map((d) => d.ms)).toEqual([OUT_MS, IN_MS]);
+		expect(readdirSync(P9DUMPS)).toContain("not-a-dump.txt");
+		expect(ompDumpDir(P9)).toBe(P9DUMPS);
+	});
+});
+

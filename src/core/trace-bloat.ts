@@ -99,3 +99,52 @@ export function bloatFindings(events: TraceEvent[], rules: BloatRules): Finding[
 	}
 	return out;
 }
+
+/** One named slice of a dumped request's prompt; bytes are the JSON.stringify length. */
+export interface DumpPart {
+	name: string;
+	bytes: number;
+}
+
+/** The prompt pieces of one dumped request: body.system, body.messages, body.tools[] in dump order. */
+export interface DumpParts {
+	system: number;
+	messages: number;
+	tools: DumpPart[];
+}
+
+export interface BloatBreakdown {
+	/** system, messages and every tool group, largest first. */
+	parts: DumpPart[];
+	/** The five largest individual tools, largest first. */
+	tools: DumpPart[];
+}
+
+/**
+ * Groups a dumped request's tools by the first capture of the group regex on the tool name (a
+ * name with no match — or a pattern with no capture, or an unparseable pattern, which disables
+ * grouping rather than guessing — lands in "builtin"), and returns the prompt parts sorted by
+ * bytes plus the five largest individual tools.
+ */
+export function bloatBreakdown(parts: DumpParts, groupRegex: string): BloatBreakdown {
+	let rx: RegExp | null;
+	try {
+		rx = new RegExp(groupRegex);
+	} catch {
+		rx = null;
+	}
+	const groups = new Map<string, number>();
+	for (const t of parts.tools) {
+		const m = rx ? rx.exec(t.name) : null;
+		const group = m?.[1] ?? "builtin";
+		groups.set(group, (groups.get(group) ?? 0) + t.bytes);
+	}
+	const rows: DumpPart[] = [
+		{ name: "system", bytes: parts.system },
+		{ name: "messages", bytes: parts.messages },
+		...[...groups].map(([name, bytes]) => ({ name, bytes })),
+	];
+	rows.sort((a, b) => b.bytes - a.bytes);
+	const tools = [...parts.tools].sort((a, b) => b.bytes - a.bytes).slice(0, 5);
+	return { parts: rows, tools };
+}
