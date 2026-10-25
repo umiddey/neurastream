@@ -1,6 +1,6 @@
 {
   "name": "neurastream",
-  "version": "0.2.24",
+  "version": "0.2.25",
   "description": "Guardrails for running many AI coding agents at once: plan queue, blockers, call budgets, provider caps, scoring, merge-verified close.",
   "keywords": [
     "ai-agents",
