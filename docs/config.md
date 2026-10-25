@@ -174,6 +174,12 @@ ui:
   owner_login: ""       # the tailscale login that may open the page; empty = the page refuses to start;
                         # `neurastream ui on --login <email>` sets it (kept on `ui off`)
 
+
+pages:
+  enabled: false
+  port: 7788
+  dir: "~/.local/share/neurastream/pages"
+  keep_days: 15            # delete a published page this many days later; `pages publish --keep` keeps it
 machine:
   load_over_cores: 4
   load_max: 0                       # 0 = nproc + load_over_cores; env LOAD_MAX sets an absolute cap
@@ -304,6 +310,7 @@ The loader rejects:
 - a `paths.*` value that is not a string
 - `metrics.report_days` below 1, or a `metrics.correction_patterns` entry that does not compile as a case-insensitive regex
 - `ui.port` outside 1..65535
+- `pages.keep_days` below 1, or not an integer
 - a `brief.repo_rules` entry whose `match`, `require`, `first` or `unless` does not compile as a case-insensitive regex, or whose `message` is empty
 - YAML that does not parse
 
