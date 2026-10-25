@@ -551,9 +551,9 @@ details.block .dbody { border-top: 1px solid var(--line); padding: 10px 0 12px; 
 .qph { list-style: none; border: 2px dashed var(--line); border-radius: 14px; margin: 4px 0; }
 .qrank { font-family: ui-monospace, "SF Mono", "Roboto Mono", monospace; font-size: 14px; color: var(--muted); min-width: 1.6em; text-align: right; font-variant-numeric: tabular-nums; }
 .qhandle { touch-action: none; padding: 12px 10px; color: var(--muted); font-size: 18px; user-select: none; }
-.qtitle { flex: 1; min-width: 0; }
+.qtitle { flex: 1 1 12em; min-width: 0; }
 .chip.repo { color: var(--teal); border-color: var(--teal); }
-.qbtns { display: flex; gap: 6px; flex-wrap: wrap; }
+.qbtns { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
 .qbtns button { min-height: 48px; padding: 4px 10px; font-size: 14px; }
 .merges, .incidents { margin: 0; padding-left: 20px; }
 .merges li, .incidents li { margin: 6px 0; }
