@@ -700,12 +700,13 @@ function mainTool(e: ToolEvent, input: Record<string, unknown>, cfg: Config): De
 		return ALLOW;
 	}
 	if (cfg.guards.shell_tools.includes(e.tool)) {
-		// Strict landing gate (20261025_1940 P2): in tier strict every push/merge waits for the
-		// owner's one-shot `go` (autonomy.go_minutes); the landing that consumes it goes through.
-		// Opinionated and full keep today's allowance. Owner-only rules above are untouched.
+		// Strict landing gate (20261025_1940 P2, P5): in tier strict every push/merge waits for the
+		// owner's approve phrase (autonomy.go_phrase, default "go push"); the landing that consumes
+		// it goes through. Opinionated and full keep today's allowance. Owner-only rules above are
+		// untouched.
 		if (landingCommand(input) && currentTier(cfg) === "strict" && !takeGo(cfg)) {
-			log(cfg.paths.guard_log, "BLOCK landing: tier strict, no go");
-			return deny('main-guard: tier strict — type "go" to approve one push/merge');
+			log(cfg.paths.guard_log, "BLOCK landing: tier strict, no approve phrase");
+			return deny(`main-guard: tier strict — type "${cfg.autonomy.go_phrase}" to approve one push/merge`);
 		}
 		const command = String(input?.command ?? input?.code ?? "");
 		for (const entry of cfg.guards.bypass_spawn) {
@@ -937,7 +938,7 @@ export function checkInject(e: InjectEvent, cfg: Config): Decision {
 	const tier = currentTier(cfg);
 	const tierNote =
 		tier === "strict"
-			? `Main changes at most ${cfg.autonomy.strict_edit_limit} project files per ${cfg.guards.main_window_min} min, and every git push / glab mr merge / gh pr merge waits for your "go" (one landing, valid ${cfg.autonomy.go_minutes} min).`
+			? `Main changes at most ${cfg.autonomy.strict_edit_limit} project files per ${cfg.guards.main_window_min} min, and every git push / glab mr merge / gh pr merge waits for your "${cfg.autonomy.go_phrase}" (one landing, valid ${cfg.autonomy.go_minutes} min).`
 			: tier === "full"
 				? `Main works unattended: no edit cap, its own "Priority skip: <plan> — Main: \\"<reason>\\"" skips pass, pushes and merges go through. Owner-only moves (guard files, the phone page, notify secrets, the unlock) stay locked.`
 				: `Main changes at most ${cfg.guards.main_edit_limit} project files per ${cfg.guards.main_window_min} min; pushes and merges go through.`;

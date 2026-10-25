@@ -1151,8 +1151,9 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	};
 
 	// Chat unlock + autonomy tiers (guards.chat_unlock): the owner's whole message "unlock"/
-	// "unlock N"/"lock" moves the guard unlock file, "tier <name>" sets the autonomy tier and
-	// "go" approves one strict landing (src/core/queue/lib.ts chatUnlock, src/core/autonomy.ts
+	// "unlock N"/"lock" moves the guard unlock file, "tier <name>" sets the autonomy tier and the
+	// approve phrase (autonomy.go_phrase, default "go push") approves one strict landing
+	// (src/core/queue/lib.ts chatUnlock, src/core/autonomy.ts
 	// chatTier/chatGo). Only prompts the owner really typed
 	// count: the local terminal (input event, source "interactive") and collab guest prompts from
 	// write peers. This handler is registered BEFORE the rollover input handler below, so the unlock
@@ -1176,7 +1177,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	const notifyGo = (ctx: unknown, r: { minutes?: number }): void => {
 		const c = asRolloverCtx(ctx);
 		if (!c || r.minutes === undefined) return;
-		c.notify(`go: one push/merge approved for ${r.minutes} min`);
+		c.notify(`${cfg.autonomy.go_phrase}: one push/merge approved for ${r.minutes} min`);
 	};
 	pi.on("input", (event, ctx) => {
 		if (!cfg.guards.chat_unlock || !isMain(ctx)) return undefined;

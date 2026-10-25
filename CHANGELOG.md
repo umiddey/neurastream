@@ -1,4 +1,8 @@
 # Changelog
+## Unreleased
+### Changed
+- Autonomy tiers: the strict tier's chat approve word is config `autonomy.go_phrase` (default `go push`), matched as the whole trimmed message, case-insensitive with inner spaces collapsed; a bare `go` no longer approves anything and falls through as a normal message (I-20261025-201). The strict refusal, the injected tier line and the owner notice name the phrase from config.
+
 ## 0.2.28
 ### Added
 - Secrets never reach the chat (I-20261025-197): a content-based redactor (`src/core/secret-redact.ts`) runs on every tool result for Main and every subagent, on every notify post and in the new `neurastream redact` command; a token, key, password or any exact value from `~/.npmrc`, `.env…` files, `secrets.known_value_files` or credential-named env vars shows as `[REDACTED:<type>]`, whatever the file is named. Config `secrets.redact|known_value_files|extra_patterns|proxy`; `secrets.proxy: secretgate` adds secretgate as a second net on outbound traffic; `neurastream doctor` reports the redactor and proxy state.
