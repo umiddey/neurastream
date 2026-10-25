@@ -35,6 +35,8 @@ interface Decision {
 	reason: string;
 	inject?: string;
 	restore?: { path: string; text: string };
+	rewrite?: { path: string; text: string };
+	note?: string;
 	state?: { callsSinceStop: number; idleStops: number };
 }
 
@@ -228,7 +230,7 @@ test("non-Progress plan edit: tool_call snapshots, tool_result refuses, restores
 	const statusFlip = before.replace("Status: open", "Status: complete");
 	const progressOnly = before.replace("- Started the toy work.", "- Started the toy work.\n- Did the thing. Findings: none.");
 	const out = adapterRun(`${REGISTER}
-const fs = await import("node:fs");
+const fs = await import("node:fs"); // dynamic here: this line runs inside the runtime-built bun -e child script, static imports cannot reach it
 const out = [];
 out.push(await h["tool_call"]({ toolName: "write", input: { path: ${JSON.stringify(PLAN)}, content: ${JSON.stringify(statusFlip)} }, toolCallId: "t1" }, ${SUB_CTX}));
 fs.writeFileSync(${JSON.stringify(PLAN)}, ${JSON.stringify(statusFlip)}); // the tool did the write
@@ -250,6 +252,38 @@ console.log(JSON.stringify(out));
 	expect(out[3]).toBeUndefined();
 	expect(out[4]).toBeUndefined(); // Progress-only edit passes verification
 	expect(out[5]).toBe(true); // and the Progress-only content stays
+});
+
+test("auto-listing: a Main plan edit citing a read file passes the tool_result with the note, the file gains the section; the CLI decision carries the same rewrite", () => {
+	fresh();
+	const cited = join(TOY, "src/b.ts");
+	writeFileSync(cited, "export const b = 1;\n");
+	// The citation sits in the Goal (outside Progress), and Main's read log names it fresh.
+	const withCite = TOY_PLAN.replace("- Guard parity toy for the ported guards.", "- Guard parity toy for the ported guards. See src/b.ts:3.");
+	const reads = JSON.stringify({ [cited]: new Date().toISOString() });
+	const out = adapterRun(`${REGISTER}
+const fs = await import("node:fs"); // dynamic here: this line runs inside the runtime-built bun -e child script, static imports cannot reach it
+fs.writeFileSync(${JSON.stringify(join(STATE, "main-reads.json"))}, JSON.stringify(${reads}));
+const out = [];
+out.push(await h["tool_call"]({ toolName: "write", input: { path: ${JSON.stringify(PLAN)}, content: ${JSON.stringify(withCite)} }, toolCallId: "t1" }, ${MAIN_CTX}));
+fs.writeFileSync(${JSON.stringify(PLAN)}, ${JSON.stringify(withCite)}); // the tool did the write
+out.push(await h["tool_result"]({ toolName: "write", input: {}, toolCallId: "t1" }, ${MAIN_CTX}));
+out.push(fs.readFileSync(${JSON.stringify(PLAN)}, "utf8"));
+console.log(JSON.stringify(out));
+`);
+	expect(out[0]).toBeUndefined(); // the write itself is allowed, only verified after
+	const result = fieldOf(out[1], "content") as { type: string; text: string }[] | undefined;
+	expect(result).toHaveLength(1);
+	expect(result?.[0]?.text).toBe(`plan-guard: added 1 file(s) to "## Code read by Main": src/b.ts`);
+	const onDisk = out[2] as string;
+	expect(onDisk.indexOf("## Code read by Main")).toBeLessThan(onDisk.indexOf("## Progress"));
+	expect(onDisk).toContain("- `src/b.ts`");
+	// `neurastream guard plan-edit --json` returns the same allow-with-rewrite for the same edit.
+	const cli = guardCli("plan-edit", { path: PLAN, before: TOY_PLAN, after: withCite, agent: "main" });
+	expect(cli.code).toBe(0);
+	expect(cli.d.allow).toBe(true);
+	expect(cli.d.rewrite).toEqual({ path: PLAN, text: onDisk });
+	expect(cli.d.note).toBe(`plan-guard: added 1 file(s) to "## Code read by Main": src/b.ts`);
 });
 
 test("spawn outside the allow-list: before_subagent_spawn refuses; listed agent via task passes; other kinds refuse", () => {

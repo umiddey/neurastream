@@ -794,6 +794,14 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 					revertMainEdit(asString(e.toolName), asRecord(e.input), c.cwd ?? process.cwd(), cfg);
 					return { isError: true, content: [{ type: "text", text: d.reason }] };
 				}
+				// Plan-guard auto-listing (I-20261025-208): the allowed edit's file is amended to name
+				// the cited files Main did read; the note tells Main what moved into the list.
+				if (d.allow && d.rewrite) {
+					try {
+						writeFileSync(d.rewrite.path, d.rewrite.text);
+					} catch {}
+					if (d.note) notes.push(d.note);
+				}
 				if (d.allow && (!c.hasAgent || c.kind === "main") && q.doneCount(after) > q.doneCount(before) && q.planAt(file, q.activePlans())) {
 					const note = trimProgress(file);
 					if (note) notes.push(note);

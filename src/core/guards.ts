@@ -35,6 +35,18 @@ import type { Plan } from "./queue/lib.ts";
 import { nowSec } from "./clock.ts";
 const ALLOW: Decision = { allow: true, reason: "" };
 
+/**
+ * The plan-edit decision: a Decision plus the allow-with-amendment fields of the plan-read guard
+ * (I-20261025-208). On allow, `rewrite` names the file the caller writes back (the auto-listed
+ * read section) and `note` is the receipt for the tool result; both travel through the guard
+ * CLI's JSON output. They live here, not on the shared Decision, so every other check keeps the
+ * plain shape.
+ */
+export interface PlanEditDecision extends Decision {
+	rewrite?: { path: string; text: string };
+	note?: string;
+}
+
 function deny(reason: string): Decision {
 	return { allow: false, reason };
 }
@@ -964,7 +976,7 @@ function mainOnlyLines(text: string): string {
  * `restore` hands back the untouched text for the caller to write (the original restored the
  * file itself before reporting).
  */
-export function checkPlanEdit(e: PlanEditEvent, cfg: Config): Decision {
+export function checkPlanEdit(e: PlanEditEvent, cfg: Config): PlanEditDecision {
 	if (e.agent === "main") return checkMainPlan(e, cfg);
 	if (q.outsideProgress(e.after) !== q.outsideProgress(e.before) || mainOnlyLines(e.after) !== mainOnlyLines(e.before)) {
 		log(cfg.paths.plan_guard_log, `RESTORE ${e.path}`);
@@ -1042,13 +1054,27 @@ export function findingsValue(block: string): string | null {
 
 // Main's plan text outside "## Progress" must rest on files Main read itself (planReadProblems).
 // An empty `before` means the plan file did not exist yet; a refusal then deletes it.
-function checkMainPlan(e: PlanEditEvent, cfg: Config): Decision {
+function checkMainPlan(e: PlanEditEvent, cfg: Config): PlanEditDecision {
 	if (q.outsideProgress(e.after) === q.outsideProgress(e.before)) return ALLOW;
+	// A cited file Main did read lands in the list instead of the refusal (I-20261025-208): fix the
+	// text first, then judge the fixed text like any other edit.
+	const fix = autoListReads(e.after, e.path, cfg);
+	const fixed = fix ? fix.text : e.after;
 	// Refuse only what this edit adds: a problem the plan already had is not Main's doing now.
 	// The missing-section problem is always refused: a plan with no read list has no evidence behind its text.
 	const known = new Set(e.before ? planReadProblems(e.before, e.path, cfg) : []);
-	const problems = planReadProblems(e.after, e.path, cfg).filter(p => p === NO_SECTION || !known.has(p));
-	if (!problems.length) return ALLOW;
+	const problems = planReadProblems(fixed, e.path, cfg).filter(p => p === NO_SECTION || !known.has(p));
+	if (!problems.length) {
+		if (!fix) return ALLOW;
+		const list = fix.paths.join(", ");
+		log(cfg.paths.plan_guard_log, `AUTO-LIST ${e.path}: ${list}`);
+		return {
+			allow: true,
+			reason: "",
+			rewrite: { path: e.path, text: fix.text },
+			note: `plan-guard: added ${fix.paths.length} file(s) to "## Code read by Main": ${list}`,
+		};
+	}
 	log(cfg.paths.plan_guard_log, `REFUSE-READ ${e.path}: ${problems.join("; ")}`);
 	return {
 		allow: false,
@@ -1129,6 +1155,47 @@ function namedOrTwin(named: Set<string>, abs: string, planPath: string, text: st
 	if (named.has(abs)) return true;
 	const twin = twinFile(abs, planPath, text);
 	return twin !== null && named.has(twin);
+}
+
+/**
+ * Cited paths (outside Progress) Main read within the window but the list omits: returns the plan
+ * text with one `- \`<path as cited>\`` line appended to "## Code read by Main" (the section is
+ * created before "## Progress" when missing), or null when nothing qualifies. Never-read citations
+ * stay out: they are refused like today.
+ */
+function autoListReads(text: string, planPath: string, cfg: Config): { text: string; paths: string[] } | null {
+	const reads = readMainReads();
+	const maxMs = cfg.guards.plan_read_max_hours * 3_600_000;
+	const covered = new Set<string>();
+	for (const p of [...(READ_SECTION.exec(text)?.[1] ?? "").matchAll(LISTED_PATH)].map(m => (m[1] ?? "").replace(/:[\d,+\- ]+$/, "")))
+		covered.add(planFile(p, planPath, text));
+	const added: string[] = [];
+	const seen = new Set<string>();
+	for (const [, cited = ""] of q.outsideProgress(text).matchAll(CITED_PATH)) {
+		const abs = planFile(cited, planPath, text);
+		if (abs.includes("/docs/plans/") || seen.has(cited) || !isFile(abs)) continue;
+		if (namedOrTwin(covered, abs, planPath, text)) continue;
+		if (!readWithin(abs, planPath, text, reads, maxMs)) continue;
+		seen.add(cited);
+		covered.add(abs);
+		added.push(cited);
+	}
+	if (!added.length) return null;
+	const lines = added.map(p => `- \`${p}\``);
+	const m = READ_SECTION.exec(text);
+	let out: string;
+	if (m && m[1] !== undefined) {
+		// Append after the section's last entry, ahead of the blank lines before the next heading.
+		const bodyStart = m.index + m[0].length - m[1].length;
+		const at = bodyStart + m[1].replace(/\s+$/, "").length;
+		out = `${text.slice(0, at)}\n${lines.join("\n")}${text.slice(at)}`;
+	} else {
+		// No section yet: create it right before "## Progress" (or at the end when that is missing too).
+		const at = text.search(/^## Progress\b/m);
+		const block = `## Code read by Main\n${lines.join("\n")}\n\n`;
+		out = at === -1 ? `${text}${block}` : `${text.slice(0, at)}${block}${text.slice(at)}`;
+	}
+	return { text: out, paths: added };
 }
 
 function isFile(file: string): boolean {

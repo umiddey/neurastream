@@ -216,3 +216,36 @@ test("a file Main read in neither checkout is still refused with the was-not-rea
 	expect(d.allow).toBe(false);
 	expect(d.reason).toContain("src/a.ts was not read by Main within");
 });
+
+// P2: a cited file Main did read lands in the list instead of the refusal.
+test("a cited file Main has read is auto-listed: allowed, the rewrite text gains the entry, the note names it", () => {
+	readLogWith({ [LISTED]: HOURS_30_AGO, [NEW_CITE]: new Date().toISOString() });
+	const before = guardPlan("[ ]", "- Reads show X.", PROGRESS);
+	const after = guardPlan("[ ]", "- Reads show X. See src/y.ts:3.", PROGRESS);
+	const d = checkPlanEdit({ path: PLAN_FILE, before, after, agent: "main" }, GUARD_CFG);
+	expect(d.allow).toBe(true);
+	expect(d.rewrite).toEqual({ path: PLAN_FILE, text: expect.stringContaining("- `src/y.ts`") });
+	expect(d.note).toBe(`plan-guard: added 1 file(s) to "## Code read by Main": src/y.ts`);
+});
+
+test("a never-read citation is still refused, never auto-listed", () => {
+	readLogWith({ [LISTED]: new Date().toISOString() });
+	const before = guardPlan("[ ]", "- Reads show X.", PROGRESS);
+	const after = guardPlan("[ ]", "- Reads show X. See src/y.ts:3.", PROGRESS);
+	const d = checkPlanEdit({ path: PLAN_FILE, before, after, agent: "main" }, GUARD_CFG);
+	expect(d.allow).toBe(false);
+	expect(d.reason).toContain("src/y.ts is cited but not listed");
+	expect(d.rewrite).toBeUndefined();
+});
+
+test("a plan with no read section gains one before Progress when its citation was read", () => {
+	readLogWith({ [NEW_CITE]: new Date().toISOString() });
+	const before = guardPlan("[ ]", "- Reads show X.", PROGRESS).replace("\n## Code read by Main\n- `src/a.ts`\n", "\n");
+	const after = guardPlan("[ ]", "- Reads show X. See src/y.ts:3.", PROGRESS).replace("\n## Code read by Main\n- `src/a.ts`\n", "\n");
+	const d = checkPlanEdit({ path: PLAN_FILE, before, after, agent: "main" }, GUARD_CFG);
+	expect(d.allow).toBe(true);
+	const text = d.rewrite?.text ?? "";
+	expect(text.indexOf("## Code read by Main")).toBeGreaterThanOrEqual(0);
+	expect(text.indexOf("## Code read by Main")).toBeLessThan(text.indexOf("## Progress"));
+	expect(text).toContain("- `src/y.ts`");
+});
