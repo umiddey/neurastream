@@ -18,9 +18,9 @@ import { appendMetric } from "../src/core/metrics.ts";
 import { checkTool } from "../src/core/guards.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { createOmpAdapter, ownerInboxCursorPath, ownerInboxMessage, type ExtensionHost } from "../src/adapters/omp/index.ts";
-import { inboxPath, startOwnerUi, type OwnerUiOptions, type OwnerUiServer } from "../src/core/owner-ui.ts";
+import { inboxPath, agentRows, ciRows, incidentRows, machineRow, questionRows, queueRows, scoresData, startOwnerUi, type OwnerUiOptions, type OwnerUiServer } from "../src/core/owner-ui.ts";
 import { runUi } from "../src/cli/ui.ts";
-import { stateDirPath, unlockPath } from "../src/core/queue/lib.ts";
+import { parsePlan, stateDirPath, unlockPath } from "../src/core/queue/lib.ts";
 import { parseWhoisLogin, type Tailscale } from "../src/core/tailscale.ts";
 
 const OWNER = "owner@example.com";
@@ -82,6 +82,7 @@ const CFG: Config = {
 applyQueueEnv(CFG);
 
 const INDEX = CFG.paths.queue_index;
+mkdirSync(join(TOY, ".git"), { recursive: true }); // gitTop only looks for the dir: the repo label is basename(TOY)
 mkdirSync(join(TOY, "docs/plans"), { recursive: true });
 mkdirSync(dirname(unlockPath()), { recursive: true });
 mkdirSync(stateDirPath(), { recursive: true });
@@ -185,14 +186,12 @@ function raw(
 	const req = request({ host: "127.0.0.1", port: svc.port, method, path, headers }, res => {
 		const chunks: Buffer[] = [];
 		res.on("data", (c: Buffer) => chunks.push(c));
-		res.on("end", () =>
-			resolve(
-				new Response(Buffer.concat(chunks).toString("utf8"), {
-					status: res.statusCode,
-					headers: { "content-type": String(res.headers["content-type"] ?? "") },
-				}),
-			),
-		);
+		res.on("end", () => {
+			// All response headers: the P2 tests read Location and Content-Security-Policy.
+			const resHeaders: Record<string, string> = {};
+			for (let i = 0; i < res.rawHeaders.length; i += 2) resHeaders[(res.rawHeaders[i] ?? "").toLowerCase()] = String(res.rawHeaders[i + 1] ?? "");
+			resolve(new Response(Buffer.concat(chunks).toString("utf8"), { status: res.statusCode, headers: resHeaders }));
+		});
 	});
 	req.on("error", reject);
 	req.end(body);
@@ -246,35 +245,35 @@ function planGuardLogLines(): string[] {
 
 // --- auth: only the owner's phone gets through ---
 
-test("GET / serves the owner: every section renders from fixture state", async () => {
+test("GET / renders the redesigned page: waiting card with title, repo eyebrow, question and goal background", async () => {
 	const svc = ui();
 	const res = await get(svc);
 	expect(res.status).toBe(200);
 	expect(res.headers.get("content-type")).toContain("text/html");
 	const body = await res.text();
-	// questions: the plan's WAITING on owner line
+	// needs-you card: title from the plan's # heading, repo label eyebrow, the ask, the goal
+	expect(body).toContain("Toy plan");
+	expect(body).toContain("toy · waiting");
+	expect(body).toContain("What I need from you");
 	expect(body).toContain(QUESTION);
-	expect(body).toContain(PLAN_W);
-	// agents: the running ledger row
+	expect(body).toContain("Owner page toy.");
+	// working row: the running ledger agent
 	expect(body).toContain("owner-ui-alice-run");
 	expect(body).toContain("RUNNING");
-	// queue: both plans with their status
-	expect(body).toContain("20261019_wait.md");
-	expect(body).toContain("20261019_done.md");
 	// merges/CI: the metrics ci row
 	expect(body).toContain("!77");
 	// incidents
 	expect(body).toContain("toy incident the page must show");
-	// agent scores: the ranking board
+	// agent scores: the ranking board (a non-table board renders as text lines)
 	expect(body).toContain("alice 4.2");
-	// machine health: disk and load numbers
+	// machine health in the strip
 	expect(body).toContain("disk");
-	expect(body).toContain("load");
-	// unlock state
-	expect(body).toContain("locked");
-	// mobile page plumbing: auto-refresh every 20 s
-	expect(body).toContain('http-equiv="refresh"');
-	expect(body).toContain('content="20"');
+	// lock state
+	expect(body).toMatch(/Locked/);
+	// the redesign: progressive disclosure, no raw text dumps, no meta refresh
+	expect(body).toContain("<details");
+	expect(body).not.toContain("<pre>");
+	expect(body).not.toContain("http-equiv");
 });
 
 test("the machine's own tailnet address gets 403", async () => {
@@ -430,12 +429,18 @@ test("POST /lock removes the unlock file and logs LOCK ui source=ui:<login>", as
 	expect(lines[0]).toContain(`LOCK ui source=ui:${OWNER}`);
 });
 
-test("unlock with the chat gate off is refused and logs nothing", async () => {
+test("unlock or lock with the chat gate off redirects to the explanation and changes nothing", async () => {
 	const svc = ui({ cfg: { ...CFG, guards: { ...CFG.guards, chat_unlock: false } } });
 	const res = await post(svc, "/unlock", { minutes: "5" });
-	expect(res.status).toBe(409);
+	expect(res.status).toBe(303);
+	expect(res.headers.get("location")).toBe("/?sent=unlock-off");
 	expect(existsSync(unlockPath())).toBe(false);
 	expect(planGuardLogLines().some(l => l.includes("UNLOCK"))).toBe(false);
+	expect(inboxRecords()).toEqual([]);
+	const lock = await post(svc, "/lock", {});
+	expect(lock.status).toBe(303);
+	expect(lock.headers.get("location")).toBe("/?sent=unlock-off");
+	expect(existsSync(unlockPath())).toBe(false);
 	expect(inboxRecords()).toEqual([]);
 });
 
@@ -735,4 +740,247 @@ test("parseWhoisLogin reads UserProfile.LoginName from the multi-line `tailscale
 	expect(parseWhoisLogin(out)).toBe("owner@example.com");
 	expect(parseWhoisLogin(JSON.stringify({ User: { LoginName: "owner@example.com" } }))).toBeNull();
 	expect(parseWhoisLogin("not json")).toBeNull();
+});
+
+// --- P2: the redesigned page's receipt, all-clear and CSP plumbing ---
+
+test("zero waiting plans render the all-clear state", async () => {
+	const emptyIndex = join(TMP, "empty-index.md");
+	writeFileSync(emptyIndex, `${PLAN_D}\n`);
+	const svc = ui({ cfg: { ...CFG, paths: { ...CFG.paths, queue_index: emptyIndex } } });
+	const body = await (await get(svc)).text();
+	expect(body).toContain("All clear");
+	expect(body).toContain("Nothing needs you right now");
+});
+
+test("the CSP header nonce equals the inline script nonce, and there is no meta refresh", async () => {
+	const svc = ui();
+	const res = await get(svc);
+	const csp = res.headers.get("content-security-policy") ?? "";
+	expect(csp).toContain("default-src 'none'");
+	const nonce = /nonce-([A-Za-z0-9]+)/.exec(csp)?.[1];
+	expect(nonce).toBeTruthy();
+	const body = await res.text();
+	expect(body).toContain(`<script nonce="${nonce}">`);
+	expect(body).not.toContain("http-equiv");
+});
+
+test("POST /answer redirects to the one-time receipt", async () => {
+	const svc = ui();
+	const res = await post(svc, "/answer", { plan: PLAN_W, answer: "yes" });
+	expect(res.status).toBe(303);
+	expect(res.headers.get("location")).toBe("/?sent=answer");
+});
+
+// --- P1: typed page data (the plain-language card rows) ---
+
+test("parsePlan takes the title from the first # heading (else the basename) and the goal bullets, max 6", () => {
+	const p = parsePlan(TOY, PLAN_W, readFileSync(PLAN_W, "utf8"));
+	expect(p.title).toBe("Toy plan");
+	expect(p.goal).toEqual(["Owner page toy."]);
+	const goals = Array.from({ length: 9 }, (_, i) => `- goal line ${i + 1}`).join("\n");
+	const q = parsePlan(TOY, join(TOY, "docs/plans/20261020_goals.md"), `# Deep goals\n\n## Goal\n${goals}\n`);
+	expect(q.title).toBe("Deep goals");
+	expect(q.goal).toEqual(["goal line 1", "goal line 2", "goal line 3", "goal line 4", "goal line 5", "goal line 6"]);
+	const bare = parsePlan(TOY, join(TOY, "docs/plans/20261020_bare.md"), "no heading here");
+	expect(bare.title).toBe("20261020_bare.md");
+	expect(bare.goal).toEqual([]);
+});
+
+test("questionRows: title, repo label, waiting line, goal and minutes waiting from the file mtime", () => {
+	const rows = questionRows(CFG);
+	expect(rows.length).toBe(1);
+	expect(rows[0]).toMatchObject({ plan: PLAN_W, title: "Toy plan", repo: "toy", waitingLine: QUESTION, goal: ["Owner page toy."] });
+	expect(rows[0]!.waitingMin).toBeGreaterThanOrEqual(0);
+});
+
+test("agentRows: short model after the last /, detail and minutes since startedAt", () => {
+	expect(agentRows(CFG, RUNS)).toEqual([{ id: "owner-ui-alice-run", model: "model", detail: "RUNNING", minutes: 0, status: "running" }]);
+	const started = nowSec() - 5400;
+	const rows = agentRows(CFG, {
+		listRuns: () => [run({ id: "x", model: "zai/glm-5.3-flash", status: "waiting", statusDetail: "WAITING on owner", startedAt: started })],
+		mainSession: () => null,
+	});
+	expect(rows[0]!.model).toBe("glm-5.3-flash");
+	expect(rows[0]!.minutes).toBe(90);
+	expect(rows[0]!.status).toBe("waiting");
+});
+
+test("queueRows: open plans only, with repo label, title, status and waiting", () => {
+	expect(queueRows(CFG)).toEqual([{ repo: "toy", file: PLAN_W, title: "Toy plan", status: "open", waiting: true }]);
+});
+
+test("ciRows: newest first, mr as text, tries as number", () => {
+	appendMetric(CFG, { type: "ci", mr: "!78", repo: TOY, tries: 1, ts: nowSec() + 1 });
+	const rows = ciRows(CFG);
+	expect(rows.length).toBe(2);
+	expect(rows[0]).toMatchObject({ mr: "!78", tries: 1 });
+	expect(rows[1]!.mr).toBe("!77");
+});
+
+test("incidentRows: id, kind, summary, count", () => {
+	const rows = incidentRows(CFG);
+	expect(rows.length).toBe(1);
+	expect(rows[0]).toMatchObject({ kind: "toy", summary: "toy incident the page must show", count: 1 });
+	expect(rows[0]!.id).toBeTruthy();
+});
+
+test("scoresData parses a markdown table into header and rows, other lines as text", () => {
+	const board = join(TMP, "table-board.md");
+	writeFileSync(
+		board,
+		["# Subagent ranking board", "", "| agent | score | runs |", "| --- | ---: | ---: |", "| alice | 4.2 | 7 |", "| bob | 3.9 | 5 |", "", "- alice 4.2 (7d)"].join("\n"),
+	);
+	const d = scoresData({ ...CFG, paths: { ...CFG.paths, ranking_board: board } });
+	expect(d.header).toEqual(["agent", "score", "runs"]);
+	expect(d.rows).toEqual([
+		["alice", "4.2", "7"],
+		["bob", "3.9", "5"],
+	]);
+	expect(d.text).toEqual(["# Subagent ranking board", "- alice 4.2 (7d)"]);
+});
+
+test("machineRow: free GB, disk minimum, load, load max and cores", () => {
+	const m = machineRow(CFG);
+	expect(m.freeGb).toBeGreaterThan(0);
+	expect(typeof m.diskMin).toBe("number");
+	expect(m.cores).toBeGreaterThan(0);
+	expect(m.loadMax).toBeGreaterThan(0);
+	expect(m.load).toBeGreaterThanOrEqual(0);
+});
+
+// --- P4: queue reorder by drag and drop ---
+
+const PLAN_A = join(TOY, "docs/plans/20261021_alpha.md");
+const PLAN_B = join(TOY, "docs/plans/20261021_beta.md");
+const PLAN_C = join(TOY, "docs/plans/20261021_gamma.md");
+
+// A temp INDEX.md with comment and blank lines: every non-plan line sits above the plan that
+// follows it, and a successful reorder keeps exactly that attachment.
+function reorderIndex(): string {
+	writeFileSync(PLAN_A, PLAN_TEXT("open", false));
+	writeFileSync(PLAN_B, PLAN_TEXT("open", false));
+	writeFileSync(PLAN_C, PLAN_TEXT("open", false));
+	const index = join(TMP, "reorder-index.md");
+	writeFileSync(
+		index,
+		[
+			"<!-- the top comment belongs to the plan below it -->",
+			PLAN_A,
+			"",
+			"<!-- pinned above B -->",
+			PLAN_B,
+			PLAN_C,
+			"",
+		].join("\n"),
+	);
+	return index;
+}
+
+test("POST /reorder rewrites the index in the new order, keeping every comment and blank line above the plan that follows it", async () => {
+	const index = reorderIndex();
+	const svc = ui({ cfg: { ...CFG, paths: { ...CFG.paths, queue_index: index } } });
+	const res = await post(svc, "/reorder", {
+		order: [PLAN_B, PLAN_C, PLAN_A].join("\n"),
+		before: [PLAN_A, PLAN_B, PLAN_C].join("\n"),
+		moved: PLAN_A,
+	});
+	expect(res.status).toBe(303);
+	expect(res.headers.get("location")).toBe("/?sent=reorder&to=3");
+	expect(readFileSync(index, "utf8")).toBe(
+		[
+			"",
+			"<!-- pinned above B -->",
+			PLAN_B,
+			PLAN_C,
+			"<!-- the top comment belongs to the plan below it -->",
+			PLAN_A,
+			"",
+		].join("\n"),
+	);
+});
+
+test("POST /reorder appends exactly one reorder inbox record with 1-based from/to ranks and the login", async () => {
+	const index = reorderIndex();
+	const svc = ui({ cfg: { ...CFG, paths: { ...CFG.paths, queue_index: index } } });
+	const before = nowSec();
+	const res = await post(svc, "/reorder", {
+		order: [PLAN_C, PLAN_A, PLAN_B].join("\n"),
+		before: [PLAN_A, PLAN_B, PLAN_C].join("\n"),
+		moved: PLAN_A,
+	});
+	expect(res.status).toBe(303);
+	const recs = inboxRecords();
+	expect(recs.length).toBe(1);
+	expect(recs[0]).toEqual({
+		ts: expect.any(Number),
+		kind: "reorder",
+		plan: PLAN_A,
+		from: 1,
+		to: 2,
+		login: OWNER,
+	});
+	expect(Number(recs[0]!.ts)).toBeGreaterThanOrEqual(before);
+});
+
+test("a /reorder order that is not exactly the index's plans gets 400 and leaves the file unchanged", async () => {
+	const index = reorderIndex();
+	const svc = ui({ cfg: { ...CFG, paths: { ...CFG.paths, queue_index: index } } });
+	const original = readFileSync(index, "utf8");
+	const full = [PLAN_A, PLAN_B, PLAN_C];
+	// a dropped plan
+	expect((await post(svc, "/reorder", { order: [PLAN_A, PLAN_B].join("\n"), before: full.join("\n"), moved: PLAN_A })).status).toBe(400);
+	// an added plan
+	expect((await post(svc, "/reorder", { order: [...full, PLAN_D].join("\n"), before: full.join("\n"), moved: PLAN_A })).status).toBe(400);
+	// a duplicated plan
+	expect((await post(svc, "/reorder", { order: [PLAN_A, PLAN_B, PLAN_C, PLAN_A].join("\n"), before: full.join("\n"), moved: PLAN_A })).status).toBe(400);
+	// an empty order
+	expect((await post(svc, "/reorder", { order: "", before: full.join("\n"), moved: PLAN_A })).status).toBe(400);
+	expect(readFileSync(index, "utf8")).toBe(original);
+	expect(inboxRecords()).toEqual([]);
+});
+
+test("a stale before order gets 409 and leaves the file unchanged", async () => {
+	const index = reorderIndex();
+	const svc = ui({ cfg: { ...CFG, paths: { ...CFG.paths, queue_index: index } } });
+	const original = readFileSync(index, "utf8");
+	// The page was rendered with B,A,C but the index now holds A,B,C: Main reordered meanwhile.
+	const res = await post(svc, "/reorder", {
+		order: [PLAN_C, PLAN_B, PLAN_A].join("\n"),
+		before: [PLAN_B, PLAN_A, PLAN_C].join("\n"),
+		moved: PLAN_C,
+	});
+	expect(res.status).toBe(409);
+	expect(readFileSync(index, "utf8")).toBe(original);
+	expect(inboxRecords()).toEqual([]);
+});
+
+test("a non-owner peer is refused on /reorder like /answer", async () => {
+	const index = reorderIndex();
+	const svc = ui({ cfg: { ...CFG, paths: { ...CFG.paths, queue_index: index } }, peerOf: () => "100.95.10.7" });
+	const original = readFileSync(index, "utf8");
+	const res = await post(svc, "/reorder", {
+		order: [PLAN_B, PLAN_C, PLAN_A].join("\n"),
+		before: [PLAN_A, PLAN_B, PLAN_C].join("\n"),
+		moved: PLAN_A,
+	});
+	expect(res.status).toBe(403);
+	expect(readFileSync(index, "utf8")).toBe(original);
+	expect(inboxRecords()).toEqual([]);
+});
+
+test("the queue section is one flat ranked list with a drag handle, arrow buttons and the rendered order in a before field", async () => {
+	const svc = ui();
+	const body = await (await get(svc)).text();
+	expect(body).toContain('id="qlist"');
+	expect(body).toContain(`data-plan="${PLAN_W}"`);
+	expect(body).toContain('class="qrank">1<');
+	expect(body).toContain("qhandle");
+	expect(body).toContain(">↑ top<");
+	expect(body).toContain(">↑<");
+	expect(body).toContain(">↓<");
+	expect(body).toContain(`name="before" value="${PLAN_W}"`);
+	expect(body).toContain('action="/reorder"');
+	// not grouped by repo any more
+	expect(body).not.toContain("qrepo");
 });
