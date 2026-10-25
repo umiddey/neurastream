@@ -13,6 +13,8 @@
 //   D4 owner-correction: an owner message matching the M4 correction patterns.
 //   D5 claim-unbacked: a run's final report claims something its own tool output never
 //     showed (gathered by the traces claims CLI, src/cli/traces.ts).
+//   D6 suspicious-action: a high-severity suspicious tool action the run's trace shows
+//     (gathered by the traces actions CLI, src/cli/traces.ts).
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -24,6 +26,7 @@ import { log } from "./guards.ts";
 import { addIncident, type IncidentView } from "./incidents.ts";
 import type { GuardBlock } from "./metrics.ts";
 import { verifyClaims, type Claim } from "./trace-claims.ts";
+import type { SuspiciousAction } from "./trace-actions.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -168,6 +171,25 @@ export function claimUnbacked(claims: Claim[], events: TraceEvent[]): Finding[] 
 	return out;
 }
 
+// ---- D6: a high-severity suspicious tool action ----
+
+/**
+ * Suspicious tool actions (src/core/trace-actions.ts) at severity high: secret-path reads and
+ * exfil-shaped network commands. Medium and low findings stay in the `traces actions` report;
+ * only the ones worth waking the owner for become incidents. Evidence is already masked and
+ * capped by the rule engine, so nothing secret reaches the incident store.
+ */
+export function suspiciousAction(actions: SuspiciousAction[]): Finding[] {
+	return actions
+		.filter((a) => a.severity === "high")
+		.map((a) => ({
+			kind: "suspicious-action",
+			summary: `${a.runId}: ${a.summary}`,
+			evidence: a.evidence,
+			fingerprint: `suspicious-action:${a.rule}:${a.target}`,
+		}));
+}
+
 // ---- the runner ----
 
 /** The plain inputs the callers gather; a detector without its input does not run. */
@@ -184,6 +206,8 @@ export interface DetectorInput {
 	/** D5: one run's final-report claims plus the same run's trace events (the traces CLI gathers both). */
 	claims?: Claim[];
 	events?: TraceEvent[];
+	/** D6: suspicious tool actions from one or more scanned runs (the traces actions CLI gathers them). */
+	actions?: SuspiciousAction[];
 }
 
 /**
@@ -230,6 +254,9 @@ export function runDetectors(cfg: Config, input: DetectorInput, now = nowSec()):
 	}
 	if (input.claims && input.events) {
 		attempt("claim-unbacked", () => claimUnbacked(input.claims!, input.events!));
+	}
+	if (input.actions) {
+		attempt("suspicious-action", () => suspiciousAction(input.actions!));
 	}
 	return out;
 }

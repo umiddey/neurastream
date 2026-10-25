@@ -102,9 +102,9 @@ function expandHome(p: string, home: string): string {
 	return p;
 }
 
-/** Trim shell noise off a whitespace token without touching glob stars. */
+/** Trim shell noise (quotes, `;`, the `)` closing a `$(...)`) off a whitespace token without touching glob stars. */
 function bareWord(raw: string): string {
-	return raw.replace(/^[\s'"`]+|[\s'"`;]+$/g, "");
+	return raw.replace(/^[\s'"`]+|[\s'"`;)]+$/g, "");
 }
 
 /** Path-like words of one command string: with a slash, or dotfiles, or home-relative. */
@@ -128,6 +128,31 @@ function argStrings(args: Record<string, unknown> | undefined): string[] {
 		else if (v && typeof v === "object") for (const x of Object.values(v as Record<string, unknown>)) walk(x);
 	};
 	for (const v of Object.values(args)) walk(v);
+	return out;
+}
+
+/**
+ * Absolute targets a write tool names: its `path`/`file`/`file_path` arguments (`;`-joined lists
+ * and `:N-M` selectors allowed) and `[path#TAG]` headers in patch text. Content strings are data,
+ * never targets. A relative target resolves against the call's `cwd`; without one it is skipped,
+ * since its real location is unknown.
+ */
+function writerPaths(args: Record<string, unknown> | undefined, home: string): string[] {
+	if (!args) return [];
+	const raw: string[] = [];
+	for (const key of ["path", "file", "file_path"]) {
+		const v = args[key];
+		if (typeof v === "string") raw.push(...v.split(";"));
+	}
+	for (const m of JSON.stringify(args).matchAll(/\[([^\]\s#"]+)#[0-9A-Fa-f]{4}\]/g)) raw.push(m[1] ?? "");
+	const cwd = typeof args.cwd === "string" ? expandHome(args.cwd, home) : "";
+	const out: string[] = [];
+	for (const r of raw) {
+		const p = expandHome(r.trim().replace(/(:raw)?(:[\d+\-,]+)?(:raw)?$/, ""), home);
+		if (p === "" || p.includes("://")) continue;
+		if (p.startsWith("/")) out.push(p);
+		else if (cwd.startsWith("/")) out.push(`${cwd.replace(/\/+$/, "")}/${p.replace(/^\.\//, "")}`);
+	}
 	return out;
 }
 
@@ -294,7 +319,7 @@ export function suspiciousActions(events: TraceEvent[], rules: ActionsRules): Su
 		const scanArgs = command === "" && !writer;
 		const writes = new Set<string>([
 			...writeTargets(command).map((w) => expandHome(w, rules.home)),
-			...(writer ? argStrings(ev.args).map((w) => expandHome(w, rules.home)) : []),
+			...(writer ? writerPaths(ev.args, rules.home) : []),
 		]);
 		const evidence = command !== "" ? command : JSON.stringify(ev.args ?? {});
 		for (const w of writes) {

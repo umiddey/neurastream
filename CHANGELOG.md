@@ -3,6 +3,7 @@
 ## Unreleased
 ### Added
 - `neurastream traces claims <runId|--since 24h> [--json]`: check what a run's final report claims (test counts, exit codes, commit SHAs, heavy-run labels, changed paths) against what the same run's tool output actually shows; anything nothing backs becomes a `claim-unbacked` finding. A SHA only counts when the git command whose output printed it is the call the run itself made (results pair with their own tool calls), paths must end in a real file extension (dotted API symbols and session-UUID fragments are not files), and files agents wrote through the shell (redirect, heredoc, `tee`/`touch`/`cp`/`mv`) back changed-path claims like edit/write calls do.
+- `neurastream traces actions <runId|--since 24h> [--json]`: flag suspicious tool actions in a run's trace — reads of secret paths, network commands to hosts not on the allow list (exfil-shaped ones are high), writes outside the work roots or into deny paths, and `curl … | sh`. Every list lives in the new `traces:` config section. High findings become `suspicious-action` incidents; evidence is masked and capped.
 
 ## 0.2.12
 ### Added

@@ -4,11 +4,14 @@
 // tests build the rule set directly, exactly the way actionsRules(cfg) maps it.
 
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { ompTraceSource } from "../src/adapters/omp/traces.ts";
 import type { TraceEvent } from "../src/core/adapter.ts";
 import { loadConfig, ConfigError } from "../src/core/config.ts";
+import { runDetectors } from "../src/core/incident-detectors.ts";
+import { runTraces } from "../src/cli/traces.ts";
 import { actionsRules, globMatch, suspiciousActions, type ActionsRules } from "../src/core/trace-actions.ts";
 
 const HOME = "/home/agent-sandbox";
@@ -115,6 +118,19 @@ describe("out-of-scope and deny-path writes", () => {
 		], rules())).toEqual([]);
 	});
 
+	test("a write tool's content and intent are data; only its named targets count", () => {
+		expect(suspiciousActions([
+			call("edit", {
+				i: "Adding traceback to the folder log",
+				input: `[${HOME}/Work/demo-wt/src/a.ts#1A2B]\nPUT 3.=3:\n+  open("/tmp/out/x") > /tmp/out/y`,
+			}),
+			call("write", { path: "src/b.ts", content: "cat /etc/hosts > /tmp/out/z" }),
+			call("bash", { command: "v=$(git rev-parse HEAD 2>/dev/null)" }),
+		], rules())).toEqual([]);
+		const f = suspiciousActions([call("edit", { input: "[/tmp/out/c.ts#1A2B]\nPUT 1.=1:\n+x" })], rules());
+		expect(f.map((a) => a.target)).toEqual(["/tmp/out/c.ts"]);
+	});
+
 	test("deny paths are flagged wherever the roots point", () => {
 		const f = suspiciousActions([call("bash", { command: "cp tool ~/.local/bin/tool" })], rules());
 		expect(f).toHaveLength(1);
@@ -205,5 +221,136 @@ traces:
 			err = e;
 		}
 		expect(err).toBeInstanceOf(ConfigError);
+	});
+});
+
+// ---- P2: the real trace reader over the fixtures, incidents for high findings, the CLI ----
+
+const REPO = dirname(dirname(import.meta.path));
+const FIX = join(REPO, "tests", "fixtures", "traces");
+const P2 = mkdtempSync(join(tmpdir(), "ns-actions-p2-"));
+const P2SESSIONS = join(P2, ".omp/agent/sessions/actions-proj");
+mkdirSync(P2SESSIONS, { recursive: true });
+// A user config with work roots, so the out-of-scope write rule fires (the template has both
+// write lists empty = scope check off, and jsonlAt counts directory levels: runs are discovered
+// from the sessions parent, matching the real layout and the CLI's root).
+mkdirSync(join(P2, ".config/neurastream"), { recursive: true });
+writeFileSync(
+	join(P2, ".config/neurastream/config.yml"),
+	`paths:
+  home: "${P2}"
+  work_roots:
+    - "${P2}/Work"
+`,
+);
+// Real layout: sessions/<project>/<dated main>.jsonl, so the run ids are MAIN 09-00-00 / MAIN 09-10-00.
+writeFileSync(join(P2SESSIONS, "2026-10-25T09-00-00-000Z_actions-red.jsonl"), readFileSync(join(FIX, "actions-red.jsonl"), "utf8"));
+writeFileSync(join(P2SESSIONS, "2026-10-25T09-10-00-000Z_actions-benign.jsonl"), readFileSync(join(FIX, "actions-benign.jsonl"), "utf8"));
+const P2RULES = actionsRules(loadConfig({ home: P2, env: {} }));
+const P2SRC = ompTraceSource(join(P2, ".omp/agent/sessions"));
+const key = (a: { rule: string; severity: string; target: string }): string => `${a.rule}/${a.severity}/${a.target}`;
+
+describe("fixture scan through the real trace reader", () => {
+	test("the red fixture flags every rule with the planned severity", () => {
+		const f = suspiciousActions(P2SRC.events("MAIN 09-00-00"), P2RULES);
+		expect(
+			f.sort((a, b) => (key(a) < key(b) ? -1 : 1)).map(key),
+		).toEqual([
+			"net-unknown-host/high/exfil.example",
+			"net-unknown-host/low/get.example",
+			"net-unknown-host/low/unknown.example",
+			"pipe-to-shell/medium/| sh",
+			`secret-read/high/${P2}/.ssh/id_ed25519`,
+			"write-out-of-scope/medium//tmp/out/notes.txt",
+		]);
+	});
+
+	test("the benign fixture (git fetch, bun test) gives zero findings", () => {
+		expect(suspiciousActions(P2SRC.events("MAIN 09-10-00"), P2RULES)).toEqual([]);
+	});
+});
+
+describe("high findings become realtime incidents", () => {
+	const h2 = mkdtempSync(join(tmpdir(), "ns-actions-inc-"));
+	const qs = join(h2, "state");
+	mkdirSync(join(h2, ".config/neurastream"), { recursive: true });
+	mkdirSync(qs, { recursive: true });
+	writeFileSync(
+		join(h2, ".config/neurastream/config.yml"),
+		`paths:
+  home: "${h2}"
+  queue_state: "${qs}"
+  guard_log: "${join(h2, "g.log")}"
+  plan_guard_log: "${join(h2, "pg.log")}"
+`,
+	);
+	const cfg = loadConfig({ home: h2, env: {} });
+
+	test("runDetectors folds only the high actions as suspicious-action incidents", () => {
+		const all = suspiciousActions(P2SRC.events("MAIN 09-00-00"), P2RULES);
+		const inc = runDetectors(cfg, { actions: all }, 1_760_000_000);
+		expect(inc.map((i) => [i.kind, i.fingerprint])).toEqual([
+			["suspicious-action", `suspicious-action:secret-read:${P2}/.ssh/id_ed25519`],
+			["suspicious-action", "suspicious-action:net-unknown-host:exfil.example"],
+		]);
+		// the same sighting again dedupes onto the open incidents instead of opening new ones
+		const again = runDetectors(cfg, { actions: all }, 1_760_000_010);
+		expect(new Set(again.map((i) => i.id)).size).toBe(2);
+		expect(again.every((i) => i.count === 2)).toBe(true);
+	});
+});
+
+describe("traces actions CLI", () => {
+	test("--json prints one record set per run in the --since window", async () => {
+		const logs: string[] = [];
+		const orig = console.log;
+		console.log = (line: string) => logs.push(line);
+		let rc = -1;
+		try {
+			rc = await runTraces(["actions", "--since", "24h", "--json"], { home: P2 });
+		} finally {
+			console.log = orig;
+		}
+		expect(rc).toBe(0);
+		const reports = JSON.parse(logs.join("\n")) as { runId: string; actions: { rule: string; severity: string; target: string }[] }[];
+		expect(reports.map((r) => r.runId).sort()).toEqual(["MAIN 09-00-00", "MAIN 09-10-00"]);
+		const red = reports.find((r) => r.runId === "MAIN 09-00-00")!;
+		expect(red.actions).toHaveLength(6);
+		expect(red.actions.filter((a) => a.severity === "high")).toHaveLength(2);
+	});
+
+	test("text output lists severity, rule and masked evidence per action", async () => {
+		const logs: string[] = [];
+		const orig = console.log;
+		console.log = (line: string) => logs.push(line);
+		let rc = -1;
+		try {
+			rc = await runTraces(["actions", "MAIN 09-00-00"], { home: P2 });
+		} finally {
+			console.log = orig;
+		}
+		expect(rc).toBe(0);
+		expect(logs[0]).toBe("MAIN 09-00-00: 6 suspicious actions (2 high)");
+		expect(logs.filter((l) => l.startsWith("  [high]"))).toHaveLength(2);
+		expect(logs.filter((l) => l.startsWith("    evidence: "))).toHaveLength(6);
+	});
+
+	test("selector rules match claims: never both a run id and --since, unknown sub refused", async () => {
+		expect(await runTraces(["actions", "MAIN 09-00-00", "--since", "24h"], { home: P2 })).toBe(2);
+		expect(await runTraces(["nope"], { home: P2 })).toBe(2);
+	});
+
+	test("the claims subcommand still works over the same fixtures", async () => {
+		const logs: string[] = [];
+		const orig = console.log;
+		console.log = (line: string) => logs.push(line);
+		let rc = -1;
+		try {
+			rc = await runTraces(["claims", "MAIN 09-00-00"], { home: P2 });
+		} finally {
+			console.log = orig;
+		}
+		expect(rc).toBe(0);
+		expect(logs.join("\n")).toContain("no verifiable claims");
 	});
 });
