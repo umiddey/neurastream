@@ -711,8 +711,25 @@ export function dropSlot(mids: number[], mid: number): number {
 	return mids.length;
 }
 
+/**
+ * Autoscroll speed in px/frame while a drag is held near the screen edge (P5b): 0 outside a
+ * 72 px band, negative in the top band, positive in the bottom band, growing toward the edge,
+ * capped at 24 px/frame. Pure and exported so the page script — which inlines this exact
+ * source via toString() — and the test run the same code.
+ */
+export function edgeScrollStep(y: number, viewportH: number): number {
+	const BAND = 72;
+	const CAP = 24;
+	const fromTop = BAND - y;
+	const fromBottom = y - (viewportH - BAND);
+	if (fromTop > 0) return -Math.min(CAP, Math.ceil((CAP * fromTop) / BAND));
+	if (fromBottom > 0) return Math.min(CAP, Math.ceil((CAP * fromBottom) / BAND));
+	return 0;
+}
+
 const SCRIPT = `(function(){
 var dropSlot=${dropSlot.toString()};
+var edgeScrollStep=${edgeScrollStep.toString()};
 // Keep only the tab in the address bar: receipts are one-time DOM, not a reloadable URL.
 if(location.search){var keep=new URLSearchParams(location.search).get("tab");history.replaceState(null,"",location.pathname+(keep?"?tab="+keep:""));}
 function store(d,v){var k="nsui:"+d.id;if(v===undefined)return sessionStorage.getItem(k);sessionStorage.setItem(k,v?"1":"0");}
@@ -746,10 +763,16 @@ function navigate(href){swapMain(href,true,true).catch(function(){showNetErr();}
 function refreshNow(){if(swapping)return;swapping=true;swapMain(location.href,false,false).catch(function(){}).then(function(){swapping=false;});}
 function showNetErr(){var d=showReceipt("Couldn't reach the page — tap to retry");if(d)d.setAttribute("data-js","neterr");}
 var drag=null;
-window.addEventListener("pointermove",function(e){if(!drag||e.pointerId!==drag.id)return;var card=drag.card,list=drag.list;card.style.transform="translateY("+(e.clientY-drag.y0)+"px)";var r=card.getBoundingClientRect();var mid=r.top+r.height/2;var mids=[];var els=[];var ch=list.children;for(var i=0;i<ch.length;i++){var el=ch[i];if(el===card||el===drag.ph)continue;var er=el.getBoundingClientRect();mids.push(er.top+er.height/2);els.push(el);}
+// One drag move: place the floating card at pointer Y and drop the placeholder between the
+// cards around it. Also re-run after every autoscroll step, since scrolling moved the midpoints.
+function dragMove(y){if(!drag)return;var card=drag.card,list=drag.list;card.style.transform="translateY("+(y-drag.y0)+"px)";var r=card.getBoundingClientRect();var mid=r.top+r.height/2;var mids=[];var els=[];var ch=list.children;for(var i=0;i<ch.length;i++){var el=ch[i];if(el===card||el===drag.ph)continue;var er=el.getBoundingClientRect();mids.push(er.top+er.height/2);els.push(el);}
 var k=dropSlot(mids,mid);
-if(k<mids.length){if(els[k].previousElementSibling!==drag.ph)list.insertBefore(drag.ph,els[k]);}else if(mids.length&&els[mids.length-1].nextElementSibling!==drag.ph){list.insertBefore(drag.ph,els[mids.length-1].nextSibling);}});
-var endDrag=function(e,submitIt){if(!drag||(e&&e.pointerId!==undefined&&e.pointerId!==drag.id))return;var card=drag.card,ph=drag.ph,list=drag.list;card.classList.remove("dragging");card.style.transform="";card.style.width="";card.style.left="";card.style.top="";list.insertBefore(card,ph);list.removeChild(ph);drag=null;if(submitIt)sendReorder(card.getAttribute("data-plan"),list);else dragging=false;};
+if(k<mids.length){if(els[k].previousElementSibling!==drag.ph)list.insertBefore(drag.ph,els[k]);}else if(mids.length&&els[mids.length-1].nextElementSibling!==drag.ph){list.insertBefore(drag.ph,els[mids.length-1].nextSibling);}}
+window.addEventListener("pointermove",function(e){if(!drag||e.pointerId!==drag.id)return;drag.y=e.clientY;dragMove(drag.y);});
+// P5b: a finger held still at the screen edge fires no pointermove, so a rAF loop keeps
+// scrolling by edgeScrollStep and re-drops the placeholder while it scrolls; endDrag stops it.
+function dragFrame(){if(!drag)return;var dy=edgeScrollStep(drag.y,window.innerHeight);if(dy){window.scrollBy(0,dy);dragMove(drag.y);}requestAnimationFrame(dragFrame);}
+var endDrag=function(e,submitIt){if(!drag||(e&&e.pointerId!==undefined&&e.pointerId!==drag.id))return;var card=drag.card,ph=drag.ph,list=drag.list;if(drag.raf)cancelAnimationFrame(drag.raf);card.classList.remove("dragging");card.style.transform="";card.style.width="";card.style.left="";card.style.top="";list.insertBefore(card,ph);list.removeChild(ph);drag=null;if(submitIt)sendReorder(card.getAttribute("data-plan"),list);else dragging=false;};
 window.addEventListener("pointerup",function(e){endDrag(e,true);});
 window.addEventListener("pointercancel",function(e){endDrag(e,false);});
 // Every POST form goes over fetch and swaps main in place (P11b); a no-JS browser still submits for real and gets the 303s.
@@ -782,7 +805,7 @@ var qlist=main.querySelector("#qlist");
 if(qlist){
 var moveCard=function(card,how){if(how==="top"){var f=qlist.querySelector(".qcard");if(f&&f!==card)qlist.insertBefore(card,f);}else if(how==="up"){var p=card.previousElementSibling;if(p&&p.classList.contains("qcard"))qlist.insertBefore(card,p);}else if(how==="down"){var n=card.nextElementSibling;if(n&&n.classList.contains("qcard"))qlist.insertBefore(card,n.nextSibling);}};
 qlist.addEventListener("click",function(e){var t=e.target;if(!t||!t.closest)return;var b=t.closest(".qmove");if(!b)return;var card=t.closest(".qcard");if(!card)return;moveCard(card,b.getAttribute("data-move"));sendReorder(card.getAttribute("data-plan"),qlist);});
-qlist.addEventListener("pointerdown",function(e){var t=e.target;if(!t||!t.closest)return;var h=t.closest(".qhandle");if(h&&!drag){var card=t.closest(".qcard");if(card){e.preventDefault();dragging=true;var r=card.getBoundingClientRect();var ph=document.createElement("li");ph.className="qph";ph.style.height=r.height+"px";qlist.insertBefore(ph,card);card.classList.add("dragging");card.style.width=r.width+"px";card.style.left=r.left+"px";card.style.top=r.top+"px";drag={card:card,ph:ph,y0:e.clientY,id:e.pointerId,list:qlist};try{h.setPointerCapture(e.pointerId);}catch(_){}}}});
+qlist.addEventListener("pointerdown",function(e){var t=e.target;if(!t||!t.closest)return;var h=t.closest(".qhandle");if(h&&!drag){var card=t.closest(".qcard");if(card){e.preventDefault();dragging=true;var r=card.getBoundingClientRect();var ph=document.createElement("li");ph.className="qph";ph.style.height=r.height+"px";qlist.insertBefore(ph,card);card.classList.add("dragging");card.style.width=r.width+"px";card.style.left=r.left+"px";card.style.top=r.top+"px";drag={card:card,ph:ph,y0:e.clientY,y:e.clientY,id:e.pointerId,list:qlist,raf:0};try{h.setPointerCapture(e.pointerId);}catch(_){}requestAnimationFrame(dragFrame);}}}});
 }
 }
 function busy(){if(dragging)return true;var els=document.querySelectorAll("input:not([type=hidden]), textarea");for(var k=0;k<els.length;k++){if(els[k]===document.activeElement||els[k].value)return true;}return false;}

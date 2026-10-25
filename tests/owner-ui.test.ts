@@ -18,7 +18,7 @@ import { appendMetric } from "../src/core/metrics.ts";
 import { checkTool } from "../src/core/guards.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { createOmpAdapter, ownerInboxCursorPath, ownerInboxMessage, type ExtensionHost } from "../src/adapters/omp/index.ts";
-import { inboxPath, agentRows, buildPageData, ciRows, dropSlot, incidentRows, machineRow, nowStats, questionRows, queueRows, scoresData, startOwnerUi, type OwnerUiOptions, type OwnerUiServer } from "../src/core/owner-ui.ts";
+import { inboxPath, agentRows, buildPageData, ciRows, dropSlot, edgeScrollStep, incidentRows, machineRow, nowStats, questionRows, queueRows, scoresData, startOwnerUi, type OwnerUiOptions, type OwnerUiServer } from "../src/core/owner-ui.ts";
 import { runUi } from "../src/cli/ui.ts";
 import { parsePlan, stateDirPath, unlockPath } from "../src/core/queue/lib.ts";
 import { parseWhoisLogin, type Tailscale } from "../src/core/tailscale.ts";
@@ -1409,6 +1409,27 @@ test("dropSlot: a drag from #1 toward #2 lands in slot 2, not second-to-last (P1
 	// the page script inlines this exact function, so what the test runs is what the page runs
 	const svc = ui();
 	expect(await (await get(svc)).text()).toContain("var dropSlot=");
+});
+
+// --- P5b: a drag held at the screen edge autoscrolls the page ---
+
+test("edgeScrollStep: 0 mid-screen, positive in the bottom band growing to the 24 px cap, negative in the top band (P5b)", async () => {
+	// middle of the screen and just outside either band: no scroll
+	expect(edgeScrollStep(400, 800)).toBe(0);
+	expect(edgeScrollStep(72, 800)).toBe(0);
+	expect(edgeScrollStep(727, 800)).toBe(0);
+	// bottom band: positive, larger nearer the edge, never above the cap
+	expect(edgeScrollStep(740, 800)).toBeGreaterThan(0);
+	expect(edgeScrollStep(795, 800)).toBeGreaterThan(edgeScrollStep(740, 800));
+	expect(edgeScrollStep(800, 800)).toBe(24);
+	expect(edgeScrollStep(900, 800)).toBe(24); // a pointer past the edge stays capped
+	// top band: negative, larger in magnitude nearer the edge
+	expect(edgeScrollStep(60, 800)).toBeLessThan(0);
+	expect(edgeScrollStep(10, 800)).toBeLessThan(edgeScrollStep(60, 800));
+	expect(edgeScrollStep(-100, 800)).toBe(-24);
+	// the page script inlines this exact function, so what the test runs is what the page runs
+	const svc = ui();
+	expect(await (await get(svc)).text()).toContain("var edgeScrollStep=");
 });
 
 test("the reorder receipt says the rank is among open plans (P10)", async () => {
