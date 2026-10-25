@@ -19,7 +19,7 @@ import { cpuCount } from "./host.ts";
 import { openIncidents } from "./incidents.ts";
 import { log } from "./guards.ts";
 import { readMetricEvents } from "./metrics.ts";
-import { activePlans, chatUnlock, expandHome, stateDirPath, unlockPath, type Plan } from "./queue/lib.ts";
+import { activePlans, chatUnlock, dependencyOrderProblems, expandHome, stateDirPath, unlockPath, type Plan } from "./queue/lib.ts";
 import type { Tailscale } from "./tailscale.ts";
 
 const ANSWER_MAX = 2000;
@@ -1220,9 +1220,9 @@ function handleReorder(cfg: Config, fields: Record<string, string>, login: strin
 	const fail = (error: string, status: number): Response =>
 		wantsJson ? Response.json({ ok: false, error }, { status }) : textRes(error, status);
 	// One source of truth for the reorderable set: the open plans, the same list queueRows renders.
-	const openPaths = activePlans(index)
-		.filter(p => p.status === "open")
-		.map(p => p.file);
+	const openPlans = activePlans(index).filter(p => p.status === "open");
+	const openPaths = openPlans.map(p => p.file);
+	const openPlan: Record<string, Plan> = Object.fromEntries(openPlans.map(p => [p.file, p]));
 	if (!moved || !order.length) return fail("order and moved are required", 400);
 	// 400: the posted order must be exactly the open plans the page renders now — no adds, drops or duplicates.
 	if (new Set(order).size !== order.length) return fail("order lists a plan more than once", 400);
@@ -1233,6 +1233,11 @@ function handleReorder(cfg: Config, fields: Record<string, string>, login: strin
 	// 409: the order the page was rendered with must still be the open plans' current order.
 	const stale = before.length !== openPaths.length || before.some((p, i) => p !== openPaths[i]);
 	if (stale) return fail("the queue changed since the page loaded — reload and drag again", 409);
+	// 409: the index is priority (I-20261025-208), so the posted order itself may not put a plan
+	// above the open plan it waits on. Checked before any write: the index file and the reorder
+	// inbox stay untouched, and the page's 409 branch shows the message and reloads the real order.
+	const firstBlock = dependencyOrderProblems(order.map(o => openPlan[o]!))[0];
+	if (firstBlock) return fail(`blocked: ${firstBlock}`, 409);
 	const from = openPaths.indexOf(moved);
 	const to = order.indexOf(moved);
 	if (from === -1 || to === -1) return fail("moved is not one of the page's plans", 400);
