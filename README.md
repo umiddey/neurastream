@@ -65,6 +65,12 @@ neurastream config --json
 
 Every tool is one program, selected by the name it was called with: `agent-score`, `agent-ledger`, `brief-lint`, `oc-run`, `wip-check`, `wip-backup`, `wip-snapshot`, `main-health`, `queue-check`, `queue-close`, `queue-cancel`, `queue-trim`, `main-start`, `machine-guard`, `quota-reset`, `priority-watch`, `resource-alerts`, `tmp-snapshot`, `heavy-run`.
 
+## Skill pack
+
+`templates/skills/` ships skills for any agent that reads `~/.agents/skills/`. `neurastream adapter install omp` copies each one to `~/.agents/skills/<name>/` only when that directory is missing; an existing directory is kept as it is, so your edits survive a reinstall. `doctor` reports a shipped file that is missing from the live copy. `uninstall` removes a skill directory only when its whole tree is byte-identical to the shipped one; a directory with your own file or an edited file is kept and listed as `kept:`.
+
+The first skill is `architecture-drilldown`: a self-contained HTML atlas with drill-down boxes. Its data is the `T` tree between `/* === DATA === */` and `/* === END DATA === */` in `template.html`; replace that block and leave the engine below it alone. `SKILL.md` lists the schema and the checks.
+
 ## Develop
 
 ```sh

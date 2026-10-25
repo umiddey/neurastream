@@ -70,3 +70,12 @@ test("offline registry is a warning and does not fail a clean install", () => {
 	expect(ran.status).toBe(0);
 	expect(ran.stdout).toContain("warning: offline:");
 });
+
+test("a removed shipped skill file is named and exits 1", () => {
+	install();
+	const skill = join(HOME, ".agents/skills/architecture-drilldown/SKILL.md");
+	unlinkSync(skill);
+	const ran = doctor(npmStub(`#!/bin/sh\necho ${INSTALLED}\n`));
+	expect(ran.status).toBe(1);
+	expect(ran.stdout).toContain(skill);
+});

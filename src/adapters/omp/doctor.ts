@@ -69,6 +69,15 @@ export function adapterLiveFiles(home: string, root: string = PACKAGE_ROOT): Liv
 		if (!name.endsWith(".md") || name.includes(".bak")) continue;
 		files.push({ live: join(home, ".omp/agent/agents", name), source: join(agents, name) });
 	}
+	// Skills are copied under ~/.agents/skills/<name>/ by adapter install (copySkills), never linked.
+	// Only each shipped SKILL.md is listed: doctor reports a missing or edited skill the way it reports agents.
+	const skills = join(root, "templates/skills");
+	if (existsSync(skills)) {
+		for (const name of readdirSync(skills).sort()) {
+			if (!statSync(join(skills, name)).isDirectory()) continue;
+			files.push({ live: join(home, ".agents/skills", name, "SKILL.md"), source: join(skills, name, "SKILL.md") });
+		}
+	}
 	return files;
 }
 

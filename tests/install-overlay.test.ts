@@ -1,9 +1,9 @@
 // INCIDENT I-20261025-98: the adapter overlay must extend guards.protected in every shape a
 // config can hold it, and never write list items without their `protected:` key.
 import { afterAll, beforeEach, expect, test } from "bun:test";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { writeOverlay } from "../src/adapters/omp/install.ts";
+import { installOmp, writeOverlay } from "../src/adapters/omp/install.ts";
 import { initHome } from "../src/cli/init.ts";
 import { loadConfig } from "../src/core/config.ts";
 
@@ -60,3 +60,16 @@ test("a flow list with items is refused instead of getting a second protected ke
 	expect(() => writeOverlay(CFG)).toThrow(/protected/);
 	expect(readFileSync(CFG, "utf8").match(/^ {2}protected:/gm)?.length).toBe(1);
 });
+
+test("installOmp copies the shipped skills once, then keeps an owner-edited skill", () => {
+	const dir = join(HOME, ".agents/skills/architecture-drilldown");
+	const first = installOmp(HOME);
+	expect(first.skillsCopied).toContain(dir);
+	expect(existsSync(join(dir, "SKILL.md"))).toBe(true);
+	expect(existsSync(join(dir, "template.html"))).toBe(true);
+	writeFileSync(join(dir, "SKILL.md"), "owner edit\n");
+	const second = installOmp(HOME);
+	expect(second.skillsKept).toContain(dir);
+	expect(second.skillsCopied).toEqual([]);
+	expect(readFileSync(join(dir, "SKILL.md"), "utf8")).toBe("owner edit\n");
+}, 60_000);

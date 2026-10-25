@@ -2,7 +2,7 @@
 // Does not read or write the real user's agent directory: every path is under `home`.
 
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,6 +31,8 @@ export interface InstallResult {
 	removedStaleLink: string | null;
 	pinsCopied: string[];
 	pinsKept: string[];
+	skillsCopied: string[];
+	skillsKept: string[];
 	overlay: "written" | "unchanged";
 	agentsMd: "written" | "unchanged";
 }
@@ -53,9 +55,9 @@ function ensureLink(link: string, target: string): void {
 
 function linkInstalled(home: string): void {
 	for (const file of adapterLiveFiles(home)) {
-		// agents/ are copied, not linked; the plugin link is `omp plugin link`'s
+		// agents/ and skills/ are copied, not linked; the plugin link is `omp plugin link`'s
 		// own output (linkPlugin below), never ours to ensureLink.
-		if (file.live.includes("/.omp/agent/agents/") || file.live.includes("/.omp/plugins/")) continue;
+		if (file.live.includes("/.omp/agent/agents/") || file.live.includes("/.omp/plugins/") || file.live.includes("/.agents/skills/")) continue;
 		ensureLink(file.live, file.source);
 	}
 }
@@ -73,6 +75,27 @@ function copyPins(dest: string): { copied: string[]; kept: string[] } {
 			continue;
 		}
 		copyFileSync(join(src, name), to);
+		copied.push(to);
+	}
+	return { copied, kept };
+}
+
+// Shipped skills (templates/skills/<name>/) are copied, not linked: the owner
+// edits them, so an existing skill dir is kept as it is.
+function copySkills(home: string): { copied: string[]; kept: string[] } {
+	const src = join(PACKAGE_ROOT, "templates/skills");
+	const dest = join(home, ".agents/skills");
+	const copied: string[] = [];
+	const kept: string[] = [];
+	if (!existsSync(src)) return { copied, kept };
+	mkdirSync(dest, { recursive: true });
+	for (const name of readdirSync(src, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort()) {
+		const to = join(dest, name);
+		if (existsSync(to)) {
+			kept.push(to);
+			continue;
+		}
+		cpSync(join(src, name), to, { recursive: true });
 		copied.push(to);
 	}
 	return { copied, kept };
@@ -162,7 +185,8 @@ export function installOmp(home: string): InstallResult {
 	const plugin = linkPlugin(home);
 	const overlay = writeOverlay(file);
 	const agentsMd = writeAgentsMd(home);
-	return { plugin, removedStaleLink, pinsCopied: pins.copied, pinsKept: pins.kept, overlay, agentsMd };
+	const skills = copySkills(home);
+	return { plugin, removedStaleLink, pinsCopied: pins.copied, pinsKept: pins.kept, skillsCopied: skills.copied, skillsKept: skills.kept, overlay, agentsMd };
 }
 
 export function printInstall(result: InstallResult): void {
@@ -171,6 +195,7 @@ export function printInstall(result: InstallResult): void {
 	console.log(
 		`neurastream adapter install omp: pins copied ${result.pinsCopied.length}, kept ${result.pinsKept.length}; overlay ${result.overlay}`,
 	);
+	console.log(`neurastream adapter install omp: skills copied ${result.skillsCopied.length}, kept ${result.skillsKept.length}`);
 	console.log(`neurastream adapter install omp: AGENTS.md block ${result.agentsMd}`);
 }
 
