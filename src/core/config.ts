@@ -168,6 +168,7 @@ export interface Config {
 	notify: { discord_webhook_file: string; slack_webhook_file: string; prefix: string };
 	priority: { sleep_sec: number };
 	alerts: { temp_c: number; mem_psi: number; io_psi: number; cooldown_sec: number };
+	snapshot: { tmp_dest: string; git_repo: string; git_backup: string; excludes: string[] };
 	labels: { episode_days: number };
 	/** Trace rules: provider honesty (src/core/trace-provider.ts) and what a scanned run may read, dial and write (src/core/trace-actions.ts). */
 	traces: {
@@ -403,6 +404,7 @@ function check(cfg: Config): void {
 	if (!(cfg.guards.rate_limit.max_wait_s >= 1)) throw new ConfigError("guards.rate_limit.max_wait_s must be >= 1");
 	if (!(cfg.guards.rate_limit.slack_s >= 0)) throw new ConfigError("guards.rate_limit.slack_s must be >= 0");
 	if (!(cfg.rollover.exit_grace_s > 0)) throw new ConfigError("rollover.exit_grace_s must be > 0");
+	if (!(cfg.metrics.report_days >= 1)) throw new ConfigError("metrics.report_days must be >= 1");
 	if (!(cfg.labels.episode_days >= 1)) throw new ConfigError("labels.episode_days must be >= 1");
 	if (!(cfg.ui.port >= 1 && cfg.ui.port <= 65535)) throw new ConfigError("ui.port must be between 1 and 65535");
 	for (const p of cfg.metrics.correction_patterns) {
