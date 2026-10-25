@@ -154,7 +154,7 @@ guards:
   rate_limit:
     patterns: ["429", "rate_limit", "rate limit", "overloaded", "529"]   # error-text substrings (case-insensitive) that mark a provider rate limit
     default_wait_s: 300    # wait when the error text names no retry-after
-    max_wait_s: 3600       # cap for the parsed (or doubled) wait, before slack
+    max_wait_s: 3600       # cap for the parsed (or doubled default) wait, before slack
     slack_s: 15            # added on top of every wait
   blocker_timeout_ms: 10000
   skip_tools: [todo, wait, ask, web_search, job, cancel_job]

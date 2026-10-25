@@ -463,10 +463,11 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	// mid-work report, never a hand-back.
 	let stopBlocked = false;
 	// Rate-limit wait-it-out (plan 20261025_0640): consecutive turn ends on a provider rate limit
-	// form one episode. The attempt doubles the wait, the owner chat is told once per episode, and
-	// ONE timer gives Main a new turn when the wait is over; a new Main turn before expiry takes
-	// over and cancels it. Inputs that do not start a turn leave it armed. Any turn that ends
-	// without a limit resets the episode and disarms it.
+	// form one episode. Named provider retry-after values remain authoritative; otherwise the
+	// attempt doubles the default wait. The owner chat is told once per episode, and ONE timer
+	// gives Main a new turn when the wait is over; a new Main turn before expiry takes over and
+	// cancels it. Inputs that do not start a turn leave it armed. Any turn that ends without a
+	// limit resets the episode and disarms it.
 	let rateAttempt = 0;
 	let rateTimer: NodeJS.Timeout | null = null;
 	const rateClock = (ms: number): string => strftime(ms / 1000, "%H:%M");

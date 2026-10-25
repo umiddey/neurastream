@@ -51,8 +51,8 @@ describe("rateLimitWait", () => {
 		expect(w!.waitMs).toBe((1200 + 15) * 1000);
 	});
 
-	test("an attempt-3 default wait above max_wait_s is clamped, then slack is added", () => {
-		const w = rateLimitWait("error", "429 slow down", 1000, cfg, 3);
+	test("an attempt-5 default wait above max_wait_s is clamped, then slack is added", () => {
+		const w = rateLimitWait("error", "429 slow down", 1000, cfg, 5);
 		expect(w!.waitMs).toBe((3600 + 15) * 1000);
 	});
 	test("incident I-20261025-195 preserves provider retry-after across attempts", () => {
