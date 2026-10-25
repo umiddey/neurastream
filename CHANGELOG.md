@@ -1,5 +1,7 @@
 # Changelog
 ## Unreleased
+### Changed
+- The owner page has the approved mockup look: a sticky top bar with pill tabs (Now / Queue / Agents / Spend, server-rendered, unknown falls back to Now) and the lock pill that posts the existing unlock/lock forms; a Today tile card on Now (needs-you count, 24 h list-price spend with sparkline and Main/agents split, agent runs with running/died counts and sparkline, open plans) from the new `nowStats`; the queue as plain-language rows (first 8 on Now with "Show all N ›", the full drag list on Queue); agent scores, incidents, merges/CI and machine health on Agents; per-model spend over 24 h on Spend. A plan whose answer is already in the owner inbox shows "You answered ‘yes' · 14:19 — Main is on it" with a change-answer link instead of the Yes/No buttons.
 
 ## 0.2.22
 ### Added

@@ -664,7 +664,7 @@ body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.4 system-ui,-appl
 .pills a{flex:1;text-align:center;padding:5px 0;border-radius:999px;color:var(--mut);text-decoration:none;font-size:13px}
 .pills a.on{background:var(--bg);color:var(--fg);font-weight:600;box-shadow:0 0 0 1px var(--bd)}
 .lock{border:1px solid var(--bd);background:var(--card);border-radius:999px;padding:6px 10px;font-size:13px;color:var(--fg);position:relative;flex:none}
-.lock summary{list-style:none;cursor:pointer;white-space:nowrap}
+.lock summary{list-style:none;white-space:nowrap}
 .lock summary::-webkit-details-marker{display:none}
 .lockmenu{position:absolute;right:0;top:calc(100% + 6px);background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:10px;display:flex;flex-direction:column;gap:6px;min-width:170px;z-index:10}
 .lockmenu .btn{margin:0}
@@ -690,22 +690,22 @@ svg.spark{width:130px;height:40px;flex:none}
 .ask p{margin:2px 0 10px;color:var(--mut);font-size:13px}
 .ask .q{color:var(--fg);font-size:14px;margin:0 0 8px}
 .answered{color:var(--ok)!important;margin:0 0 4px!important}
-.link{border:0;background:none;color:var(--mut);text-decoration:underline;padding:0;font:inherit;font-size:13px;cursor:pointer}
+.link{border:0;background:none;color:var(--mut);text-decoration:underline;padding:0;font:inherit;font-size:13px}
 .acts{display:flex;gap:6px;flex-wrap:wrap}
-.btn{border:1px solid var(--bd);background:var(--card);color:var(--fg);border-radius:999px;padding:6px 16px;font-size:14px;margin-right:6px;font-family:inherit;cursor:pointer}
+.btn{border:1px solid var(--bd);background:var(--card);color:var(--fg);border-radius:999px;padding:6px 16px;font-size:14px;margin-right:6px;font-family:inherit}
 .btn.pri{background:var(--acc);border-color:var(--acc);color:#fff}
 :focus-visible{outline:2px solid var(--acc);outline-offset:2px}
 .reply{margin-top:8px}
 .reply textarea{width:100%;padding:10px;border-radius:10px;border:1px solid var(--bd);background:var(--bg);color:var(--fg);font:inherit}
 details.bg{margin:8px 0;border-top:1px solid var(--bd);padding-top:6px}
-details.bg summary{color:var(--mut);cursor:pointer}
+details.bg summary{color:var(--mut)}
 details.bg ul{margin:4px 0 8px;padding-left:20px;color:var(--mut);font-size:13px}
 .qlist{list-style:none;margin:0;padding:0}
 .qcard{display:flex;align-items:center;gap:10px;padding:12px 14px;border-top:1px solid var(--bd);flex-wrap:wrap}
 .qcard:first-child{border-top:0}
 .qcard.dragging{position:fixed;z-index:20;background:var(--card);border:1px solid var(--acc);border-radius:14px;margin:0;user-select:none;opacity:0.96}
 .qph{list-style:none;border:2px dashed var(--bd);margin:4px 0}
-.qhandle{color:var(--mut);cursor:grab;font-size:18px;touch-action:none;padding:2px 2px;user-select:none;flex:none}
+.qhandle{color:var(--mut);font-size:18px;touch-action:none;padding:2px 2px;user-select:none;flex:none}
 .qrank{color:var(--mut);width:18px;font-size:13px;text-align:right;font-variant-numeric:tabular-nums;flex:none}
 .qtitle{flex:1 1 12em;min-width:0}
 .chip{font-size:11px;padding:2px 8px;border-radius:999px;white-space:nowrap;flex:none}
@@ -714,7 +714,7 @@ details.bg ul{margin:4px 0 8px;padding-left:20px;color:var(--mut);font-size:13px
 .c-ready{background:color-mix(in srgb,var(--mut) 15%,transparent);color:var(--mut)}
 .chip.bad{color:var(--red)}
 .qbtns{display:flex;gap:4px;flex-wrap:wrap;margin-left:auto}
-.qbtns button{min-height:32px;padding:2px 10px;font-size:12px;border-radius:999px;border:1px solid var(--bd);background:var(--card);color:var(--mut);cursor:pointer}
+.qbtns button{min-height:32px;padding:2px 10px;font-size:12px;border-radius:999px;border:1px solid var(--bd);background:var(--card);color:var(--mut)}
 .more{display:block;text-align:center;padding:12px;color:var(--acc);text-decoration:none;border-top:1px solid var(--bd);font-size:14px}
 .agents{list-style:none;margin:0;padding:8px 14px}
 .agent{display:flex;align-items:baseline;gap:8px;padding:8px 0;border-bottom:1px solid var(--bd);flex-wrap:wrap}

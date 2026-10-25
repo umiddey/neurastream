@@ -1,21 +1,25 @@
 // Renders the owner page to a file with the real renderer and no server, from a fixture state
-// (plan 20261025_0100_owner_ui_redesign P3): 2 waiting plans with long questions, 3 agents,
-// 12 queued plans across 3 repos, 1 incident, a scores table, low disk. The output is meant
-// for screenshots and review; it is not a test and touches nothing outside <out.html>.
-// Usage: bun scripts/ui-preview.ts <out.html>
+// (plan 20261025_0100_owner_ui_redesign P8): every tab has data — 2 asks (one already answered),
+// 12 queued plans across 3 repos, 3 agents incl. 1 died, a scores table, an incident, low disk,
+// and spend across the last 10 hours. `--tab <now|queue|agents|spend>` picks the tab (default
+// now). The output is meant for screenshots and review; it is not a test and touches nothing
+// outside <out.html>.
+// Usage: bun scripts/ui-preview.ts <out.html> [--tab <name>]
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { loadConfig } from "../src/core/config.ts";
 import { nowSec } from "../src/core/clock.ts";
-import { renderPage, type CiRow, type IncidentRow, type PageData, type QueueRow, type QuestionRow } from "../src/core/owner-ui.ts";
+import { renderPage, type AgentRow, type CiRow, type IncidentRow, type NowStats, type PageData, type QueueRow, type QuestionRow } from "../src/core/owner-ui.ts";
 
 const out = process.argv[2];
 if (!out) {
-	console.error("usage: bun scripts/ui-preview.ts <out.html>");
+	console.error("usage: bun scripts/ui-preview.ts <out.html> [--tab <name>]");
 	process.exit(2);
 }
+const tabAt = process.argv.indexOf("--tab");
+const tab = tabAt > -1 ? (process.argv[tabAt + 1] ?? "") : "";
 
 const questions: QuestionRow[] = [
 	{
@@ -31,7 +35,7 @@ const questions: QuestionRow[] = [
 			"Land in 0.16 with the adapter contract unchanged",
 		],
 		waitingMin: 187,
-		answered: null,
+		answered: { answer: "yes", at: nowSec() - 20 * 60 },
 	},
 	{
 		plan: "/srv/code/beta/docs/plans/20261024_1900_pm_batch.md",
@@ -49,9 +53,9 @@ const questions: QuestionRow[] = [
 	},
 ];
 
-const agents = [
+const agents: AgentRow[] = [
 	{ id: "main-7f3a2c", model: "glm-5.3-flash", detail: "Reviewing the PM red-list diff", minutes: 34, status: "running" },
-	{ id: "pr01-keys-12a", model: "grok-4-fast", detail: "Matching synapse task orders to real-UI keys", minutes: 12, status: "running" },
+	{ id: "pr01-keys-12a", model: "grok-4-fast", detail: "Batch probe crashed on the webhook fixtures", minutes: 51, status: "died" },
 	{ id: "scores-sweep", model: "deepseek-v3", detail: "WAITING on owner answer", minutes: 3, status: "waiting" },
 ];
 
@@ -75,6 +79,27 @@ const queue: QueueRow[] = [
 	status: "open",
 	waiting: waiting as boolean,
 }));
+
+// Spend and runs across the last 10 hours; the 14 older buckets stay empty. The totals add up:
+// $39.50 over 45 runs, split Main $27.30 / agents $12.20, and byModel carries the same sums.
+const spendByHour = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1.8, 2.4, 3.1, 2.2, 4.6, 5.1, 3.8, 4.9, 6.2, 5.4];
+const runsByHour = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 3, 4, 3, 5, 6, 4, 6, 7, 5];
+const stats: NowStats = {
+	spend24: 39.5,
+	mainSpend: 27.3,
+	agentSpend: 12.2,
+	runs24: 45,
+	running: 2,
+	died: 1,
+	spendByHour,
+	runsByHour,
+	byModel: [
+		{ model: "glm-5.3-flash", spend: 21.4, runs: 24 },
+		{ model: "grok-4-fast", spend: 12.8, runs: 13 },
+		{ model: "deepseek-v3", spend: 5.3, runs: 8 },
+	],
+	openPlans: queue.length,
+};
 
 const ts = nowSec();
 const ci: CiRow[] = [
@@ -101,24 +126,13 @@ const data: PageData = {
 		text: ["Scores roll on a 7-day window; penalties are subtracted from the raw mean."],
 	},
 	machine: { freeGb: 6.2, diskMin: 20, load: 1.84, loadMax: 16, cores: 16 },
-	stats: {
-		spend24: 0,
-		mainSpend: 0,
-		agentSpend: 0,
-		runs24: 0,
-		running: 0,
-		died: 0,
-		spendByHour: Array.from({ length: 24 }, () => 0),
-		runsByHour: Array.from({ length: 24 }, () => 0),
-		byModel: [],
-		openPlans: queue.length,
-	},
-	lockMinutesLeft: null,
+	stats,
+	lockMinutesLeft: 12,
 };
 
 const base = loadConfig({ home: join(tmpdir(), "neurastream-ui-preview") });
 const cfg = { ...base, guards: { ...base.guards, chat_unlock: true } };
-const html = renderPage(cfg, data, new URLSearchParams(""), "preview-fixed-nonce");
+const html = renderPage(cfg, data, new URLSearchParams(tab ? `tab=${tab}` : ""), "preview-fixed-nonce");
 mkdirSync(dirname(resolve(out)), { recursive: true });
 writeFileSync(out, html);
-console.log(`wrote ${out} (${html.length} bytes, ${questions.length} waiting, ${queue.length} queued)`);
+console.log(`wrote ${out} (${html.length} bytes, tab=${tab || "now"}, ${questions.length} waiting, ${queue.length} queued, ${stats.runs24} runs/$${stats.spend24.toFixed(2)} in 24 h)`);
