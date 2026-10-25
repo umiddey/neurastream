@@ -509,9 +509,24 @@ test("the owner inbox lives under the queue state dir", () => {
 
 function fakePi(): { pi: ExtensionHost; sent: string[]; handlers: Map<string, (e: unknown, ctx: unknown) => unknown> } {
 	const sent: string[] = [];
+	// INCIDENT I-20261025-21/22: keep EVERY handler per event (the real omp runner calls them all
+	// in registration order); handlers.get(event) is the dispatcher the tests invoke.
+	const registered = new Map<string, ((e: unknown, ctx: unknown) => unknown)[]>();
 	const handlers = new Map<string, (e: unknown, ctx: unknown) => unknown>();
 	const pi: ExtensionHost = {
-		on: (event, cb) => handlers.set(event, cb as (e: unknown, ctx: unknown) => unknown),
+		on: (event, cb) => {
+			const list = registered.get(event) ?? [];
+			list.push(cb as (e: unknown, ctx: unknown) => unknown);
+			registered.set(event, list);
+			handlers.set(event, (e, ctx) => {
+				let out: unknown;
+				for (const h of list) {
+					const r = h(e, ctx);
+					if (r !== undefined) out = r;
+				}
+				return out;
+			});
+		},
 		registerCommand: () => {},
 		sendUserMessage: content => sent.push(content),
 		sendMessage: () => {},
@@ -520,6 +535,19 @@ function fakePi(): { pi: ExtensionHost; sent: string[]; handlers: Map<string, (e
 }
 
 const rec = (answer: string) => JSON.stringify({ ts: nowSec(), plan: PLAN_W, question: QUESTION, answer, login: OWNER });
+
+// INCIDENT I-20261025-21 / I-20261025-22: the fake host kept only the LAST handler per event, so a
+// second pi.on("agent_end") silently shadowed the first (the real omp runner calls them all).
+test("fakePi keeps every handler per event and runs them in registration order", () => {
+	const { pi, handlers } = fakePi();
+	const ran: string[] = [];
+	pi.on("agent_end", () => (ran.push("first"), "a"));
+	pi.on("agent_end", () => (ran.push("second"), "b"));
+	const out = handlers.get("agent_end")!({}, mainCtx);
+	expect(ran).toEqual(["first", "second"]);
+	// The last handler's non-undefined result is the event's result.
+	expect(out).toBe("b");
+});
 
 test("ownerInboxMessage formats unlock, lock, answer, reorder and rejects unknown kinds", () => {
 	const until = nowSec() + 300;
