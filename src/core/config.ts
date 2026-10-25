@@ -176,6 +176,8 @@ export interface Config {
 			id_patterns: Record<string, string>;
 			/** Tools a run may call even when no result in the run proves the tool was offered. */
 			allow_tools: string[];
+			/** Model -> $ per million tokens; a model without an entry is not priced, so its cost is not checked. Both maps are open: an empty object in the template means the user may add keys. */
+			prices: Record<string, { input: number; output: number; cache_read: number; cache_write: number }>;
 		};
 		allowed_hosts: string[];
 		/** Product names (docs/config.md) whose files another product's run may not read quietly. */
@@ -252,6 +254,12 @@ function merge(base: unknown, over: unknown, path: string): unknown {
 			if (!(key in base)) {
 				if (path === "" && key === "adapter") {
 					out[key] = adapterOverlay(over[key], next);
+					continue;
+				}
+				// An empty object in the template is an open map: the user may add any keys
+				// (traces.provider.id_patterns, traces.provider.prices).
+				if (Object.keys(base).length === 0) {
+					out[key] = over[key];
 					continue;
 				}
 				throw new ConfigError(`unknown key ${next}`);
@@ -342,10 +350,18 @@ function check(cfg: Config): void {
 		}
 	}
 	for (const [provider, pattern] of Object.entries(cfg.traces.provider.id_patterns)) {
+		if (typeof pattern !== "string") throw new ConfigError(`traces.provider.id_patterns.${provider} must be a string`);
 		try {
 			new RegExp(pattern);
 		} catch {
 			throw new ConfigError(`traces.provider.id_patterns.${provider}: not a valid regex: ${pattern}`);
+		}
+	}
+	for (const [model, row] of Object.entries(cfg.traces.provider.prices)) {
+		for (const key of ["input", "output", "cache_read", "cache_write"] as const) {
+			if (typeof row[key] !== "number" || !Number.isFinite(row[key])) {
+				throw new ConfigError(`traces.provider.prices.${model}.${key} must be a number`);
+			}
 		}
 	}
 	for (const rule of cfg.brief.repo_rules) {

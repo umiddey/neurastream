@@ -202,6 +202,32 @@ neurastream traces claims --since 24h --json     # machine-readable
 
 Known boundary: a report that cites other runs' work (Main quoting a subagent, a relaunched agent quoting its predecessor) can produce `claim-unbacked` findings that are true in this run's trace but provable only in the cited run's own trace.
 
+## Provider honesty
+
+Five rules check what came back against what was asked for, over one run's trace, read-only (`src/core/trace-provider.ts`):
+
+- `model-swap`: the run announced a model (`model_change`) but an assistant message shows another model or another provider, or the run resolved the request to a fallback (`resolvedModelIsFallback`).
+- `odd-response-id`: an assistant message's `responseId` misses the regex configured for its provider (`traces.provider.id_patterns`; a provider without an entry is not checked).
+- `unoffered-tool`: a toolCall for a tool the session never showed as offered — not in `traces.provider.allow_tools`, not in the request's own tool list (an http dump), and no successful result anywhere in the run.
+- `phantom-output`: output tokens billed for an assistant message that wrote nothing.
+- `cost-mismatch`: the run's `model_usage` cost misses the `traces.provider.prices` table ($ per million tokens) by more than ±20%, in either direction; a model without a price row is not checked.
+
+`neurastream metrics report` ends with a weekly line — `Provider honesty over N runs: …` — counting the findings of every run touched in the window. Both config maps are open: an empty object in the template means "add your own keys" in your config. The id patterns below were sampled from real traces; paste them (or yours) into `~/.config/neurastream/config.yml`:
+
+```yaml
+traces:
+  provider:
+    id_patterns:
+      anthropic: '^msg_[A-Za-z0-9]+$'
+      zai: '^[0-9]{14}[0-9a-f]+$'
+      openai-codex: '^resp_[0-9a-f]+$'
+      openrouter: '^gen-[0-9]+-[A-Za-z0-9]+$'
+    prices: {}   # e.g. glm-test: { input: 2, output: 6, cache_read: 0.2, cache_write: 0.5 }
+    allow_tools: []
+```
+
+Finding evidence is masked (long token-like runs never survive verbatim) and capped at 160 characters, so a response id or a tool call line cannot carry a secret into the findings.
+
 ## Self-metrics
 
 `neurastream metrics report [--days N]` compares this window (the last `metrics.report_days`, default 7) with the one before it, writes `<paths.notes>/metrics.md`, and prints the same report. Worst change is marked `◀ worst`. The five numbers:
@@ -213,6 +239,8 @@ Known boundary: a report that cites other runs' work (Main quoting a subagent, a
 - M5 guard blocks: BLOCK lines in the guard logs in the window, with false alarms and the top 3 reasons.
 
 Caveat: M4 is a whole-run measure. A main run counts entirely by its last write time, so a run that spans a window edge counts in the window it ends in.
+
+The report ends with a `Provider honesty over N runs: …` line — provider-honesty findings (see Provider honesty above) over every run touched in the window.
 
 Weekly loop: run `neurastream metrics report`, then propose ONE rule change to the owner. When the owner decides, record it with `neurastream metrics rule "<text>" --approved|--rejected`; approved rules get a before/after check once a full window has passed. Record CI with `neurastream metrics ci <repo-dir> <mr-id>` and guard false alarms with `neurastream metrics false-alarm <log-ts> --why "<text>"`. main-start shows the report as due when it is missing or older than `metrics.report_days`.
 

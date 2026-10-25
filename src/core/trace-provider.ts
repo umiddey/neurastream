@@ -127,3 +127,81 @@ export function unofferedTools(events: TraceEvent[], allowTools: string[], offer
 	}
 	return out;
 }
+
+/**
+ * Output tokens billed for an assistant message that wrote nothing: the parser marks a
+ * content-less message as assistantText with empty text, and billed output with no content is
+ * phantom. A message without usage cannot be judged and a real reply never is. Each phantom
+ * message is its own finding, keyed by response id (or position when the line carries neither).
+ */
+export function phantomOutput(events: TraceEvent[]): Finding[] {
+	const out: Finding[] = [];
+	const seen = new Set<string>();
+	for (let i = 0; i < events.length; i++) {
+		const e = events[i]!;
+		if (e.kind !== "assistantText" || e.text !== "" || !e.usage) continue;
+		if (!(e.usage.output > 0)) continue;
+		const id = e.responseId ?? (e.ts === null ? String(i) : String(e.ts));
+		fold(out, seen, "phantom-output", `run ${e.runId}: an assistant message billed ${e.usage.output} output tokens but wrote nothing`,
+			`assistant message billed ${e.usage.output} output tokens with empty content (responseId ${e.responseId ?? "<absent>"})`,
+			`phantom-output:${e.runId}:${id}`);
+	}
+	return out;
+}
+
+/**
+ * The run's own model_usage accounting vs the configured price table ($ per million tokens).
+ * Billed cost beyond ±20% of the table price is a mismatch in either direction — over-billing
+ * and under-billing both lie about what the run cost. A zero-priced model that still bills is
+ * a mismatch too (no percentage exists against zero). A model without an entry is not priced:
+ * a wrong guess would be worse than no check. Repeats fold per run and model.
+ */
+export function costMismatch(events: TraceEvent[], prices: Record<string, ProviderPrice>): Finding[] {
+	const out: Finding[] = [];
+	const seen = new Set<string>();
+	for (const e of events) {
+		if (e.kind !== "usage" || !e.model || !e.usage) continue;
+		const u = e.usage;
+		if (!(u.totalTokens > 0)) continue;
+		const bare = e.model.includes("/") ? e.model.slice(e.model.indexOf("/") + 1) : e.model;
+		const price = prices[e.model] ?? prices[bare];
+		if (!price) continue;
+		const expected = (u.input * price.input + u.output * price.output + u.cacheRead * price.cache_read + u.cacheWrite * price.cache_write) / 1_000_000;
+		const billed = u.cost;
+		const off = expected > 0 ? Math.abs(billed - expected) / expected : Math.abs(billed);
+		if (!(off > 0.2)) continue;
+		const pct = expected > 0 ? ` (${Math.round((billed / expected - 1) * 100)}%)` : "";
+		fold(out, seen, "cost-mismatch", `run ${e.runId}: ${e.model} billed $${billed} but the price table says $${Number(expected.toFixed(6))}${pct}`,
+			`model_usage ${e.model}: billed $${billed}, tokens in ${u.input} out ${u.output} cacheRead ${u.cacheRead} cacheWrite ${u.cacheWrite}, table says $${Number(expected.toFixed(6))}${pct}`,
+			`cost-mismatch:${e.runId}:${e.model}`);
+	}
+	return out;
+}
+
+/** What the provider-honesty rules need from config (cfg.traces.provider). */
+export interface ProviderRules {
+	id_patterns: Record<string, string>;
+	allow_tools: string[];
+}
+
+/** One model's price row: $ per million tokens (traces.provider.prices). */
+export interface ProviderPrice {
+	input: number;
+	output: number;
+	cache_read: number;
+	cache_write: number;
+}
+
+/**
+ * Every rule at once over one run's events, in rule order (P1 swaps, P1 ids, P2 tools, P3
+ * phantom, P3 cost) — the shape the metrics report summary and the smoke scan both fold.
+ */
+export function providerFindings(events: TraceEvent[], rules: ProviderRules, prices: Record<string, ProviderPrice> = {}, offered: string[] = []): Finding[] {
+	return [
+		...modelSwaps(events),
+		...oddResponseIds(events, rules.id_patterns),
+		...unofferedTools(events, rules.allow_tools, offered),
+		...phantomOutput(events),
+		...costMismatch(events, prices),
+	];
+}

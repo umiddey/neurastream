@@ -8,8 +8,10 @@ import { ConfigError, loadConfig, type Config } from "../core/config.ts";
 import { appendMetric } from "../core/metrics.ts";
 import { nowSec } from "../core/clock.ts";
 import type { RunSource } from "../core/adapter.ts";
-import { buildReport } from "../core/report.ts";
+import { buildReport, type ProviderSummary } from "../core/report.ts";
+import { providerFindings } from "../core/trace-provider.ts";
 import { defaultRunSource } from "../adapters/omp/sessions.ts";
+import { ompTraceRuns, ompTraceSource } from "../adapters/omp/traces.ts";
 
 export const METRICS_USAGE = [
 	"usage: neurastream metrics ci <repo-dir> <mr-id>",
@@ -89,6 +91,23 @@ export function recordRule(cfg: Config, text: string, decision: "approved" | "re
 	return 0;
 }
 
+/** Provider-honesty counts over every run touched inside the window, folded from the five
+ *  rules of src/core/trace-provider.ts under the config's provider rules and price table. */
+function providerSummary(cfg: Config, now: number, days: number): ProviderSummary {
+	const root = cfg.adapter?.sessions || join(cfg.paths.home, ".omp", "agent", "sessions");
+	const cutoff = now - days * 86400;
+	const src = ompTraceSource(root);
+	const rules = cfg.traces.provider;
+	const byKind: Record<string, number> = {};
+	let runs = 0;
+	for (const r of ompTraceRuns(root)) {
+		if (r.mtimeSec < cutoff) continue;
+		runs++;
+		for (const f of providerFindings(src.events(r.runId), rules, rules.prices)) byKind[f.kind] = (byKind[f.kind] ?? 0) + 1;
+	}
+	return { runs, byKind };
+}
+
 /** Writes notes/metrics.md and prints the same report: this window against the previous one. */
 export function reportCmd(cfg: Config, source: RunSource, args: string[], now: number): number {
 	const raw = flagValue(args, "--days");
@@ -97,7 +116,7 @@ export function reportCmd(cfg: Config, source: RunSource, args: string[], now: n
 		console.error(METRICS_USAGE);
 		return 2;
 	}
-	const { md, text } = buildReport(cfg, source, days, now);
+	const { md, text } = buildReport(cfg, source, days, now, providerSummary(cfg, now, days));
 	mkdirSync(cfg.paths.notes, { recursive: true });
 	writeFileSync(join(cfg.paths.notes, "metrics.md"), md);
 	console.log(text);

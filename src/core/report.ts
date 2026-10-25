@@ -172,7 +172,16 @@ export interface Report {
 	worst: { key: string; name: string; cur: number | null; prev: number | null; change: number | null } | null;
 }
 
-export function buildReport(cfg: Config, source: RunSource, days: number, now: number): Report {
+/** Weekly provider-honesty counts the report appends; the CLI caller builds them from the
+ *  sessions root (core has no adapter), folding src/core/trace-provider.ts findings by kind. */
+export interface ProviderSummary {
+	/** Runs scanned inside the window. */
+	runs: number;
+	/** Findings by rule kind over those runs. */
+	byKind: Record<string, number>;
+}
+
+export function buildReport(cfg: Config, source: RunSource, days: number, now: number, provider?: ProviderSummary): Report {
 	const inp = loadInputs(cfg, source, now, days);
 	const events = [...inp.events, ...readMetricEvents(cfg)];
 	const blocks = readBlocks(cfg);
@@ -208,6 +217,16 @@ export function buildReport(cfg: Config, source: RunSource, days: number, now: n
 		"",
 		"Approved rules, before vs after:",
 		...ruleLines(cfg, source, events, blocks, incidents, days, now),
+		...(provider
+			? [
+					"",
+					`Provider honesty over ${provider.runs} runs: ` +
+						(Object.entries(provider.byKind)
+							.filter(([, n]) => n > 0)
+							.map(([k, n]) => `${n} ${k}`)
+							.join(", ") || "no findings"),
+				]
+			: []),
 	].join("\n");
 
 	const md = [

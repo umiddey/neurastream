@@ -199,14 +199,14 @@ snapshot:
 
 traces:
   provider:
-    # Provider-honesty rules (src/core/trace-provider.ts). id_patterns maps a provider to the
-    # regex every assistant responseId must match; a provider without an entry is not checked.
-    # allow_tools: tools a run may call even when no result in the run proves the tool was offered.
-    id_patterns:
-      anthropic: '^msg_[A-Za-z0-9]+$'
-      zai: '^[0-9]{14}[0-9a-f]+$'
-      openai-codex: '^resp_[0-9a-f]+$'
-      openrouter: '^gen-[0-9]+-[A-Za-z0-9]+$'
+    # Provider-honesty rules (src/core/trace-provider.ts). The maps below are open: an empty
+    # object here means "add your own keys" in your config. id_patterns maps a provider to the
+    # regex every assistant responseId must match (a provider without an entry is not checked);
+    # sampled defaults live in README.md. prices maps a model to $ per million tokens; a model
+    # without an entry is not priced. allow_tools: tools a run may call even when no result in
+    # the run proves the tool was offered.
+    id_patterns: {}
+    prices: {}
     allow_tools: []
   allowed_hosts:        # hosts a network command may touch without a finding
     - localhost

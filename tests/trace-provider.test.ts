@@ -4,13 +4,14 @@
 // exercised end to end, plus synthetic events for edges the fixtures cannot carry.
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { TraceEvent } from "../src/core/adapter.ts";
 import { parseTraceFile, offeredFromDump } from "../src/adapters/omp/traces.ts";
 import { loadConfig, TEMPLATE_PATH } from "../src/core/config.ts";
-import { modelSwaps, oddResponseIds, unofferedTools } from "../src/core/trace-provider.ts";
+import { modelSwaps, oddResponseIds, unofferedTools, phantomOutput, costMismatch, providerFindings } from "../src/core/trace-provider.ts";
+import { buildReport } from "../src/core/report.ts";
 
 const REPO = dirname(dirname(import.meta.path));
 const FIX = join(REPO, "tests", "fixtures", "traces");
@@ -125,10 +126,19 @@ describe("response ids (P1)", () => {
 });
 
 describe("config wiring", () => {
-	test("template ships provider defaults under traces.provider", () => {
+	test("template ships open provider maps; the four sampled id defaults live in README", () => {
 		const cfg = loadConfig({ home: TMP, template: TEMPLATE_PATH });
-		expect(Object.keys(cfg.traces.provider.id_patterns)).toContain("anthropic");
-		expect(Array.isArray(cfg.traces.provider.allow_tools)).toBe(true);
+		expect(cfg.traces.provider.id_patterns).toEqual({});
+		expect(cfg.traces.provider.allow_tools).toEqual([]);
+		expect(cfg.traces.provider.prices).toEqual({});
+	});
+
+	test("user config may add price rows and new id patterns (open maps)", () => {
+		const file = join(TMP, "user-config.yml");
+		writeFileSync(file, "traces:\n  provider:\n    id_patterns:\n      openai: '^resp_'\n    prices:\n      glm-test: { input: 2, output: 6, cache_read: 0.2, cache_write: 0.5 }\n");
+		const cfg = loadConfig({ home: TMP, file, template: TEMPLATE_PATH });
+		expect(cfg.traces.provider.id_patterns.openai).toBe("^resp_");
+		expect(cfg.traces.provider.prices["glm-test"]?.input).toBe(2);
 	});
 });
 
@@ -185,6 +195,115 @@ describe("offered tools from an http dump (P2)", () => {
 		expect(offeredFromDump(join(FIX, "does-not-exist.json"))).toEqual([]);
 		expect(offeredFromDump(join(REPO, "README.md"))).toEqual([]);
 		expect(offeredFromDump(join(FIX, "provider-benign.jsonl"))).toEqual([]);
+	});
+});
+
+const withUsage = (text: string, output: number): TraceEvent => ({
+	kind: "assistantText",
+	ts: null,
+	runId: "synthetic",
+	text,
+	usage: { input: 1, output, cacheRead: 0, cacheWrite: 0, totalTokens: 1 + output, cost: 0.001 },
+});
+
+const usageLine = (model: string, cost: number, input: number, cacheRead = 0): TraceEvent => ({
+	kind: "usage",
+	ts: null,
+	runId: "synthetic",
+	model,
+	usage: { input, output: 0, cacheRead, cacheWrite: 0, totalTokens: input + cacheRead, cost },
+});
+
+const PRICES = { "glm-test": { input: 2, output: 6, cache_read: 0.2, cache_write: 0.5 } };
+
+describe("phantom output (P3)", () => {
+	test("benign run: every billed output token came with content", () => {
+		expect(phantomOutput(events("provider-benign.jsonl"))).toEqual([]);
+	});
+
+	test("output tokens billed for an empty message are phantom; a message without usage is not", () => {
+		const found = phantomOutput(events("provider-phantom.jsonl"));
+		expect(found.map((f) => f.fingerprint)).toEqual(["phantom-output:provider-phantom:msg_phantom000000000000001"]);
+		expect(found[0]?.kind).toBe("phantom-output");
+		expect(found[0]?.evidence?.length ?? 0).toBeLessThanOrEqual(160);
+	});
+
+	test("the parser marks a content-less assistant message as empty text", () => {
+		expect(events("provider-phantom.jsonl").some((e) => e.kind === "assistantText" && e.text === "")).toBe(true);
+	});
+
+	test("output without usage, or content with output, is not phantom", () => {
+		expect(phantomOutput([withUsage("a real reply", 512)])).toEqual([]);
+		expect(phantomOutput([withUsage("", 0)])).toEqual([]);
+		expect(phantomOutput([{ kind: "assistantText", ts: null, runId: "synthetic", text: "" }])).toEqual([]);
+	});
+});
+
+describe("cost mismatch (P3)", () => {
+	test("a run with no usage lines prices nothing", () => {
+		expect(costMismatch(events("provider-benign.jsonl"), PRICES)).toEqual([]);
+	});
+
+	test("billed cost within the tolerance is honest, beyond it is a mismatch", () => {
+		const found = costMismatch(events("provider-cost.jsonl"), PRICES);
+		expect(found.map((f) => f.fingerprint)).toEqual(["cost-mismatch:provider-cost:glm-test"]);
+		expect(found[0]?.kind).toBe("cost-mismatch");
+		expect(found[0]?.evidence?.length ?? 0).toBeLessThanOrEqual(160);
+	});
+
+	test("the 20% boundary itself is honest; under-billing past it is not", () => {
+		expect(costMismatch([usageLine("glm-test", 2.4, 1000000)], PRICES)).toEqual([]);
+		expect(costMismatch([usageLine("glm-test", 1.0, 1000000)], PRICES)).toHaveLength(1);
+	});
+
+	test("a model without a price entry is not priced", () => {
+		expect(costMismatch(events("provider-cost.jsonl"), {})).toEqual([]);
+	});
+
+	test("a zero-priced model that still bills is a mismatch", () => {
+		const zero = { free: { input: 0, output: 0, cache_read: 0, cache_write: 0 } };
+		expect(costMismatch([usageLine("free", 0.5, 1000)], zero)).toHaveLength(1);
+		expect(costMismatch([usageLine("free", 0, 1000)], zero)).toEqual([]);
+	});
+
+	test("cache tokens are priced from their own rates", () => {
+		expect(costMismatch([usageLine("glm-test", 4, 1000000, 1000000)], PRICES)).toHaveLength(1);
+		expect(costMismatch([usageLine("glm-test", 2.2, 1000000, 1000000)], PRICES)).toEqual([]);
+	});
+});
+
+describe("all rules in one pass", () => {
+	test("providerFindings folds the five rules over one run's events", () => {
+		const found = providerFindings(events("provider-tools.jsonl"), { id_patterns: {}, allow_tools: [] });
+		expect(found.map((f) => f.kind)).toEqual(["unoffered-tool", "unoffered-tool"]);
+	});
+
+	test("one pass over merged runs keeps every kind", () => {
+		const evs = [
+			...events("provider-odd-id.jsonl"),
+			...events("provider-phantom.jsonl"),
+			withUsage("", 99),
+		];
+		const found = providerFindings(evs, { id_patterns: { anthropic: "^msg_[A-Za-z0-9]+$" }, allow_tools: [] });
+		// The odd-id fixture's mystery-provider assistant also breaks the announced provider,
+		// so the pass opens with a model-swap before the id and phantom findings.
+		expect(found.map((f) => f.kind)).toEqual(["model-swap", "odd-response-id", "phantom-output", "phantom-output"]);
+	});
+});
+
+describe("weekly provider honesty summary (P3)", () => {
+	const src = { listRuns: () => [], mainSession: () => null };
+	test("the report carries a provider honesty block when a summary is passed", () => {
+		const rep = buildReport(loadConfig({ home: TMP, template: TEMPLATE_PATH }), src, 7, 1793000000, {
+			runs: 3,
+			byKind: { "model-swap": 2, "unoffered-tool": 1 },
+		});
+		expect(rep.text).toContain("Provider honesty over 3 runs: 2 model-swap, 1 unoffered-tool");
+	});
+
+	test("without a summary the block is absent (older callers unchanged)", () => {
+		const rep = buildReport(loadConfig({ home: TMP, template: TEMPLATE_PATH }), src, 7, 1793000000);
+		expect(rep.text).not.toContain("Provider honesty");
 	});
 });
 
