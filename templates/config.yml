@@ -238,7 +238,7 @@ traces:
     poll_pattern: '^\s*(sleep\s+\d|ps\b|pgrep\b)'   # shell commands that poll while nothing else runs
   briefs:              # brief-quality rules (src/core/trace-briefs.ts): what a spawn brief names, and the report's length buckets
     verify_pattern: '\b(?:bun test|bun run typecheck|pytest|npm test|go test|cargo test)\b'
-    phase_pattern: '\bP\d+\b'
+    phase_pattern: '\bP\d+[a-z]?\b'
     plan_pattern: 'docs/plans/\S+\.md'
     char_buckets: [1500, 4000]   # brief length edges: <1500, 1500-3999, >=4000
     min_n: 5             # the report shows a mean only with at least this many rows on that side

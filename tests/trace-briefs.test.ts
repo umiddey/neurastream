@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runTraces } from "../src/cli/traces.ts";
-import { spawnBriefs } from "../src/adapters/omp/traces.ts";
+import { spawnBriefs, spawnBriefsIn } from "../src/adapters/omp/traces.ts";
 import type { TraceEvent, TraceSource } from "../src/core/adapter.ts";
 import { ConfigError, loadConfig } from "../src/core/config.ts";
 import { type BriefFeatures, type BriefRow, type BriefRules, briefFeatures, briefReport, briefRows } from "../src/core/trace-briefs.ts";
@@ -62,15 +62,38 @@ function row(p: Partial<BriefFeatures>, waste: number | null, accepted: boolean)
 }
 
 describe("spawnBriefs (omp adapter)", () => {
-	test("keeps each successful spawn once, skips refused ones, joins task text with shared context", () => {
+	test("keeps each successful spawn once, skips refused ones, joins shared context ahead of task text", () => {
 		const { sessions } = sandbox();
 		const briefs = spawnBriefs(sessions, "MAIN 12-00-00");
 		expect(briefs.map((b) => b.agent)).toEqual(["NsBriefA", "NsBriefB", "NsBriefC"]);
 		const a = briefs.find((b) => b.agent === "NsBriefA");
-		expect(a?.brief.startsWith("Build the join in src/core/guards.ts:206.")).toBe(true);
+		expect(a?.brief.startsWith("# Goal\nship P1\nPhase: P1\nWorktree: /tmp/wt-briefs\n\nBuild the join in src/core/guards.ts:206.")).toBe(true);
 		expect(a?.brief).toContain("# Goal\nship P1");
 		const c = briefs.find((b) => b.agent === "NsBriefC");
 		expect(c?.brief).toContain("Call budget: 40");
+	});
+	test("a 3-line shared context ahead of a task ending in Acceptance counts only the task's two acceptance lines", () => {
+		const H = mkdtempSync(join(tmpdir(), "ns-briefs-join-"));
+		TMP.push(H);
+		const file = join(H, "2026-10-25T13-00-00-000Z_join-main.jsonl");
+		const context = "Plan: docs/plans/20261025_join.md\nPhase: P3c\nWorktree: /tmp/wt-join";
+		const task = "Build the join.\nRun bun test tests/trace-briefs.test.ts.\n# Acceptance\n- join rows\n- features";
+		const lines = [
+			{ type: "session", timestamp: "2026-10-25T13:00:00.000Z", id: "join-main" },
+			{ type: "message", timestamp: "2026-10-25T13:00:01.000Z", message: { role: "assistant", model: "m1", provider: "p1", content: [{ type: "toolCall", id: "t1", name: "task", arguments: { i: "spawn A", context, tasks: [{ name: "NsJoinA", agent: "explore", task }] } }] } },
+			{ type: "message", timestamp: "2026-10-25T13:00:02.000Z", message: { role: "toolResult", toolCallId: "t1", toolName: "task", isError: false, content: [{ type: "text", text: "Spawned agent `NsJoinA` (job `NsJoinA`)." }] } },
+		];
+		writeFileSync(file, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+		const briefs = spawnBriefsIn(file, "MAIN 13-00-00");
+		expect(briefs.map((b) => b.agent)).toEqual(["NsJoinA"]);
+		expect(briefFeatures(briefs[0]?.brief ?? "", RULES).acceptance).toBe(2);
+	});
+
+	test("phase_pattern default: sub-phases name a phase, a word that merely contains P<digits> does not", () => {
+		const { H } = sandbox();
+		const rules: BriefRules = { ...RULES, phase_pattern: loadConfig({ home: H }).traces.briefs.phase_pattern };
+		for (const t of ["Phase: P3c", "P10"]) expect(briefFeatures(t, rules).phase).toBe(true);
+		for (const t of ["PR 12", "MP3"]) expect(briefFeatures(t, rules).phase).toBe(false);
 	});
 });
 
@@ -131,7 +154,7 @@ describe("briefRows join", () => {
 		expect(a?.wasted).toBe(1);
 		expect(a?.waste_pct).toBeCloseTo(1 / 3);
 		expect(a?.accepted).toBe(true);
-		expect(a?.features.acceptance).toBe(4);
+		expect(a?.features.acceptance).toBe(2);
 		// no trace: waste is unknown ("-" in the CLI), not zero
 		expect(b?.waste_pct).toBeNull();
 		expect(b?.accepted).toBe(false);

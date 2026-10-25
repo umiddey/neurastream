@@ -217,8 +217,8 @@ export function subagentTraces(root: string, mainRunId: string): RelatedTrace[] 
 /**
  * The spawn briefs of one Main run (plan 20261024_0305 traces_06): each `task` spawn whose result
  * is a success, one entry per spawned agent. A refused spawn (`main-guard:` error) spawned nothing.
- * The brief is the task's own text, then the shared context: guards.briefBudget reads the first
- * `Call budget` line, so a budget in the task text wins over one in shared context.
+ * The brief is the shared context, then the task's own text, so the task's trailing sections (such as
+ * `# Acceptance`) end the brief. guards.briefBudget reads the first `Call budget` line of it.
  */
 export function spawnBriefs(root: string, mainRunId: string): SpawnBrief[] {
 	const main = ompTraceRuns(root).find((r) => r.runId === mainRunId);
@@ -243,7 +243,7 @@ export function spawnBriefsIn(file: string, runId: string): SpawnBrief[] {
 			const task = asObj(t);
 			const name = str(task?.name);
 			if (!task || !name || !named.has(name)) continue;
-			const brief = [str(task.task) ?? "", context].filter((s) => s !== "").join("\n\n");
+			const brief = [context, str(task.task) ?? ""].filter((s) => s !== "").join("\n\n");
 			out.push({ agent: name, brief, ts: e.ts });
 		}
 	}
