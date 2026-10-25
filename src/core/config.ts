@@ -159,6 +159,8 @@ export interface Config {
 	/** Trace action rules (src/core/trace-actions.ts): what a scanned run may read, dial and write. */
 	traces: {
 		allowed_hosts: string[];
+		/** Product names (docs/config.md) whose files another product's run may not read quietly. */
+		owned_repos: string[];
 		actions: {
 			secret_globs: string[];
 			net_tools: string[];
@@ -326,7 +328,7 @@ function check(cfg: Config): void {
 		}
 		if (!rule.message) throw new ConfigError("brief.repo_rules.message must be a non-empty string");
 	}
-	for (const list of [cfg.traces.allowed_hosts, cfg.traces.actions.secret_globs, cfg.traces.actions.net_tools, cfg.traces.actions.shell_patterns, cfg.traces.actions.write_roots, cfg.traces.actions.deny_globs]) {
+	for (const list of [cfg.traces.allowed_hosts, cfg.traces.owned_repos, cfg.traces.actions.secret_globs, cfg.traces.actions.net_tools, cfg.traces.actions.shell_patterns, cfg.traces.actions.write_roots, cfg.traces.actions.deny_globs]) {
 		if (list.some((v) => typeof v !== "string" || v === "")) {
 			throw new ConfigError("traces lists must be non-empty strings");
 		}

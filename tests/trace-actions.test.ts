@@ -7,12 +7,13 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { ompTraceSource } from "../src/adapters/omp/traces.ts";
+import { ompTraceSource, parseTraceFile } from "../src/adapters/omp/traces.ts";
 import type { TraceEvent } from "../src/core/adapter.ts";
 import { loadConfig, ConfigError } from "../src/core/config.ts";
 import { runDetectors } from "../src/core/incident-detectors.ts";
 import { runTraces } from "../src/cli/traces.ts";
-import { actionsRules, globMatch, suspiciousActions, type ActionsRules } from "../src/core/trace-actions.ts";
+import { readEvents } from "../src/core/agent-score.ts";
+import { actionsRules, globMatch, ownedRepoOf, suspiciousActions, unreportedFindings, type ActionsRules } from "../src/core/trace-actions.ts";
 
 const HOME = "/home/agent-sandbox";
 
@@ -27,6 +28,7 @@ function rules(over: Partial<ActionsRules> = {}): ActionsRules {
 		shell_patterns: ["| sh", "| bash", 'eval "$('],
 		shell_tools: ["bash", "eval"],
 		write_tools: ["write", "edit", "ast_edit"],
+		owned_repos: [],
 		...over,
 	};
 }
@@ -381,5 +383,123 @@ describe("traces actions CLI", () => {
 		}
 		expect(rc).toBe(0);
 		expect(logs.join("\n")).toContain("no verifiable claims");
+	});
+});
+
+// ---- P4: cross-product reads of owned repos hidden behind a `Findings: none` line ----
+
+const P4 = mkdtempSync(join(tmpdir(), "ns-actions-owned-"));
+const P4SESSIONS = join(P4, ".omp/agent/sessions/actions-proj");
+mkdirSync(join(P4, ".config/neurastream"), { recursive: true });
+mkdirSync(P4SESSIONS, { recursive: true });
+// User config names the owned repos; the template's traces section fills the rest.
+writeFileSync(
+	join(P4, ".config/neurastream/config.yml"),
+	`paths:
+  home: "${P4}"
+traces:
+  owned_repos:
+    - gateforge
+    - neurastream
+    - pm
+    - cp
+`,
+);
+// Subagent runs sit one level deeper than the dated main files, so the bare stems are the run
+// ids and the agent names (PmEvidenceGlm / PmEvidenceBnGlm).
+writeFileSync(join(P4SESSIONS, "PmEvidenceGlm.jsonl"), readFileSync(join(FIX, "owned-red.jsonl"), "utf8"));
+writeFileSync(join(P4SESSIONS, "PmEvidenceBnGlm.jsonl"), readFileSync(join(FIX, "owned-benign.jsonl"), "utf8"));
+const P4RULES = actionsRules(loadConfig({ home: P4, env: {} }));
+const OWN = { repo: "pm", plan: "/plans/pm-w16.md" };
+
+describe("ownedRepoOf maps paths to owned products", () => {
+	test("repo dirs, word-boundary prefixes and npm-scope installs match; strangers do not", () => {
+		const repos = ["gateforge", "neurastream", "pm", "cp"];
+		expect(ownedRepoOf("/home/agent-sandbox/Work/gateforge/src/x.ts", repos)).toBe("gateforge");
+		expect(ownedRepoOf("/home/agent-sandbox/Work/pm-suite-w16.wt/tests/a.spec.js", repos)).toBe("pm");
+		expect(ownedRepoOf("/home/agent-sandbox/Work/cp-demo-fixes/.env", repos)).toBe("cp");
+		// the installed copy inside another product's node_modules is still gateforge's file
+		expect(ownedRepoOf(`${P4}/Work/pm-suite-w16.wt/node_modules/@gate-forge/core/dist/mapping/resolve.js`, repos)).toBe("gateforge");
+		expect(ownedRepoOf("/usr/lib/node_modules/neurastream/cli.js", repos)).toBe("neurastream");
+		expect(ownedRepoOf("/home/agent-sandbox/Work/other/repo.md", repos)).toBe(null);
+		expect(ownedRepoOf("/srv/scopes/x", repos)).toBe(null);
+	});
+});
+
+describe("unreported-finding: cross-product reads behind a Findings: none line (P4)", () => {
+	test("actionsRules carries the configured owned repos", () => {
+		expect(P4RULES.owned_repos).toEqual(["gateforge", "neurastream", "pm", "cp"]);
+	});
+
+	test("the red fixture: a PM run reading gateforge's installed core and reporting none", () => {
+		const f = unreportedFindings(parseTraceFile(join(P4SESSIONS, "PmEvidenceGlm.jsonl"), "PmEvidenceGlm"), P4RULES, OWN);
+		expect(f).toHaveLength(1);
+		expect(f[0]).toMatchObject({
+			agent: "PmEvidenceGlm",
+			repo: "gateforge",
+			plan: OWN.plan,
+			target: "/home/agent-sandbox/Work/pm-suite-w16.wt/node_modules/@gate-forge/core/dist/mapping/resolve.js",
+		});
+		expect(f[0]!.summary).toContain("Findings: none");
+		expect(f[0]!.evidence).toContain("resolve.js");
+	});
+
+	test("the same read with a findings item in the final report is no finding", () => {
+		expect(unreportedFindings(parseTraceFile(join(P4SESSIONS, "PmEvidenceBnGlm.jsonl"), "PmEvidenceBnGlm"), P4RULES, OWN)).toEqual([]);
+	});
+
+	test("own-repo activity, unowned paths, missing Findings lines and main runs never fire", () => {
+		const as = (runId: string, ...evs: TraceEvent[]) => evs.map((e) => ({ ...e, runId }));
+		const owned = rules({ owned_repos: ["pm", "gateforge"] });
+		expect(unreportedFindings(as("SubA",
+			call("edit", { path: `${HOME}/Work/pm-x/tests/a.spec.js` }),
+			call("read", { path: `${HOME}/Work/other/notes.md` }),
+			{ kind: "assistantText", ts: 3, runId: "SubA", text: "done\n\nFindings: none" },
+		), owned, OWN)).toEqual([]);
+		expect(unreportedFindings(as("SubB",
+			call("read", { path: `${HOME}/Work/pm-x/node_modules/@gate-forge/core/index.js` }),
+		), owned, OWN)).toEqual([]);
+		expect(unreportedFindings(as("MAIN 09-00-00",
+			call("read", { path: `${HOME}/Work/pm-x/node_modules/@gate-forge/core/index.js` }),
+			{ kind: "assistantText", ts: 3, runId: "MAIN 09-00-00", text: "Findings: none" },
+		), owned, OWN)).toEqual([]);
+	});
+});
+
+describe("unreported findings fold as traces incidents with an agent-score penalty", () => {
+	const h4 = mkdtempSync(join(tmpdir(), "ns-actions-owned-inc-"));
+	const q4 = join(h4, "state");
+	mkdirSync(join(h4, ".config/neurastream"), { recursive: true });
+	mkdirSync(q4, { recursive: true });
+	writeFileSync(
+		join(h4, ".config/neurastream/config.yml"),
+		`paths:
+  home: "${h4}"
+  queue_state: "${q4}"
+  guard_log: "${join(h4, "g.log")}"
+  plan_guard_log: "${join(h4, "pg.log")}"
+  score_state: "${join(h4, "score")}"
+`,
+	);
+	const cfg4 = loadConfig({ home: h4, env: {} });
+	const finding = {
+		agent: "PmEvidenceGlm",
+		repo: "gateforge",
+		target: "/x/node_modules/@gate-forge/core/dist/mapping/resolve.js",
+		plan: OWN.plan,
+		summary: "PmEvidenceGlm read gateforge files and reported Findings: none",
+		evidence: "read …resolve.js",
+	};
+
+	test("runDetectors opens a traces incident and records the penalty once, not on dedupe", () => {
+		const inc = runDetectors(cfg4, { unreported: [finding] }, 1_760_000_000);
+		expect(inc.map((i) => [i.source, i.kind])).toEqual([["traces", "unreported-finding"]]);
+		const evs = readEvents(cfg4).filter((e) => e.type === "penalty");
+		expect(evs).toHaveLength(1);
+		expect(evs[0]).toMatchObject({ agent: "PmEvidenceGlm", kind: "unreported-finding", plan: OWN.plan });
+		const again = runDetectors(cfg4, { unreported: [finding] }, 1_760_000_010);
+		expect(again).toHaveLength(1);
+		expect(again[0]!.count).toBe(2);
+		expect(readEvents(cfg4).filter((e) => e.type === "penalty")).toHaveLength(1);
 	});
 });

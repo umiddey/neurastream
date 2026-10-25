@@ -15,6 +15,9 @@
 //     showed (gathered by the traces claims CLI, src/cli/traces.ts).
 //   D6 suspicious-action: a high-severity suspicious tool action the run's trace shows
 //     (gathered by the traces actions CLI, src/cli/traces.ts).
+//   D7 unreported-finding: a subagent run read files of another owned repo (config
+//     traces.owned_repos) while its final report says "Findings: none"; folds as source
+//     "traces" and records an agent-score penalty event for that agent on the plan.
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -26,7 +29,8 @@ import { log } from "./guards.ts";
 import { addIncident, type IncidentView } from "./incidents.ts";
 import type { GuardBlock } from "./metrics.ts";
 import { verifyClaims, type Claim } from "./trace-claims.ts";
-import type { SuspiciousAction } from "./trace-actions.ts";
+import { recordPenalty } from "./agent-score.ts";
+import type { SuspiciousAction, UnreportedFinding } from "./trace-actions.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -208,6 +212,8 @@ export interface DetectorInput {
 	events?: TraceEvent[];
 	/** D6: suspicious tool actions from one or more scanned runs (the traces actions CLI gathers them). */
 	actions?: SuspiciousAction[];
+	/** D7: cross-product reads a subagent run hid behind a Findings: none line (src/core/trace-actions.ts). */
+	unreported?: UnreportedFinding[];
 }
 
 /**
@@ -257,6 +263,25 @@ export function runDetectors(cfg: Config, input: DetectorInput, now = nowSec()):
 	}
 	if (input.actions) {
 		attempt("suspicious-action", () => suspiciousAction(input.actions!));
+	}
+	if (input.unreported) {
+		for (const f of input.unreported!) {
+			try {
+				const { incident, deduped } = addIncident(
+					cfg,
+					{ source: "traces", kind: "unreported-finding", summary: f.summary, evidence: f.evidence, fingerprint: `unreported-finding:${f.agent}:${f.target}` },
+					now,
+				);
+				if (!deduped) recordPenalty(cfg, { agent: f.agent, kind: "unreported-finding", plan: f.plan, note: f.summary });
+				log(
+					cfg.paths.guard_log,
+					`incident ${incident.id} [traces/${incident.kind}]${deduped ? ` sighting #${incident.count}` : " opened"}: ${incident.summary}`,
+				);
+				out.push(incident);
+			} catch (err) {
+				log(cfg.paths.guard_log, `detector unreported-finding failed: ${err instanceof Error ? err.message : String(err)}`);
+			}
+		}
 	}
 	return out;
 }

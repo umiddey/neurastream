@@ -25,6 +25,8 @@ export interface ActionsRules {
 	shell_patterns: string[];
 	shell_tools: string[];
 	write_tools: string[];
+	/** Product names (config `traces.owned_repos`) whose files another product's run may not read quietly. */
+	owned_repos: string[];
 }
 
 export interface SuspiciousAction {
@@ -54,6 +56,7 @@ export function actionsRules(cfg: Config): ActionsRules {
 		shell_patterns: cfg.traces.actions.shell_patterns,
 		shell_tools: cfg.guards.shell_tools,
 		write_tools: cfg.guards.write_tools,
+		owned_repos: cfg.traces.owned_repos,
 	};
 }
 
@@ -360,6 +363,117 @@ export function suspiciousActions(events: TraceEvent[], rules: ActionsRules): Su
 			if (command.includes(p)) {
 				add({ rule: "pipe-to-shell", severity: "medium", runId: ev.runId, ts: ev.ts, tool, target: p, summary: `feeds a shell from a pipe (${p})`, evidence: command });
 			}
+		}
+	}
+	return out;
+}
+
+// ---- P4: owned-product reads reported as `Findings: none` ----
+
+export interface OwnRun {
+	/** The run's plan repo, spelled like the `traces.owned_repos` entries. */
+	repo: string;
+	/** The plan the run reported into, carried onto the agent-score penalty event. */
+	plan: string;
+}
+
+export interface UnreportedFinding {
+	/** The subagent run id — the agent name the score events use. */
+	agent: string;
+	/** The owned repo whose file was read. */
+	repo: string;
+	/** The expanded read target. */
+	target: string;
+	/** The plan context, passed through to the penalty event. */
+	plan: string;
+	summary: string;
+	/** Masked and capped call text. */
+	evidence: string;
+}
+
+/** One path segment (npm scopes included) reduced for owned-repo matching: case, a leading `@` and `-_.` gone. */
+function segKey(seg: string): string {
+	return seg.toLowerCase().replace(/^@/, "").replace(/[-_.]+/g, "");
+}
+
+/**
+ * The owned repo (config `traces.owned_repos`) a path belongs to, or null. A segment matches a
+ * repo when it equals the name once case and `-_.` are ignored — an `@scope` segment is the
+ * installed-copy shape under node_modules and global installs — or when the lowercased segment
+ * starts with the name at a word boundary. The longest name wins when several match.
+ */
+export function ownedRepoOf(path: string, repos: string[]): string | null {
+	let best: string | null = null;
+	for (const repo of repos) {
+		const key = segKey(repo);
+		if (key === "") continue;
+		for (const seg of path.split("/")) {
+			const s = seg.toLowerCase();
+			const hit = segKey(seg) === key ||
+				(s.startsWith(key) && (s.length === key.length || /^[-_./@]/.test(s.slice(key.length))));
+			if (hit && (best === null || key.length > segKey(best).length)) {
+				best = repo;
+				break;
+			}
+		}
+	}
+	return best;
+}
+
+const NONE_FINDINGS = /findings:\s*none\b[\s.!]*$/i;
+
+/**
+ * Cross-product reads a subagent run hid behind a `Findings: none` line (plan P4): the run read
+ * files of an owned repo other than its plan's own (`own.repo`), installed copies under
+ * node_modules included, while its final report claims no findings. Read tools count only their
+ * named path arguments (search text and intents are data) plus a shell command's path-like
+ * words; writes of its own repo, unowned paths, runs without the none-claim and the trace
+ * reader's main runs never fire. Evidence is masked like every rule's.
+ */
+export function unreportedFindings(events: TraceEvent[], rules: ActionsRules, own: OwnRun): UnreportedFinding[] {
+	if (rules.owned_repos.length === 0) return [];
+	const agent = events.find((e) => e.runId !== "")?.runId ?? "";
+	if (agent === "" || agent.startsWith("MAIN ")) return [];
+	let report: string | null = null;
+	for (let i = events.length - 1; i >= 0; i--) {
+		const e = events[i];
+		if (e?.kind === "assistantText" && e.text?.trim()) {
+			report = e.text;
+			break;
+		}
+	}
+	if (report === null || !NONE_FINDINGS.test(report.trimEnd())) return [];
+	const ownKey = segKey(own.repo);
+	const out: UnreportedFinding[] = [];
+	const seen = new Set<string>();
+	for (const ev of events) {
+		if (ev.kind !== "toolCall") continue;
+		const tool = ev.tool ?? "?";
+		const targets: string[] = [];
+		if (rules.shell_tools.includes(tool)) {
+			targets.push(...pathTokens(typeof ev.args?.command === "string" ? ev.args.command : ""));
+		} else if (!rules.write_tools.includes(tool)) {
+			for (const key of ["path", "file", "file_path"]) {
+				const v = ev.args?.[key];
+				if (typeof v === "string" && (v.includes("/") || v.startsWith(".") || v.startsWith("~"))) targets.push(v);
+			}
+		}
+		for (const raw of targets) {
+			const t = expandHome(raw, rules.home);
+			const repo = ownedRepoOf(t, rules.owned_repos);
+			if (repo === null || segKey(repo) === ownKey) continue;
+			const id = `${repo}:${t}`;
+			if (seen.has(id)) continue;
+			seen.add(id);
+			const text = typeof ev.args?.command === "string" ? ev.args.command : JSON.stringify(ev.args ?? {});
+			out.push({
+				agent,
+				repo,
+				target: t,
+				plan: own.plan,
+				summary: `${agent} read ${repo} files (${t}) and reported Findings: none`,
+				evidence: maskEvidence(text),
+			});
 		}
 	}
 	return out;

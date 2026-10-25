@@ -28,6 +28,7 @@ score:
     false-claim: 5
     rule-break: 2
     escaped-defect: 8
+    unreported-finding: 5
   diagnose_weight: 4
   gate_days: 7
   board_days: 7
@@ -196,6 +197,7 @@ traces:
     - localhost
     - 127.0.0.1
     - "::1"
+  owned_repos: []      # product names another product's run may not read quietly; the intended list lives in docs/config.md
   actions:
     secret_globs:       # a read matching any glob is a high finding; evidence is masked either way
       - "~/.ssh/**"

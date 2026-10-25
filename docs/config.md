@@ -275,3 +275,15 @@ The loader rejects:
 - YAML that does not parse
 
 Missing keys are filled from the defaults above. A present key replaces the default. Objects merge one level (`score.penalties` merges per kind; an omitted kind keeps the default). Arrays replace.
+
+
+## traces.owned_repos
+
+Names of the owner's products, spelled the way the repos and worktree dirs spell them. A
+subagent run that reads files of one of these products outside its own plan's repo — installed
+copies under `node_modules` and global installs included, so `@gate-forge/core/...` counts as
+gateforge — while its final report says `Findings: none` becomes an `unreported-finding`
+incident (source `traces`) and records an `agent-score penalty` event (kind
+`unreported-finding`, weight `score.penalties.unreported-finding`) for that agent on the plan.
+Intended list: gateforge, neurastream, oi-agent, clanky, PM, CP. The template ships `[]`; an
+empty list turns the rule off.
