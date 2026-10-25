@@ -1,6 +1,6 @@
 // Autonomy tiers (I-20261025-177): one owner setting — strict / opinionated / full — that the
 // guards follow. The tier and a one-shot `go` are written only by the owner's own words (the same
-// paths as chatUnlock: the terminal input event and collab write-peer prompts) or the
+// paths as chatUnlock: the terminal input event and collab write-peer messages) or the
 // authenticated phone page; never by a tool call (the state dir is protected) and never from
 // model text. Every tier keeps the owner-only moves owner-only; no tier loosens them.
 
