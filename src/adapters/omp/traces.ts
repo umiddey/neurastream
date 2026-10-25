@@ -5,7 +5,7 @@
 // trace-relevant data is mapped; anything else (session banners, custom lines, compaction
 // notes, unparseable lines) is skipped.
 
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { closeSync, openSync, readFileSync, readSync, readdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { TraceEvent, TraceSource, TraceUsage } from "../../core/adapter.ts";
 import type { DumpParts, DumpTokens } from "../../core/trace-bloat.ts";
@@ -144,6 +144,29 @@ export function ompTraceRuns(root: string): { runId: string; file: string; mtime
 		if (!prev || mtimeSec > prev.mtimeSec) newest[id] = { file, mtimeSec };
 	}
 	return Object.entries(newest).map(([runId, v]) => ({ runId, file: v.file, mtimeSec: v.mtimeSec }));
+}
+
+/** Read only the session banner at the start of a trace; null means it is unreadable. */
+export function ompTraceStart(file: string): number | null {
+	let fd: number;
+	try {
+		fd = openSync(file, "r");
+	} catch {
+		return null;
+	}
+	const buffer = Buffer.allocUnsafe(4096);
+	try {
+		const bytes = readSync(fd, buffer, 0, buffer.length, 0);
+		for (const line of buffer.toString("utf8", 0, bytes).split("\n")) {
+			try {
+				const value = JSON.parse(line) as { type?: unknown; timestamp?: unknown };
+				if (value.type === "session" && typeof value.timestamp === "string") return parseTs(value.timestamp);
+			} catch {}
+		}
+		return null;
+	} finally {
+		closeSync(fd);
+	}
 }
 
 /**

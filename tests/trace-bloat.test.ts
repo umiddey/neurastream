@@ -388,7 +388,7 @@ traces:
 
 import { statSync } from "node:fs";
 import { dumpPromptTokens } from "../src/adapters/omp/traces.ts";
-import { bloatReport } from "../src/cli/traces.ts";
+import { assignDumps, bloatReport } from "../src/cli/traces.ts";
 import { dumpFinding } from "../src/core/trace-bloat.ts";
 
 describe("dumpPromptTokens (P3)", () => {
@@ -523,6 +523,27 @@ describe("overlapping run dump ownership (P3b)", () => {
 		expect(owners[0]!.runId).toBe("MAIN 01-00-10");
 		expect(owners[0]!.dumpPrompt).toEqual({ tokens: 1172629, limit: 1000000 });
 		expect(output.unmatchedDumps).toHaveLength(0);
+	});
+});
+describe("shared dump assignment (P3c)", () => {
+	test("does not parse runs outside dump coverage and parses candidates only once for multiple dumps", () => {
+		const ms = 1_800_000_000_000;
+		const futureFile = join(TMP, "future-session.jsonl");
+		writeFileSync(futureFile, `${JSON.stringify({ type: "title" })}\n${JSON.stringify({ type: "session", timestamp: "2027-01-15T08:00:01.000Z" })}\n`);
+		const runs = [
+			{ runId: "ended", file: "ended", mtimeSec: ms / 1000 - 10 },
+			{ runId: "future", file: futureFile, mtimeSec: ms / 1000 + 100 },
+			{ runId: "candidate", file: "candidate", mtimeSec: ms / 1000 + 100 },
+		];
+		const counts = new Map<string, number>();
+		const src = { events(id: string): TraceEvent[] { counts.set(id, (counts.get(id) ?? 0) + 1); return [called(1, "big-model", { ts: ms / 1000 - 5, runId: id })]; } };
+		const secondDump = join(TMP, "second-dump.json");
+		writeFileSync(secondDump, readFileSync(join(FIX, "bloat-dump-rejected.json"), "utf8"));
+		const result = assignDumps(runs, src, [{ file: join(FIX, "bloat-dump-rejected.json"), ms }, { file: secondDump, ms: ms + 1 }]);
+		expect(counts.get("ended") ?? 0).toBe(0);
+		expect(counts.get("future") ?? 0).toBe(0);
+		expect(counts.get("candidate")).toBe(1);
+		expect(result.owners.size).toBe(2);
 	});
 });
 

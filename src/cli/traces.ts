@@ -9,13 +9,13 @@
 
 import { join } from "node:path";
 import { nowSec } from "../core/clock.ts";
-import type { TraceSource } from "../core/adapter.ts";
+import type { TraceEvent, TraceSource } from "../core/adapter.ts";
 import { ConfigError, loadConfig, type Config } from "../core/config.ts";
 import { claimUnbacked } from "../core/incident-detectors.ts";
 import { claimsFromEvents, type RelatedRun } from "../core/trace-claims.ts";
 import { actionsRules, suspiciousActions, type ActionsRules, type SuspiciousAction } from "../core/trace-actions.ts";
 import { bloatBreakdown, bloatFindings, bloatRules, callSizes, dumpFinding, type BloatBreakdown, type BloatRules } from "../core/trace-bloat.ts";
-import { dumpModel, dumpParts, dumpPromptTokens, ompDumps, ompTraceRuns, ompTraceSource, subagentTraces } from "../adapters/omp/traces.ts";
+import { dumpModel, dumpParts, dumpPromptTokens, ompDumps, ompTraceRuns, ompTraceSource, ompTraceStart, subagentTraces } from "../adapters/omp/traces.ts";
 
 export const TRACES_USAGE = [
 	"usage: neurastream traces claims <runId> [--json]",
@@ -80,8 +80,45 @@ export interface RunBloatReport {
  * Scan one run's calls and findings, and report the dump assigned to it by the caller. The
  * command assigns dumps across runs by window, matching model and closest event timestamp.
  */
-export function bloatReport(src: TraceSource, runId: string, rules: BloatRules, groupRegex: string, dumps: { file: string; ms: number }[], mtimeSec: number): RunBloatReport {
-	const events = src.events(runId);
+export interface DumpAssignmentRun { runId: string; file: string; mtimeSec: number }
+export interface DumpAssignment { owners: Map<string, string>; unmatched: { file: string; ms: number }[]; events: Map<string, TraceEvent[]> }
+
+/** Assign each dump once, parsing only traces whose session start and mtime contain it. */
+export function assignDumps(runs: DumpAssignmentRun[], src: TraceSource, dumps: { file: string; ms: number }[]): DumpAssignment {
+	const owners = new Map<string, string>();
+	const unmatched: { file: string; ms: number }[] = [];
+	const cached = new Map<string, ReturnType<TraceSource["events"]>>();
+	for (const dump of dumps) {
+		const model = dumpModel(dump.file);
+		const eligible: { ts: number; runId: string }[] = [];
+		for (const run of runs) {
+			if (dump.ms > Math.round(run.mtimeSec * 1000)) continue;
+			const start = ompTraceStart(run.file);
+			if (start !== null && dump.ms < start * 1000) continue;
+			let events = cached.get(run.runId);
+			if (!events) {
+				events = src.events(run.runId);
+				cached.set(run.runId, events);
+			}
+			let firstTs: number | undefined;
+			let closestTs: number | undefined;
+			for (const event of events) {
+				if (event.ts === null || event.ts * 1000 > dump.ms) continue;
+				if (firstTs === undefined || event.ts < firstTs) firstTs = event.ts;
+				if (model !== undefined && event.model === model && (closestTs === undefined || event.ts > closestTs)) closestTs = event.ts;
+			}
+			if (firstTs !== undefined && dump.ms >= firstTs * 1000 && closestTs !== undefined) eligible.push({ runId: run.runId, ts: closestTs });
+		}
+		const bestTs = eligible.reduce((best, item) => Math.max(best, item.ts), -Infinity);
+		const best = eligible.filter((item) => item.ts === bestTs);
+		if (best.length === 1) owners.set(dump.file, best[0]!.runId);
+		else unmatched.push(dump);
+	}
+	return { owners, unmatched, events: cached };
+}
+
+export function bloatReport(src: TraceSource, runId: string, rules: BloatRules, groupRegex: string, dumps: { file: string; ms: number }[], mtimeSec: number, parsedEvents?: TraceEvent[]): RunBloatReport {
+	const events = parsedEvents ?? src.events(runId);
 	const sizes = callSizes(events);
 	const findings = bloatFindings(events, rules);
 	let breakdown: BloatBreakdown | undefined;
@@ -171,42 +208,16 @@ export async function runTraces(args: string[], opts: { home?: string } = {}): P
 	const relatedOf = (id: string): RelatedRun[] =>
 		sub === "claims" ? subagentTraces(root, id).map(({ name, events }) => ({ name, events })) : [];
 	const dumps = sub === "bloat" ? ompDumps(cfg.paths.home) : [];
-	const dumpOwners = new Map<string, string>();
-	const unmatchedDumps: { file: string; ms: number }[] = [];
-	if (sub === "bloat") {
-		for (const dump of dumps) {
-			const model = dumpModel(dump.file);
-			const eligible: { ts: number; runId: string }[] = [];
-			for (const run of runs) {
-				const events = src.events(run.runId);
-				let firstTs: number | undefined;
-				let closestTs: number | undefined;
-				for (const event of events) {
-					if (event.ts === null || event.ts * 1000 > dump.ms) continue;
-					if (firstTs === undefined || event.ts < firstTs) firstTs = event.ts;
-					if (model !== undefined && event.model === model && (closestTs === undefined || event.ts > closestTs)) closestTs = event.ts;
-				}
-				if (firstTs !== undefined && dump.ms >= firstTs * 1000 && dump.ms <= run.mtimeSec * 1000 && closestTs !== undefined) {
-					eligible.push({ runId: run.runId, ts: closestTs });
-				}
-			}
-			if (eligible.length === 0) {
-				unmatchedDumps.push(dump);
-				continue;
-			}
-			const bestTs = Math.max(...eligible.map((candidate) => candidate.ts));
-			const best = eligible.filter((candidate) => candidate.ts === bestTs);
-			if (best.length === 1) dumpOwners.set(dump.file, best[0]!.runId);
-			else unmatchedDumps.push(dump);
-		}
-	}
+	const assignment = sub === "bloat" ? assignDumps(runs, src, dumps) : { owners: new Map<string, string>(), unmatched: [] as { file: string; ms: number }[], events: new Map<string, TraceEvent[]>() };
+	const dumpOwners = assignment.owners;
+	const unmatchedDumps = assignment.unmatched;
 	const mtimeOf = (id: string): number => runs.find((r) => r.runId === id)?.mtimeSec ?? 0;
 	const assignedDumps = (id: string) => dumps.filter((dump) => dumpOwners.get(dump.file) === id);
 	const reports: (RunClaimsReport | RunActionsReport | RunBloatReport)[] = [];
 	const reportOf = (id: string): RunClaimsReport | RunActionsReport | RunBloatReport => {
 		if (sub === "claims") return claimsReport(src, id, relatedOf(id));
 		if (sub === "actions") return actionsReport(src, id, rules as ActionsRules);
-		return bloatReport(src, id, rules as BloatRules, cfg.traces.bloat.tool_group, assignedDumps(id), mtimeOf(id));
+		return bloatReport(src, id, rules as BloatRules, cfg.traces.bloat.tool_group, assignedDumps(id), mtimeOf(id), assignment.events.get(id));
 	};
 	if (windowSec !== undefined) {
 		const cutoff = nowSec() - windowSec;

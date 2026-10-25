@@ -13,7 +13,7 @@ import { providerFindings } from "../core/trace-provider.ts";
 import { bloatRules } from "../core/trace-bloat.ts";
 import { defaultRunSource } from "../adapters/omp/sessions.ts";
 import { ompDumps, ompTraceRuns, ompTraceSource } from "../adapters/omp/traces.ts";
-import { bloatReport } from "./traces.ts";
+import { assignDumps, bloatReport } from "./traces.ts";
 
 export const METRICS_USAGE = [
 	"usage: neurastream metrics ci <repo-dir> <mr-id>",
@@ -122,10 +122,13 @@ function bloatSummary(cfg: Config, now: number, days: number): BloatSummary {
 	let runs = 0;
 	let flagged = 0;
 	let largest: BloatSummary["largest"] = null;
-	for (const r of ompTraceRuns(root)) {
+	const allRuns = ompTraceRuns(root);
+	const { owners, events: assignmentEvents } = assignDumps(allRuns, src, dumps);
+	for (const r of allRuns) {
 		if (r.mtimeSec < cutoff) continue;
 		runs++;
-		const rep = bloatReport(src, r.runId, rules, cfg.traces.bloat.tool_group, dumps, r.mtimeSec);
+		const owned = dumps.filter((dump) => owners.get(dump.file) === r.runId);
+		const rep = bloatReport(src, r.runId, rules, cfg.traces.bloat.tool_group, owned, r.mtimeSec, assignmentEvents.get(r.runId));
 		if (rep.findings.length === 0) continue;
 		flagged++;
 		const firstCall = Math.max(rep.firstPrompt ?? 0, rep.dumpPrompt?.tokens ?? 0);
