@@ -189,6 +189,15 @@ export interface Config {
 			write_roots: string[];
 			deny_globs: string[];
 		};
+		/** Waste counters (src/core/trace-efficiency.ts): what makes a tool call wasted. */
+		efficiency: {
+			/** The Nth identical read (same args JSON, no write between) counts; >= 2. */
+			repeat_read_min: number;
+			/** A toolResult text starting with one of these is a guard block. */
+			guard_prefixes: string[];
+			/** Shell commands matching this poll while nothing else runs. */
+			poll_pattern: string;
+		};
 	};
 	/** Optional overlay written by adapter install. Absent until an adapter is installed. */
 	adapter?: { name: string; sessions: string; pins: string; extensions: string };
@@ -380,6 +389,17 @@ function check(cfg: Config): void {
 		if (list.some((v) => typeof v !== "string" || v === "")) {
 			throw new ConfigError("traces lists must be non-empty strings");
 		}
+	}
+	if (!(cfg.traces.efficiency.repeat_read_min >= 2)) {
+		throw new ConfigError("traces.efficiency.repeat_read_min must be >= 2");
+	}
+	if (cfg.traces.efficiency.guard_prefixes.some((p) => typeof p !== "string" || p === "")) {
+		throw new ConfigError("traces.efficiency.guard_prefixes must be non-empty strings");
+	}
+	try {
+		new RegExp(cfg.traces.efficiency.poll_pattern);
+	} catch {
+		throw new ConfigError(`traces.efficiency.poll_pattern: not a valid regex: ${cfg.traces.efficiency.poll_pattern}`);
 	}
 	for (const [key, value] of Object.entries(cfg.paths)) {
 		if (key === "work_roots") {
