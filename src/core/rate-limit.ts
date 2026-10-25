@@ -24,20 +24,19 @@ export interface RateLimitWait {
 const RETRY_AFTER_MS = /retry-after-ms[=:]\s*(\d+)/i;
 const RETRY_AFTER_S = /retry-after[=:]\s*(\d+)/i;
 
-function retryAfterMs(errorText: string, cfg: RateLimitConfig): number {
+function retryAfterMs(errorText: string, cfg: RateLimitConfig): { ms: number; named: boolean } {
 	const ms = RETRY_AFTER_MS.exec(errorText);
-	if (ms) return Number(ms[1]);
+	if (ms) return { ms: Number(ms[1]), named: true };
 	const s = RETRY_AFTER_S.exec(errorText);
-	if (s) return Number(s[1]) * 1000;
-	return cfg.default_wait_s * 1000;
+	if (s) return { ms: Number(s[1]) * 1000, named: true };
+	return { ms: cfg.default_wait_s * 1000, named: false };
 }
 
 /**
  * The wait for a turn that ended on a provider rate limit, or null when it did not: the stop
  * reason must be "error" and the error text must contain one of the configured patterns
- * (case-insensitive). The wait is the retry-after the text names (`retry-after-ms=<ms>` or
- * `retry-after: <seconds>`, else default_wait_s); attempt >= 2 doubles the previous wait of the
- * episode; every wait is clamped to max_wait_s, then slack_s is added.
+ * (case-insensitive). A named retry-after is used as-is; otherwise default_wait_s is doubled
+ * for each later attempt. The resulting wait is clamped to max_wait_s, then slack_s is added.
  */
 export function rateLimitWait(
 	stopReason: string | null,
@@ -50,12 +49,15 @@ export function rateLimitWait(
 	const text = errorText.toLowerCase();
 	if (!cfg.patterns.some(p => text.includes(p.toLowerCase()))) return null;
 	const capMs = cfg.max_wait_s * 1000;
-	let baseMs = retryAfterMs(errorText, cfg);
-	for (let i = 1; i < Math.max(1, attempt); i++) {
-		baseMs *= 2;
-		if (baseMs >= capMs) {
-			baseMs = capMs;
-			break;
+	const retryAfter = retryAfterMs(errorText, cfg);
+	let baseMs = retryAfter.ms;
+	if (!retryAfter.named) {
+		for (let i = 1; i < Math.max(1, attempt); i++) {
+			baseMs *= 2;
+			if (baseMs >= capMs) {
+				baseMs = capMs;
+				break;
+			}
 		}
 	}
 	const waitMs = Math.min(baseMs, capMs) + cfg.slack_s * 1000;

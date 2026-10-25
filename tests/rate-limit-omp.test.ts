@@ -59,7 +59,7 @@ function writeConfig(): Config {
   plan_guard_log: "${join(TMP, "plan-guard.log")}"
 guards:
   rate_limit:
-    default_wait_s: 1
+    default_wait_s: 5
     slack_s: 0
 notify:
   discord_webhook_file: "${DISCORD_FILE}"
@@ -129,6 +129,11 @@ const err429 = (retryMs: number): Record<string, unknown> =>
 	msg({
 		stopReason: "error",
 		errorMessage: `429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_x"} retry-after-ms=${retryMs}`,
+	});
+const err429WithoutRetryAfter = (): Record<string, unknown> =>
+	msg({
+		stopReason: "error",
+		errorMessage: `429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_x"}`,
 	});
 
 const stopEvent = (m: Record<string, unknown>): Record<string, unknown> => ({ last_assistant_message: m, messages: [m] });
@@ -278,13 +283,13 @@ test("a second 429 in the episode doubles the wait, replaces the timer, posts no
 	const ctx = ctxFor();
 	await host.emit("session_stop", stopEvent(err429(2000)), ctx); // attempt 1: 2 s
 	await until(() => rlHits().length === 1);
-	await host.emit("session_stop", stopEvent(err429(2000)), ctx); // attempt 2: 4 s
+	await host.emit("session_stop", stopEvent(err429WithoutRetryAfter()), ctx); // attempt 2: doubled default wait
 	const stop = logLines().filter(l => l.includes("RATE-LIMIT stop"));
 	expect(stop).toHaveLength(2);
-	expect(stop[1]).toMatch(/RATE-LIMIT stop: resume at \d\d:\d\d \(4s, attempt 2\)$/);
+	expect(stop[1]).toMatch(/RATE-LIMIT stop: resume at \d\d:\d\d \(10s, attempt 2\)$/);
 	await expectNoMore(() => host.sent.length, 0); // past the replaced 2 s arm: nothing sent yet
 	expect(rlHits()).toHaveLength(1); // no second post in the episode
-	await until(() => host.sent.length === 1, 6000); // only the doubled timer fires, at ~4 s
+	await until(() => host.sent.length === 1, 12_000); // only the doubled default timer fires
 	expect(logLines().filter(l => l.includes("RATE-LIMIT resume"))).toHaveLength(1);
 	expect(rlHits()).toHaveLength(1);
 }, 30_000);
@@ -294,11 +299,11 @@ test("slash command input leaves the resume armed until it fires", async () => {
 	reset();
 	const host = adapterWith(stopCfg(writeConfig()));
 	const ctx = ctxFor();
-	await host.emit("session_stop", stopEvent(err429(2000)), ctx);
+	await host.emit("session_stop", stopEvent(err429(15_000)), ctx);
 	await until(() => rlHits().length === 1);
 	await host.emit("input", { text: "/usage", source: "interactive" }, ctx);
 	expect(logLines().filter(l => l.includes("RATE-LIMIT resume cancelled: owner message"))).toHaveLength(0);
-	await until(() => host.sent.length === 1, 8000);
+	await until(() => host.sent.length === 1, 20_000);
 	expect(logLines().filter(l => l.includes("RATE-LIMIT resume: new turn sent"))).toHaveLength(1);
 }, 30_000);
 
