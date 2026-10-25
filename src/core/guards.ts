@@ -10,9 +10,13 @@
 //   - protected guard files, unlockable by the owner for `guards.unlock_minutes`
 //   - subs: no queue-close/queue-cancel, call budget 90/100, plan edits only inside "## Progress",
 //     blocker execution, invalid plans refuse
-//   - main: 5 project-file changes per `main_window_min` window (owner message resets), spawn
+//   - main: project-file changes per `main_window_min` window capped by the autonomy tier
+//     (strict: `autonomy.strict_edit_limit`, opinionated: 5, full: none), spawn
 //     gate (allow-list, task-only, open plan, new Progress since last run), bypass launches go
-//     through the same plan gate, cancel-pending blocks spawns and stops, keep-working stop rule
+//     through the same plan gate, cancel-pending blocks spawns and stops, keep-working stop rule;
+//     tier strict additionally refuses `git push` / `glab mr merge` / `gh pr merge` until the
+//     owner's one-shot `go`, and tier full lets a `Priority skip: <plan> — Main: "<reason>"` line
+//     past the priority gate
 //   - incidents: while an incident is open (src/core/incidents.ts: no plan/dismiss/fixed record)
 //     every Main prompt lists it, a spawn must be fix work (its plan cites `INCIDENT <id>`), and
 //     the stop is refused; an incident with a plan no longer blocks
@@ -21,6 +25,7 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Decision, InjectEvent, PlanEditEvent, SpawnEvent, StopEvent, ToolEvent } from "./adapter.ts";
+import { currentTier, takeGo, type Tier } from "./autonomy.ts";
 import type { Config } from "./config.ts";
 import { addIncident, openIncidents, type IncidentView } from "./incidents.ts";
 import { notifyProtectedPaths, notifySecretReadHit } from "./notify.ts";
@@ -390,15 +395,18 @@ function priorityIdle(p: Plan, plans: Plan[]): boolean {
  * Proof is either the higher plan's own `Waits on: <plan>` line for a plan still open in the index
  * (then it is not idle at all) or a `Priority skip: <path> — owner: "<words>"` line whose quoted
  * words (≥ 4, normalised) appear in one of `messages` (the owner's recorded words of the last
- * 24 h; `now` is the current unix seconds). Any other skip line is refused.
+ * 24 h; `now` is the current unix seconds). In tier full (`cfg`) a `Priority skip: <path> —
+ * Main: "<reason>"` line with ≥ 4 words is proof too; without `cfg` the refusal behaviour is the
+ * pre-tier one. Any other skip line is refused.
  * `staffed === undefined` means the caller had no running-job info (CLI spawn without it): never
  * refuse. Plans already named by this call never block it.
  */
-export function priorityProblem(plans: Plan[], named: string[], staffed: string[] | undefined, brief: string, messages: OwnerMessage[] = [], now: number = nowSec()): PriorityOutcome | null {
+export function priorityProblem(plans: Plan[], named: string[], staffed: string[] | undefined, brief: string, messages: OwnerMessage[] = [], now: number = nowSec(), cfg?: Config): PriorityOutcome | null {
 	if (staffed === undefined) return { unknown: true };
 	const namedRanks = named.map(f => plans.findIndex(p => p.file === f)).filter(n => n >= 0);
 	if (!namedRanks.length) return null;
 	const higher = plans.slice(0, Math.min(...namedRanks));
+	const tier = cfg ? currentTier(cfg) : "opinionated";
 	const skipLines: Record<string, string> = {};
 	for (const m of brief.matchAll(SKIP_LINE)) {
 		const plan = (m[1] ?? "").trim();
@@ -410,6 +418,13 @@ export function priorityProblem(plans: Plan[], named: string[], staffed: string[
 		const p = higher[i]!;
 		if (!priorityIdle(p, plans) || staffed.includes(p.file)) continue;
 		const why = skipLines[p.file];
+		// Tier full (20261025_1940 P2): Main's own >= 4-word reason is proof enough; every other
+		// tier refuses it exactly as before — only the owner's recorded words let a skip through.
+		const mainWhy = tier === "full" ? why?.match(/^Main:\s*"(.+)"\s*$/) : undefined;
+		if (why && mainWhy && mainWhy[1]!.trim().split(/\s+/).length >= 4) {
+			skips.push({ plan: p.file, why });
+			continue;
+		}
 		const quote = why?.match(/^owner:\s*"(.+)"\s*$/);
 		if (why && quote && ownerSaid(quote[1]!, messages, now)) {
 			skips.push({ plan: p.file, why });
@@ -422,7 +437,7 @@ export function priorityProblem(plans: Plan[], named: string[], staffed: string[
 
 /** Load staffing and the owner's recorded words, run the pure priority gate and log its outcome; the refusal comes back with the caller's label, or null. */
 function priorityGate(named: string[], runningJobs: string[] | undefined, brief: string, cfg: Config, label: string): string | null {
-	const outcome = priorityProblem(q.activePlans(), named, runningJobs === undefined ? undefined : staffedPlans(readStaffing(), runningJobs), brief, readOwnerMessages(), nowSec());
+	const outcome = priorityProblem(q.activePlans(), named, runningJobs === undefined ? undefined : staffedPlans(readStaffing(), runningJobs), brief, readOwnerMessages(), nowSec(), cfg);
 	if (outcome?.unknown) log(cfg.paths.guard_log, "PRIORITY unknown jobs");
 	for (const s of outcome?.skips ?? []) log(cfg.paths.guard_log, `PRIORITY skip ${s.plan}: ${s.why}`);
 	return outcome?.problem ? `${label}: ${outcome.problem}` : null;
@@ -531,6 +546,23 @@ function startsOwnerUi(input: Record<string, unknown>): boolean {
 	});
 }
 
+// True when a command segment lands work on a remote (plan 20261025_1940 P2): `git push`,
+// `glab mr merge`, `gh pr merge`. Segment splitting and launcher skipping match startsOwnerUi,
+// so `sh -c "git push"`, `sudo git push` and chained pushes are seen too.
+function landingCommand(input: Record<string, unknown>): boolean {
+	const text = Object.values(input).filter((v): v is string => typeof v === "string").join("\n");
+	return text.split(/&&|\|\||;|\||\n|\$\(|`/).some(seg => {
+		const words = seg.trim().split(/\s+/).filter(Boolean).map(w => w.replace(/^["'(]+|["')]+$/g, ""));
+		let i = 0;
+		while (i < words.length && (LAUNCHERS[words[i] ?? ""] === true || /^\w+=/.test(words[i] ?? "") || /(^|\/)main\.ts$/.test(words[i] ?? ""))) i++;
+		const cmd = (words[i] ?? "").split("/").pop() ?? "";
+		if (cmd === "git" && words[i + 1] === "push") return true;
+		if (cmd === "glab" && words[i + 1] === "mr" && words[i + 2] === "merge") return true;
+		if (cmd === "gh" && words[i + 1] === "pr" && words[i + 2] === "merge") return true;
+		return false;
+	});
+}
+
 // Subagent half of a tool call (the original plan-guard checkCall without the main return).
 // `cap` is the sub's hard call cap: its recorded per-spawn budget, else the global sub_max_calls.
 function subRules(e: ToolEvent, input: Record<string, unknown>, paths: string[], writes: string[], cfg: Config, cap: number): string | null {
@@ -565,33 +597,39 @@ function subRules(e: ToolEvent, input: Record<string, unknown>, paths: string[],
 	return null;
 }
 
-// Main's edit limit: window starts at the first counted change, resets after main_window_min
-// minutes and at every owner message. State lives in the queue state dir so one-shot CLI
-// processes share the window (the original kept it in extension memory for one session).
+// Main's edit limit (20261025_1940 P2): the cap follows the autonomy tier — autonomy.strict_edit_limit
+// in strict, guards.main_edit_limit in opinionated, none in full. Window starts at the first counted
+// change, resets after main_window_min minutes and at every owner message. State lives in the queue
+// state dir so one-shot CLI processes share the window (the original kept it in extension memory for
+// one session).
 function editWindow(e: ToolEvent, input: Record<string, unknown>, cfg: Config): Decision {
 	const files = changedProjectFiles(e.tool, input, e.cwd, cfg);
 	if (!files.length) return ALLOW;
+	const tier = currentTier(cfg);
+	if (tier === "full") return ALLOW; // no cap: Main works unattended
+	const limit = tier === "strict" ? cfg.autonomy.strict_edit_limit : cfg.guards.main_edit_limit;
+	const limitName = tier === "strict" ? "autonomy.strict_edit_limit" : "owner limit";
 	const now = Date.now();
 	const w = readWindow();
 	if (w.used.length && now - w.windowStart >= cfg.guards.main_window_min * 60_000) w.used = [];
-	if (w.used.length >= cfg.guards.main_edit_limit) {
+	if (w.used.length >= limit) {
 		const mins = Math.ceil((w.windowStart + cfg.guards.main_window_min * 60_000 - now) / 60_000);
-		log(cfg.paths.guard_log, `BLOCK tool=${e.tool} after ${w.used.length} edits: ${files.join(",")}`);
+		log(cfg.paths.guard_log, `BLOCK tool=${e.tool} after ${w.used.length} edits (tier ${tier}): ${files.join(",")}`);
 		return deny(
-			`main-guard: Main already changed project files ${w.used.length} times in this ${cfg.guards.main_window_min}-minute window ` +
-				`(owner limit ${cfg.guards.main_edit_limit}; resets in ${mins} min). Main writes plans, not code: put the work in a plan ` +
+			`main-guard: tier ${tier} — Main already changed project files ${w.used.length} times in this ${cfg.guards.main_window_min}-minute window ` +
+				`(${limitName} ${limit}; resets in ${mins} min). Main writes plans, not code: put the work in a plan ` +
 				`(listed in ${q.INDEX}, phase-0 blockers first) and spawn an implementer. Changes so far: ${w.used.join(", ")}`,
 		);
 	}
 	if (!w.used.length) w.windowStart = now;
 	w.used.push(`${e.tool}:${files[0]!}`);
 	writeWindow(w);
-	const left = cfg.guards.main_edit_limit - w.used.length;
+	const left = limit - w.used.length;
 	if (left <= 2)
 		return {
 			allow: true,
 			reason: "",
-			inject: `main-guard: ${left} project-file change(s) left in this ${cfg.guards.main_window_min}-minute window; then delegate.`,
+			inject: `main-guard: tier ${tier} — ${left} project-file change(s) left in this ${cfg.guards.main_window_min}-minute window; then delegate.`,
 		};
 	return ALLOW;
 }
@@ -662,6 +700,13 @@ function mainTool(e: ToolEvent, input: Record<string, unknown>, cfg: Config): De
 		return ALLOW;
 	}
 	if (cfg.guards.shell_tools.includes(e.tool)) {
+		// Strict landing gate (20261025_1940 P2): in tier strict every push/merge waits for the
+		// owner's one-shot `go` (autonomy.go_minutes); the landing that consumes it goes through.
+		// Opinionated and full keep today's allowance. Owner-only rules above are untouched.
+		if (landingCommand(input) && currentTier(cfg) === "strict" && !takeGo(cfg)) {
+			log(cfg.paths.guard_log, "BLOCK landing: tier strict, no go");
+			return deny('main-guard: tier strict — type "go" to approve one push/merge');
+		}
 		const command = String(input?.command ?? input?.code ?? "");
 		for (const entry of cfg.guards.bypass_spawn) {
 			if (!bypassRegExp(entry).test(command)) continue;
@@ -888,7 +933,15 @@ export function checkInject(e: InjectEvent, cfg: Config): Decision {
 	const cancel = continuation ? "" : flagCancel(e.inject, cfg);
 	const incidents = openIncidentList(cfg);
 	const incidentText = incidents.length ? `\n${incidents.map(incidentLine).join("\n")}` : "";
-	const editLimit = continuation ? "" : `\nmain-guard: Main may change project files at most ${cfg.guards.main_edit_limit} times per ${cfg.guards.main_window_min}-minute window; then delegate.`;
+	// 20261025_1940 P2: the injected line names the autonomy tier and what Main does without asking in it.
+	const tier = currentTier(cfg);
+	const tierNote =
+		tier === "strict"
+			? `Main changes at most ${cfg.autonomy.strict_edit_limit} project files per ${cfg.guards.main_window_min} min, and every git push / glab mr merge / gh pr merge waits for your "go" (one landing, valid ${cfg.autonomy.go_minutes} min).`
+			: tier === "full"
+				? `Main works unattended: no edit cap, its own "Priority skip: <plan> — Main: \\"<reason>\\"" skips pass, pushes and merges go through. Owner-only moves (guard files, the phone page, notify secrets, the unlock) stay locked.`
+				: `Main changes at most ${cfg.guards.main_edit_limit} project files per ${cfg.guards.main_window_min} min; pushes and merges go through.`;
+	const editLimit = continuation ? "" : `\nautonomy: ${tier} — ${tierNote}`;
 	return {
 		allow: true,
 		reason: "",

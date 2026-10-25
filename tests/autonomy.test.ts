@@ -187,3 +187,166 @@ test("bad autonomy config values are ConfigErrors", () => {
 		expect(() => load(autonomy)).toThrow(ConfigError);
 	}
 });
+
+// --- P2: the guards follow the tier (src/core/guards.ts) ---
+
+import { checkInject, checkTool, priorityProblem } from "../src/core/guards.ts";
+import type { ToolEvent } from "../src/core/adapter.ts";
+import type { Plan } from "../src/core/queue/lib.ts";
+
+const NOW = 1760000000;
+
+function mainEvent(tool: string, input: Record<string, unknown>): ToolEvent {
+	return { tool, input, cwd: repo, agent: "main", agentId: "main", calls: 0, paths: [], writes: [], command: String(input?.command ?? "") };
+}
+
+/** A change Main is allowed to make (a scratch file in the repo), counted by the edit window. */
+function editCall(n: number): ToolEvent {
+	const f = join(repo, `scratch-${n}.ts`);
+	writeFileSync(f, "export const a = 1;\n");
+	return mainEvent("write", { path: f, content: "export const a = 2;\n" });
+}
+
+function planAt(file: string, status: "open" | "complete" = "open"): Plan {
+	return {
+		repo,
+		file,
+		text: "# toy\n\n## Phases\n- [ ] P1 do the thing\n",
+		status,
+		blockers: [],
+		doneCheck: null,
+		worktree: null,
+		branch: null,
+		appliesTo: [],
+		waiting: false,
+		waitingLine: null,
+		waitsOn: [],
+		priorityId: null,
+		title: file,
+		goal: [],
+		errors: [],
+	};
+}
+
+const HIGH = () => join(repo, "docs/plans/20261020_0100_high.md");
+const LOW = () => join(repo, "docs/plans/20261020_0102_low.md");
+
+test("tier strict caps Main's changes at autonomy.strict_edit_limit and names the tier", () => {
+	setTier("strict");
+	for (let i = 1; i <= 2; i++) expect(checkTool(editCall(i), cfg).allow).toBe(true);
+	const d = checkTool(editCall(3), cfg);
+	expect(d.allow).toBe(false);
+	expect(d.reason).toContain("tier strict");
+	expect(d.reason).toContain("autonomy.strict_edit_limit 2");
+});
+
+test("tier opinionated keeps today's cap of guards.main_edit_limit", () => {
+	setTier("opinionated");
+	for (let i = 1; i <= 5; i++) expect(checkTool(editCall(i), cfg).allow).toBe(true);
+	const d = checkTool(editCall(6), cfg);
+	expect(d.allow).toBe(false);
+	expect(d.reason).toContain("tier opinionated");
+	expect(d.reason).toContain("owner limit 5");
+});
+
+test("tier full has no edit cap and no warning inject", () => {
+	setTier("full");
+	for (let i = 1; i <= 8; i++) {
+		const d = checkTool(editCall(i), cfg);
+		expect(d.allow).toBe(true);
+		expect(d.inject).toBeUndefined();
+	}
+});
+
+test("checkInject names the tier instead of the bare edit-limit line", () => {
+	setTier("strict");
+	const d = checkInject({ agent: "main", inject: "what is next" }, cfg);
+	expect(d.inject).toContain("autonomy: strict —");
+	expect(d.inject).toContain('"go"');
+	expect(d.inject).not.toContain("Main may change project files at most");
+	setTier("full");
+	const f = checkInject({ agent: "main", inject: "what is next" }, cfg);
+	expect(f.inject).toContain("autonomy: full —");
+	expect(f.inject).toContain("no edit cap");
+});
+
+// --- P2: the strict landing gate ---
+
+const PUSH = "git push origin feat/toy";
+
+test("tier strict refuses Main's push/merge without go", () => {
+	setTier("strict");
+	const d = checkTool(mainEvent("bash", { command: PUSH }), cfg);
+	expect(d.allow).toBe(false);
+	expect(d.reason).toBe('main-guard: tier strict — type "go" to approve one push/merge');
+	const m = checkTool(mainEvent("bash", { command: "glab mr merge 141" }), cfg);
+	expect(m.allow).toBe(false);
+	const h = checkTool(mainEvent("bash", { command: "gh pr merge 12 --squash" }), cfg);
+	expect(h.allow).toBe(false);
+});
+
+test("tier strict sees the push through sh -c, sudo, env and chains", () => {
+	setTier("strict");
+	for (const command of [`sh -c '${PUSH}'`, "sudo git push origin main", `bun run typecheck && ${PUSH}`, "env GIT=1 git push"]) {
+		expect(checkTool(mainEvent("bash", { command }), cfg).allow).toBe(false);
+	}
+});
+
+test("a standing go lets exactly one landing through", () => {
+	setTier("strict");
+	expect(chatGo("go", cfg, "interactive").applied).toBe(true);
+	expect(checkTool(mainEvent("bash", { command: PUSH }), cfg).allow).toBe(true);
+	const second = checkTool(mainEvent("bash", { command: PUSH }), cfg);
+	expect(second.allow).toBe(false);
+	expect(second.reason).toContain('type "go"');
+});
+
+test("a go that is not the whole message approves nothing", () => {
+	setTier("strict");
+	expect(chatGo("please go", cfg, "interactive").applied).toBe(false);
+	expect(checkTool(mainEvent("bash", { command: PUSH }), cfg).allow).toBe(false);
+});
+
+test("opinionated and full keep today's push allowance", () => {
+	setTier("opinionated");
+	expect(checkTool(mainEvent("bash", { command: PUSH }), cfg).allow).toBe(true);
+	setTier("full");
+	expect(checkTool(mainEvent("bash", { command: PUSH }), cfg).allow).toBe(true);
+});
+
+test("full never loosens the owner-only moves: protected write and ui start stay refused", () => {
+	setTier("full");
+	const d = checkTool(mainEvent("write", { path: join(agentDir, ".guard-unlock"), content: "" }), cfg);
+	expect(d.allow).toBe(false);
+	expect(d.reason).toContain("protected guard file");
+	const ui = checkTool(mainEvent("bash", { command: "systemctl --user restart neurastream-ui" }), cfg);
+	expect(ui.allow).toBe(false);
+	expect(ui.reason).toContain("starting the owner page");
+});
+
+// --- P2: the priority gate in full ---
+
+test("priority skip with a Main reason passes only in tier full", () => {
+	const plans = [planAt(HIGH()), planAt(LOW())];
+	const brief = `Priority skip: ${HIGH()} — Main: "the traces series is blocked on the owner"`;
+	// strict and opinionated: refused exactly as today
+	setTier("strict");
+	const s = priorityProblem(plans, [LOW()], [], brief, [], NOW, cfg);
+	expect(s?.problem).toContain("a skip needs the owner's words");
+	setTier("opinionated");
+	expect(priorityProblem(plans, [LOW()], [], brief, [], NOW, cfg)?.problem).toContain("a skip needs the owner's words");
+	// full: Main's own >= 4-word reason goes through
+	setTier("full");
+	expect(priorityProblem(plans, [LOW()], [], brief, [], NOW, cfg)).toEqual({
+		skips: [{ plan: HIGH(), why: 'Main: "the traces series is blocked on the owner"' }],
+	});
+	// a short reason is not a reason
+	const short = `Priority skip: ${HIGH()} — Main: "do it"`;
+	expect(priorityProblem(plans, [LOW()], [], short, [], NOW, cfg)?.problem).toContain("a skip needs the owner's words");
+	// the owner's recorded words still work in full
+	const said = [{ at: NOW, text: "the traces series gets first prio today" }];
+	const ownerBrief = `Priority skip: ${HIGH()} — owner: "traces series gets first"`;
+	expect(priorityProblem(plans, [LOW()], [], ownerBrief, said, NOW, cfg)).toEqual({
+		skips: [{ plan: HIGH(), why: 'owner: "traces series gets first"' }],
+	});
+});
