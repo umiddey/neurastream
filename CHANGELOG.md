@@ -1,5 +1,5 @@
 # Changelog
-## Unreleased
+## 0.2.26
 ### Fixed
 - Provider retry-after values remain unchanged across rate-limit resume attempts; only the default wait doubles.
 
