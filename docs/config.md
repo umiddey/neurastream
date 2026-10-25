@@ -187,6 +187,7 @@ machine:
 
 quota:
   reset_tz: "Asia/Shanghai"
+  reset_pattern: 'reset at (\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?)\s*(Z|UTC|GMT|[+-]\d{2}:?\d{2}|[A-Z]{2,5}\b)?'
   label: "quota"
 
 priority:

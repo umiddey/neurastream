@@ -161,7 +161,7 @@ export interface Config {
 		watch_sec: number;
 		watch_streak: number;
 	};
-	quota: { reset_tz: string; label: string };
+	quota: { reset_tz: string; reset_pattern: string; label: string };
 	/** Chat notify (src/core/notify.ts): Main's final reply goes to these webhooks at session_stop.
 	 *  The values are paths to secret files holding the webhook URLs — never the URLs themselves. */
 	notify: { discord_webhook_file: string; slack_webhook_file: string; prefix: string };
@@ -325,7 +325,30 @@ function applyEnv(cfg: Record<string, unknown>, env: NodeJS.ProcessEnv): void {
 }
 
 function check(cfg: Config): void {
-	if (cfg.ledger.max_slots < 1) throw new ConfigError("ledger.max_slots must be >= 1");
+	try {
+		const pattern = cfg.quota.reset_pattern;
+		const compiled = new RegExp(pattern);
+		let groups = 0;
+		let escaped = false;
+		let inClass = false;
+		for (let i = 0; i < pattern.length; i++) {
+			const char = pattern[i];
+			if (escaped) {
+				escaped = false;
+				continue;
+			}
+			if (char === "\\") {
+				escaped = true;
+				continue;
+			}
+			if (char === "[" && !inClass) inClass = true;
+			else if (char === "]" && inClass) inClass = false;
+			else if (char === "(" && !inClass && pattern[i + 1] !== "?") groups++;
+		}
+		if (groups < 1) throw new Error("missing capture group 1");
+	} catch {
+		throw new ConfigError("quota.reset_pattern must be a valid regex with capture group 1");
+	}
 	if (cfg.guards.sub_warn_calls > cfg.guards.sub_max_calls) {
 		throw new ConfigError("guards.sub_warn_calls must be <= guards.sub_max_calls");
 	}

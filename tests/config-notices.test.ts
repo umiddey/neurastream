@@ -24,7 +24,11 @@ function load(text: string) {
 test("a top-level glm: section loads as quota: with a rename notice", () => {
 	const { file, cfg } = load('glm:\n  reset_tz: "Asia/Shanghai"\n  label: "GLM"\n');
 	const loaded = cfg();
-	expect(loaded.quota).toEqual({ reset_tz: "Asia/Shanghai", label: "GLM" });
+	expect(loaded.quota).toEqual({
+		reset_tz: "Asia/Shanghai",
+		reset_pattern: String.raw`reset at (\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?)\s*(Z|UTC|GMT|[+-]\d{2}:?\d{2}|[A-Z]{2,5}\b)?`,
+		label: "GLM",
+	});
 	expect(loaded.notices).toEqual([`config "glm:" is now "quota:"; rename it in ${file}`]);
 });
 
