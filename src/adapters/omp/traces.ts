@@ -61,7 +61,14 @@ export function parseTraceFile(file: string, runId: string): TraceEvent[] {
 		if (!d) continue;
 		const ts = typeof d.timestamp === "string" ? parseTs(d.timestamp) : null;
 		if (d.type === "model_change") {
-			out.push({ kind: "modelChange", ts, runId, model: str(d.model), provider: str(d.provider) });
+			out.push({
+				kind: "modelChange",
+				ts,
+				runId,
+				model: str(d.model),
+				provider: str(d.provider),
+				fallback: d.resolvedModelIsFallback === true ? true : undefined,
+			});
 			continue;
 		}
 		if (d.type === "model_usage") {
@@ -82,7 +89,7 @@ export function parseTraceFile(file: string, runId: string): TraceEvent[] {
 				if (!p) continue;
 				if (p.type === "text") {
 					const t = String(p.text ?? "");
-					if (t.trim()) out.push({ kind: "assistantText", ts, runId, text: t, model, provider, usage });
+					if (t.trim()) out.push({ kind: "assistantText", ts, runId, text: t, model, provider, usage, responseId: str(m.responseId) });
 				} else if (p.type === "toolCall") {
 					out.push({
 						kind: "toolCall",
@@ -93,6 +100,7 @@ export function parseTraceFile(file: string, runId: string): TraceEvent[] {
 						model,
 						provider,
 						usage,
+						responseId: str(m.responseId),
 					});
 				}
 			}

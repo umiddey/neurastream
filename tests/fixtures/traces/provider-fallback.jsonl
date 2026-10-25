@@ -1,0 +1,3 @@
+{"type":"session","timestamp":"2026-10-25T12:00:00.000Z","id":"provider-fallback"}
+{"type":"model_change","timestamp":"2026-10-25T12:00:01.000Z","model":"zai/glm-5.3","resolvedModelIsFallback":true}
+{"type":"message","timestamp":"2026-10-25T12:00:02.000Z","message":{"role":"assistant","model":"glm-5.3","provider":"zai","api":"zai-chat","responseId":"20261025120002000000abc123","stopReason":"endTurn","content":[{"type":"text","text":"honestly served, but on a fallback resolution"}]}}

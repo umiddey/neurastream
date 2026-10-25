@@ -68,6 +68,10 @@ export interface TraceEvent {
 	model?: string;
 	provider?: string;
 	usage?: TraceUsage;
+	/** Provider response id of the assistant message; absent when the line carries none. */
+	responseId?: string;
+	/** modelChange only: the run resolved the requested model to a fallback. */
+	fallback?: boolean;
 }
 
 export interface TraceSource {

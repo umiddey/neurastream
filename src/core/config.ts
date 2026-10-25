@@ -137,6 +137,15 @@ export interface Config {
 		/** Per-metric daily floors (keys: m1, m2, m3, m4_corrections, m4_questions, m5): a regression below the floor is noise. */
 		daily_floor: Record<string, number>;
 	};
+	/** Provider-honesty rules (src/core/trace-provider.ts): what an honest provider answer looks like. */
+	traces: {
+		provider: {
+			/** Provider -> regex every assistant responseId must match; a provider without an entry is not checked. */
+			id_patterns: Record<string, string>;
+			/** Tools a run may call even when no result in the run proves the tool was offered. */
+			allow_tools: string[];
+		};
+	};
 	machine: {
 		load_over_cores: number;
 		load_max: number;
@@ -301,6 +310,13 @@ function check(cfg: Config): void {
 			new RegExp(p, "i");
 		} catch {
 			throw new ConfigError(`metrics.correction_patterns: not a valid regex: ${p}`);
+		}
+	}
+	for (const [provider, pattern] of Object.entries(cfg.traces.provider.id_patterns)) {
+		try {
+			new RegExp(pattern);
+		} catch {
+			throw new ConfigError(`traces.provider.id_patterns.${provider}: not a valid regex: ${pattern}`);
 		}
 	}
 	for (const rule of cfg.brief.repo_rules) {
