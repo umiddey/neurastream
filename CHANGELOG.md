@@ -1,4 +1,7 @@
 # Changelog
+## Unreleased
+### Fixed
+- The priority-watch golden test no longer flakes on a minute rollover between runs or the 5 s default timeout under load.
 ## 0.2.18
 ### Fixed
 - A slash command typed while Main waited out a rate limit no longer cancels the wake-up before a turn starts.
