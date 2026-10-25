@@ -8,6 +8,7 @@ Branch: fix/provider-state
 - Read /home/ukd/projects/opus-implementer-method.md first.
 
 ## Forbidden
+- Host-neutral (owner 2026-10-26): logic and types in src/core name no harness (omp/opencode/codex/claude/cursor); harness-specific reads/writes live under src/adapters/<harness>/ (docs/adapter.md).
 - Never push; never tag; never `npm publish`. Main merges and releases.
 - Do not edit the reset-time parser (`src/core/reset-time.ts`) or its test; reuse `parseWhen`/`wallToEpoch`.
 - Do not touch anything under /home/ukd/.omp/agent or the installed neurastream.

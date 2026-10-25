@@ -11,6 +11,7 @@ Branch: feat/traces-labels
 - Order: after traces 01 (TraceSource) and traces 05 (waste counters) land.
 
 ## Forbidden
+- Host-neutral (owner 2026-10-26): logic and types in src/core name no harness (omp/opencode/codex/claude/cursor); harness-specific reads/writes live under src/adapters/<harness>/ (docs/adapter.md).
 - Never push, merge, tag or publish; commit on the plan's branch and report.
 - Never edit or delete a line of the label ledger in code or tests: append only. A correction is a new line.
 - No LLM call anywhere in labelling. Every label comes from a recorded event, git, or an explicit Main command.
