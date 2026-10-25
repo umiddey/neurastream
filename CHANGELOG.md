@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.15
 ### Added
 - Provider-honesty rules (plan 20261024_0302): `model-swap` (announced model vs the model/provider assistant messages show, fallback resolutions included), `odd-response-id` (a present responseId vs `traces.provider.id_patterns`; a missing id is not checked), `unoffered-tool` (calls nothing in the allow-list, the request's own tool list or a result other than an unknown-tool refusal backs — a guard-refused call of a real tool is not flagged), `phantom-output` (billed output tokens for a message that wrote nothing; aborted or errored streams are not judged) and `cost-mismatch` (`model_usage` cost beyond ±20% of `traces.provider.prices`, $ per million tokens, either direction). `neurastream metrics report` ends with a weekly `Provider honesty over N runs: …` line. The `traces.provider` maps are open: an empty object in the template accepts your keys, and an assistant message with no content now parses as an empty-text event so phantom output is visible.
 
