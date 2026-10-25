@@ -658,47 +658,21 @@ function handleLock(cfg: Config, login: string): Response {
 // ---- queue reorder (plan P4): the owner drags a card; INDEX.md is rewritten atomically ----
 
 /**
- * INDEX.md's plan lines: every non-blank line that is not a `<!--` comment, normalized and
- * resolved the way the queue reader (readIndex) does it, first occurrence of a path wins,
- * in file order — with each line's raw text so a rewrite never re-serializes the index.
+ * The index text with its open-plan groups reordered: a group is a plan line plus the non-plan
+ * lines (blank or `<!--` comment) attached above it, and the open groups — the first line of
+ * each path in `openPaths`, in file order — are replaced by the groups of `order`, so every open
+ * plan moves with its comment lines while every other plan line keeps its slot (a path listed
+ * twice keeps both lines). Lines after the last plan keep the file's end. Returns null when an
+ * order path is no longer in the file.
  */
-function indexPlanLines(index: string): { path: string; raw: string }[] | null {
+function reorderedIndexText(index: string, order: string[], openPaths: ReadonlySet<string>): string | null {
 	let text: string;
 	try {
 		text = readFileSync(index, "utf8");
 	} catch {
 		return null;
 	}
-	const out: { path: string; raw: string }[] = [];
-	const seen = new Set<string>();
-	for (const raw of text.split("\n")) {
-		const norm = raw
-			.trim()
-			.replace(/^[-*]\s+/, "")
-			.trim();
-		if (!norm || norm.startsWith("<!--")) continue;
-		const p = resolve(process.cwd(), expandHome(norm.replace(/`/g, "")));
-		if (!seen.has(p)) {
-			seen.add(p);
-			out.push({ path: p, raw });
-		}
-	}
-	return out;
-}
-
-/**
- * The index text with its plan lines reordered: every non-plan line (blank or `<!--` comment)
- * stays attached above the plan that follows it, and lines after the last plan keep the file's
- * end. Returns null when an order path is not in the file.
- */
-function reorderedIndexText(index: string, order: string[]): string | null {
-	let text: string;
-	try {
-		text = readFileSync(index, "utf8");
-	} catch {
-		return null;
-	}
-	const groups = new Map<string, string[]>();
+	const groups: { path: string; lines: string[] }[] = [];
 	let pending: string[] = [];
 	for (const raw of text.split("\n")) {
 		const norm = raw
@@ -709,15 +683,33 @@ function reorderedIndexText(index: string, order: string[]): string | null {
 			pending.push(raw);
 			continue;
 		}
-		const p = resolve(process.cwd(), expandHome(norm.replace(/`/g, "")));
-		if (!groups.has(p)) groups.set(p, [...pending, raw]);
+		groups.push({ path: resolve(process.cwd(), expandHome(norm.replace(/`/g, ""))), lines: [...pending, raw] });
 		pending = [];
 	}
+	// The open slots in file order: the first line of each open path; a later duplicate of the
+	// same path keeps its place like a non-open line, so a path listed twice keeps both lines.
+	const byPath = new Map<string, number>();
+	const slots: number[] = [];
+	const seen = new Set<string>();
+	for (const [i, g] of groups.entries()) {
+		if (!byPath.has(g.path)) byPath.set(g.path, i);
+		if (openPaths.has(g.path) && !seen.has(g.path)) {
+			seen.add(g.path);
+			slots.push(i);
+		}
+	}
+	if (slots.length !== order.length) return null;
 	const parts: string[] = [];
-	for (const p of order) {
-		const g = groups.get(p);
-		if (!g) return null;
-		parts.push(...g);
+	let k = 0;
+	for (let i = 0; i < groups.length; i++) {
+		if (slots[k] === i) {
+			const at = byPath.get(order[k] ?? "");
+			if (at === undefined) return null;
+			parts.push(...groups[at]!.lines);
+			k++;
+		} else {
+			parts.push(...groups[i]!.lines);
+		}
 	}
 	parts.push(...pending);
 	return parts.join("\n");
@@ -734,24 +726,25 @@ function handleReorder(cfg: Config, fields: Record<string, string>, login: strin
 		.map(l => l.trim())
 		.filter(l => l.length > 0);
 	const moved = (fields.moved ?? "").trim();
-	const current = indexPlanLines(index);
-	if (!current) return textRes("the queue index is missing", 400);
-	const paths = current.map(l => l.path);
+	// One source of truth for the reorderable set: the open plans, the same list queueRows renders.
+	const openPaths = activePlans(index)
+		.filter(p => p.status === "open")
+		.map(p => p.file);
 	if (!moved || !order.length) return textRes("order and moved are required", 400);
-	// 400: the posted order must be exactly the plans the index lists now — no adds, drops or duplicates.
+	// 400: the posted order must be exactly the open plans the page renders now — no adds, drops or duplicates.
 	if (new Set(order).size !== order.length) return textRes("order lists a plan more than once", 400);
 	const sortedOrder = [...order].sort();
-	const sortedPaths = [...paths].sort();
-	const sameSet = order.length === paths.length && sortedOrder.every((p, i) => p === sortedPaths[i]);
-	if (!sameSet) return textRes("order is not exactly the plans now in the index", 400);
-	// 409: the order the page was rendered with must still be the index's current order.
-	const stale = before.length !== paths.length || before.some((p, i) => p !== paths[i]);
+	const sortedOpen = [...openPaths].sort();
+	const sameSet = order.length === openPaths.length && sortedOrder.every((p, i) => p === sortedOpen[i]);
+	if (!sameSet) return textRes("order is not exactly the plans now on the page", 400);
+	// 409: the order the page was rendered with must still be the open plans' current order.
+	const stale = before.length !== openPaths.length || before.some((p, i) => p !== openPaths[i]);
 	if (stale) return textRes("the queue changed since the page loaded — reload and drag again", 409);
-	const from = paths.indexOf(moved);
+	const from = openPaths.indexOf(moved);
 	const to = order.indexOf(moved);
-	if (from === -1 || to === -1) return textRes("moved is not one of the index's plans", 400);
-	const newText = reorderedIndexText(index, order);
-	if (newText === null) return textRes("the queue index no longer lists every plan", 400);
+	if (from === -1 || to === -1) return textRes("moved is not one of the page's plans", 400);
+	const newText = reorderedIndexText(index, order, new Set(openPaths));
+	if (newText === null) return textRes("the queue index no longer lists every open plan", 400);
 	// Atomic write: a torn INDEX.md would break every reader, so temp file in the same dir + rename.
 	const tmp = `${index}.${randomUUID().slice(0, 8)}.tmp`;
 	writeFileSync(tmp, newText);

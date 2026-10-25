@@ -854,6 +854,7 @@ test("machineRow: free GB, disk minimum, load, load max and cores", () => {
 const PLAN_A = join(TOY, "docs/plans/20261021_alpha.md");
 const PLAN_B = join(TOY, "docs/plans/20261021_beta.md");
 const PLAN_C = join(TOY, "docs/plans/20261021_gamma.md");
+const PLAN_E = join(TOY, "docs/plans/20261021_delta.md");
 
 // A temp INDEX.md with comment and blank lines: every non-plan line sits above the plan that
 // follows it, and a successful reorder keeps exactly that attachment.
@@ -871,6 +872,31 @@ function reorderIndex(): string {
 			"<!-- pinned above B -->",
 			PLAN_B,
 			PLAN_C,
+			"",
+		].join("\n"),
+	);
+	return index;
+}
+
+// The incident shape: a complete plan (B) is still indexed while it awaits its merge, so the
+// page shows only the open plans A, C, D — and only those are reorderable.
+function mixedIndex(): string {
+	writeFileSync(PLAN_A, PLAN_TEXT("open", false));
+	writeFileSync(PLAN_B, PLAN_TEXT("complete", false));
+	writeFileSync(PLAN_C, PLAN_TEXT("open", false));
+	writeFileSync(PLAN_E, PLAN_TEXT("open", true));
+	const index = join(TMP, "reorder-index-open.md");
+	writeFileSync(
+		index,
+		[
+			"<!-- the top comment belongs to A -->",
+			PLAN_A,
+			"<!-- pinned above B -->",
+			PLAN_B,
+			"",
+			PLAN_C,
+			"<!-- pinned above D -->",
+			PLAN_E,
 			"",
 		].join("\n"),
 	);
@@ -949,6 +975,65 @@ test("a stale before order gets 409 and leaves the file unchanged", async () => 
 		order: [PLAN_C, PLAN_B, PLAN_A].join("\n"),
 		before: [PLAN_B, PLAN_A, PLAN_C].join("\n"),
 		moved: PLAN_C,
+	});
+	expect(res.status).toBe(409);
+	expect(readFileSync(index, "utf8")).toBe(original);
+	expect(inboxRecords()).toEqual([]);
+});
+
+test("with a complete plan still indexed, the page ranks only the open plans and dragging the last card to the top rewrites only the open slots", async () => {
+	const index = mixedIndex();
+	const svc = ui({ cfg: { ...CFG, paths: { ...CFG.paths, queue_index: index } } });
+	// the page shows A, C, D ranked 1–3; the complete B is not on it
+	expect([...(await (await get(svc)).text()).matchAll(/data-plan="([^"]+)"/g)].map(m => m[1])).toEqual([PLAN_A, PLAN_C, PLAN_E]);
+	// drag D (page rank 3) to the top: the open plans fill the open slots, B keeps its slot
+	const res = await post(svc, "/reorder", {
+		order: [PLAN_E, PLAN_A, PLAN_C].join("\n"),
+		before: [PLAN_A, PLAN_C, PLAN_E].join("\n"),
+		moved: PLAN_E,
+	});
+	expect(res.status).toBe(303);
+	expect(res.headers.get("location")).toBe("/?sent=reorder&to=1");
+	expect(readFileSync(index, "utf8")).toBe(
+		[
+			"<!-- pinned above D -->",
+			PLAN_E,
+			"<!-- pinned above B -->",
+			PLAN_B,
+			"<!-- the top comment belongs to A -->",
+			PLAN_A,
+			"",
+			PLAN_C,
+			"",
+		].join("\n"),
+	);
+	const recs = inboxRecords();
+	expect(recs.length).toBe(1);
+	expect(recs[0]).toEqual({ ts: expect.any(Number), kind: "reorder", plan: PLAN_E, from: 3, to: 1, login: OWNER });
+});
+
+test("posting a non-open plan in the order gets 400 and leaves the file unchanged", async () => {
+	const index = mixedIndex();
+	const svc = ui({ cfg: { ...CFG, paths: { ...CFG.paths, queue_index: index } } });
+	const original = readFileSync(index, "utf8");
+	const open = [PLAN_A, PLAN_C, PLAN_E];
+	// B is complete, so it is not on the page and not reorderable
+	expect((await post(svc, "/reorder", { order: [PLAN_A, PLAN_B, PLAN_C].join("\n"), before: open.join("\n"), moved: PLAN_A })).status).toBe(400);
+	// not even appended to an otherwise correct order
+	expect((await post(svc, "/reorder", { order: [...open, PLAN_B].join("\n"), before: open.join("\n"), moved: PLAN_A })).status).toBe(400);
+	expect(readFileSync(index, "utf8")).toBe(original);
+	expect(inboxRecords()).toEqual([]);
+});
+
+test("a before order that still names a non-open plan is stale and gets 409", async () => {
+	const index = mixedIndex();
+	const svc = ui({ cfg: { ...CFG, paths: { ...CFG.paths, queue_index: index } } });
+	const original = readFileSync(index, "utf8");
+	// a page rendered before B completed carries B in `before`; against the open plans that render is stale
+	const res = await post(svc, "/reorder", {
+		order: [PLAN_E, PLAN_A, PLAN_C].join("\n"),
+		before: [PLAN_A, PLAN_B, PLAN_C, PLAN_E].join("\n"),
+		moved: PLAN_E,
 	});
 	expect(res.status).toBe(409);
 	expect(readFileSync(index, "utf8")).toBe(original);
