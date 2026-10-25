@@ -1,7 +1,7 @@
-// Plan 20261025_0640 P1: the pure rate-limit decision. What counts as a rate limit (config
-// patterns on the turn's error text, stop reason "error" only) and how long to wait it out
-// (retry-after parsed from the text, doubling on a repeat within the episode, a max cap, slack
-// on top). The error text is the real one the provider returned at 2026-10-25 02:07:49Z.
+// Plan 20261025_0640 P1: pure rate-limit decisions. Configured patterns match the turn's error
+// text (stop reason "error" only). Named retry-after values stay authoritative across attempts;
+// otherwise the default wait doubles on repeats, subject to the cap and slack.
+// The error text below is the real one returned by the provider at 2026-10-25 02:07:49Z.
 
 import { describe, expect, test } from "bun:test";
 import { rateLimitWait, type RateLimitConfig } from "../src/core/rate-limit.ts";
@@ -51,9 +51,15 @@ describe("rateLimitWait", () => {
 		expect(w!.waitMs).toBe((1200 + 15) * 1000);
 	});
 
-	test("a doubled wait above max_wait_s is clamped, then slack is added", () => {
-		const w = rateLimitWait("error", "429 slow down retry-after-ms=2000000", 1000, cfg, 3);
+	test("an attempt-3 default wait above max_wait_s is clamped, then slack is added", () => {
+		const w = rateLimitWait("error", "429 slow down", 1000, cfg, 3);
 		expect(w!.waitMs).toBe((3600 + 15) * 1000);
+	});
+	test("incident I-20261025-195 preserves provider retry-after across attempts", () => {
+		const attempt2 = rateLimitWait("error", `429 rate limit retry-after-ms=2115000`, 1000, cfg, 2);
+		expect(attempt2!.waitMs).toBe((2115 + 15) * 1000);
+		const attempt3 = rateLimitWait("error", `429 rate limit retry-after-ms=156000`, 1000, cfg, 3);
+		expect(attempt3!.waitMs).toBe((156 + 15) * 1000);
 	});
 
 	test("a retry-after above max_wait_s is clamped on the first attempt too", () => {
