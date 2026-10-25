@@ -161,13 +161,14 @@ mkdirSync(p3Base.paths.agent_dir, { recursive: true });
 applyQueueEnv(p3Base);
 const tuned = { ...p3Base, guards: { ...p3Base.guards, main_edit_limit: 7, main_window_min: 20 } };
 
-test("the main prompt states the edit limit from config", () => {
+test("the main prompt states the tier and the edit limit from config", () => {
 	const d = checkInject({ inject: "hello", agent: "main" }, tuned);
-	expect(d.inject).toContain("at most 7 times per 20-minute window");
-	expect(d.inject).not.toContain("at most 5 times");
+	expect(d.inject).toContain("autonomy: opinionated —");
+	expect(d.inject).toContain("at most 7 project files per 20 min");
+	expect(d.inject).not.toContain("at most 5");
 });
 
-test("a stop continuation does not repeat the edit-limit line", () => {
+test("a stop continuation does not repeat the tier line", () => {
 	const d = checkInject({ inject: "main-guard: keep going", agent: "main" }, tuned);
-	expect(d.inject).not.toContain("at most");
+	expect(d.inject).not.toContain("autonomy: opinionated");
 });

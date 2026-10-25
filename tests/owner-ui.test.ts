@@ -151,6 +151,8 @@ beforeEach(() => {
 	rmSync(inboxPath(), { force: true });
 	rmSync(ownerInboxCursorPath(), { force: true });
 	rmSync(unlockPath(), { force: true });
+	rmSync(join(stateDirPath(), "autonomy-tier"), { force: true });
+	rmSync(join(stateDirPath(), "autonomy-go"), { force: true });
 	rmSync(CFG.paths.guard_log, { force: true });
 	rmSync(CFG.paths.plan_guard_log, { force: true });
 });
@@ -573,6 +575,51 @@ test("POST /lock appends one lock inbox record", async () => {
 		kind: "lock",
 		login: OWNER,
 	});
+});
+
+// --- tier buttons: POST /tier (plan 20261025_1940 P3) ---
+
+test("POST /tier writes the tier file, logs TIER ui, marks the current button and appends one inbox record", async () => {
+	const svc = ui();
+	const res = await post(svc, "/tier", { tier: "full" });
+	expect(res.status).toBe(303);
+	expect(res.headers.get("location")).toBe("/?sent=tier&tier=full");
+	expect(readFileSync(join(stateDirPath(), "autonomy-tier"), "utf8")).toBe("full\n");
+	const lines = planGuardLogLines().filter(l => l.includes(" TIER "));
+	expect(lines.length).toBe(1);
+	expect(lines[0]).toContain(`TIER full ui source=ui:${OWNER}`);
+	const page = await (await get(svc)).text();
+	expect(page).toContain("Tier: strict");
+	expect(page).toContain("Tier: opinionated");
+	expect(page).toContain(`value="full"><button class="btn on" type="submit">Tier: full</button>`);
+	const recs = inboxRecords();
+	expect(recs.length).toBe(1);
+	expect(recs[0]).toEqual({ ts: expect.any(Number), kind: "tier", tier: "full", login: OWNER });
+});
+
+test("POST /tier from a stranger gets 403 and writes nothing", async () => {
+	const svc = ui({ peerOf: () => "100.95.10.7" }); // whois: other@example.com
+	const res = await post(svc, "/tier", { tier: "full" });
+	expect(res.status).toBe(403);
+	expect(existsSync(join(stateDirPath(), "autonomy-tier"))).toBe(false);
+});
+
+test("POST /tier with a bad name gets 400 before the core is called", async () => {
+	const svc = ui();
+	const res = await post(svc, "/tier", { tier: "nope" });
+	expect(res.status).toBe(400);
+	expect(existsSync(join(stateDirPath(), "autonomy-tier"))).toBe(false);
+	expect(planGuardLogLines().some(l => l.includes(" TIER "))).toBe(false);
+	expect(inboxRecords()).toEqual([]);
+});
+
+test("tier buttons with the chat gate off redirect to the explanation and change nothing", async () => {
+	const svc = ui({ cfg: { ...CFG, guards: { ...CFG.guards, chat_unlock: false } } });
+	const res = await post(svc, "/tier", { tier: "full" });
+	expect(res.status).toBe(303);
+	expect(res.headers.get("location")).toBe("/?sent=unlock-off");
+	expect(existsSync(join(stateDirPath(), "autonomy-tier"))).toBe(false);
+	expect(inboxRecords()).toEqual([]);
 });
 
 // --- every request is logged ---
