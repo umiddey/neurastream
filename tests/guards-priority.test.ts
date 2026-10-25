@@ -8,10 +8,10 @@ import { afterAll, expect, test } from "bun:test";
 import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { SpawnEvent, ToolEvent } from "../src/core/adapter.ts";
+import type { InjectEvent, SpawnEvent, ToolEvent } from "../src/core/adapter.ts";
 import type { Config } from "../src/core/config.ts";
 import { loadConfig } from "../src/core/config.ts";
-import { checkSpawn, checkTool, priorityProblem, readStaffing, recordSpawns, staffedPlans } from "../src/core/guards.ts";
+import { checkInject, checkSpawn, checkTool, ownerSaid, priorityProblem, readStaffing, recordSpawns, staffedPlans } from "../src/core/guards.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { activePlans, closeLog, stateDirPath } from "../src/core/queue/lib.ts";
 
@@ -260,6 +260,24 @@ test("a skip line without a reason is refused", () => {
 		const d = checkSpawn(spawnEv(`Work ${LOW} on P1\n${line}\n`, []), cfg);
 		expect(d.allow).toBe(false);
 	}
+});
+
+test("owner messages are recorded, bounded, and matched as recent normalized quotes", () => {
+	const event = (inject: string): InjectEvent => ({ agent: "main", inject });
+	checkInject(event("The owner wants priority for the traces series"), cfg);
+	checkInject(event("main-guard: continuation"), cfg);
+	checkInject(event("<system-notice> harness notice"), cfg);
+	const file = join(STATE, "owner-messages.jsonl");
+	let messages = readFileSync(file, "utf8").trim().split("\n").map(line => JSON.parse(line));
+	expect(messages).toHaveLength(1);
+	expect(messages[0].text).toContain("traces series");
+	for (let i = 0; i < 50; i++) checkInject(event(`owner message ${i}`), cfg);
+	messages = readFileSync(file, "utf8").trim().split("\n").map(line => JSON.parse(line));
+	expect(messages).toHaveLength(50);
+	expect(messages[0].text).toBe("owner message 0");
+	expect(ownerSaid("PRIORITY   for the traces series", [{ at: NOW, text: "The owner wants priority for the traces series" }], NOW)).toBe(true);
+	expect(ownerSaid("one two three", [{ at: NOW, text: "one two three" }], NOW)).toBe(false);
+	expect(ownerSaid("four words minimum", [{ at: NOW - 86401, text: "four words minimum" }], NOW)).toBe(false);
 });
 
 test("without job info the gate never refuses and logs PRIORITY unknown jobs", () => {

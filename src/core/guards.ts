@@ -27,6 +27,7 @@ import { notifyProtectedPaths, notifySecretReadHit } from "./notify.ts";
 import * as q from "./queue/lib.ts";
 import type { Plan } from "./queue/lib.ts";
 
+import { nowSec } from "./clock.ts";
 const ALLOW: Decision = { allow: true, reason: "" };
 
 function deny(reason: string): Decision {
@@ -81,6 +82,43 @@ function spawnsFile(): string {
 
 function staffingFile(): string {
 	return path.join(q.STATE_DIR, "staffing.json");
+}
+
+export interface OwnerMessage {
+	at: number;
+	text: string;
+}
+
+function ownerMessagesFile(): string {
+	return path.join(q.STATE_DIR, "owner-messages.jsonl");
+}
+
+function readOwnerMessages(): OwnerMessage[] {
+	try {
+		return readFileSync(ownerMessagesFile(), "utf8").split("\n").filter(Boolean)
+			.map(line => JSON.parse(line) as OwnerMessage);
+	} catch {
+		return [];
+	}
+}
+
+export function ownerSaid(words: string, messages: OwnerMessage[], now: number): boolean {
+	const quote = words.toLowerCase().replace(/\s+/g, " ").trim();
+	if (quote.split(" ").length < 4) return false;
+	return messages.some(m => now - m.at >= 0 && now - m.at <= 86400 && m.text.toLowerCase().replace(/\s+/g, " ").includes(quote));
+}
+
+function recordOwnerMessage(text: string, cfg: Config): void {
+	if (text.trimStart().startsWith("main-guard:") || text.trimStart().startsWith("<system-notice>") || text.includes("<task-result")) return;
+	const file = ownerMessagesFile();
+	try {
+		mkdirSync(q.STATE_DIR, { recursive: true });
+		const messages = readOwnerMessages();
+		messages.push({ at: nowSec(), text });
+		writeFileSync(file, `${messages.slice(-50).map(m => JSON.stringify(m)).join("\n")}\n`);
+	} catch (err) {
+		log(cfg.paths.guard_log, `cannot write ${file}: ${err}`);
+	}
 }
 
 /** plan → the task names of its newest spawn (staffing.json); read for the staffed check. */
@@ -834,6 +872,7 @@ export function checkInject(e: InjectEvent, cfg: Config): Decision {
 	if (e.agent !== "main") return ALLOW;
 	const continuation = e.inject.trimStart().startsWith("main-guard:");
 	if (!continuation) writeWindow({ used: [], windowStart: 0 });
+	recordOwnerMessage(e.inject, cfg);
 	let summary: string;
 	try {
 		summary = q.queueSummary();
