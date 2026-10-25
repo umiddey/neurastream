@@ -1,5 +1,8 @@
 # Changelog
 ## Unreleased
+### Changed
+- Owner page: drag drops and the ↑ top/↑/↓ buttons send the reorder over fetch — the card stays where it was dropped, the ranks renumber in place, a 409 re-fetches the list — and the 20 s refresh swaps only the page body instead of a full reload; every POST redirect returns to the tab the owner was on, and the CSP gained `connect-src 'self'` (nothing else).
+
 ### Fixed
 - Owner page: dragging a queue card to slot 2 now lands it at slot 2 — the drag placeholder always slid to the last card's slot before (I-20261025-187); the reorder receipt says "Moved to #N of open plans" so the page's rank is not confused with INDEX.md's line numbers.
 

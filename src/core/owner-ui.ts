@@ -306,7 +306,7 @@ export function nowStats(cfg: Config, source: RunSource, now: number): NowStats 
 
 // ---- rendering (consumes the rows above, never the readers directly) ----
 
-function needCard(row: QuestionRow, i: number): string {
+function needCard(row: QuestionRow, i: number, tab: string): string {
 	const goals = row.goal.map(g => `<li>${esc(g)}</li>`).join("");
 	const wait = row.waitingMin < 60 ? `waiting ${row.waitingMin} min` : `waiting ${Math.max(1, Math.round(row.waitingMin / 60))} h`;
 	const bg = row.goal.length ? `<details class="bg" id="bg-${i}"><summary>Background</summary><ul>${goals}</ul></details>` : "";
@@ -332,6 +332,7 @@ function needCard(row: QuestionRow, i: number): string {
 ${bg}
 <form method="post" action="/answer">
 <input type="hidden" name="plan" value="${esc(row.plan)}">
+<input type="hidden" name="tab" value="${esc(tab)}">
 ${acts}
 <div class="reply" hidden>
 <textarea name="answer_text" maxlength="${ANSWER_MAX}" rows="3" placeholder="Type your reply"></textarea>
@@ -347,7 +348,7 @@ function agentRowHtml(r: AgentRow): string {
 	return `<li class="agent"><span class="dot ${dot}" aria-hidden="true"></span><span class="aid">${esc(r.id)}</span><span class="model">${esc(r.model)}</span><span class="detail">${esc(r.detail)}${mins}</span></li>`;
 }
 
-function queueHtml(rows: QueueRow[]): string {
+function queueHtml(rows: QueueRow[], tab: string): string {
 	const cards = rows
 		.map(
 			(r, i) => `<li class="qcard" data-plan="${esc(r.file)}">
@@ -369,6 +370,7 @@ ${cards}
 <input type="hidden" name="before" value="${esc(before)}">
 <input type="hidden" name="order" value="">
 <input type="hidden" name="moved" value="">
+<input type="hidden" name="tab" value="${esc(tab)}">
 </form>`;
 }
 
@@ -441,25 +443,26 @@ function topBarHtml(tab: string, lockMinutesLeft: number | null, cfg: Config): s
 	const tabs: [string, string][] = [["now", "Now"], ["queue", "Queue"], ["agents", "Agents"], ["spend", "Spend"]];
 	const pills = tabs.map(([id, label]) => `<a href="/?tab=${id}"${tab === id ? ` class="on"` : ""}>${label}</a>`).join("");
 	const lockLabel = lockMinutesLeft === null ? "🔒 Off" : `🔓 ${lockMinutesLeft} min`;
+	const tabField = `<input type="hidden" name="tab" value="${esc(tab)}">`;
 	const unlockForm = (minutes: number) =>
-		`<form method="post" action="/unlock"><input type="hidden" name="minutes" value="${minutes}"><button class="btn" type="submit">Unlock ${minutes} min</button></form>`;
+		`<form method="post" action="/unlock"><input type="hidden" name="minutes" value="${minutes}">${tabField}<button class="btn" type="submit">Unlock ${minutes} min</button></form>`;
 	const tierForm = (name: Tier, label: string) =>
-		`<form method="post" action="/tier"><input type="hidden" name="tier" value="${name}"><button class="btn${currentTier(cfg) === name ? " on" : ""}" type="submit">${label}</button></form>`;
+		`<form method="post" action="/tier"><input type="hidden" name="tier" value="${name}">${tabField}<button class="btn${currentTier(cfg) === name ? " on" : ""}" type="submit">${label}</button></form>`;
 	const off = cfg.guards.chat_unlock
 		? ""
 		: `<p class="offnote">Unlocking from the page is switched off in the config. To turn it on, set:</p><code class="offcfg">guards: chat_unlock: true</code>`;
 	return `<div class="top"><span class="logo">ns</span>
 <nav class="pills" aria-label="Sections">${pills}</nav>
-<details class="lock" id="lock-pill"><summary>${lockLabel}</summary><div class="lockmenu">${unlockForm(15)}${unlockForm(30)}<form method="post" action="/lock"><button class="btn" type="submit">Lock now</button></form><hr>${tierForm("strict", "Tier: strict")}${tierForm("opinionated", "Tier: opinionated")}${tierForm("full", "Tier: full")}${off}</div></details>
+<details class="lock" id="lock-pill"><summary>${lockLabel}</summary><div class="lockmenu">${unlockForm(15)}${unlockForm(30)}<form method="post" action="/lock">${tabField}<button class="btn" type="submit">Lock now</button></form><hr>${tierForm("strict", "Tier: strict")}${tierForm("opinionated", "Tier: opinionated")}${tierForm("full", "Tier: full")}${off}</div></details>
 </div>`;
 }
 
 /** The queue card. Full on the Queue tab; the Now tab shows the first 8 rows plus the "Show all" link — the drag script merges the hidden rest from the form's before field, so a drag still posts the complete order. */
-function queueCard(rows: QueueRow[] | null, full: boolean): string {
+function queueCard(rows: QueueRow[] | null, full: boolean, tab: string): string {
 	const head = full ? "" : `<h2>Queue <small>drag ≡ to sort</small></h2>`;
 	if (rows === null) return `${head}<div class="card">${na("Queue")}</div>`;
 	if (!rows.length) return `${head}<div class="card"><p class="empty">The queue is empty</p></div>`;
-	const body = queueHtml(full ? rows : rows.slice(0, 8));
+	const body = queueHtml(full ? rows : rows.slice(0, 8), tab);
 	const more = !full && rows.length > 8 ? `<a class="more" href="/?tab=queue">Show all ${rows.length} ›</a>` : "";
 	return `${head}<div class="card">${body}${more}</div>`;
 }
@@ -574,31 +577,57 @@ export function dropSlot(mids: number[], mid: number): number {
 
 const SCRIPT = `(function(){
 var dropSlot=${dropSlot.toString()};
-if(location.search)history.replaceState(null,"",location.pathname);
+// Keep only the tab in the address bar: receipts are one-time DOM, not a reloadable URL.
+if(location.search){var keep=new URLSearchParams(location.search).get("tab");history.replaceState(null,"",location.pathname+(keep?"?tab="+keep:""));}
 function store(d,v){var k="nsui:"+d.id;if(v===undefined)return sessionStorage.getItem(k);sessionStorage.setItem(k,v?"1":"0");}
-var ds=document.querySelectorAll("details[id]");
-for(var i=0;i<ds.length;i++){(function(d){var s=store(d);if(s!==null)d.open=s==="1";d.addEventListener("toggle",function(){store(d,d.open);});})(ds[i]);}
-var rb=document.querySelectorAll(".replybtn");
-for(var j=0;j<rb.length;j++){rb[j].addEventListener("click",function(){var f=this.closest("form");var box=f&&f.querySelector(".reply");if(box){box.hidden=!box.hidden;if(!box.hidden){var t=box.querySelector("textarea");if(t)t.focus();}}});}
-var qlist=document.getElementById("qlist");
+function bindDetails(root){var ds=root.querySelectorAll("details[id]");for(var i=0;i<ds.length;i++){(function(d){var s=store(d);if(s!==null)d.open=s==="1";d.addEventListener("toggle",function(){store(d,d.open);});})(ds[i]);}}
 var dragging=false;
-if(qlist){
-var rform=document.getElementById("reorder-form");
-var qcards=function(){return Array.prototype.slice.call(qlist.querySelectorAll(".qcard"));};
-var submitReorder=function(moved){if(!rform)return;var shown=qcards().map(function(c){return c.getAttribute("data-plan");});var bf=(rform.querySelector("[name=before]").value||"").split("\\n").filter(function(x){return x;});var o=shown.slice();for(var i=0;i<bf.length;i++){if(shown.indexOf(bf[i])<0)o.push(bf[i]);}rform.querySelector("[name=order]").value=o.join("\\n");rform.querySelector("[name=moved]").value=moved;dragging=false;rform.submit();};
-var moveCard=function(card,how){if(how==="top"){var f=qcards()[0];if(f&&f!==card)qlist.insertBefore(card,f);}else if(how==="up"){var p=card.previousElementSibling;if(p&&p.classList.contains("qcard"))qlist.insertBefore(card,p);}else if(how==="down"){var n=card.nextElementSibling;if(n&&n.classList.contains("qcard"))qlist.insertBefore(card,n.nextSibling);}};
-qlist.addEventListener("click",function(e){var t=e.target;if(!t||!t.closest)return;var b=t.closest(".qmove");if(!b)return;var card=t.closest(".qcard");if(!card)return;moveCard(card,b.getAttribute("data-move"));submitReorder(card.getAttribute("data-plan"));});
+function showReceipt(text){var main=document.querySelector("main");if(!main)return;var old=document.querySelector(".receipt[data-js]");if(old&&old.parentNode)old.parentNode.removeChild(old);var d=document.createElement("div");d.className="receipt";d.setAttribute("role","status");d.setAttribute("data-js","1");d.textContent=text;main.parentNode.insertBefore(d,main);}
+function renumber(list){var cards=list.querySelectorAll(".qcard");for(var i=0;i<cards.length;i++){var n=cards[i].querySelector(".qrank");if(n)n.textContent=String(i+1);}}
+function sendReorder(moved,list){
+var rform=document.getElementById("reorder-form");if(!rform||!moved)return;
+var cards=list.querySelectorAll(".qcard");var shown=[];for(var i=0;i<cards.length;i++)shown.push(cards[i].getAttribute("data-plan"));
+var bf=(rform.querySelector("[name=before]").value||"").split("\\n").filter(function(x){return x;});
+var o=shown.slice();for(var j=0;j<bf.length;j++){if(shown.indexOf(bf[j])<0)o.push(bf[j]);}
+dragging=false;
+fetch("/reorder",{method:"POST",headers:{"accept":"application/json","content-type":"application/x-www-form-urlencoded"},body:new URLSearchParams({order:o.join("\\n"),before:bf.join("\\n"),moved:moved}).toString()}).then(function(r){return r.json().then(function(j){return{s:r.status,j:j};});}).then(function(res){
+if(res.s===200&&res.j&&res.j.ok){renumber(list);var b=rform.querySelector("[name=before]");if(b)b.value=o.join("\\n");showReceipt("Moved to #"+res.j.to+" of open plans · Main sees it next turn");}
+else if(res.s===409){showReceipt((res.j&&res.j.error?res.j.error:"the queue changed since the page loaded")+" — showing the current order");refreshNow();}
+else{showReceipt(res.j&&res.j.error?res.j.error:"the move was refused");}
+}).catch(function(){showReceipt("could not reach the page server — try again");});
+}
+var swapping=false;
+function refreshNow(){
+if(swapping)return;swapping=true;
+fetch(location.href,{headers:{"accept":"text/html"}}).then(function(r){return r.text();}).then(function(html){
+var doc=document.implementation.createHTMLDocument("");doc.body.innerHTML=html;
+var fresh=doc.querySelector("main");var cur=document.querySelector("main");
+if(fresh&&cur){cur.innerHTML=fresh.innerHTML;bindPage();}
+}).catch(function(){}).then(function(){swapping=false;});
+}
 var drag=null;
-qlist.addEventListener("pointerdown",function(e){var t=e.target;if(!t||!t.closest)return;var h=t.closest(".qhandle");if(!h||drag)return;var card=t.closest(".qcard");if(!card)return;e.preventDefault();dragging=true;var r=card.getBoundingClientRect();var ph=document.createElement("li");ph.className="qph";ph.style.height=r.height+"px";qlist.insertBefore(ph,card);card.classList.add("dragging");card.style.width=r.width+"px";card.style.left=r.left+"px";card.style.top=r.top+"px";drag={card:card,ph:ph,y0:e.clientY,id:e.pointerId};try{h.setPointerCapture(e.pointerId);}catch(_){}});
-window.addEventListener("pointermove",function(e){if(!drag||e.pointerId!==drag.id)return;var card=drag.card;card.style.transform="translateY("+(e.clientY-drag.y0)+"px)";var r=card.getBoundingClientRect();var mid=r.top+r.height/2;var mids=[];var els=[];var ch=qlist.children;for(var i=0;i<ch.length;i++){var el=ch[i];if(el===card||el===drag.ph)continue;var er=el.getBoundingClientRect();mids.push(er.top+er.height/2);els.push(el);}
+window.addEventListener("pointermove",function(e){if(!drag||e.pointerId!==drag.id)return;var card=drag.card,list=drag.list;card.style.transform="translateY("+(e.clientY-drag.y0)+"px)";var r=card.getBoundingClientRect();var mid=r.top+r.height/2;var mids=[];var els=[];var ch=list.children;for(var i=0;i<ch.length;i++){var el=ch[i];if(el===card||el===drag.ph)continue;var er=el.getBoundingClientRect();mids.push(er.top+er.height/2);els.push(el);}
 var k=dropSlot(mids,mid);
-if(k<mids.length){if(els[k].previousElementSibling!==drag.ph)qlist.insertBefore(drag.ph,els[k]);}else if(mids.length&&els[mids.length-1].nextElementSibling!==drag.ph){qlist.insertBefore(drag.ph,els[mids.length-1].nextSibling);}});
-var endDrag=function(e,submitIt){if(!drag||(e&&e.pointerId!==undefined&&e.pointerId!==drag.id))return;var card=drag.card,ph=drag.ph;card.classList.remove("dragging");card.style.transform="";card.style.width="";card.style.left="";card.style.top="";qlist.insertBefore(card,ph);qlist.removeChild(ph);drag=null;if(submitIt)submitReorder(card.getAttribute("data-plan"));else dragging=false;};
+if(k<mids.length){if(els[k].previousElementSibling!==drag.ph)list.insertBefore(drag.ph,els[k]);}else if(mids.length&&els[mids.length-1].nextElementSibling!==drag.ph){list.insertBefore(drag.ph,els[mids.length-1].nextSibling);}});
+var endDrag=function(e,submitIt){if(!drag||(e&&e.pointerId!==undefined&&e.pointerId!==drag.id))return;var card=drag.card,ph=drag.ph,list=drag.list;card.classList.remove("dragging");card.style.transform="";card.style.width="";card.style.left="";card.style.top="";list.insertBefore(card,ph);list.removeChild(ph);drag=null;if(submitIt)sendReorder(card.getAttribute("data-plan"),list);else dragging=false;};
 window.addEventListener("pointerup",function(e){endDrag(e,true);});
 window.addEventListener("pointercancel",function(e){endDrag(e,false);});
+function bindPage(){
+var main=document.querySelector("main");if(!main)return;
+bindDetails(main);
+var rb=main.querySelectorAll(".replybtn");
+for(var j=0;j<rb.length;j++){rb[j].addEventListener("click",function(){var f=this.closest("form");var box=f&&f.querySelector(".reply");if(box){box.hidden=!box.hidden;if(!box.hidden){var t=box.querySelector("textarea");if(t)t.focus();}}});}
+var qlist=main.querySelector("#qlist");
+if(qlist){
+var moveCard=function(card,how){if(how==="top"){var f=qlist.querySelector(".qcard");if(f&&f!==card)qlist.insertBefore(card,f);}else if(how==="up"){var p=card.previousElementSibling;if(p&&p.classList.contains("qcard"))qlist.insertBefore(card,p);}else if(how==="down"){var n=card.nextElementSibling;if(n&&n.classList.contains("qcard"))qlist.insertBefore(card,n.nextSibling);}};
+qlist.addEventListener("click",function(e){var t=e.target;if(!t||!t.closest)return;var b=t.closest(".qmove");if(!b)return;var card=t.closest(".qcard");if(!card)return;moveCard(card,b.getAttribute("data-move"));sendReorder(card.getAttribute("data-plan"),qlist);});
+qlist.addEventListener("pointerdown",function(e){var t=e.target;if(!t||!t.closest)return;var h=t.closest(".qhandle");if(h&&!drag){var card=t.closest(".qcard");if(card){e.preventDefault();dragging=true;var r=card.getBoundingClientRect();var ph=document.createElement("li");ph.className="qph";ph.style.height=r.height+"px";qlist.insertBefore(ph,card);card.classList.add("dragging");card.style.width=r.width+"px";card.style.left=r.left+"px";card.style.top=r.top+"px";drag={card:card,ph:ph,y0:e.clientY,id:e.pointerId,list:qlist};try{h.setPointerCapture(e.pointerId);}catch(_){}}}});
+}
 }
 function busy(){if(dragging)return true;var els=document.querySelectorAll("input:not([type=hidden]), textarea");for(var k=0;k<els.length;k++){if(els[k]===document.activeElement||els[k].value)return true;}return false;}
-setInterval(function(){if(!busy())location.reload();},${REFRESH_SEC}000);
+setInterval(function(){if(!busy()&&!swapping)refreshNow();},${REFRESH_SEC}000);
+bindDetails(document);
+bindPage();
 })();`;
 
 /** The whole page as one HTML string. Exported for scripts/ui-preview.ts (no server). */
@@ -610,7 +639,7 @@ export function renderPage(cfg: Config, data: PageData, params: URLSearchParams,
 		data.questions === null
 			? na("Waiting on you")
 			: data.questions.length
-				? data.questions.map(needCard).join("\n")
+				? data.questions.map((row, i) => needCard(row, i, tab)).join("\n")
 				: `<p class="empty">Nothing needs you right now</p>`;
 	const working =
 		data.agents === null ? na("Working now") : data.agents.length ? `<ul class="agents">${data.agents.map(agentRowHtml).join("")}</ul>` : `<p class="empty">No agents running</p>`;
@@ -629,11 +658,11 @@ ${tilesHtml(data)}
 <div class="card">
 ${needsBody}
 </div>
-${queueCard(data.queue, false)}`
+${queueCard(data.queue, false, tab)}`
 			: tab === "queue"
 				? `<h1>Queue</h1>
 <p class="sub">Drag ≡ to sort — Main works by the new order on its next turn.</p>
-${queueCard(data.queue, true)}`
+${queueCard(data.queue, true, tab)}`
 				: tab === "agents"
 					? `<h1>Agents</h1>
 <p class="sub">Who is working right now, how they score, and what went wrong.</p>
@@ -792,6 +821,12 @@ function redirect(target: string): Response {
 	return new Response(null, { status: 303, headers: { location: target } });
 }
 
+/** The POST reply target: the tab the owner was on (a hidden `tab` field; unknown = now, the default), then the receipt. */
+function sentTo(tab: string, sent: string): string {
+	const t = tab === "queue" || tab === "agents" || tab === "spend" ? tab : "now";
+	return t === "now" ? `/?${sent}` : `/?tab=${t}&${sent}`;
+}
+
 /** The normal page (the GET layout) as a POST reply; the stale-answer reply is this with sent=stale. */
 function pageRes(cfg: Config, source: RunSource, params: URLSearchParams): Response {
 	const nonce = randomUUID().replaceAll("-", "");
@@ -799,7 +834,7 @@ function pageRes(cfg: Config, source: RunSource, params: URLSearchParams): Respo
 		status: 200,
 		headers: {
 			"content-type": "text/html; charset=utf-8",
-			"content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`,
+			"content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src data:; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`,
 		},
 	});
 }
@@ -831,28 +866,28 @@ function handleAnswer(cfg: Config, source: RunSource, fields: Record<string, str
 		return pageRes(cfg, source, new URLSearchParams({ sent: "stale" }));
 	}
 	appendAnswer(planFile, plan.waitingLine, answer, login);
-	return redirect("/?sent=answer");
+	return redirect(sentTo(fields.tab ?? "", "sent=answer"));
 }
 
 function handleUnlock(cfg: Config, fields: Record<string, string>, login: string): Response {
 	const minutes = fields.minutes ?? "";
 	if (minutes !== "" && !/^\d+$/.test(minutes)) return textRes("minutes must be a number", 400);
 	const result = chatUnlock(minutes === "" ? "unlock" : `unlock ${minutes}`, cfg, `ui:${login}`, "ui");
-	if (!result.applied) return redirect("/?sent=unlock-off");
+	if (!result.applied) return redirect(sentTo(fields.tab ?? "", "sent=unlock-off"));
 	mkdirSync(stateDirPath(), { recursive: true });
 	appendFileSync(
 		inboxPath(),
 		`${JSON.stringify({ ts: nowSec(), kind: "unlock", minutes: result.minutes, until: result.until, login })}\n`,
 	);
-	return redirect(`/?sent=unlock&minutes=${result.minutes}`);
+	return redirect(sentTo(fields.tab ?? "", `sent=unlock&minutes=${result.minutes}`));
 }
 
-function handleLock(cfg: Config, login: string): Response {
+function handleLock(cfg: Config, fields: Record<string, string>, login: string): Response {
 	const result = chatUnlock("lock", cfg, `ui:${login}`, "ui");
-	if (!result.applied) return redirect("/?sent=unlock-off");
+	if (!result.applied) return redirect(sentTo(fields.tab ?? "", "sent=unlock-off"));
 	mkdirSync(stateDirPath(), { recursive: true });
 	appendFileSync(inboxPath(), `${JSON.stringify({ ts: nowSec(), kind: "lock", login })}\n`);
-	return redirect("/?sent=lock");
+	return redirect(sentTo(fields.tab ?? "", "sent=lock"));
 }
 
 const TIERS: readonly Tier[] = ["strict", "opinionated", "full"];
@@ -864,10 +899,10 @@ function handleTier(cfg: Config, fields: Record<string, string>, login: string):
 	const name = (fields.tier ?? "").trim().toLowerCase();
 	if (!(TIERS as readonly string[]).includes(name)) return textRes("tier must be strict, opinionated or full", 400);
 	const result = chatTier(`tier ${name}`, cfg, `ui:${login}`, "ui");
-	if (!result.applied) return redirect("/?sent=unlock-off");
+	if (!result.applied) return redirect(sentTo(fields.tab ?? "", "sent=unlock-off"));
 	mkdirSync(stateDirPath(), { recursive: true });
 	appendFileSync(inboxPath(), `${JSON.stringify({ ts: nowSec(), kind: "tier", tier: result.tier, login })}\n`);
-	return redirect(`/?sent=tier&tier=${result.tier}`);
+	return redirect(sentTo(fields.tab ?? "", `sent=tier&tier=${result.tier}`));
 }
 
 // ---- queue reorder (plan P4): the owner drags a card; INDEX.md is rewritten atomically ----
@@ -930,7 +965,7 @@ function reorderedIndexText(index: string, order: string[], openPaths: ReadonlyS
 	return parts.join("\n");
 }
 
-function handleReorder(cfg: Config, fields: Record<string, string>, login: string): Response {
+function handleReorder(cfg: Config, fields: Record<string, string>, login: string, wantsJson: boolean): Response {
 	const index = cfg.paths.queue_index;
 	const order = (fields.order ?? "")
 		.split("\n")
@@ -941,32 +976,37 @@ function handleReorder(cfg: Config, fields: Record<string, string>, login: strin
 		.map(l => l.trim())
 		.filter(l => l.length > 0);
 	const moved = (fields.moved ?? "").trim();
+	// The page's drag and arrow buttons send this over fetch (accept: application/json) and read
+	// the JSON reply; a no-JS form post still gets the 303. Errors follow the same split.
+	const fail = (error: string, status: number): Response =>
+		wantsJson ? Response.json({ ok: false, error }, { status }) : textRes(error, status);
 	// One source of truth for the reorderable set: the open plans, the same list queueRows renders.
 	const openPaths = activePlans(index)
 		.filter(p => p.status === "open")
 		.map(p => p.file);
-	if (!moved || !order.length) return textRes("order and moved are required", 400);
+	if (!moved || !order.length) return fail("order and moved are required", 400);
 	// 400: the posted order must be exactly the open plans the page renders now — no adds, drops or duplicates.
-	if (new Set(order).size !== order.length) return textRes("order lists a plan more than once", 400);
+	if (new Set(order).size !== order.length) return fail("order lists a plan more than once", 400);
 	const sortedOrder = [...order].sort();
 	const sortedOpen = [...openPaths].sort();
 	const sameSet = order.length === openPaths.length && sortedOrder.every((p, i) => p === sortedOpen[i]);
-	if (!sameSet) return textRes("order is not exactly the plans now on the page", 400);
+	if (!sameSet) return fail("order is not exactly the plans now on the page", 400);
 	// 409: the order the page was rendered with must still be the open plans' current order.
 	const stale = before.length !== openPaths.length || before.some((p, i) => p !== openPaths[i]);
-	if (stale) return textRes("the queue changed since the page loaded — reload and drag again", 409);
+	if (stale) return fail("the queue changed since the page loaded — reload and drag again", 409);
 	const from = openPaths.indexOf(moved);
 	const to = order.indexOf(moved);
-	if (from === -1 || to === -1) return textRes("moved is not one of the page's plans", 400);
+	if (from === -1 || to === -1) return fail("moved is not one of the page's plans", 400);
 	const newText = reorderedIndexText(index, order, new Set(openPaths));
-	if (newText === null) return textRes("the queue index no longer lists every open plan", 400);
+	if (newText === null) return fail("the queue index no longer lists every open plan", 400);
 	// Atomic write: a torn INDEX.md would break every reader, so temp file in the same dir + rename.
 	const tmp = `${index}.${randomUUID().slice(0, 8)}.tmp`;
 	writeFileSync(tmp, newText);
 	renameSync(tmp, index);
 	mkdirSync(stateDirPath(), { recursive: true });
 	appendFileSync(inboxPath(), `${JSON.stringify({ ts: nowSec(), kind: "reorder", plan: moved, from: from + 1, to: to + 1, login })}\n`);
-	return redirect(`/?sent=reorder&to=${to + 1}`);
+	if (wantsJson) return Response.json({ ok: true, to: to + 1 });
+	return redirect(sentTo(fields.tab ?? "", `sent=reorder&to=${to + 1}`));
 }
 
 /** Starts the page. Refuses to start when ui.enabled is false or ui.owner_login is empty, and on the default hostname when tailscale does not answer. */
@@ -1028,13 +1068,14 @@ export function startOwnerUi(opts: OwnerUiOptions): OwnerUiServer {
 							res = handleUnlock(cfg, await fieldsOf(req), login);
 							code = res.status;
 						} else if (req.method === "POST" && url.pathname === "/lock") {
-							res = handleLock(cfg, login);
+							res = handleLock(cfg, await fieldsOf(req), login);
 							code = res.status;
 						} else if (req.method === "POST" && url.pathname === "/tier") {
 							res = handleTier(cfg, await fieldsOf(req), login);
 							code = res.status;
 						} else if (req.method === "POST" && url.pathname === "/reorder") {
-							res = handleReorder(cfg, await fieldsOf(req), login);
+							const wantsJson = (req.headers.get("accept") ?? "").includes("application/json");
+							res = handleReorder(cfg, await fieldsOf(req), login, wantsJson);
 							code = res.status;
 						} else {
 							res = textRes("not found", 404);

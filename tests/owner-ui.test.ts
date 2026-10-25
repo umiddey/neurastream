@@ -177,12 +177,13 @@ function raw(
 	svc: OwnerUiServer,
 	method: string,
 	path: string,
-	opts: { host?: string | null; origin?: string | null; body?: Record<string, string> } = {},
+	opts: { host?: string | null; origin?: string | null; body?: Record<string, string>; accept?: string } = {},
 ): Promise<Response> {
 	const host = opts.host === null ? null : (opts.host ?? `${OWN_IP}:${svc.port}`);
 	const headers: Record<string, string> = {};
 	if (host !== null) headers.host = host;
 	if (opts.origin) headers.origin = opts.origin;
+	if (opts.accept) headers.accept = opts.accept;
 	const body = opts.body === undefined ? undefined : new URLSearchParams(opts.body).toString();
 	if (body !== undefined) headers["content-type"] = "application/x-www-form-urlencoded";
 	const { promise, resolve, reject } = Promise.withResolvers<Response>();
@@ -591,7 +592,7 @@ test("POST /tier writes the tier file, logs TIER ui, marks the current button an
 	const page = await (await get(svc)).text();
 	expect(page).toContain("Tier: strict");
 	expect(page).toContain("Tier: opinionated");
-	expect(page).toContain(`value="full"><button class="btn on" type="submit">Tier: full</button>`);
+	expect(page).toContain(`value="full"><input type="hidden" name="tab" value="now"><button class="btn on" type="submit">Tier: full</button>`);
 	const recs = inboxRecords();
 	expect(recs.length).toBe(1);
 	expect(recs[0]).toEqual({ ts: expect.any(Number), kind: "tier", tier: "full", login: OWNER });
@@ -1284,6 +1285,85 @@ test("the reorder receipt says the rank is among open plans (P10)", async () => 
 	const svc = ui();
 	const res = await get(svc, "/?sent=reorder&to=2");
 	expect(await res.text()).toContain("Moved to #2 of open plans");
+});
+
+// --- P11: reorder over fetch, no full reload, every POST keeps the tab ---
+
+test("a JSON /reorder answers {ok:true,to:N}, rewrites the index and appends the inbox line (P11)", async () => {
+	const index = reorderIndex();
+	const svc = ui({ cfg: { ...CFG, paths: { ...CFG.paths, queue_index: index } } });
+	const res = await raw(svc, "POST", "/reorder", {
+		accept: "application/json",
+		origin: `http://${OWN_IP}:${svc.port}`,
+		body: { order: [PLAN_B, PLAN_C, PLAN_A].join("\n"), before: [PLAN_A, PLAN_B, PLAN_C].join("\n"), moved: PLAN_A },
+	});
+	expect(res.status).toBe(200);
+	expect(await res.json()).toEqual({ ok: true, to: 3 });
+	expect(readFileSync(index, "utf8")).toBe(
+		["", "<!-- pinned above B -->", PLAN_B, PLAN_C, "<!-- the top comment belongs to the plan below it -->", PLAN_A, ""].join("\n"),
+	);
+	const recs = inboxRecords();
+	expect(recs).toHaveLength(1);
+	expect(recs[0]).toMatchObject({ kind: "reorder", plan: PLAN_A, from: 1, to: 3 });
+});
+
+test("a JSON /reorder on a stale before gets JSON {ok:false} with 409 and leaves the file unchanged (P11)", async () => {
+	const index = reorderIndex();
+	const svc = ui({ cfg: { ...CFG, paths: { ...CFG.paths, queue_index: index } } });
+	const original = readFileSync(index, "utf8");
+	const res = await raw(svc, "POST", "/reorder", {
+		accept: "application/json",
+		origin: `http://${OWN_IP}:${svc.port}`,
+		body: { order: [PLAN_C, PLAN_B, PLAN_A].join("\n"), before: [PLAN_B, PLAN_A, PLAN_C].join("\n"), moved: PLAN_C },
+	});
+	expect(res.status).toBe(409);
+	expect(await res.json()).toEqual({ ok: false, error: expect.any(String) });
+	expect(readFileSync(index, "utf8")).toBe(original);
+	expect(inboxRecords()).toEqual([]);
+});
+
+test("a plain form /reorder still answers 303 and its location keeps the posted tab (P11)", async () => {
+	const index = reorderIndex();
+	const svc = ui({ cfg: { ...CFG, paths: { ...CFG.paths, queue_index: index } } });
+	const res = await post(svc, "/reorder", {
+		order: [PLAN_B, PLAN_C, PLAN_A].join("\n"),
+		before: [PLAN_A, PLAN_B, PLAN_C].join("\n"),
+		moved: PLAN_A,
+		tab: "queue",
+	});
+	expect(res.status).toBe(303);
+	expect(res.headers.get("location")).toBe("/?tab=queue&sent=reorder&to=3");
+	// the rendered Queue tab carries the hidden tab field the form posts back
+	const body = await (await get(svc, "/?tab=queue")).text();
+	expect(body).toContain(`name="tab" value="queue"`);
+});
+
+test("answer, unlock and lock redirects keep the posted tab; an unknown tab falls back to now (P11)", async () => {
+	const svc = ui();
+	const answer = await post(svc, "/answer", { plan: PLAN_W, answer: "yes", tab: "queue" });
+	expect(answer.status).toBe(303);
+	expect(answer.headers.get("location")).toBe("/?tab=queue&sent=answer");
+	const unlock = await post(svc, "/unlock", { minutes: "15", tab: "agents" });
+	expect(unlock.headers.get("location")).toBe("/?tab=agents&sent=unlock&minutes=15");
+	const lock = await post(svc, "/lock", { tab: "spend" });
+	expect(lock.headers.get("location")).toBe("/?tab=spend&sent=lock");
+	const tier = await post(svc, "/tier", { tier: "full", tab: "queue" });
+	expect(tier.headers.get("location")).toBe("/?tab=queue&sent=tier&tier=full");
+	const unknown = await post(svc, "/answer", { plan: PLAN_W, answer: "no", tab: "bogus" });
+	expect(unknown.headers.get("location")).toBe("/?sent=answer");
+});
+
+test("the page CSP allows fetch to itself only, and the script fetch-swaps main instead of reloading (P11)", async () => {
+	const svc = ui();
+	const res = await get(svc);
+	const csp = res.headers.get("content-security-policy") ?? "";
+	expect(csp).toContain("connect-src 'self'");
+	expect(csp).not.toContain("connect-src *");
+	const body = await res.text();
+	expect(body).toContain("createHTMLDocument");
+	expect(body).not.toContain("location.reload");
+	// the reorder goes over fetch asking for JSON
+	expect(body).toContain('"accept":"application/json"');
 });
 
 test("the queue section is one flat ranked list with a drag handle, arrow buttons and the rendered order in a before field", async () => {
