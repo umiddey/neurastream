@@ -287,7 +287,10 @@ export function planGate(text: string, label: string): [string | null, string[]]
 			`${label}: ${unclosed.map(p => `${p.file} (${p.status})`).join(", ")} is still indexed. Verify it and run \`queue-close <plan>\` before any new spawn.`,
 			[],
 		];
-	const named = plans.filter(p => text.includes(p.file));
+	// A `Priority skip: <path> — <why>` line names a plan it does NOT run on (20261025_0215 P3);
+	// only the remaining text decides which plans this brief targets.
+	const body = text.replace(/^\s*(?:[-*]\s+)?priority skip:.*$/gim, "");
+	const named = plans.filter(p => body.includes(p.file));
 	if (!named.length)
 		return [
 			`${label}: an implementer needs an open plan. Name the plan's absolute path in the brief; the plan must be listed in ${q.INDEX}.`,
@@ -319,13 +322,76 @@ export function planGate(text: string, label: string): [string | null, string[]]
 	return [null, named.map(p => p.file)];
 }
 
-/** Reason to refuse a `task` brief, or null; `files` receives the plans to record, `budgets` every named task's call budget (null = none), `staffing` each plan's named tasks of this call. */
+// --- priority: index order is priority (plan 20261025_0215_index_priority) ---
+
+export interface PrioritySkip {
+	plan: string;
+	why: string;
+}
+
+export interface PriorityOutcome {
+	/** Refusal text, without the caller's label prefix. */
+	problem?: string;
+	/** Skip lines the brief justified; the caller logs each, then allows. */
+	skips?: PrioritySkip[];
+	/** No job info was available: the gate never refuses. */
+	unknown?: boolean;
+}
+
+const SKIP_LINE = /^\s*(?:[-*]\s+)?priority skip:\s*(.+?)\s+[—–-]\s*(.+?)\s*$/gim;
+
+/** One plan is idle when a subagent could start on it right now: open, no owner hold, not awaiting merge, no template errors, and an unticked phase left. */
+function priorityIdle(p: Plan): boolean {
+	return p.status === "open" && !p.waiting && !q.awaitingMerge(p) && !p.errors.length && unticked(p).length > 0;
+}
+
+/**
+ * Pure priority gate: for the brief's named plans, every higher plan in index order that is idle
+ * and unstaffed needs a `Priority skip: <path> — <why>` line (non-empty why) in the brief;
+ * otherwise the spawn is refused. `staffed === undefined` means the caller had no running-job
+ * info (CLI spawn without it): never refuse. Plans already named by this call never block it.
+ */
+export function priorityProblem(plans: Plan[], named: string[], staffed: string[] | undefined, brief: string): PriorityOutcome | null {
+	if (staffed === undefined) return { unknown: true };
+	const namedRanks = named.map(f => plans.findIndex(p => p.file === f)).filter(n => n >= 0);
+	if (!namedRanks.length) return null;
+	const higher = plans.slice(0, Math.min(...namedRanks));
+	const skipLines: Record<string, string> = {};
+	for (const m of brief.matchAll(SKIP_LINE)) {
+		const plan = (m[1] ?? "").trim();
+		const why = (m[2] ?? "").trim();
+		if (plan && why) skipLines[plan] = why;
+	}
+	const skips: PrioritySkip[] = [];
+	for (let i = 0; i < higher.length; i++) {
+		const p = higher[i]!;
+		if (!priorityIdle(p) || staffed.includes(p.file)) continue;
+		const why = skipLines[p.file];
+		if (why) {
+			skips.push({ plan: p.file, why });
+			continue;
+		}
+		return { problem: `higher plan ${p.file} (rank ${i + 1}) is idle; spawn on it first or add "Priority skip: ${p.file} — <why>"` };
+	}
+	return skips.length ? { skips } : null;
+}
+
+/** Load staffing, run the pure priority gate and log its outcome; the refusal comes back with the caller's label, or null. */
+function priorityGate(named: string[], runningJobs: string[] | undefined, brief: string, cfg: Config, label: string): string | null {
+	const outcome = priorityProblem(q.activePlans(), named, runningJobs === undefined ? undefined : staffedPlans(readStaffing(), runningJobs), brief);
+	if (outcome?.unknown) log(cfg.paths.guard_log, "PRIORITY unknown jobs");
+	for (const s of outcome?.skips ?? []) log(cfg.paths.guard_log, `PRIORITY skip ${s.plan}: ${s.why}`);
+	return outcome?.problem ? `${label}: ${outcome.problem}` : null;
+}
+
+/** Reason to refuse a `task` brief, or null; `files` receives the plans to record, `budgets` every named task's call budget (null = none), `staffing` each plan's named tasks of this call, `runningJobs` the caller's running job labels (undefined = no job info). */
 export function spawnProblem(
 	input: Record<string, unknown>,
 	cfg: Config,
 	files: string[] = [],
 	budgets: Record<string, number | null> = {},
 	staffing: Record<string, string[]> = {},
+	runningJobs?: string[],
 ): string | null {
 	const tasks = Array.isArray(input?.tasks) ? input.tasks : [];
 	const context = String(input?.context ?? "");
@@ -352,7 +418,16 @@ export function spawnProblem(
 		files.push(...plans);
 	}
 	Object.assign(budgets, named);
-	return null;
+	// Priority gate (20261025_0215 P3): once per `task` call, over the plans this call names; the
+	// skip lines may sit in the shared context or any task text.
+	const gate = priorityGate(
+		files,
+		runningJobs,
+		`${context}\n${tasks.map(t => String(t?.task ?? "")).join("\n")}`,
+		cfg,
+		String((tasks[0] && (tasks[0].name ?? tasks[0].agent)) ?? "task"),
+	);
+	return gate;
 }
 
 function runBlockers(plan: Plan, hit: string[], e: ToolEvent, cfg: Config): string | null {
@@ -531,7 +606,7 @@ function mainTool(e: ToolEvent, input: Record<string, unknown>, cfg: Config): De
 		const files: string[] = [];
 		const budgets: Record<string, number | null> = {};
 		const staffing: Record<string, string[]> = {};
-		const why = spawnProblem(input, cfg, files, budgets, staffing);
+		const why = spawnProblem(input, cfg, files, budgets, staffing, e.runningJobs);
 		if (why) {
 			log(cfg.paths.guard_log, `BLOCK spawn: ${why}`);
 			return deny(`main-guard: ${why}`);
@@ -714,6 +789,11 @@ export function checkSpawn(e: SpawnEvent, cfg: Config): Decision {
 	if (why) {
 		log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${why}`);
 		return deny(`main-guard: ${why}`);
+	}
+	const gate = priorityGate(named, e.runningJobs, e.brief, cfg, e.agent);
+	if (gate) {
+		log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${gate}`);
+		return deny(`main-guard: ${gate}`);
 	}
 	const inc = incidentSpawnProblem(`spawn ${e.agent}`, e.brief, named, cfg);
 	if (inc) return deny(`main-guard: ${inc}`);

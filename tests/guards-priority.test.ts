@@ -8,12 +8,12 @@ import { afterAll, expect, test } from "bun:test";
 import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ToolEvent } from "../src/core/adapter.ts";
+import type { SpawnEvent, ToolEvent } from "../src/core/adapter.ts";
 import type { Config } from "../src/core/config.ts";
 import { loadConfig } from "../src/core/config.ts";
-import { checkSpawn, checkTool, readStaffing, recordSpawns, staffedPlans } from "../src/core/guards.ts";
+import { checkSpawn, checkTool, priorityProblem, readStaffing, recordSpawns, staffedPlans } from "../src/core/guards.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
-import { stateDirPath } from "../src/core/queue/lib.ts";
+import { activePlans, closeLog, stateDirPath } from "../src/core/queue/lib.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "nsar-guard-priority-"));
 const HOME = join(TMP, "home");
@@ -157,4 +157,136 @@ test("a spawn event records the agent name per plan; a nameless recordSpawns lea
 	recordSpawns([MID]);
 	expect(readStaffing()).toEqual({ [MID]: ["keeper"], [HIGH]: ["toy-worker"] });
 	refresh(HIGH);
+});
+
+// --- P3: priority gate (index order is priority) ---
+
+function spawnEv(brief: string, runningJobs?: string[]): SpawnEvent {
+	return { agent: "toy-worker", invocationKind: "task", brief, ...(runningJobs === undefined ? {} : { runningJobs }) };
+}
+
+function guardLog(): string[] {
+	try {
+		return readFileSync(join(HOME, "main-guard.log"), "utf8").split("\n").filter(Boolean);
+	} catch {
+		return [];
+	}
+}
+
+/** Reset HIGH to a plain open plan. */
+function resetHigh(extra = ""): void {
+	writeFileSync(HIGH, planText(extra));
+}
+
+test("priorityProblem: pure ranks, staffing and the unknown-jobs pass", () => {
+	const plans = activePlans();
+	expect(plans.map(p => p.file)).toEqual([HIGH, MID, LOW]);
+	// nothing higher than rank 1
+	expect(priorityProblem(plans, [HIGH], [], "")).toBeNull();
+	// HIGH staffed, MID idle: refused on MID at rank 2
+	expect(priorityProblem(plans, [LOW], staffedPlans({ [HIGH]: ["w-high"] }, ["w-high"]), "")).toEqual({
+		problem: expect.stringContaining(`higher plan ${MID} (rank 2) is idle`),
+	});
+	// both higher plans staffed: allowed
+	expect(priorityProblem(plans, [LOW], [HIGH, MID], "")).toBeNull();
+	// both skips justified
+	expect(priorityProblem(plans, [LOW], [], `Priority skip: ${HIGH} — first\nPriority skip: ${MID} — also first`)).toEqual({
+		skips: [
+			{ plan: HIGH, why: "first" },
+			{ plan: MID, why: "also first" },
+		],
+	});
+	// no job info: never refuse
+	expect(priorityProblem(plans, [LOW], undefined, "")).toEqual({ unknown: true });
+	// one batch naming both ends needs no skip for its own higher plan
+	expect(priorityProblem(plans, [HIGH, LOW], [], "")).toBeNull();
+});
+
+test("a spawn under an idle higher plan is refused with its rank", () => {
+	resetHigh();
+	refresh(LOW); // the previous test's allowed spawn spent LOW's progress hash
+	const d = checkSpawn(spawnEv(`Work ${LOW} on P1`, []), cfg);
+	expect(d.allow).toBe(false);
+	expect(d.reason).toContain(`higher plan ${HIGH} (rank 1) is idle`);
+	expect(d.reason).toContain(`Priority skip: ${HIGH}`);
+	expect(guardLog().at(-1)).toContain(`BLOCK spawn toy-worker: toy-worker: higher plan ${HIGH} (rank 1) is idle`);
+});
+
+test("a higher plan that is WAITING, awaiting merge, fully ticked or staffed does not block", () => {
+	// MID (rank 2) is held by a running subagent throughout: only HIGH's state varies.
+	writeFileSync(STAFFING, JSON.stringify({ [MID]: ["w-mid"] }));
+	const jobs = ["w-mid"];
+	// WAITING on owner
+	resetHigh("\n\nWAITING on owner: tell me when\n");
+	refresh(LOW);
+	expect(checkSpawn(spawnEv(`Work ${LOW} on P1`, jobs), cfg)).toMatchObject({ allow: true });
+	// awaiting merge
+	writeFileSync(HIGH, planText().replace("Status: open", "Status: complete"));
+	appendFileSync(closeLog(HIGH), "queue-close: AWAITING merge: done check green; branch feat/high is not merged yet\n");
+	refresh(LOW);
+	expect(checkSpawn(spawnEv(`Work ${LOW} on P1`, jobs), cfg)).toMatchObject({ allow: true });
+	// no unticked phase
+	resetHigh();
+	writeFileSync(HIGH, planText().replace("- [ ] P1 do the thing", "- [x] P1 do the thing"));
+	refresh(LOW);
+	expect(checkSpawn(spawnEv(`Work ${LOW} on P1`, jobs), cfg)).toMatchObject({ allow: true });
+	// staffed: a running subagent holds the higher plan (worker slots may fill below)
+	resetHigh();
+	writeFileSync(STAFFING, JSON.stringify({ [HIGH]: ["w-high"], [MID]: ["w-mid"] }));
+	refresh(LOW);
+	expect(checkSpawn(spawnEv(`Work ${LOW} on P1`, ["w-high", "w-mid"]), cfg)).toMatchObject({ allow: true });
+	// a name that only shares a prefix is not the staffed plan
+	writeFileSync(STAFFING, JSON.stringify({ [HIGH]: ["w-hi"], [MID]: ["w-mid"] }));
+	refresh(LOW);
+	expect(checkSpawn(spawnEv(`Work ${LOW} on P1`, ["w-high", "w-mid"]), cfg)).toMatchObject({ allow: false });
+	resetHigh();
+});
+
+test("a Priority skip line with a reason lets the spawn through and is logged", () => {
+	resetHigh();
+	refresh(LOW);
+	const why = "owner ranked the traces series first, this fills the free slot";
+	const d = checkSpawn(spawnEv(`Work ${LOW} on P1\nPriority skip: ${HIGH} — ${why}\nPriority skip: ${MID} — behind HIGH\n`, []), cfg);
+	expect(d).toMatchObject({ allow: true });
+	const lines = guardLog().join("\n");
+	expect(lines).toContain(`PRIORITY skip ${HIGH}: ${why}`);
+	expect(lines).toContain(`PRIORITY skip ${MID}: behind HIGH`);
+});
+
+test("a skip line without a reason is refused", () => {
+	resetHigh();
+	refresh(LOW);
+	for (const line of [`Priority skip: ${HIGH} —`, `Priority skip: ${HIGH} —   `, `Priority skip: ${HIGH}`]) {
+		const d = checkSpawn(spawnEv(`Work ${LOW} on P1\n${line}\n`, []), cfg);
+		expect(d.allow).toBe(false);
+	}
+});
+
+test("without job info the gate never refuses and logs PRIORITY unknown jobs", () => {
+	resetHigh();
+	refresh(LOW);
+	const before = guardLog().length;
+	const d = checkSpawn(spawnEv(`Work ${LOW} on P1`), cfg);
+	expect(d).toMatchObject({ allow: true });
+	expect(guardLog().slice(before).some(l => l.includes("PRIORITY unknown jobs"))).toBe(true);
+});
+
+test("one batch naming HIGH and LOW needs no skip for its own higher plan; only MID would block a later LOW spawn", () => {
+	resetHigh();
+	refresh(LOW);
+	refresh(HIGH);
+	const input = {
+		tasks: [
+			{ name: "w-high", agent: "toy-worker", task: `Work ${HIGH} on P1`, context: "" },
+			{ name: "w-low", agent: "toy-worker", task: `Work ${LOW} on P1`, context: "" },
+		],
+	};
+	const d = checkTool({ tool: "task", input, cwd: TOY, agent: "main", agentId: "m0", calls: 0, paths: [], writes: [], command: "", runningJobs: [] }, cfg);
+	expect(d).toMatchObject({ allow: true });
+	// HIGH is now staffed by w-high: a further LOW spawn is refused on MID (rank 2), not HIGH
+	refresh(LOW);
+	const later = checkSpawn(spawnEv(`Work ${LOW} on P1`, ["w-high"]), cfg);
+	expect(later.allow).toBe(false);
+	expect(later.reason).toContain(`higher plan ${MID} (rank 2) is idle`);
+	expect(later.reason).not.toContain(HIGH);
 });
