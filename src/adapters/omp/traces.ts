@@ -194,6 +194,18 @@ export function ompDumps(home: string): { file: string; ms: number }[] {
 	return out.sort((a, b) => a.ms - b.ms);
 }
 
+/** Model requested by a failed request dump, if the JSON contains one. */
+export function dumpModel(file: string): string | undefined {
+	try {
+		const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
+		const o = asObj(parsed);
+		const body = asObj(o?.body);
+		return str(body?.model) ?? str(o?.model);
+	} catch {
+		return undefined;
+	}
+}
+
 /**
  * What a dumped request's prompt is made of, in JSON.stringify characters: body.system,
  * body.messages and every body.tools[] entry with its name (a nameless tool keeps its bytes

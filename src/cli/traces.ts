@@ -15,7 +15,7 @@ import { claimUnbacked } from "../core/incident-detectors.ts";
 import { claimsFromEvents, type RelatedRun } from "../core/trace-claims.ts";
 import { actionsRules, suspiciousActions, type ActionsRules, type SuspiciousAction } from "../core/trace-actions.ts";
 import { bloatBreakdown, bloatFindings, bloatRules, callSizes, dumpFinding, type BloatBreakdown, type BloatRules } from "../core/trace-bloat.ts";
-import { dumpParts, dumpPromptTokens, ompDumps, ompTraceRuns, ompTraceSource, subagentTraces } from "../adapters/omp/traces.ts";
+import { dumpModel, dumpParts, dumpPromptTokens, ompDumps, ompTraceRuns, ompTraceSource, subagentTraces } from "../adapters/omp/traces.ts";
 
 export const TRACES_USAGE = [
 	"usage: neurastream traces claims <runId> [--json]",
@@ -70,22 +70,15 @@ export interface RunBloatReport {
 	maxPrompt: number | null;
 	/** prompt-bloat findings; evidence masked and capped. */
 	findings: { kind: string; summary: string; evidence?: string }[];
-	/** What filled the prompt, from the run's dumped failed request; present only when a dump sits in the run's window. */
+	/** What filled the prompt, from the uniquely assigned failed-request dump. */
 	breakdown?: BloatBreakdown;
-	/** The prompt the matched dump's error response states, when it states one — a rejected
-	 *  call wrote no usage, so this may be the run's real first call. */
+	/** The prompt the assigned dump's error response states. */
 	dumpPrompt?: { tokens: number; limit?: number };
 }
 
 /**
- * Scan one run: per-call prompt sizes and the bloat findings — plus, when a dump of the run's
- * failed request exists, what filled the prompt. Dumps are named by the epoch ms of the failed
- * request; a dump belongs to the run whose trace window covers that instant: first readable
- * event ts <= dump <= trace file mtime (the file keeps growing while the run lives, so the
- * dump of a request that never produced an event is still inside). A run with no readable
- * timestamps matches no dump. A rejected call never wrote usage, so when the run's own usage
- * flags nothing, the dump's error response states the prompt and dumpFinding flags from it —
- * a dump stating no count flags nothing, and no size is guessed from bytes.
+ * Scan one run's calls and findings, and report the dump assigned to it by the caller. The
+ * command assigns dumps across runs by window, matching model and closest event timestamp.
  */
 export function bloatReport(src: TraceSource, runId: string, rules: BloatRules, groupRegex: string, dumps: { file: string; ms: number }[], mtimeSec: number): RunBloatReport {
 	const events = src.events(runId);
@@ -178,12 +171,42 @@ export async function runTraces(args: string[], opts: { home?: string } = {}): P
 	const relatedOf = (id: string): RelatedRun[] =>
 		sub === "claims" ? subagentTraces(root, id).map(({ name, events }) => ({ name, events })) : [];
 	const dumps = sub === "bloat" ? ompDumps(cfg.paths.home) : [];
+	const dumpOwners = new Map<string, string>();
+	const unmatchedDumps: { file: string; ms: number }[] = [];
+	if (sub === "bloat") {
+		for (const dump of dumps) {
+			const model = dumpModel(dump.file);
+			const eligible: { ts: number; runId: string }[] = [];
+			for (const run of runs) {
+				const events = src.events(run.runId);
+				let firstTs: number | undefined;
+				let closestTs: number | undefined;
+				for (const event of events) {
+					if (event.ts === null || event.ts * 1000 > dump.ms) continue;
+					if (firstTs === undefined || event.ts < firstTs) firstTs = event.ts;
+					if (model !== undefined && event.model === model && (closestTs === undefined || event.ts > closestTs)) closestTs = event.ts;
+				}
+				if (firstTs !== undefined && dump.ms >= firstTs * 1000 && dump.ms <= run.mtimeSec * 1000 && closestTs !== undefined) {
+					eligible.push({ runId: run.runId, ts: closestTs });
+				}
+			}
+			if (eligible.length === 0) {
+				unmatchedDumps.push(dump);
+				continue;
+			}
+			const bestTs = Math.max(...eligible.map((candidate) => candidate.ts));
+			const best = eligible.filter((candidate) => candidate.ts === bestTs);
+			if (best.length === 1) dumpOwners.set(dump.file, best[0]!.runId);
+			else unmatchedDumps.push(dump);
+		}
+	}
 	const mtimeOf = (id: string): number => runs.find((r) => r.runId === id)?.mtimeSec ?? 0;
+	const assignedDumps = (id: string) => dumps.filter((dump) => dumpOwners.get(dump.file) === id);
 	const reports: (RunClaimsReport | RunActionsReport | RunBloatReport)[] = [];
 	const reportOf = (id: string): RunClaimsReport | RunActionsReport | RunBloatReport => {
 		if (sub === "claims") return claimsReport(src, id, relatedOf(id));
 		if (sub === "actions") return actionsReport(src, id, rules as ActionsRules);
-		return bloatReport(src, id, rules as BloatRules, cfg.traces.bloat.tool_group, dumps, mtimeOf(id));
+		return bloatReport(src, id, rules as BloatRules, cfg.traces.bloat.tool_group, assignedDumps(id), mtimeOf(id));
 	};
 	if (windowSec !== undefined) {
 		const cutoff = nowSec() - windowSec;
@@ -199,7 +222,7 @@ export async function runTraces(args: string[], opts: { home?: string } = {}): P
 		reports.push(reportOf(runId!));
 	}
 	if (json) {
-		console.log(JSON.stringify(reports, null, 2));
+		console.log(JSON.stringify(sub === "bloat" ? { reports, unmatchedDumps } : reports, null, 2));
 		return 0;
 	}
 	for (const r of reports) {
@@ -239,6 +262,10 @@ export async function runTraces(args: string[], opts: { home?: string } = {}): P
 				if (a.evidence) console.log(`    evidence: ${a.evidence}`);
 			}
 		}
+	}
+	if (unmatchedDumps.length > 0) {
+		console.log("unmatched dumps:");
+		for (const dump of unmatchedDumps) console.log(`  ${dump.ms} ${dump.file}`);
 	}
 	return 0;
 }

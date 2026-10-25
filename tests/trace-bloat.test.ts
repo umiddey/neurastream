@@ -322,7 +322,8 @@ traces:
 			console.log = orig;
 		}
 		expect(rc).toBe(0);
-		return JSON.parse(logs.join("\n")) as Record<string, unknown>[];
+		const parsed: unknown = JSON.parse(logs.join("\n"));
+		return Array.isArray(parsed) ? parsed as Record<string, unknown>[] : (parsed as { reports: Record<string, unknown>[] }).reports;
 	}
 
 	test("--since 48h lists both runs; only the run whose window holds the dump gets a breakdown", async () => {
@@ -483,6 +484,45 @@ describe("bloatReport dump flag (P3)", () => {
 			"run MAIN 10-00-00: call 7 (test-model) prompt 85000 tokens is 85% of its 100000 context limit",
 		]);
 		expect(rep.dumpPrompt).toEqual({ tokens: 1172629, limit: 1000000 });
+	});
+});
+// ---- P3b: each dump has one owner, even when run windows overlap ----
+describe("overlapping run dump ownership (P3b)", () => {
+	const P11 = mkdtempSync(join(tmpdir(), "ns-trace-bloat-p3b-"));
+	const sessions = join(P11, ".omp/agent/sessions/bloat-proj");
+	const dumpDir = ompDumpDir(P11);
+	mkdirSync(sessions, { recursive: true });
+	mkdirSync(dumpDir, { recursive: true });
+	mkdirSync(join(P11, ".config/neurastream"), { recursive: true });
+	writeFileSync(join(P11, ".config/neurastream/config.yml"), `paths:\n  home: "${P11}"\n`);
+	const trace = (model: string, ts: string) =>
+		[
+			{ type: "session", timestamp: ts, id: "x" },
+			{ type: "message", timestamp: ts, message: { role: "assistant", model, provider: "test-provider", responseId: "rr", stopReason: "toolUse", content: [] } },
+		]
+			.map((l) => JSON.stringify(l))
+			.join("\n") + "\n";
+	writeFileSync(join(sessions, "2026-10-24T01-00-00-000Z_first.jsonl"), trace("other-model", "2026-10-24T01:00:01.000Z"));
+	writeFileSync(join(sessions, "2026-10-24T01-00-10-000Z_second.jsonl"), trace("big-model", "2026-10-24T01:00:02.000Z"));
+	const ms = parseTs("2026-10-24T01:00:03.000Z")! * 1000;
+	writeFileSync(join(dumpDir, `${ms}-synthrej03.json`), readFileSync(join(FIX, "bloat-dump-rejected.json"), "utf8"));
+	afterAll(() => rmSync(P11, { recursive: true, force: true }));
+
+	test("overlapping windows assign the rejected prompt to only the closest same-model run", async () => {
+		const logs: string[] = [];
+		const orig = console.log;
+		console.log = (line: string) => logs.push(line);
+		try {
+			expect(await runTraces(["bloat", "--since", "7d", "--json"], { home: P11 })).toBe(0);
+		} finally {
+			console.log = orig;
+		}
+		const output = JSON.parse(logs.join("\n")) as { reports: Record<string, unknown>[]; unmatchedDumps: unknown[] };
+		const owners = output.reports.filter((r) => r.dumpPrompt !== undefined);
+		expect(owners).toHaveLength(1);
+		expect(owners[0]!.runId).toBe("MAIN 01-00-10");
+		expect((owners[0]!.dumpPrompt as { tokens: number }).tokens).toBe(1172629);
+		expect(output.unmatchedDumps).toHaveLength(0);
 	});
 });
 
