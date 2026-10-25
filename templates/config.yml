@@ -140,6 +140,7 @@ pages:
   enabled: false
   port: 7788
   dir: "~/.local/share/neurastream/pages"
+  keep_days: 15        # delete a published page this many days later; publish --keep is permanent
 rollover:
   enabled: true
   max_session_mb: 5

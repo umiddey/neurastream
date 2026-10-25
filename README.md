@@ -125,7 +125,7 @@ An answer appends one record to `<queue_state>/owner-inbox.jsonl` (plan, questio
 
 ## Static pages (`neurastream pages`)
 
-`neurastream pages on [--port N] [--dir D]` installs the systemd user unit and serves regular files in the configured pages directory on the tailnet; `pages publish <file> [name] [--force]` publishes an artifact and prints its MagicDNS URL. `pages list` lists published files and `pages off` stops the service. Requests are limited to the configured owner's tailnet login or loopback; hidden files, symlinks and paths outside the directory are not served.
+`neurastream pages on [--port N] [--dir D]` installs the systemd user unit and serves regular files in the configured pages directory on the tailnet; `pages publish <file> [name] [--force] [--keep]` publishes an artifact and prints its MagicDNS URL, then `expires YYYY-MM-DD` or `kept`. A page without `--keep` is deleted `pages.keep_days` days after publishing (default 15). `pages list` prints each file as `<name>  expires YYYY-MM-DD` or `<name>  kept`, and `pages off` stops the service. Publish, list, and serve remove expired files first; serve repeats that sweep every hour. Requests are limited to the configured owner's tailnet login or loopback; hidden files, symlinks and paths outside the directory are not served.
 
 ## Session rollover
 

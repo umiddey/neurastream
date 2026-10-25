@@ -53,4 +53,4 @@ Open the file at two widths and check the root plus one drilled level:
 
 ## Host
 
-Single file: open it from disk, or serve the folder with any static server. Share the file as-is.
+Build the HTML in a scratch directory (`mktemp -d`), not in a repo. Publish it with `neurastream pages publish <file>`. The page is deleted after 15 days. Add `--keep` only when the owner's prompt says to keep it permanently. Never commit the HTML into a repo unless the owner asks.
