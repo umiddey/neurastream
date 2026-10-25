@@ -31,7 +31,8 @@ Suite runs go through `/home/ukd/Work/heavy-run.sh agent "<label>" -- <cmd>`. St
 - `tests/fixtures/originals/bin/priority-watch` (oracle: `date '+%H:%M'; echo "$out"`, :8)
 
 ## Progress
-Status: open
+Status: complete
+- 2026-10-25 13:33 Main: merged as b83553f, on origin/main via 3133ffd (full suite on the combined reset+golden merge: 760 pass, 3 skip, 0 fail, tsc clean). Done check passes. Findings: none
 - 2026-10-25 13:12 Main: INCIDENT I-20261025-132 (NsTracesBriefsHaiku saw ports-p4.test.ts:624 fail on "12:51" vs "12:52") is this plan's bug; fixed by b5f17df, closes when merged. Findings: none
 - 2026-10-25 13:00 Main (for NsGoldenClockLuna, cannot write outside its worktree): P1 committed b5f17df (tests/golden/ports-p4.test.ts: stripClock :108-110, first-line HH:MM asserts + stripClock compare + per-test 35_000 timeout :627-631; CHANGELOG Unreleased/Fixed). heavy-run "golden clock" END exit 2 12:47:50, exit 0 12:52:52 (P1 verify, 13 pass), exit 0 12:55:10 (full suite 751 pass, 3 skip, 0 fail; tsc clean). Main read the diff: status/stderr compares unchanged, nothing under src/. The agent's report said no END lines appeared; they are in /home/ukd/Work/.heavy-run.log 10155-10163. Merge with traces_04 + reset-time into 0.2.19. Findings: none
 - 2026-10-25 12:48 Main: moved to INDEX rank 5 (after reset_time_local, before the PM plans): the 0.2.19 release of traces_04 (owner's first priority) runs the full suite in the publish workflow, and this flake failed the v0.2.18 publish once. Forbidden now carries the standard never-push line (brief-lint). Spawning luna for P1. Findings: none
