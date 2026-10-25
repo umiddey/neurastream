@@ -246,32 +246,34 @@ function planGuardLogLines(): string[] {
 
 // --- auth: only the owner's phone gets through ---
 
-test("GET / renders the redesigned page: waiting card with title, repo eyebrow, question and goal background", async () => {
+test("GET / renders the mockup Now tab: top bar, Today tiles, the ask card and the queue preview", async () => {
 	const svc = ui();
 	const res = await get(svc);
 	expect(res.status).toBe(200);
 	expect(res.headers.get("content-type")).toContain("text/html");
 	const body = await res.text();
-	// needs-you card: title from the plan's # heading, repo label eyebrow, the ask, the goal
+	// sticky top bar: logo, pill tabs with Now on, the lock pill Off
+	expect(body).toContain('class="logo">ns</span>');
+	expect(body).toContain('href="/?tab=now" class="on">Now</a>');
+	expect(body).toContain("🔒 Off");
+	// Today tiles from nowStats: 1 waiting plan, one running sub run at $0.20, 1 open plan
+	expect(body).toContain("Today");
+	expect(body).toContain('style="color:var(--warn)">1</div>');
+	expect(body).toContain("answer below ↓");
+	expect(body).toContain("$0.20");
+	expect(body).toContain("Main $0.00 · agents $0.20");
+	expect(body).toContain("1 running · 0 died");
+	// ask card: title from the plan's # heading, repo label eyebrow, the ask, the goal
 	expect(body).toContain("Toy plan");
 	expect(body).toContain("toy · waiting");
-	expect(body).toContain("What I need from you");
 	expect(body).toContain(QUESTION);
 	expect(body).toContain("Owner page toy.");
-	// working row: the running ledger agent
-	expect(body).toContain("owner-ui-alice-run");
-	expect(body).toContain("RUNNING");
-	// merges/CI: the metrics ci row
-	expect(body).toContain("!77");
-	// incidents
-	expect(body).toContain("toy incident the page must show");
-	// agent scores: the ranking board (a non-table board renders as text lines)
-	expect(body).toContain("alice 4.2");
-	// machine health in the strip
-	expect(body).toContain("disk");
-	// lock state
-	expect(body).toMatch(/Locked/);
-	// the redesign: progressive disclosure, no raw text dumps, no meta refresh
+	expect(body).toContain('class="btn pri"');
+	// queue preview row with the plain-language chip; a one-plan queue has no "Show all"
+	expect(body).toContain(`data-plan="${PLAN_W}"`);
+	expect(body).toContain("waits you");
+	expect(body).not.toContain("Show all");
+	// no raw text dumps, no meta refresh
 	expect(body).toContain("<details");
 	expect(body).not.toContain("<pre>");
 	expect(body).not.toContain("http-equiv");
@@ -416,7 +418,7 @@ test("POST /unlock moves the guard unlock file and logs UNLOCK ui source=ui:<log
 	expect(lines.length).toBe(1);
 	expect(lines[0]).toContain(`UNLOCK ui source=ui:${OWNER} minutes=5`);
 	const page = await (await get(svc)).text();
-	expect(page).toMatch(/unlocked/i);
+	expect(page).toContain("🔓 5 min");
 });
 
 test("POST /lock removes the unlock file and logs LOCK ui source=ui:<login>", async () => {
@@ -498,11 +500,12 @@ test("every request logs UI <method> <path> login=<l> → <code> to the guard lo
 
 test("an unreadable section shows unavailable and never fails the page", async () => {
 	const svc = ui({ cfg: { ...CFG, paths: { ...CFG.paths, ranking_board: join(TMP, "missing-dir", "board.md") } } });
-	const res = await get(svc);
-	expect(res.status).toBe(200);
-	const body = await res.text();
-	expect(body).toContain("unavailable");
-	expect(body).toContain(QUESTION);
+	// the Now tab stays whole…
+	const now = await (await get(svc)).text();
+	expect(now).toContain(QUESTION);
+	// …and the tab that owns the unreadable source says so instead of dying.
+	const agents = await (await get(svc, "/?tab=agents")).text();
+	expect(agents).toContain("unavailable");
 });
 
 // --- inbox location (the adapter reads it in P3) ---
@@ -745,13 +748,15 @@ test("parseWhoisLogin reads UserProfile.LoginName from the multi-line `tailscale
 
 // --- P2: the redesigned page's receipt, all-clear and CSP plumbing ---
 
-test("zero waiting plans render the all-clear state", async () => {
+test("zero waiting plans render the all-clear tile and the empty state", async () => {
 	const emptyIndex = join(TMP, "empty-index.md");
 	writeFileSync(emptyIndex, `${PLAN_D}\n`);
 	const svc = ui({ cfg: { ...CFG, paths: { ...CFG.paths, queue_index: emptyIndex } } });
 	const body = await (await get(svc)).text();
-	expect(body).toContain("All clear");
+	expect(body).toContain('<div class="num">0</div>');
+	expect(body).toContain("all clear");
 	expect(body).toContain("Nothing needs you right now");
+	expect(body).not.toContain("answer below");
 });
 
 test("the CSP header nonce equals the inline script nonce, and there is no meta refresh", async () => {
@@ -1133,4 +1138,49 @@ test("the queue section is one flat ranked list with a drag handle, arrow button
 	expect(body).toContain('action="/reorder"');
 	// not grouped by repo any more
 	expect(body).not.toContain("qrepo");
+});
+
+// --- P7: tab selection and the queue preview cut ---
+
+test("tab selection: each tab shows its own sections and an unknown tab falls back to now", async () => {
+	const svc = ui();
+	const now = await (await get(svc)).text();
+	expect(now).toContain("Today");
+	expect(now).toContain(QUESTION);
+	expect(now).not.toContain("owner-ui-alice-run");
+	const queue = await (await get(svc, "/?tab=queue")).text();
+	expect(queue).toContain('id="qlist"');
+	expect(queue).not.toContain("Today");
+	const agents = await (await get(svc, "/?tab=agents")).text();
+	expect(agents).toContain("owner-ui-alice-run");
+	expect(agents).toContain("alice 4.2");
+	expect(agents).toContain("toy incident the page must show");
+	expect(agents).toContain("!77");
+	expect(agents).toContain("Disk free");
+	expect(agents).not.toContain(QUESTION);
+	const spend = await (await get(svc, "/?tab=spend")).text();
+	expect(spend).toContain("By model");
+	expect(spend).toContain("$0.20");
+	expect(spend).not.toContain(QUESTION);
+	const unknown = await (await get(svc, "/?tab=bogus")).text();
+	expect(unknown).toContain("Today");
+	expect(unknown).toContain('href="/?tab=now" class="on">Now</a>');
+});
+
+test("the Now tab cuts the queue preview at 8 rows with Show all N; the Queue tab lists every row", async () => {
+	const files: string[] = [];
+	for (let i = 0; i < 10; i++) {
+		const f = join(TOY, `docs/plans/20261022_many_${i}.md`);
+		writeFileSync(f, PLAN_TEXT("open", false));
+		files.push(f);
+	}
+	const index = join(TMP, "many-open-index.md");
+	writeFileSync(index, `${[...files, PLAN_W].join("\n")}\n`);
+	const svc = ui({ cfg: { ...CFG, paths: { ...CFG.paths, queue_index: index } } });
+	const now = await (await get(svc)).text();
+	expect([...now.matchAll(/data-plan="([^"]+)"/g)]).toHaveLength(8);
+	expect(now).toContain("Show all 11 ›");
+	const full = await (await get(svc, "/?tab=queue")).text();
+	expect([...full.matchAll(/data-plan="([^"]+)"/g)]).toHaveLength(11);
+	expect(full).not.toContain("Show all");
 });

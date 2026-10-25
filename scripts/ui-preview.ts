@@ -31,6 +31,7 @@ const questions: QuestionRow[] = [
 			"Land in 0.16 with the adapter contract unchanged",
 		],
 		waitingMin: 187,
+		answered: null,
 	},
 	{
 		plan: "/srv/code/beta/docs/plans/20261024_1900_pm_batch.md",
@@ -44,6 +45,7 @@ const questions: QuestionRow[] = [
 			"Make the batch report pair every key with its probe log",
 		],
 		waitingMin: 41,
+		answered: null,
 	},
 ];
 
@@ -99,6 +101,18 @@ const data: PageData = {
 		text: ["Scores roll on a 7-day window; penalties are subtracted from the raw mean."],
 	},
 	machine: { freeGb: 6.2, diskMin: 20, load: 1.84, loadMax: 16, cores: 16 },
+	stats: {
+		spend24: 0,
+		mainSpend: 0,
+		agentSpend: 0,
+		runs24: 0,
+		running: 0,
+		died: 0,
+		spendByHour: Array.from({ length: 24 }, () => 0),
+		runsByHour: Array.from({ length: 24 }, () => 0),
+		byModel: [],
+		openPlans: queue.length,
+	},
 	lockMinutesLeft: null,
 };
 

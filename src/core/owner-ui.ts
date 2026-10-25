@@ -93,6 +93,27 @@ export interface QuestionRow {
 	waitingLine: string;
 	goal: string[];
 	waitingMin: number;
+	/** The last answer this plan already got (from the owner inbox), so the card can say so. */
+	answered: { answer: string; at: number } | null;
+}
+
+/** The newest inbox record that carries an answer for this plan, if any. A missing or torn inbox is simply "no answer". */
+function lastAnswerFor(plan: string): { answer: string; at: number } | null {
+	let lines: string[];
+	try {
+		lines = readFileSync(inboxPath(), "utf8").split("\n");
+	} catch {
+		return null;
+	}
+	for (let i = lines.length - 1; i >= 0; i--) {
+		const line = lines[i]!.trim();
+		if (!line) continue;
+		try {
+			const rec = JSON.parse(line) as Record<string, unknown>;
+			if (rec.plan === plan && typeof rec.answer === "string" && rec.answer) return { answer: rec.answer, at: Number(rec.ts) || 0 };
+		} catch {}
+	}
+	return null;
 }
 
 export interface AgentRow {
@@ -155,6 +176,7 @@ export function questionRows(cfg: Config): QuestionRow[] {
 				waitingLine: p.waitingLine ?? "",
 				goal: p.goal,
 				waitingMin,
+				answered: lastAnswerFor(p.file),
 			};
 		});
 }
@@ -287,29 +309,39 @@ function needCard(row: QuestionRow, i: number): string {
 	const goals = row.goal.map(g => `<li>${esc(g)}</li>`).join("");
 	const wait = row.waitingMin < 60 ? `waiting ${row.waitingMin} min` : `waiting ${Math.max(1, Math.round(row.waitingMin / 60))} h`;
 	const bg = row.goal.length ? `<details class="bg" id="bg-${i}"><summary>Background</summary><ul>${goals}</ul></details>` : "";
-	return `<article class="card need">
+	let said = "";
+	if (row.answered) {
+		const text = row.answered.answer;
+		const quote = text.length > 80 ? `${text.slice(0, 80)}…` : text;
+		const verb = text.toLowerCase() === "yes" || text.toLowerCase() === "no" ? "answered" : "replied";
+		said = `<p class="answered">You ${verb} "${esc(quote)}" · ${esc(strftime(row.answered.at, "%H:%M"))} — Main is on it</p>
+<button type="button" class="replybtn link">change answer</button>`;
+	}
+	const acts = row.answered
+		? said
+		: `<div class="acts">
+<button class="btn pri" type="submit" name="answer" value="yes">Yes</button>
+<button class="btn" type="submit" name="answer" value="no">No</button>
+<button type="button" class="btn replybtn">Reply…</button>
+</div>`;
+	return `<article class="ask">
 <p class="eyebrow">${esc(row.repo)} · ${esc(wait)}</p>
-<h3>${esc(row.title)}</h3>
-<p class="ask">What I need from you</p>
+<b>${esc(row.title)}</b>
 <p class="q">${esc(row.waitingLine)}</p>
 ${bg}
 <form method="post" action="/answer">
 <input type="hidden" name="plan" value="${esc(row.plan)}">
-<div class="acts">
-<button class="primary" type="submit" name="answer" value="yes">Yes, go ahead</button>
-<button type="submit" name="answer" value="no">No</button>
-<button type="button" class="replybtn">Reply…</button>
-</div>
+${acts}
 <div class="reply" hidden>
 <textarea name="answer_text" maxlength="${ANSWER_MAX}" rows="3" placeholder="Type your reply"></textarea>
-<button class="primary" type="submit">Send reply</button>
+<button class="btn pri" type="submit">Send reply</button>
 </div>
 </form>
 </article>`;
 }
 
 function agentRowHtml(r: AgentRow): string {
-	const dot = r.status === "running" ? "ok" : "warn";
+	const dot = r.status === "running" ? "ok" : r.status === "waiting" ? "warn" : "bad";
 	const mins = r.minutes > 0 ? ` · ${r.minutes} min` : "";
 	return `<li class="agent"><span class="dot ${dot}" aria-hidden="true"></span><span class="aid">${esc(r.id)}</span><span class="model">${esc(r.model)}</span><span class="detail">${esc(r.detail)}${mins}</span></li>`;
 }
@@ -318,11 +350,10 @@ function queueHtml(rows: QueueRow[]): string {
 	const cards = rows
 		.map(
 			(r, i) => `<li class="qcard" data-plan="${esc(r.file)}">
+<span class="qhandle" title="Drag to reorder" aria-label="Drag ${esc(r.title)}">≡</span>
 <span class="qrank">${i + 1}</span>
-<span class="qhandle" title="Drag to reorder" aria-label="Drag ${esc(r.title)}">⠿</span>
 <span class="qtitle">${esc(r.title)}</span>
-<span class="chip repo">${esc(r.repo)}</span>
-${r.waiting ? `<span class="chip wait">waiting</span>` : ""}
+${r.waiting ? `<span class="chip c-wait">waits you</span>` : `<span class="chip c-ready">ready</span>`}
 <span class="qbtns"><button type="button" class="qmove" data-move="top">↑ top</button><button type="button" class="qmove" data-move="up">↑</button><button type="button" class="qmove" data-move="down">↓</button></span>
 </li>`,
 		)
@@ -370,8 +401,71 @@ function machineHtml(cfg: Config, m: MachineRow): string {
 	].join("");
 }
 
-function detailsBlock(id: string, label: string, count: string, inner: string): string {
-	return `<details id="${id}"><summary>${esc(label)} <span class="chip">${esc(count)}</span></summary><div class="dbody">${inner}</div></details>`;
+/** Inline SVG sparkline (mockup: a 130×40 polyline, oldest → newest, left → right). */
+function sparkSvg(points: number[], stroke: string): string {
+	const max = Math.max(...points, 0);
+	const n = points.length;
+	const pts = points
+		.map((v, i) => {
+			const x = n <= 1 ? 0 : (i / (n - 1)) * 130;
+			const y = max > 0 ? 34 - (v / max) * 28 : 34;
+			return `${x.toFixed(1)},${y.toFixed(1)}`;
+		})
+		.join(" ");
+	return `<svg class="spark" viewBox="0 0 130 40" aria-hidden="true"><polyline points="${pts}" fill="none" stroke="${stroke}" stroke-width="2"/></svg>`;
+}
+
+function tile(label: string, num: string, numStyle: string, note: string, spark = ""): string {
+	return `<div class="tile"><div><div class="lbl">${esc(label)}</div><div class="num"${numStyle ? ` style="${numStyle}"` : ""}>${num}</div><div class="note">${note}</div></div>${spark}</div>`;
+}
+
+function spendTileHtml(data: PageData): string {
+	const s = data.stats;
+	return s
+		? tile("Spend (list price)", `$${s.spend24.toFixed(2)}`, "", `Main $${s.mainSpend.toFixed(2)} · agents $${s.agentSpend.toFixed(2)}`, sparkSvg(s.spendByHour, "var(--acc)"))
+		: tile("Spend (list price)", "–", "", "–");
+}
+
+/** The mockup's Today tile card: needs-you, spend, agent runs, open plans. */
+function tilesHtml(data: PageData): string {
+	const needs = data.questions === null ? null : data.questions.length;
+	const needsTile = needs === null ? tile("Needs you", "–", "", "–") : needs > 0 ? tile("Needs you", String(needs), "color:var(--warn)", "answer below ↓") : tile("Needs you", "0", "", "all clear");
+	const runs = data.stats ? tile("Agent runs", String(data.stats.runs24), "", `${data.stats.running} running · ${data.stats.died} died`, sparkSvg(data.stats.runsByHour, "var(--teal)")) : tile("Agent runs", "–", "", "–");
+	const plans = data.stats ? tile("Plans", String(data.stats.openPlans), "", `<span style="color:var(--ok)">open</span>`) : tile("Plans", "–", "", "–");
+	return [needsTile, spendTileHtml(data), runs, plans].join("\n");
+}
+
+/** The sticky mockup top bar: logo, pill tabs, and the lock pill that posts the unlock/lock forms. */
+function topBarHtml(tab: string, lockMinutesLeft: number | null, cfg: Config): string {
+	const tabs: [string, string][] = [["now", "Now"], ["queue", "Queue"], ["agents", "Agents"], ["spend", "Spend"]];
+	const pills = tabs.map(([id, label]) => `<a href="/?tab=${id}"${tab === id ? ` class="on"` : ""}>${label}</a>`).join("");
+	const lockLabel = lockMinutesLeft === null ? "🔒 Off" : `🔓 ${lockMinutesLeft} min`;
+	const unlockForm = (minutes: number) =>
+		`<form method="post" action="/unlock"><input type="hidden" name="minutes" value="${minutes}"><button class="btn" type="submit">Unlock ${minutes} min</button></form>`;
+	const off = cfg.guards.chat_unlock
+		? ""
+		: `<p class="offnote">Unlocking from the page is switched off in the config. To turn it on, set:</p><code class="offcfg">guards: chat_unlock: true</code>`;
+	return `<div class="top"><span class="logo">ns</span>
+<nav class="pills" aria-label="Sections">${pills}</nav>
+<details class="lock" id="lock-pill"><summary>${lockLabel}</summary><div class="lockmenu">${unlockForm(15)}${unlockForm(30)}<form method="post" action="/lock"><button class="btn" type="submit">Lock now</button></form>${off}</div></details>
+</div>`;
+}
+
+/** The queue card. Full on the Queue tab; the Now tab shows the first 8 rows plus the "Show all" link — the drag script merges the hidden rest from the form's before field, so a drag still posts the complete order. */
+function queueCard(rows: QueueRow[] | null, full: boolean): string {
+	const head = full ? "" : `<h2>Queue <small>drag ≡ to sort</small></h2>`;
+	if (rows === null) return `${head}<div class="card">${na("Queue")}</div>`;
+	if (!rows.length) return `${head}<div class="card"><p class="empty">The queue is empty</p></div>`;
+	const body = queueHtml(full ? rows : rows.slice(0, 8));
+	const more = !full && rows.length > 8 ? `<a class="more" href="/?tab=queue">Show all ${rows.length} ›</a>` : "";
+	return `${head}<div class="card">${body}${more}</div>`;
+}
+
+function modelSpendTable(stats: NowStats | null): string {
+	if (stats === null) return na("Spend");
+	if (!stats.byModel.length) return `<p class="empty">No spend recorded in the last 24 hours</p>`;
+	const rows = stats.byModel.map(m => `<tr><td>${esc(m.model)}</td><td>$${m.spend.toFixed(2)}</td><td>${m.runs}</td></tr>`).join("");
+	return `<table><thead><tr><th>Model</th><th>Spend</th><th>Runs</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 function na(label: string): string {
@@ -405,16 +499,6 @@ function receiptHtml(sent: string | null, params: URLSearchParams): string {
 			return "";
 	}
 	return `<div class="receipt" role="status">${esc(text)}</div>`;
-}
-
-function bottomBar(cfg: Config, lockMinutesLeft: number | null): string {
-	const state = lockMinutesLeft === null ? "Locked" : `Unlocked · ${lockMinutesLeft} min left`;
-	const unlockBtn = (minutes: number) =>
-		`<form method="post" action="/unlock"><input type="hidden" name="minutes" value="${minutes}"><button type="submit">Unlock ${minutes} min</button></form>`;
-	const off = cfg.guards.chat_unlock
-		? ""
-		: `<p class="offnote">Unlocking from the page is switched off in the config. To turn it on, set:</p><code class="offcfg">guards: chat_unlock: true</code>`;
-	return `<footer class="bar"><div class="barline"><div class="barinner"><p class="lockstate${lockMinutesLeft === null ? "" : " on"}">${esc(state)}</p><div class="barbtns">${unlockBtn(15)}${unlockBtn(30)}<form method="post" action="/lock"><button type="submit">Lock now</button></form></div></div></div>${off}</footer>`;
 }
 
 // ---- page assembly: one unreadable source never takes the page down ----
@@ -466,33 +550,6 @@ export function buildPageData(cfg: Config, source: RunSource): PageData {
 	};
 }
 
-function stripHtml(data: PageData): string {
-	const n = data.questions?.length ?? null;
-	const left =
-		n === null
-			? `<span class="count na">–</span>`
-			: n === 0
-				? `<span class="count clear">All clear</span>`
-				: `<a class="count" href="#needs" aria-label="${n} plans need you">${n}</a>`;
-	const working = data.agents === null ? "working –" : `${data.agents.length} working`;
-	const ci =
-		data.incidents === null
-			? "CI –"
-			: data.incidents.length
-				? `<span class="bad">${data.incidents.length === 1 ? "1 incident" : `${data.incidents.length} incidents`}</span>`
-				: `<span class="fine">CI ok</span>`;
-	const m = data.machine;
-	const disk =
-		m === null
-			? "disk –"
-			: m.freeGb < m.diskMin
-				? `<span class="bad">disk ${m.freeGb.toFixed(0)} GB</span>`
-				: m.load > m.loadMax
-					? `<span class="bad">load ${m.load.toFixed(1)}</span>`
-					: `disk ${m.freeGb.toFixed(0)} GB`;
-	return `<header class="strip"><div class="barinner stripinner">${left}<div class="signals"><span>${esc(working)}</span><span>${ci}</span><span>${disk}</span></div></div></header>`;
-}
-
 const FAVICON =
 	"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%23D98E04'/%3E%3C/svg%3E";
 
@@ -508,7 +565,7 @@ var dragging=false;
 if(qlist){
 var rform=document.getElementById("reorder-form");
 var qcards=function(){return Array.prototype.slice.call(qlist.querySelectorAll(".qcard"));};
-var submitReorder=function(moved){if(!rform)return;var o=qcards().map(function(c){return c.getAttribute("data-plan");}).join("\\n");rform.querySelector("[name=order]").value=o;rform.querySelector("[name=moved]").value=moved;dragging=false;rform.submit();};
+var submitReorder=function(moved){if(!rform)return;var shown=qcards().map(function(c){return c.getAttribute("data-plan");});var bf=(rform.querySelector("[name=before]").value||"").split("\\n").filter(function(x){return x;});var o=shown.slice();for(var i=0;i<bf.length;i++){if(shown.indexOf(bf[i])<0)o.push(bf[i]);}rform.querySelector("[name=order]").value=o.join("\\n");rform.querySelector("[name=moved]").value=moved;dragging=false;rform.submit();};
 var moveCard=function(card,how){if(how==="top"){var f=qcards()[0];if(f&&f!==card)qlist.insertBefore(card,f);}else if(how==="up"){var p=card.previousElementSibling;if(p&&p.classList.contains("qcard"))qlist.insertBefore(card,p);}else if(how==="down"){var n=card.nextElementSibling;if(n&&n.classList.contains("qcard"))qlist.insertBefore(card,n.nextSibling);}};
 qlist.addEventListener("click",function(e){var t=e.target;if(!t||!t.closest)return;var b=t.closest(".qmove");if(!b)return;var card=t.closest(".qcard");if(!card)return;moveCard(card,b.getAttribute("data-move"));submitReorder(card.getAttribute("data-plan"));});
 var drag=null;
@@ -524,39 +581,69 @@ setInterval(function(){if(!busy())location.reload();},${REFRESH_SEC}000);
 
 /** The whole page as one HTML string. Exported for scripts/ui-preview.ts (no server). */
 export function renderPage(cfg: Config, data: PageData, params: URLSearchParams, nonce: string): string {
-	const needs = data.questions === null ? na("Waiting on you") : data.questions.length ? data.questions.map(needCard).join("\n") : `<p class="empty">Nothing needs you right now</p>`;
+	const req = params.get("tab") ?? "";
+	// Server-rendered tabs: the pill links carry ?tab=; anything unknown renders Now.
+	const tab = req === "queue" || req === "agents" || req === "spend" ? req : "now";
+	const needsBody =
+		data.questions === null
+			? na("Waiting on you")
+			: data.questions.length
+				? data.questions.map(needCard).join("\n")
+				: `<p class="empty">Nothing needs you right now</p>`;
 	const working =
 		data.agents === null ? na("Working now") : data.agents.length ? `<ul class="agents">${data.agents.map(agentRowHtml).join("")}</ul>` : `<p class="empty">No agents running</p>`;
-	const queue = detailsBlock(
-		"d-queue",
-		"Queue",
-		data.queue === null ? "–" : String(data.queue.length),
-		data.queue === null ? na("Queue") : data.queue.length ? queueHtml(data.queue) : `<p class="empty">The queue is empty</p>`,
-	);
-	const merges = detailsBlock(
-		"d-merges",
-		"Merges",
-		data.ci === null ? "–" : String(data.ci.length),
-		data.ci === null ? na("Merges") : data.ci.length ? ciHtml(data.ci) : `<p class="empty">No CI runs recorded</p>`,
-	);
-	const incidents = detailsBlock(
-		"d-incidents",
-		"Incidents",
-		data.incidents === null ? "–" : String(data.incidents.length),
-		data.incidents === null ? na("Incidents") : data.incidents.length ? incidentsHtml(data.incidents) : `<p class="empty">No open incidents</p>`,
-	);
-	const scores = detailsBlock(
-		"d-scores",
-		"Agent scores",
-		data.scores === null ? "–" : String(data.scores.rows.length + data.scores.text.length),
-		data.scores === null ? na("Agent scores") : scoresHtml(data.scores),
-	);
-	const machine = detailsBlock(
-		"d-machine",
-		"Machine",
-		data.machine === null ? "–" : `${data.machine.freeGb.toFixed(0)} GB`,
-		data.machine === null ? na("Machine") : machineHtml(cfg, data.machine),
-	);
+	const scores = data.scores === null ? na("Agent scores") : scoresHtml(data.scores);
+	const incidents = data.incidents === null ? na("Incidents") : data.incidents.length ? incidentsHtml(data.incidents) : `<p class="empty">No open incidents</p>`;
+	const merges = data.ci === null ? na("Merges") : data.ci.length ? ciHtml(data.ci) : `<p class="empty">No CI runs recorded</p>`;
+	const machine = data.machine === null ? na("Machine") : machineHtml(cfg, data.machine);
+	const body =
+		tab === "now"
+			? `<h1>Today</h1>
+<p class="sub">What your agents did in the last 24 hours.</p>
+<div class="card">
+${tilesHtml(data)}
+</div>
+<h2>Needs you</h2>
+<div class="card">
+${needsBody}
+</div>
+${queueCard(data.queue, false)}`
+			: tab === "queue"
+				? `<h1>Queue</h1>
+<p class="sub">Drag ≡ to sort — Main works by the new order on its next turn.</p>
+${queueCard(data.queue, true)}`
+				: tab === "agents"
+					? `<h1>Agents</h1>
+<p class="sub">Who is working right now, how they score, and what went wrong.</p>
+<h2>Working now</h2>
+<div class="card">
+${working}
+</div>
+<h2>Agent scores</h2>
+<div class="card">
+${scores}
+</div>
+<h2>Incidents</h2>
+<div class="card">
+${incidents}
+</div>
+<h2>Merges</h2>
+<div class="card">
+${merges}
+</div>
+<h2>Machine</h2>
+<div class="card">
+${machine}
+</div>`
+					: `<h1>Spend</h1>
+<p class="sub">List price over the last 24 hours.</p>
+<div class="card">
+${spendTileHtml(data)}
+</div>
+<h2>By model</h2>
+<div class="card">
+${modelSpendTable(data.stats)}
+</div>`;
 	return `<!doctype html>
 <html lang="en">
 <head>
@@ -566,102 +653,97 @@ export function renderPage(cfg: Config, data: PageData, params: URLSearchParams,
 <title>neurastream</title>
 <link rel="icon" href="${FAVICON}">
 <style>
-:root { color-scheme: light dark; --ink:#1C2430; --page:#EEF1F5; --card:#FFFFFF; --line:#D5DBE3; --muted:#5E6A7A; --amber:#D98E04; --teal:#0F8A8A; --red:#C8382F; --on-amber:#10141A; }
-@media (prefers-color-scheme: dark) { :root { --ink:#E6EAF0; --page:#10141A; --card:#1A2029; --line:#2A323D; --muted:#94A0B0; } }
-* { box-sizing: border-box; }
-html { scroll-padding-top: 72px; }
-body { margin: 0; background: var(--page); color: var(--ink); font: 17px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-.barinner { max-width: 36rem; margin: 0 auto; padding: 0 16px; }
-.mono, .aid, .model { font-family: ui-monospace, "SF Mono", "Roboto Mono", monospace; font-size: 14px; }
-.strip { position: sticky; top: 0; z-index: 5; background: var(--page); border-bottom: 1px solid var(--line); }
-.stripinner { display: flex; align-items: center; justify-content: space-between; min-height: 64px; }
-.count { color: var(--amber); font-size: 34px; font-weight: 800; font-variant-numeric: tabular-nums; text-decoration: none; }
-.count.clear { color: var(--teal); font-size: 20px; font-weight: 700; }
-.count.na { color: var(--muted); font-size: 20px; }
-.signals { display: flex; gap: 12px; color: var(--muted); font-size: 14px; text-align: right; }
-.bad { color: var(--red); font-weight: 600; }
-.fine { color: var(--teal); }
-main { padding-bottom: 96px; }
-.receipt { max-width: 36rem; margin: 12px auto 0; padding: 10px 16px; background: var(--card); border: 1px solid var(--teal); border-radius: 14px; color: var(--teal); font-weight: 600; }
-.card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; margin: 16px 0; }
-.need { border-left: 4px solid var(--amber); }
-.eyebrow { margin: 0 0 2px; color: var(--muted); font-size: 14px; }
-.need .eyebrow { color: var(--amber); }
-.card h3 { margin: 2px 0 8px; font-size: 20px; font-weight: 650; }
-.ask { margin: 0 0 2px; color: var(--muted); font-size: 14px; }
-.q { margin: 0 0 10px; }
-details.bg { margin: 8px 0; border-top: 1px solid var(--line); padding-top: 6px; }
-details.bg summary, details.block summary { min-height: 48px; display: flex; align-items: center; gap: 8px; color: var(--muted); }
-details.bg ul { margin: 4px 0 8px; padding-left: 20px; }
-.acts { display: flex; gap: 8px; flex-wrap: wrap; }
-button { min-height: 48px; padding: 8px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--ink); font: inherit; }
-button.primary { background: var(--amber); border-color: var(--amber); color: var(--on-amber); font-weight: 650; }
-:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
-.reply { margin-top: 8px; }
-.reply textarea { width: 100%; padding: 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--page); color: var(--ink); font: inherit; }
-.agents { list-style: none; margin: 0; padding: 0; }
-.agent { display: flex; align-items: baseline; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
-.agent:last-child { border-bottom: none; }
-.dot { width: 10px; height: 10px; border-radius: 50%; align-self: center; flex: none; }
-.dot.ok { background: var(--teal); }
-.dot.warn { background: var(--amber); }
-.model { color: var(--muted); }
-.detail { color: var(--muted); }
-details.block { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 4px 16px; margin: 12px 0; }
-details.block .dbody { border-top: 1px solid var(--line); padding: 10px 0 12px; }
-.chip { display: inline-block; padding: 1px 8px; border: 1px solid var(--line); border-radius: 999px; font-size: 13px; color: var(--muted); }
-.chip.bad { color: var(--red); border-color: var(--red); }
-.chip.wait { color: var(--amber); border-color: var(--amber); }
-.qlist { list-style: none; margin: 0; padding: 0; }
-.qcard { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
-.qcard:last-child { border-bottom: none; }
-.qcard.dragging { position: fixed; z-index: 20; background: var(--card); border: 1px solid var(--amber); border-radius: 14px; padding: 10px 12px; margin: 0; user-select: none; opacity: 0.96; }
-.qph { list-style: none; border: 2px dashed var(--line); border-radius: 14px; margin: 4px 0; }
-.qrank { font-family: ui-monospace, "SF Mono", "Roboto Mono", monospace; font-size: 14px; color: var(--muted); min-width: 1.6em; text-align: right; font-variant-numeric: tabular-nums; }
-.qhandle { touch-action: none; padding: 12px 10px; color: var(--muted); font-size: 18px; user-select: none; }
-.qtitle { flex: 1 1 12em; min-width: 0; }
-.chip.repo { color: var(--teal); border-color: var(--teal); }
-.qbtns { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
-.qbtns button { min-height: 48px; padding: 4px 10px; font-size: 14px; }
-.merges, .incidents { margin: 0; padding-left: 20px; }
-.merges li, .incidents li { margin: 6px 0; }
-table { border-collapse: collapse; width: 100%; font-size: 14px; }
-th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
-th { color: var(--muted); font-weight: 600; }
-.mrow { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--line); }
-.mrow:last-child { border-bottom: none; }
-.empty { color: var(--muted); }
-.na { color: var(--muted); font-style: italic; }
-.bar { position: sticky; bottom: 0; z-index: 5; background: var(--page); border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); }
-.barline { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 64px; flex-wrap: wrap; padding-top: 6px; padding-bottom: 6px; }
-.lockstate { margin: 0; font-weight: 650; color: var(--muted); }
-.lockstate.on { color: var(--teal); }
-.barbtns { display: flex; gap: 8px; flex-wrap: wrap; }
-.barbtns button { min-height: 40px; padding: 6px 10px; font-size: 15px; }
-.offnote { margin: 0; color: var(--muted); font-size: 14px; }
-.offcfg { display: block; font-family: ui-monospace, "SF Mono", "Roboto Mono", monospace; font-size: 14px; padding: 4px 0 10px; }
-@media (max-width: 360px) { .signals { display: none; } }
+:root{--bg:#f4f4f6;--card:#fff;--fg:#111;--mut:#6b6b76;--bd:#e4e4ea;--acc:#c026d3;--teal:#0d9488;--warn:#d97706;--ok:#16a34a;--red:#dc2626}
+@media(prefers-color-scheme:dark){:root{--bg:#0e0e11;--card:#18181c;--fg:#f2f2f4;--mut:#9a9aa6;--bd:#2a2a31}}
+*{box-sizing:border-box}
+html{scroll-padding-top:64px}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.4 system-ui,-apple-system,sans-serif}
+.top{position:sticky;top:0;display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--bg);z-index:2}
+.logo{font-weight:800;color:var(--acc)}
+.pills{display:flex;background:var(--card);border:1px solid var(--bd);border-radius:999px;padding:3px;flex:1}
+.pills a{flex:1;text-align:center;padding:5px 0;border-radius:999px;color:var(--mut);text-decoration:none;font-size:13px}
+.pills a.on{background:var(--bg);color:var(--fg);font-weight:600;box-shadow:0 0 0 1px var(--bd)}
+.lock{border:1px solid var(--bd);background:var(--card);border-radius:999px;padding:6px 10px;font-size:13px;color:var(--fg);position:relative;flex:none}
+.lock summary{list-style:none;cursor:pointer;white-space:nowrap}
+.lock summary::-webkit-details-marker{display:none}
+.lockmenu{position:absolute;right:0;top:calc(100% + 6px);background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:10px;display:flex;flex-direction:column;gap:6px;min-width:170px;z-index:10}
+.lockmenu .btn{margin:0}
+.offnote{margin:0;color:var(--mut);font-size:12px}
+.offcfg{font-family:ui-monospace,"SF Mono","Roboto Mono",monospace;font-size:12px}
+main{padding:4px 12px 40px}
+h1{font-size:26px;margin:8px 0 2px}
+h2{font-size:17px;margin:22px 4px 8px;display:flex;justify-content:space-between;align-items:baseline}
+h2 small{font-size:12px;color:var(--mut);font-weight:400}
+.sub{color:var(--mut);font-size:13px;margin:0 0 12px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:14px;overflow:hidden}
+.tile{padding:14px 16px;border-top:1px solid var(--bd);display:flex;justify-content:space-between;align-items:flex-end;gap:8px}
+.tile:first-child{border-top:0}
+.lbl{font-size:13px;color:var(--mut)}
+.num{font-size:30px;font-weight:700;line-height:1.1;font-variant-numeric:tabular-nums}
+.note{font-size:12px;color:var(--mut)}
+svg.spark{width:130px;height:40px;flex:none}
+.receipt{margin:12px 12px 0;padding:10px 16px;background:var(--card);border:1px solid var(--teal);border-radius:14px;color:var(--teal);font-weight:600}
+.eyebrow{margin:0 0 2px;color:var(--mut);font-size:13px}
+.ask{padding:14px 16px;border-top:1px solid var(--bd)}
+.ask:first-child{border-top:0}
+.ask b{display:block;font-size:16px}
+.ask p{margin:2px 0 10px;color:var(--mut);font-size:13px}
+.ask .q{color:var(--fg);font-size:14px;margin:0 0 8px}
+.answered{color:var(--ok)!important;margin:0 0 4px!important}
+.link{border:0;background:none;color:var(--mut);text-decoration:underline;padding:0;font:inherit;font-size:13px;cursor:pointer}
+.acts{display:flex;gap:6px;flex-wrap:wrap}
+.btn{border:1px solid var(--bd);background:var(--card);color:var(--fg);border-radius:999px;padding:6px 16px;font-size:14px;margin-right:6px;font-family:inherit;cursor:pointer}
+.btn.pri{background:var(--acc);border-color:var(--acc);color:#fff}
+:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.reply{margin-top:8px}
+.reply textarea{width:100%;padding:10px;border-radius:10px;border:1px solid var(--bd);background:var(--bg);color:var(--fg);font:inherit}
+details.bg{margin:8px 0;border-top:1px solid var(--bd);padding-top:6px}
+details.bg summary{color:var(--mut);cursor:pointer}
+details.bg ul{margin:4px 0 8px;padding-left:20px;color:var(--mut);font-size:13px}
+.qlist{list-style:none;margin:0;padding:0}
+.qcard{display:flex;align-items:center;gap:10px;padding:12px 14px;border-top:1px solid var(--bd);flex-wrap:wrap}
+.qcard:first-child{border-top:0}
+.qcard.dragging{position:fixed;z-index:20;background:var(--card);border:1px solid var(--acc);border-radius:14px;margin:0;user-select:none;opacity:0.96}
+.qph{list-style:none;border:2px dashed var(--bd);margin:4px 0}
+.qhandle{color:var(--mut);cursor:grab;font-size:18px;touch-action:none;padding:2px 2px;user-select:none;flex:none}
+.qrank{color:var(--mut);width:18px;font-size:13px;text-align:right;font-variant-numeric:tabular-nums;flex:none}
+.qtitle{flex:1 1 12em;min-width:0}
+.chip{font-size:11px;padding:2px 8px;border-radius:999px;white-space:nowrap;flex:none}
+.c-wait{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}
+.c-run{background:color-mix(in srgb,var(--teal) 18%,transparent);color:var(--teal)}
+.c-ready{background:color-mix(in srgb,var(--mut) 15%,transparent);color:var(--mut)}
+.chip.bad{color:var(--red)}
+.qbtns{display:flex;gap:4px;flex-wrap:wrap;margin-left:auto}
+.qbtns button{min-height:32px;padding:2px 10px;font-size:12px;border-radius:999px;border:1px solid var(--bd);background:var(--card);color:var(--mut);cursor:pointer}
+.more{display:block;text-align:center;padding:12px;color:var(--acc);text-decoration:none;border-top:1px solid var(--bd);font-size:14px}
+.agents{list-style:none;margin:0;padding:8px 14px}
+.agent{display:flex;align-items:baseline;gap:8px;padding:8px 0;border-bottom:1px solid var(--bd);flex-wrap:wrap}
+.agent:last-child{border-bottom:none}
+.dot{width:10px;height:10px;border-radius:50%;align-self:center;flex:none}
+.dot.ok{background:var(--teal)}
+.dot.warn{background:var(--warn)}
+.dot.bad{background:var(--red)}
+.mono,.aid,.model{font-family:ui-monospace,"SF Mono","Roboto Mono",monospace;font-size:13px}
+.model,.detail{color:var(--mut)}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--bd);font-variant-numeric:tabular-nums}
+th{color:var(--mut);font-weight:600}
+tr:last-child td{border-bottom:none}
+.merges,.incidents{margin:0;padding:8px 14px 8px 32px}
+.merges li,.incidents li{margin:6px 0}
+.mrow{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--bd)}
+.mrow:last-child{border-bottom:none}
+.bad{color:var(--red);font-weight:600}
+.empty{color:var(--mut);padding:14px 16px;margin:0}
+.na{color:var(--mut);font-style:italic;padding:14px 16px;margin:0}
 </style>
 </head>
 <body>
-${stripHtml(data)}
+${topBarHtml(tab, data.lockMinutesLeft, cfg)}
 ${receiptHtml(params.get("sent"), params)}
 <main>
-<section id="needs"><h2 class="srt">Needs you</h2>
-${needs}
-</section>
-<section id="working"><h2 class="srt">Working now</h2>
-${working}
-</section>
-<div class="barinner">
-${queue}
-${merges}
-${incidents}
-${scores}
-${machine}
-</div>
+${body}
 </main>
-${bottomBar(cfg, data.lockMinutesLeft)}
 <script nonce="${nonce}">${SCRIPT}</script>
 </body>
 </html>`;
