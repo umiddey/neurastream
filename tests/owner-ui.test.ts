@@ -18,9 +18,9 @@ import { appendMetric } from "../src/core/metrics.ts";
 import { checkTool } from "../src/core/guards.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { createOmpAdapter, ownerInboxCursorPath, ownerInboxMessage, type ExtensionHost } from "../src/adapters/omp/index.ts";
-import { inboxPath, startOwnerUi, type OwnerUiOptions, type OwnerUiServer } from "../src/core/owner-ui.ts";
+import { inboxPath, agentRows, ciRows, incidentRows, machineRow, questionRows, queueRows, scoresData, startOwnerUi, type OwnerUiOptions, type OwnerUiServer } from "../src/core/owner-ui.ts";
 import { runUi } from "../src/cli/ui.ts";
-import { stateDirPath, unlockPath } from "../src/core/queue/lib.ts";
+import { parsePlan, stateDirPath, unlockPath } from "../src/core/queue/lib.ts";
 import { parseWhoisLogin, type Tailscale } from "../src/core/tailscale.ts";
 
 const OWNER = "owner@example.com";
@@ -82,6 +82,7 @@ const CFG: Config = {
 applyQueueEnv(CFG);
 
 const INDEX = CFG.paths.queue_index;
+mkdirSync(join(TOY, ".git"), { recursive: true }); // gitTop only looks for the dir: the repo label is basename(TOY)
 mkdirSync(join(TOY, "docs/plans"), { recursive: true });
 mkdirSync(dirname(unlockPath()), { recursive: true });
 mkdirSync(stateDirPath(), { recursive: true });
@@ -258,9 +259,9 @@ test("GET / serves the owner: every section renders from fixture state", async (
 	// agents: the running ledger row
 	expect(body).toContain("owner-ui-alice-run");
 	expect(body).toContain("RUNNING");
-	// queue: both plans with their status
+	// queue: the open plan with its status (the completed plan is not queued)
 	expect(body).toContain("20261019_wait.md");
-	expect(body).toContain("20261019_done.md");
+	expect(body).not.toContain("20261019_done.md");
 	// merges/CI: the metrics ci row
 	expect(body).toContain("!77");
 	// incidents
@@ -707,4 +708,81 @@ test("parseWhoisLogin reads UserProfile.LoginName from the multi-line `tailscale
 	expect(parseWhoisLogin(out)).toBe("owner@example.com");
 	expect(parseWhoisLogin(JSON.stringify({ User: { LoginName: "owner@example.com" } }))).toBeNull();
 	expect(parseWhoisLogin("not json")).toBeNull();
+});
+
+// --- P1: typed page data (the plain-language card rows) ---
+
+test("parsePlan takes the title from the first # heading (else the basename) and the goal bullets, max 6", () => {
+	const p = parsePlan(TOY, PLAN_W, readFileSync(PLAN_W, "utf8"));
+	expect(p.title).toBe("Toy plan");
+	expect(p.goal).toEqual(["Owner page toy."]);
+	const goals = Array.from({ length: 9 }, (_, i) => `- goal line ${i + 1}`).join("\n");
+	const q = parsePlan(TOY, join(TOY, "docs/plans/20261020_goals.md"), `# Deep goals\n\n## Goal\n${goals}\n`);
+	expect(q.title).toBe("Deep goals");
+	expect(q.goal).toEqual(["goal line 1", "goal line 2", "goal line 3", "goal line 4", "goal line 5", "goal line 6"]);
+	const bare = parsePlan(TOY, join(TOY, "docs/plans/20261020_bare.md"), "no heading here");
+	expect(bare.title).toBe("20261020_bare.md");
+	expect(bare.goal).toEqual([]);
+});
+
+test("questionRows: title, repo label, waiting line, goal and minutes waiting from the file mtime", () => {
+	const rows = questionRows(CFG);
+	expect(rows.length).toBe(1);
+	expect(rows[0]).toMatchObject({ plan: PLAN_W, title: "Toy plan", repo: "toy", waitingLine: QUESTION, goal: ["Owner page toy."] });
+	expect(rows[0]!.waitingMin).toBeGreaterThanOrEqual(0);
+});
+
+test("agentRows: short model after the last /, detail and minutes since startedAt", () => {
+	expect(agentRows(CFG, RUNS)).toEqual([{ id: "owner-ui-alice-run", model: "model", detail: "RUNNING", minutes: 0, status: "running" }]);
+	const started = nowSec() - 5400;
+	const rows = agentRows(CFG, {
+		listRuns: () => [run({ id: "x", model: "zai/glm-5.3-flash", status: "waiting", statusDetail: "WAITING on owner", startedAt: started })],
+		mainSession: () => null,
+	});
+	expect(rows[0]!.model).toBe("glm-5.3-flash");
+	expect(rows[0]!.minutes).toBe(90);
+	expect(rows[0]!.status).toBe("waiting");
+});
+
+test("queueRows: open plans only, with repo label, title, status and waiting", () => {
+	expect(queueRows(CFG)).toEqual([{ repo: "toy", file: PLAN_W, title: "Toy plan", status: "open", waiting: true }]);
+});
+
+test("ciRows: newest first, mr as text, tries as number", () => {
+	appendMetric(CFG, { type: "ci", mr: "!78", repo: TOY, tries: 1, ts: nowSec() + 1 });
+	const rows = ciRows(CFG);
+	expect(rows.length).toBe(2);
+	expect(rows[0]).toMatchObject({ mr: "!78", tries: 1 });
+	expect(rows[1]!.mr).toBe("!77");
+});
+
+test("incidentRows: id, kind, summary, count", () => {
+	const rows = incidentRows(CFG);
+	expect(rows.length).toBe(1);
+	expect(rows[0]).toMatchObject({ kind: "toy", summary: "toy incident the page must show", count: 1 });
+	expect(rows[0]!.id).toBeTruthy();
+});
+
+test("scoresData parses a markdown table into header and rows, other lines as text", () => {
+	const board = join(TMP, "table-board.md");
+	writeFileSync(
+		board,
+		["# Subagent ranking board", "", "| agent | score | runs |", "| --- | ---: | ---: |", "| alice | 4.2 | 7 |", "| bob | 3.9 | 5 |", "", "- alice 4.2 (7d)"].join("\n"),
+	);
+	const d = scoresData({ ...CFG, paths: { ...CFG.paths, ranking_board: board } });
+	expect(d.header).toEqual(["agent", "score", "runs"]);
+	expect(d.rows).toEqual([
+		["alice", "4.2", "7"],
+		["bob", "3.9", "5"],
+	]);
+	expect(d.text).toEqual(["# Subagent ranking board", "- alice 4.2 (7d)"]);
+});
+
+test("machineRow: free GB, disk minimum, load, load max and cores", () => {
+	const m = machineRow(CFG);
+	expect(m.freeGb).toBeGreaterThan(0);
+	expect(typeof m.diskMin).toBe("number");
+	expect(m.cores).toBeGreaterThan(0);
+	expect(m.loadMax).toBeGreaterThan(0);
+	expect(m.load).toBeGreaterThanOrEqual(0);
 });

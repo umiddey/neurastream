@@ -97,11 +97,145 @@ function esc(s: string): string {
 	return s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
 }
 
-function answerForm(plan: Plan): string {
+// ---- page data: one pure typed-row builder per source; rendering reads only these ----
+
+export interface QuestionRow {
+	plan: string;
+	title: string;
+	repo: string;
+	waitingLine: string;
+	goal: string[];
+	waitingMin: number;
+}
+
+export interface AgentRow {
+	id: string;
+	model: string;
+	detail: string;
+	minutes: number;
+	status: string;
+}
+
+export interface QueueRow {
+	repo: string;
+	file: string;
+	title: string;
+	status: string;
+	waiting: boolean;
+}
+
+export interface CiRow {
+	mr: string;
+	tries: number;
+	ts: number;
+}
+
+export interface IncidentRow {
+	id: string;
+	kind: string;
+	summary: string;
+	count: number;
+}
+
+/** A markdown table from the ranking board plus every non-table line, kept in order. */
+export interface ScoresData {
+	header: string[];
+	rows: string[][];
+	text: string[];
+}
+
+export interface MachineRow {
+	freeGb: number;
+	diskMin: number;
+	load: number;
+	loadMax: number;
+	cores: number;
+}
+
+export function questionRows(cfg: Config): QuestionRow[] {
+	const now = Date.now();
+	return activePlans(cfg.paths.queue_index)
+		.filter(p => p.waiting && p.status === "open" && p.waitingLine)
+		.map(p => {
+			let waitingMin = 0;
+			try {
+				waitingMin = Math.max(0, Math.round((now - statSync(p.file).mtimeMs) / 60_000));
+			} catch {}
+			return {
+				plan: p.file,
+				title: p.title,
+				repo: basename(p.repo),
+				waitingLine: p.waitingLine ?? "",
+				goal: p.goal,
+				waitingMin,
+			};
+		});
+}
+
+export function agentRows(cfg: Config, source: RunSource): AgentRow[] {
+	const cut = nowSec() - cfg.ledger.default_hours * 3600;
+	return source
+		.listRuns(cut)
+		.filter(r => r.status === "running" || r.status === "waiting")
+		.map(r => ({
+			id: r.id,
+			model: r.model.slice(r.model.lastIndexOf("/") + 1),
+			detail: r.statusDetail,
+			minutes: r.startedAt === null ? 0 : Math.max(0, Math.round((nowSec() - r.startedAt) / 60)),
+			status: r.status,
+		}));
+}
+
+export function queueRows(cfg: Config): QueueRow[] {
+	return activePlans(cfg.paths.queue_index)
+		.filter(p => p.status === "open")
+		.map(p => ({ repo: basename(p.repo), file: p.file, title: p.title, status: p.status ?? "?", waiting: p.waiting }));
+}
+
+export function ciRows(cfg: Config): CiRow[] {
+	return readMetricEvents(cfg)
+		.filter(e => e.type === "ci")
+		.slice(-10)
+		.reverse()
+		.map(e => ({ mr: String(e.mr), tries: Number(e.tries), ts: Number(e.ts) }));
+}
+
+export function incidentRows(cfg: Config): IncidentRow[] {
+	return openIncidents(cfg).map(i => ({ id: i.id, kind: i.kind, summary: i.summary, count: i.count }));
+}
+
+export function scoresData(cfg: Config): ScoresData {
+	const out: ScoresData = { header: [], rows: [], text: [] };
+	for (const raw of readFileSync(cfg.paths.ranking_board, "utf8").split("\n")) {
+		const line = raw.trim();
+		if (line.startsWith("|") && line.endsWith("|")) {
+			const cells = line.slice(1, -1).split("|").map(c => c.trim());
+			if (cells.every(c => /^:?-{2,}:?$/.test(c))) continue;
+			if (!out.header.length) out.header = cells;
+			else out.rows.push(cells);
+		} else if (line) {
+			out.text.push(line);
+		}
+	}
+	return out;
+}
+
+export function machineRow(cfg: Config): MachineRow {
+	const st = statfsSync(expandHome(cfg.machine.disk_path));
+	const freeGb = (Number(st.bavail) * Number(st.bsize)) / 1e9;
+	const load = os.loadavg()[0] ?? 0;
+	const cores = cpuCount();
+	const loadMax = cfg.machine.load_max > 0 ? cfg.machine.load_max : cores + cfg.machine.load_over_cores;
+	return { freeGb, diskMin: cfg.machine.disk_min_gb, load, loadMax, cores };
+}
+
+// ---- rendering (consumes the rows above, never the readers directly) ----
+
+function answerForm(row: QuestionRow): string {
 	return [
 		`<form method="post" action="/answer">`,
-		`<input type="hidden" name="plan" value="${esc(plan.file)}">`,
-		`<p><strong>${esc(basename(plan.file))}</strong><br>${esc(plan.waitingLine ?? "")}</p>`,
+		`<input type="hidden" name="plan" value="${esc(row.plan)}">`,
+		`<p><strong>${esc(basename(row.plan))}</strong><br>${esc(row.waitingLine)}</p>`,
 		`<button type="submit" name="answer" value="yes">yes</button>`,
 		`<button type="submit" name="answer" value="no">no</button>`,
 		`<input type="text" name="answer_text" maxlength="${ANSWER_MAX}" placeholder="short answer">`,
@@ -111,7 +245,7 @@ function answerForm(plan: Plan): string {
 }
 
 function questionsBody(cfg: Config): string {
-	const waiting = activePlans(cfg.paths.queue_index).filter(p => p.waiting && p.status === "open" && p.waitingLine);
+	const waiting = questionRows(cfg);
 	return waiting.length ? waiting.map(answerForm).join("\n") : "<p>nothing is waiting on you</p>";
 }
 
@@ -134,47 +268,35 @@ function guardsBody(cfg: Config): string {
 }
 
 function agentsBody(cfg: Config, source: RunSource): string {
-	const cut = nowSec() - cfg.ledger.default_hours * 3600;
-	const live = source
-		.listRuns(cut)
-		.filter(r => r.status === "running" || r.status === "waiting")
-		.map(r => `${r.id}  ${r.statusDetail}  ${r.model}`);
+	const live = agentRows(cfg, source).map(r => `${r.id}  ${r.detail}  ${r.model}`);
 	return live.length ? `<pre>${esc(live.join("\n"))}</pre>` : "<p>no agents running or waiting</p>";
 }
 
 function queueBody(cfg: Config): string {
-	const plans = activePlans(cfg.paths.queue_index).map(
-		p => `${basename(p.file)} — ${p.status ?? "?"}${p.waiting ? " — WAITING on owner" : ""}`,
-	);
+	const plans = queueRows(cfg).map(r => `${basename(r.file)} — ${r.status}${r.waiting ? " — WAITING on owner" : ""}`);
 	return plans.length ? `<pre>${esc(plans.join("\n"))}</pre>` : "<p>the queue is empty</p>";
 }
 
 function ciBody(cfg: Config): string {
-	const rows = readMetricEvents(cfg)
-		.filter(e => e.type === "ci")
-		.slice(-10)
-		.reverse()
-		.map(e => `${String(e.mr)} — ${Number(e.tries)} pipeline(s) — ${strftime(Number(e.ts), "%m-%d %H:%M")}`);
+	const rows = ciRows(cfg).map(r => `${r.mr} — ${r.tries} pipeline(s) — ${strftime(r.ts, "%m-%d %H:%M")}`);
 	return rows.length ? `<pre>${esc(rows.join("\n"))}</pre>` : "<p>no CI runs recorded</p>";
 }
 
 function incidentsBody(cfg: Config): string {
-	const open = openIncidents(cfg).map(i => `${i.id} [${i.source}/${i.kind}] ${i.summary}${i.count > 1 ? ` — ${i.count}x` : ""}`);
+	const open = incidentRows(cfg).map(i => `${i.id} [${i.kind}] ${i.summary}${i.count > 1 ? ` — ${i.count}x` : ""}`);
 	return open.length ? `<pre>${esc(open.join("\n"))}</pre>` : "<p>no open incidents</p>";
 }
 
 function scoresBody(cfg: Config): string {
-	return `<pre>${esc(readFileSync(cfg.paths.ranking_board, "utf8").trimEnd())}</pre>`;
+	const d = scoresData(cfg);
+	const table = d.header.length ? [d.header.join(" | "), ...d.rows.map(r => r.join(" | "))] : [];
+	return `<pre>${esc([...d.text, ...table].join("\n"))}</pre>`;
 }
 
 function machineBody(cfg: Config): string {
-	const st = statfsSync(expandHome(cfg.machine.disk_path));
-	const freeGb = (Number(st.bavail) * Number(st.bsize)) / 1e9;
-	const load = os.loadavg()[0] ?? 0;
-	const cores = cpuCount();
-	const loadMax = cfg.machine.load_max > 0 ? cfg.machine.load_max : cores + cfg.machine.load_over_cores;
-	const disk = `disk ${freeGb.toFixed(0)} GB free in ${cfg.machine.disk_path} (min ${cfg.machine.disk_min_gb} GB)${freeGb < cfg.machine.disk_min_gb ? " — LOW" : ""}`;
-	const loadLine = `load ${load.toFixed(2)} on ${cores} cores (max ${loadMax})${load > loadMax ? " — HIGH" : ""}`;
+	const m = machineRow(cfg);
+	const disk = `disk ${m.freeGb.toFixed(0)} GB free in ${cfg.machine.disk_path} (min ${m.diskMin} GB)${m.freeGb < m.diskMin ? " — LOW" : ""}`;
+	const loadLine = `load ${m.load.toFixed(2)} on ${m.cores} cores (max ${m.loadMax})${m.load > m.loadMax ? " — HIGH" : ""}`;
 	return `<pre>${esc([disk, loadLine].join("\n"))}</pre>`;
 }
 
