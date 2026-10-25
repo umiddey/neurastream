@@ -176,8 +176,8 @@ neurastream notify test   # posts one line to every configured channel; exit 1 w
 Guard rules around it:
 
 - No agent (Main included) can read a configured secret file, list its directory, or glob over it — unlock or not. Writes to the secret files and to `~/.config/neurastream/config.yml` need the owner's unlock like any guard file.
-- A stop the guard blocks posts nothing; when Main continues and really hands back later, that later stop posts the final text. A subagent session never posts, and a relaunch (the launcher's rollover) posts nothing.
-- The post never delays the stop decision: it times out at 5 seconds per chunk, makes one attempt, and writes one guard-log line when a channel fails. Long replies are split per channel (Discord 2000, Slack 3000 characters) on line boundaries where possible.
+- A blocked stop still posts its final reply once when it has text; agent_end skips that blocked stop to avoid a duplicate. Every post is serialized in call order; Discord 429 responses wait for `retry_after` (or `Retry-After`, default 1 s; capped at 10 s) and retry the chunk once.
+- Posts time out at 5 seconds per attempt. Long replies are split per channel (Discord 2000, Slack 3000 characters) on line boundaries where possible; failures are logged without delaying the stop decision.
 
 "Needs you" pings use the same channels so the owner learns on the phone that a decision is his: when a Main turn ends with an open plan whose `WAITING on owner:` line was not pinged before, neurastream posts `🔔 Needs you — <plan>: <question>` (with the `neurastream ui` phone-page link when `ui.enabled: true`), and when the guard refuses a Main tool call because it touches a protected guard file, it posts `🔓 Main needs an unlock to continue (<file>)` — the unlock ping at most once per 30 minutes, each waiting question once until its line changes or disappears, remembered in `<queue_state>/notify-waiting.json`. Every decision logs one `notify: needs-you posted|skipped (<why>)` guard-log line.
 

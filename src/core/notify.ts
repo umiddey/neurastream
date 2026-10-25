@@ -159,39 +159,64 @@ function webhookUrl(p: NotifyProvider): { url: string; why: string } {
 async function postChunks(provider: NotifyProvider, url: string, chunks: string[]): Promise<NotifyPostResult> {
 	const key = provider.name === "discord" ? "content" : "text";
 	for (const [i, chunk] of chunks.entries()) {
-		try {
-			const r = await fetch(url, {
-				method: "POST",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify({ [key]: chunk }),
-				signal: AbortSignal.timeout(POST_TIMEOUT_MS),
-			});
-			if (!r.ok) {
+		for (let attempt = 0; attempt < 2; attempt++) {
+			try {
+				const r = await fetch(url, {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({ [key]: chunk }),
+					signal: AbortSignal.timeout(POST_TIMEOUT_MS),
+				});
+				if (r.ok) break;
+				if (r.status === 429 && attempt === 0) {
+					let retryAfter: number | undefined;
+					try {
+						const body: unknown = await r.clone().json();
+						if (body && typeof body === "object" && "retry_after" in body && typeof body.retry_after === "number") retryAfter = body.retry_after;
+					} catch {}
+					if (retryAfter === undefined) {
+						const rawHeader = r.headers.get("retry-after");
+						const header = rawHeader === null ? Number.NaN : Number(rawHeader);
+						if (Number.isFinite(header) && header >= 0) retryAfter = header;
+					}
+					const { promise, resolve } = Promise.withResolvers<void>();
+					setTimeout(resolve, Math.min(retryAfter ?? 1, 10) * 1000);
+					await promise;
+					continue;
+				}
 				return { provider: provider.name, posted: false, chunks: i + 1, error: `${provider.name} answered ${r.status} on chunk ${i + 1}/${chunks.length}` };
+			} catch (err) {
+				return { provider: provider.name, posted: false, chunks: i + 1, error: `${provider.name} chunk ${i + 1}/${chunks.length} failed: ${err instanceof Error ? err.message : String(err)}` };
 			}
-		} catch (err) {
-			return { provider: provider.name, posted: false, chunks: i + 1, error: `${provider.name} chunk ${i + 1}/${chunks.length} failed: ${err instanceof Error ? err.message : String(err)}` };
 		}
 	}
 	return { provider: provider.name, posted: true, chunks: chunks.length, error: "" };
 }
 
-/** Post Main's final reply to every configured provider, chunks in order, one attempt per chunk
- *  (5 s timeout). Never throws and never retries: a failed or slow post comes back as a failed
- *  result for the caller to log. */
-export async function postReply(text: string, cfg: Config): Promise<NotifyPostResult[]> {
-	const providers = notifyProviders(cfg);
-	const body = cfg.notify.prefix ? `${cfg.notify.prefix} ${text}` : text;
-	if (body.trim() === "") return providers.map(p => ({ provider: p.name, posted: false, chunks: 0, error: "empty reply; nothing posted" }));
-	const out: NotifyPostResult[] = [];
-	for (const p of providers) {
-		const { url, why } = webhookUrl(p);
-		if (url === "") {
-			out.push({ provider: p.name, posted: false, chunks: 0, error: why });
-			continue;
+let postQueue: Promise<void> = Promise.resolve();
+const enqueuePost = <T>(operation: () => Promise<T>): Promise<T> => {
+	const result = postQueue.then(operation);
+	postQueue = result.then(() => undefined, () => undefined);
+	return result;
+}
+
+/** Post Main's final reply to every configured provider, serially across calls. 429s retry once
+ *  after Discord's requested delay (capped at 10 seconds); other failures return to the caller. */
+export function postReply(text: string, cfg: Config): Promise<NotifyPostResult[]> {
+	return enqueuePost(async () => {
+		const providers = notifyProviders(cfg);
+		const body = cfg.notify.prefix ? `${cfg.notify.prefix} ${text}` : text;
+		if (body.trim() === "") return providers.map(p => ({ provider: p.name, posted: false, chunks: 0, error: "empty reply; nothing posted" }));
+		const out: NotifyPostResult[] = [];
+		for (const p of providers) {
+			const { url, why } = webhookUrl(p);
+			if (url === "") {
+				out.push({ provider: p.name, posted: false, chunks: 0, error: why });
+				continue;
+			}
+			const limit = p.name === "discord" ? DISCORD_LIMIT : SLACK_LIMIT;
+			out.push(await postChunks(p, url, notifyChunks(body, limit)));
 		}
-		const limit = p.name === "discord" ? DISCORD_LIMIT : SLACK_LIMIT;
-		out.push(await postChunks(p, url, notifyChunks(body, limit)));
-	}
-	return out;
+		return out;
+	});
 }
