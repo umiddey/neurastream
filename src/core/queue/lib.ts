@@ -50,6 +50,10 @@ export interface Plan {
 	waiting: boolean;
 	waitingLine: string | null;
 	priorityId: string | null;
+	/** First level-1 "# " heading in the plan, else the file basename. */
+	title: string;
+	/** Bullet lines under "## Goal", capped at 6. */
+	goal: string[];
 	errors: string[];
 }
 
@@ -179,7 +183,7 @@ function headerField(text: string, name: string): string | null {
 }
 
 export function parsePlan(repo: string, file: string, text: string | null, blockersDir = blockersDirPath()): Plan {
-	const empty = { repo, file, text: "", status: null, blockers: [], doneCheck: null, worktree: null, branch: null, appliesTo: [], waiting: false, waitingLine: null, priorityId: null };
+	const empty = { repo, file, text: "", status: null, blockers: [], doneCheck: null, worktree: null, branch: null, appliesTo: [], waiting: false, waitingLine: null, priorityId: null, title: path.basename(file), goal: [] };
 	if (text === null) return { ...empty, errors: ["plan file listed in the index does not exist"] };
 	const errors: string[] = [];
 	const secs = sections(text);
@@ -225,6 +229,8 @@ export function parsePlan(repo: string, file: string, text: string | null, block
 		waiting: /^WAITING on owner:/m.test(text),
 		waitingLine: text.match(/^WAITING on owner:[ \t]*(.*)$/m)?.[1] ?? null,
 		priorityId: text.match(/^PRIORITY-ID:\s*`?([A-Z]{2}[0-9]{2})`?/m)?.[1] ?? null,
+		title: text.match(/^# (.+)$/m)?.[1]?.trim() || path.basename(file),
+		goal: items(secs.get("goal") ?? "").slice(0, 6),
 		errors,
 	};
 }
@@ -829,20 +835,20 @@ export function queueProblems(index = INDEX, blockersDir = BLOCKERS_DIR): QueueP
 }
 
 export function queueSummary(index = INDEX): string {
+	// Index order IS priority (20261025_0215_index_priority): the list is flat and ranked,
+	// rank 1 = the index's top line; repos only surface through each plan's own path.
 	const plans = activePlans(index);
 	const repos = [...new Set(plans.map(p => p.repo))];
 	const lines = [`Queue (${index}): ${plans.length ? `${plans.length} plan(s) in ${repos.length} repo(s)` : "empty, no open work"}`];
-	for (const repo of repos) {
-		const nCancelled = readCancelled(repo).length;
-		lines.push(`- ${repo}${nCancelled ? ` (${nCancelled} cancelled)` : ""}`);
-		for (const p of plans.filter(pl => pl.repo === repo)) {
-			const status = awaitingMerge(p) ? "complete, awaiting merge" : (p.status ?? "INVALID");
-			const hold = p.waiting ? `WAITING on owner: ${(p.waitingLine ?? "").slice(0, 80)}` : "";
-			const flags = [status, hold, p.priorityId ?? ""].filter(Boolean).join(", ");
-			const goal = items(sections(p.text).get("goal") ?? "")[0]?.slice(0, 100) ?? "";
-			lines.push(`  - ${p.file} [${flags}] ${goal}`);
-		}
-	}
+	plans.forEach((p, i) => {
+		const status = awaitingMerge(p) ? "complete, awaiting merge" : (p.status ?? "INVALID");
+		const hold = p.waiting ? `WAITING on owner: ${(p.waitingLine ?? "").slice(0, 80)}` : "";
+		const flags = [status, hold, p.priorityId ?? ""].filter(Boolean).join(", ");
+		const goal = items(sections(p.text).get("goal") ?? "")[0]?.slice(0, 100) ?? "";
+		lines.push(`  ${i + 1}. ${p.file} [${flags}] ${goal}`);
+	});
+	const nCancelled = repos.reduce((n, repo) => n + readCancelled(repo).length, 0);
+	if (nCancelled) lines.push(`Cancelled rules: ${nCancelled}`);
 	const probs = queueProblems(index);
 	if (probs.length) lines.push(`Problems (fix first):`, ...probs.map(q => `  - ${q.where}: ${q.problem}`));
 	return lines.join("\n");

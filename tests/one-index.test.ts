@@ -130,13 +130,12 @@ test("queueProblems: two open plans naming one worktree are refused; open plus c
 	expect(probs.find(q => q.where === SHARED)).toBeUndefined();
 });
 
-test("queueSummary still groups the plans by their repo", () => {
+test("queueSummary lists the plans flat in index order with a rank per line", () => {
 	const a = plan("20261024_1405_f.md", openPlan());
 	setIndex(a);
 	const s = queueSummary(MAIN);
-	expect(s).toContain(`- ${REPO}`);
-	expect(s).toContain(a);
-	expect(s.indexOf(`- ${REPO}`)).toBeLessThan(s.indexOf(a));
+	expect(s).toContain(`  1. ${a} [`);
+	expect(s).not.toMatch(/^- /m);
 });
 
 test("isOrchestrationPath: the main index and its listed plans are orchestration files; other files are not", () => {

@@ -44,6 +44,7 @@ function toolEvent(p: Record<string, unknown>): ToolEvent {
 		paths: asStringList(p.paths),
 		writes: asStringList(p.writes),
 		command: asString(p.command),
+		...(p.runningJobs === undefined ? {} : { runningJobs: asStringList(p.runningJobs) }),
 	};
 }
 
@@ -59,7 +60,12 @@ function decide(event: string, p: Record<string, unknown>, cfg: Config): Decisio
 			return checkInject(e, cfg);
 		}
 		case "spawn": {
-			const e: SpawnEvent = { agent: asString(p.agent), invocationKind: asString(p.invocationKind, "task"), brief: asString(p.brief ?? p.context ?? p.task) };
+			const e: SpawnEvent = {
+				agent: asString(p.agent),
+				invocationKind: asString(p.invocationKind, "task"),
+				brief: asString(p.brief ?? p.context ?? p.task),
+				...(p.runningJobs === undefined ? {} : { runningJobs: asStringList(p.runningJobs) }),
+			};
 			return checkSpawn(e, cfg);
 		}
 		case "plan-edit": {
