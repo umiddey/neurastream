@@ -596,8 +596,7 @@ function na(label: string): string {
 	return `<p class="na">${esc(label)} unavailable</p>`;
 }
 
-function receiptHtml(sent: string | null, params: URLSearchParams): string {
-	if (!sent) return "";
+function receiptText(sent: string, params: URLSearchParams): string | null {
 	let text: string;
 	switch (sent) {
 		case "answer":
@@ -625,9 +624,24 @@ function receiptHtml(sent: string | null, params: URLSearchParams): string {
 			text = "Already handled — Main cleared this question before your answer; your answer was still passed on.";
 			break;
 		default:
-			return "";
+			return null;
 	}
-	return `<div class="receipt" role="status">${esc(text)}</div>`;
+	return text;
+}
+
+function receiptHtml(sent: string | null, params: URLSearchParams): string {
+	if (!sent) return "";
+	const text = receiptText(sent, params);
+	return text === null ? "" : `<div class="receipt" role="status">${esc(text)}</div>`;
+}
+
+/** The JSON POST replies (P11b): the receipt text rides along so the page script never re-derives it. */
+function jsonSent(sent: string, receipt?: string | null): Response {
+	return Response.json(receipt ? { ok: true, sent, receipt } : { ok: true, sent });
+}
+
+function jsonFail(error: string, status: number): Response {
+	return Response.json({ ok: false, error }, { status });
 }
 
 // ---- page assembly: one unreadable source never takes the page down ----
@@ -704,7 +718,7 @@ if(location.search){var keep=new URLSearchParams(location.search).get("tab");his
 function store(d,v){var k="nsui:"+d.id;if(v===undefined)return sessionStorage.getItem(k);sessionStorage.setItem(k,v?"1":"0");}
 function bindDetails(root){var ds=root.querySelectorAll("details[id]");for(var i=0;i<ds.length;i++){(function(d){var s=store(d);if(s!==null)d.open=s==="1";d.addEventListener("toggle",function(){store(d,d.open);});})(ds[i]);}}
 var dragging=false;
-function showReceipt(text){var main=document.querySelector("main");if(!main)return;var old=document.querySelector(".receipt[data-js]");if(old&&old.parentNode)old.parentNode.removeChild(old);var d=document.createElement("div");d.className="receipt";d.setAttribute("role","status");d.setAttribute("data-js","1");d.textContent=text;main.parentNode.insertBefore(d,main);}
+function showReceipt(text){var main=document.querySelector("main");if(!main)return null;var old=document.querySelector(".receipt[data-js]");if(old&&old.parentNode)old.parentNode.removeChild(old);var d=document.createElement("div");d.className="receipt";d.setAttribute("role","status");d.setAttribute("data-js","1");d.textContent=text;main.parentNode.insertBefore(d,main);return d;}
 function renumber(list){var cards=list.querySelectorAll(".qcard");for(var i=0;i<cards.length;i++){var n=cards[i].querySelector(".qrank");if(n)n.textContent=String(i+1);}}
 function sendReorder(moved,list){
 var rform=document.getElementById("reorder-form");if(!rform||!moved)return;
@@ -719,14 +733,18 @@ else{showReceipt(res.j&&res.j.error?res.j.error:"the move was refused");}
 }).catch(function(){showReceipt("could not reach the page server — try again");});
 }
 var swapping=false;
-function refreshNow(){
-if(swapping)return;swapping=true;
-fetch(location.href,{headers:{"accept":"text/html"}}).then(function(r){return r.text();}).then(function(html){
+// Fetch a page URL and swap only <main> plus the tabs' active pill. push: new history entry; scroll: to top (tab change only).
+function swapMain(href,push,scroll){
+return fetch(href,{headers:{"accept":"text/html"}}).then(function(r){return r.text();}).then(function(html){
 var doc=document.implementation.createHTMLDocument("");doc.body.innerHTML=html;
 var fresh=doc.querySelector("main");var cur=document.querySelector("main");
-if(fresh&&cur){cur.innerHTML=fresh.innerHTML;bindPage();}
-}).catch(function(){}).then(function(){swapping=false;});
-}
+if(fresh&&cur){cur.innerHTML=fresh.innerHTML;bindPage();
+var pills=document.querySelectorAll(".pills a");var fp=doc.querySelectorAll(".pills a");for(var i=0;i<pills.length&&i<fp.length;i++)pills[i].className=fp[i].className;}
+if(push)history.pushState(null,"",href);
+if(scroll)window.scrollTo(0,0);})}
+function navigate(href){swapMain(href,true,true).catch(function(){showNetErr();});}
+function refreshNow(){if(swapping)return;swapping=true;swapMain(location.href,false,false).catch(function(){}).then(function(){swapping=false;});}
+function showNetErr(){var d=showReceipt("Couldn't reach the page — tap to retry");if(d)d.setAttribute("data-js","neterr");}
 var drag=null;
 window.addEventListener("pointermove",function(e){if(!drag||e.pointerId!==drag.id)return;var card=drag.card,list=drag.list;card.style.transform="translateY("+(e.clientY-drag.y0)+"px)";var r=card.getBoundingClientRect();var mid=r.top+r.height/2;var mids=[];var els=[];var ch=list.children;for(var i=0;i<ch.length;i++){var el=ch[i];if(el===card||el===drag.ph)continue;var er=el.getBoundingClientRect();mids.push(er.top+er.height/2);els.push(el);}
 var k=dropSlot(mids,mid);
@@ -734,6 +752,27 @@ if(k<mids.length){if(els[k].previousElementSibling!==drag.ph)list.insertBefore(d
 var endDrag=function(e,submitIt){if(!drag||(e&&e.pointerId!==undefined&&e.pointerId!==drag.id))return;var card=drag.card,ph=drag.ph,list=drag.list;card.classList.remove("dragging");card.style.transform="";card.style.width="";card.style.left="";card.style.top="";list.insertBefore(card,ph);list.removeChild(ph);drag=null;if(submitIt)sendReorder(card.getAttribute("data-plan"),list);else dragging=false;};
 window.addEventListener("pointerup",function(e){endDrag(e,true);});
 window.addEventListener("pointercancel",function(e){endDrag(e,false);});
+// Every POST form goes over fetch and swaps main in place (P11b); a no-JS browser still submits for real and gets the 303s.
+document.addEventListener("submit",function(e){
+var f=e.target;if(!f||!f.getAttribute)return;
+var action=f.getAttribute("action")||"/";
+if((f.getAttribute("method")||"").toLowerCase()!=="post"||action.charAt(0)!=="/")return;
+e.preventDefault();
+fetch(action,{method:"POST",headers:{"accept":"application/json"},body:new FormData(f,e.submitter||undefined)}).then(function(r){return r.json().then(function(j){return{s:r.status,j:j};});}).then(function(res){
+if(res.j&&res.j.receipt)showReceipt(res.j.receipt);else if(res.j&&res.j.error)showReceipt(res.j.error);
+refreshNow();
+}).catch(function(){showNetErr();});
+});
+// Same-origin links (tab pills, the queue's more link) swap main and pushState; Back swaps back via popstate; the net-error line retries on tap.
+document.addEventListener("click",function(e){
+if(e.defaultPrevented||e.button!==0||e.metaKey||e.ctrlKey||e.shiftKey||e.altKey)return;
+var t=e.target;if(!t||!t.closest)return;
+if(t.closest('.receipt[data-js="neterr"]')){e.preventDefault();refreshNow();return;}
+var a=t.closest("a");if(!a)return;var href=a.getAttribute("href");
+if(!href||a.target||href.charAt(0)!=="/")return;
+e.preventDefault();navigate(href);
+});
+window.addEventListener("popstate",function(){swapMain(location.href,false,false).catch(function(){showNetErr();});});
 function bindPage(){
 var main=document.querySelector("main");if(!main)return;
 bindDetails(main);
@@ -986,25 +1025,27 @@ function appendAnswer(plan: string, question: string, answer: string, login: str
 	lastAnswerByPlan.set(plan, { answer, ts: now });
 }
 
-function handleAnswer(cfg: Config, source: RunSource, fields: Record<string, string>, login: string): Response {
+function handleAnswer(cfg: Config, source: RunSource, fields: Record<string, string>, login: string, wantsJson: boolean): Response {
 	const planFile = (fields.plan ?? "").trim();
 	const answer = (fields.answer_text ?? "").trim() || (fields.answer ?? "").trim();
-	if (!planFile || !answer) return textRes("plan and answer are required", 400);
-	if (answer.length > ANSWER_MAX) return textRes(`answer is longer than ${ANSWER_MAX} chars`, 400);
+	if (!planFile || !answer) return wantsJson ? jsonFail("plan and answer are required", 400) : textRes("plan and answer are required", 400);
+	if (answer.length > ANSWER_MAX) return wantsJson ? jsonFail(`answer is longer than ${ANSWER_MAX} chars`, 400) : textRes(`answer is longer than ${ANSWER_MAX} chars`, 400);
 	const plan = activePlans(cfg.paths.queue_index).find(p => p.file === planFile);
-	if (!plan) return textRes("plan is not open and waiting", 409);
+	if (!plan) return wantsJson ? jsonFail("plan is not open and waiting", 409) : textRes("plan is not open and waiting", 409);
 	if (plan.status !== "open" || !plan.waiting || !plan.waitingLine) {
 		// Stale answer (P8b): Main cleared the question before the answer arrived; pass it on anyway.
 		appendAnswer(planFile, "(already cleared)", answer, login);
+		if (wantsJson) return jsonSent("stale", receiptText("stale", new URLSearchParams()));
 		return pageRes(cfg, source, new URLSearchParams({ sent: "stale" }));
 	}
 	appendAnswer(planFile, plan.waitingLine, answer, login);
+	if (wantsJson) return jsonSent("answer", receiptText("answer", new URLSearchParams()));
 	return redirect(sentTo(fields.tab ?? "", "sent=answer"));
 }
 
 // ---- POST /message (plan P13): the owner's one-way note plus images, inboxed by id ----
 
-async function handleMessage(req: Request, login: string): Promise<Response> {
+async function handleMessage(req: Request, login: string, wantsJson: boolean): Promise<Response> {
 	sweepOwnerMessages(nowSec());
 	const form = await req.formData();
 	let text = "";
@@ -1013,15 +1054,16 @@ async function handleMessage(req: Request, login: string): Promise<Response> {
 		if (key === "text" && typeof value === "string") text = value.trim();
 		else if (key === "images" && typeof value !== "string") files.push(value);
 	}
-	if (!text && !files.length) return textRes("write a text or attach an image", 400);
-	if (text.length > MESSAGE_MAX) return textRes(`text is longer than ${MESSAGE_MAX} chars`, 400);
-	if (files.length > MESSAGE_IMAGES_MAX) return textRes(`at most ${MESSAGE_IMAGES_MAX} images per message`, 400);
+	const fail = (error: string): Response => (wantsJson ? jsonFail(error, 400) : textRes(error, 400));
+	if (!text && !files.length) return fail("write a text or attach an image");
+	if (text.length > MESSAGE_MAX) return fail(`text is longer than ${MESSAGE_MAX} chars`);
+	if (files.length > MESSAGE_IMAGES_MAX) return fail(`at most ${MESSAGE_IMAGES_MAX} images per message`);
 	const images: { bytes: Uint8Array; kind: string }[] = [];
 	for (const file of files) {
-		if (file.size > MESSAGE_IMAGE_MAX_BYTES) return textRes("an image is larger than 10 MB", 400);
+		if (file.size > MESSAGE_IMAGE_MAX_BYTES) return fail("an image is larger than 10 MB");
 		const data = new Uint8Array(await file.arrayBuffer());
 		const kind = imageType(data);
-		if (!kind) return textRes("attachments must be PNG, JPEG, GIF or WEBP images — the type is read from the file itself", 400);
+		if (!kind) return fail("attachments must be PNG, JPEG, GIF or WEBP images — the type is read from the file itself");
 		images.push({ bytes: data, kind });
 	}
 	const ts = nowSec();
@@ -1039,6 +1081,7 @@ async function handleMessage(req: Request, login: string): Promise<Response> {
 	mkdirSync(stateDirPath(), { recursive: true });
 	// The text stays out of owner-inbox.jsonl; Main reads message.json through the id (P14).
 	appendFileSync(inboxPath(), `${JSON.stringify({ ts, kind: "message", id, login })}\n`);
+	if (wantsJson) return jsonSent("message", receiptText("message", new URLSearchParams()));
 	return redirect("/?sent=message");
 }
 
@@ -1062,24 +1105,26 @@ function handleMessageImage(id: string, file: string): Response {
 	}
 }
 
-function handleUnlock(cfg: Config, fields: Record<string, string>, login: string): Response {
+function handleUnlock(cfg: Config, fields: Record<string, string>, login: string, wantsJson: boolean): Response {
 	const minutes = fields.minutes ?? "";
-	if (minutes !== "" && !/^\d+$/.test(minutes)) return textRes("minutes must be a number", 400);
+	if (minutes !== "" && !/^\d+$/.test(minutes)) return wantsJson ? jsonFail("minutes must be a number", 400) : textRes("minutes must be a number", 400);
 	const result = chatUnlock(minutes === "" ? "unlock" : `unlock ${minutes}`, cfg, `ui:${login}`, "ui");
-	if (!result.applied) return redirect(sentTo(fields.tab ?? "", "sent=unlock-off"));
+	if (!result.applied) return wantsJson ? jsonFail("Refused — chat unlock is off", 400) : redirect(sentTo(fields.tab ?? "", "sent=unlock-off"));
 	mkdirSync(stateDirPath(), { recursive: true });
 	appendFileSync(
 		inboxPath(),
 		`${JSON.stringify({ ts: nowSec(), kind: "unlock", minutes: result.minutes, until: result.until, login })}\n`,
 	);
+	if (wantsJson) return jsonSent("unlock", receiptText("unlock", new URLSearchParams({ minutes: String(result.minutes) })));
 	return redirect(sentTo(fields.tab ?? "", `sent=unlock&minutes=${result.minutes}`));
 }
 
-function handleLock(cfg: Config, fields: Record<string, string>, login: string): Response {
+function handleLock(cfg: Config, fields: Record<string, string>, login: string, wantsJson: boolean): Response {
 	const result = chatUnlock("lock", cfg, `ui:${login}`, "ui");
-	if (!result.applied) return redirect(sentTo(fields.tab ?? "", "sent=unlock-off"));
+	if (!result.applied) return wantsJson ? jsonFail("Refused — chat unlock is off", 400) : redirect(sentTo(fields.tab ?? "", "sent=unlock-off"));
 	mkdirSync(stateDirPath(), { recursive: true });
 	appendFileSync(inboxPath(), `${JSON.stringify({ ts: nowSec(), kind: "lock", login })}\n`);
+	if (wantsJson) return jsonSent("lock", receiptText("lock", new URLSearchParams()));
 	return redirect(sentTo(fields.tab ?? "", "sent=lock"));
 }
 
@@ -1088,13 +1133,14 @@ const TIERS: readonly Tier[] = ["strict", "opinionated", "full"];
 // Autonomy tier from the phone page (plan 20261025_1940 P3): behind the same auth as every other
 // route, written by the core chatTier with the owner's tapped name; a bad name is a 400 before
 // the core is called, and the chat gate off redirects to the plain-words note like unlock/lock.
-function handleTier(cfg: Config, fields: Record<string, string>, login: string): Response {
+function handleTier(cfg: Config, fields: Record<string, string>, login: string, wantsJson: boolean): Response {
 	const name = (fields.tier ?? "").trim().toLowerCase();
-	if (!(TIERS as readonly string[]).includes(name)) return textRes("tier must be strict, opinionated or full", 400);
+	if (!(TIERS as readonly string[]).includes(name)) return wantsJson ? jsonFail("tier must be strict, opinionated or full", 400) : textRes("tier must be strict, opinionated or full", 400);
 	const result = chatTier(`tier ${name}`, cfg, `ui:${login}`, "ui");
-	if (!result.applied) return redirect(sentTo(fields.tab ?? "", "sent=unlock-off"));
+	if (!result.applied) return wantsJson ? jsonFail("Refused — chat unlock is off", 400) : redirect(sentTo(fields.tab ?? "", "sent=unlock-off"));
 	mkdirSync(stateDirPath(), { recursive: true });
 	appendFileSync(inboxPath(), `${JSON.stringify({ ts: nowSec(), kind: "tier", tier: result.tier, login })}\n`);
+	if (wantsJson) return jsonSent("tier");
 	return redirect(sentTo(fields.tab ?? "", `sent=tier&tier=${result.tier}`));
 }
 
@@ -1255,29 +1301,35 @@ export function startOwnerUi(opts: OwnerUiOptions): OwnerUiServer {
 							sweepOwnerMessages(nowSec());
 							res = pageRes(cfg, source, url.searchParams);
 							code = 200;
-						} else if (req.method === "POST" && url.pathname === "/message") {
-							res = await handleMessage(req, login);
-							code = res.status;
 						} else if (req.method === "GET" && url.pathname.startsWith("/message-image/")) {
 							const mim = /^\/message-image\/([^/]+)\/([^/]+)$/.exec(url.pathname);
 							res = mim ? handleMessageImage(mim[1]!, mim[2]!) : textRes("not found", 404);
 							code = res.status;
-						} else if (req.method === "POST" && url.pathname === "/answer") {
-							res = handleAnswer(cfg, source, await fieldsOf(req), login);
-							code = res.status;
-						} else if (req.method === "POST" && url.pathname === "/unlock") {
-							res = handleUnlock(cfg, await fieldsOf(req), login);
-							code = res.status;
-						} else if (req.method === "POST" && url.pathname === "/lock") {
-							res = handleLock(cfg, await fieldsOf(req), login);
-							code = res.status;
-						} else if (req.method === "POST" && url.pathname === "/tier") {
-							res = handleTier(cfg, await fieldsOf(req), login);
-							code = res.status;
-						} else if (req.method === "POST" && url.pathname === "/reorder") {
+						} else if (req.method === "POST") {
+							// The page's script asks for JSON on every POST (P11b); a no-JS form post gets today's 303s.
 							const wantsJson = (req.headers.get("accept") ?? "").includes("application/json");
-							res = handleReorder(cfg, await fieldsOf(req), login, wantsJson);
-							code = res.status;
+							if (url.pathname === "/message") {
+								res = await handleMessage(req, login, wantsJson);
+								code = res.status;
+							} else if (url.pathname === "/answer") {
+								res = handleAnswer(cfg, source, await fieldsOf(req), login, wantsJson);
+								code = res.status;
+							} else if (url.pathname === "/unlock") {
+								res = handleUnlock(cfg, await fieldsOf(req), login, wantsJson);
+								code = res.status;
+							} else if (url.pathname === "/lock") {
+								res = handleLock(cfg, await fieldsOf(req), login, wantsJson);
+								code = res.status;
+							} else if (url.pathname === "/tier") {
+								res = handleTier(cfg, await fieldsOf(req), login, wantsJson);
+								code = res.status;
+							} else if (url.pathname === "/reorder") {
+								res = handleReorder(cfg, await fieldsOf(req), login, wantsJson);
+								code = res.status;
+							} else {
+								res = textRes("not found", 404);
+								code = 404;
+							}
 						} else {
 							res = textRes("not found", 404);
 							code = 404;

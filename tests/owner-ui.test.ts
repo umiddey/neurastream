@@ -252,7 +252,7 @@ function storedMessages(): Record<string, unknown>[] {
 }
 
 /** A real multipart body for POST /message (the page's form enctype); files go in as raw bytes. */
-function postMessage(svc: OwnerUiServer, fields: Record<string, string>, files: { field: string; filename: string; bytes: Uint8Array }[]): Promise<Response> {
+function postMessage(svc: OwnerUiServer, fields: Record<string, string>, files: { field: string; filename: string; bytes: Uint8Array }[], json = false): Promise<Response> {
 	const boundary = `nsuitest${Math.random().toString(16).slice(2)}`;
 	const enc = new TextEncoder();
 	const parts: Uint8Array[] = [];
@@ -269,7 +269,8 @@ function postMessage(svc: OwnerUiServer, fields: Record<string, string>, files: 
 		body.set(p, at);
 		at += p.length;
 	}
-	return raw(svc, "POST", "/message", { origin: `http://${OWN_IP}:${svc.port}`, rawBody: body, contentType: `multipart/form-data; boundary=${boundary}` });
+	const opts = json ? { accept: "application/json" as const, rawBody: body, contentType: `multipart/form-data; boundary=${boundary}` } : { rawBody: body, contentType: `multipart/form-data; boundary=${boundary}` };
+	return raw(svc, "POST", "/message", { origin: `http://${OWN_IP}:${svc.port}`, ...opts });
 }
 
 function guardLogLines(): string[] {
@@ -1507,6 +1508,69 @@ test("a 13 h old message is swept by a GET; an 11 h old one stays and shows (P13
 	expect(existsSync(join(messagesDir(), `${now - 13 * 3600}-abc123`))).toBe(false);
 	expect(body).toContain("still fresh note");
 	expect(body).not.toContain("expired note");
+});
+
+// --- P11b: every POST answers JSON when asked; a plain post keeps its 303 ---
+
+test("POST /answer JSON: ok, stale and error replies (P11b)", async () => {
+	const svc = ui();
+	const ok = await raw(svc, "POST", "/answer", { accept: "application/json", origin: `http://${OWN_IP}:${svc.port}`, body: { plan: PLAN_W, answer: "yes" } });
+	expect(ok.status).toBe(200);
+	const okBody = (await ok.json()) as Record<string, unknown>;
+	expect(okBody).toMatchObject({ ok: true, sent: "answer" });
+	expect(String(okBody.receipt)).toContain("Sent to Main ·");
+	expect(inboxRecords()).toHaveLength(1);
+	// a stale answer (P8b) shows its text in place
+	try {
+		writeFileSync(PLAN_W, PLAN_TEXT("open", false));
+		const stale = await raw(svc, "POST", "/answer", { accept: "application/json", origin: `http://${OWN_IP}:${svc.port}`, body: { plan: PLAN_W, answer_text: "do it now" } });
+		expect(stale.status).toBe(200);
+		const staleBody = (await stale.json()) as Record<string, unknown>;
+		expect(staleBody).toMatchObject({ ok: true, sent: "stale" });
+		expect(String(staleBody.receipt)).toContain("Already handled");
+	} finally {
+		writeFileSync(PLAN_W, PLAN_TEXT("open", true));
+	}
+	const err = await raw(svc, "POST", "/answer", { accept: "application/json", origin: `http://${OWN_IP}:${svc.port}`, body: { plan: "/nope.md", answer: "yes" } });
+	expect(err.status).toBe(409);
+	expect(await err.json()).toEqual({ ok: false, error: "plan is not open and waiting" });
+});
+
+test("POST /unlock, /lock and /tier answer JSON; a plain post still gets its 303 (P11b)", async () => {
+	const svc = ui();
+	const unlock = await raw(svc, "POST", "/unlock", { accept: "application/json", origin: `http://${OWN_IP}:${svc.port}`, body: { minutes: "15" } });
+	expect(unlock.status).toBe(200);
+	expect(await unlock.json()).toEqual({ ok: true, sent: "unlock", receipt: "Unlocked for 15 min" });
+	const lock = await raw(svc, "POST", "/lock", { accept: "application/json", origin: `http://${OWN_IP}:${svc.port}`, body: {} });
+	expect(await lock.json()).toEqual({ ok: true, sent: "lock", receipt: "Locked" });
+	const tier = await raw(svc, "POST", "/tier", { accept: "application/json", origin: `http://${OWN_IP}:${svc.port}`, body: { tier: "strict" } });
+	expect(await tier.json()).toEqual({ ok: true, sent: "tier" });
+	const badTier = await raw(svc, "POST", "/tier", { accept: "application/json", origin: `http://${OWN_IP}:${svc.port}`, body: { tier: "nope" } });
+	expect(badTier.status).toBe(400);
+	expect(await badTier.json()).toEqual({ ok: false, error: "tier must be strict, opinionated or full" });
+	const plain = await post(svc, "/unlock", { minutes: "15" });
+	expect(plain.status).toBe(303);
+	expect(plain.headers.get("location")).toBe("/?sent=unlock&minutes=15");
+});
+
+test("unlock and lock with the gate off answer JSON refused (P11b)", async () => {
+	const svc = ui({ cfg: { ...CFG, guards: { ...CFG.guards, chat_unlock: false } } });
+	const off = await raw(svc, "POST", "/unlock", { accept: "application/json", origin: `http://${OWN_IP}:${svc.port}`, body: { minutes: "15" } });
+	expect(off.status).toBe(400);
+	expect(await off.json()).toEqual({ ok: false, error: "Refused — chat unlock is off" });
+	expect((await raw(svc, "POST", "/lock", { accept: "application/json", origin: `http://${OWN_IP}:${svc.port}`, body: {} })).status).toBe(400);
+});
+
+test("POST /message answers JSON ok and error (P11b)", async () => {
+	const svc = ui();
+	const ok = await postMessage(svc, { text: "note" }, [], true);
+	expect(ok.status).toBe(200);
+	const okBody = (await ok.json()) as Record<string, unknown>;
+	expect(okBody).toMatchObject({ ok: true, sent: "message" });
+	expect(String(okBody.receipt)).toContain("Sent to Main ·");
+	const bad = await postMessage(svc, { text: "look" }, [{ field: "images", filename: "x.png", bytes: PDF_BYTES }], true);
+	expect(bad.status).toBe(400);
+	expect(await bad.json()).toEqual({ ok: false, error: "attachments must be PNG, JPEG, GIF or WEBP images — the type is read from the file itself" });
 });
 
 test("the queue section is one flat ranked list with a drag handle, arrow buttons and the rendered order in a before field", async () => {
