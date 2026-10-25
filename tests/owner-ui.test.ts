@@ -820,3 +820,139 @@ test("machineRow: free GB, disk minimum, load, load max and cores", () => {
 	expect(m.loadMax).toBeGreaterThan(0);
 	expect(m.load).toBeGreaterThanOrEqual(0);
 });
+
+// --- P4: queue reorder by drag and drop ---
+
+const PLAN_A = join(TOY, "docs/plans/20261021_alpha.md");
+const PLAN_B = join(TOY, "docs/plans/20261021_beta.md");
+const PLAN_C = join(TOY, "docs/plans/20261021_gamma.md");
+
+// A temp INDEX.md with comment and blank lines: every non-plan line sits above the plan that
+// follows it, and a successful reorder keeps exactly that attachment.
+function reorderIndex(): string {
+	writeFileSync(PLAN_A, PLAN_TEXT("open", false));
+	writeFileSync(PLAN_B, PLAN_TEXT("open", false));
+	writeFileSync(PLAN_C, PLAN_TEXT("open", false));
+	const index = join(TMP, "reorder-index.md");
+	writeFileSync(
+		index,
+		[
+			"<!-- the top comment belongs to the plan below it -->",
+			PLAN_A,
+			"",
+			"<!-- pinned above B -->",
+			PLAN_B,
+			PLAN_C,
+			"",
+		].join("\n"),
+	);
+	return index;
+}
+
+test("POST /reorder rewrites the index in the new order, keeping every comment and blank line above the plan that follows it", async () => {
+	const index = reorderIndex();
+	const svc = ui({ cfg: { ...CFG, paths: { ...CFG.paths, queue_index: index } } });
+	const res = await post(svc, "/reorder", {
+		order: [PLAN_B, PLAN_C, PLAN_A].join("\n"),
+		before: [PLAN_A, PLAN_B, PLAN_C].join("\n"),
+		moved: PLAN_A,
+	});
+	expect(res.status).toBe(303);
+	expect(res.headers.get("location")).toBe("/?sent=reorder&to=3");
+	expect(readFileSync(index, "utf8")).toBe(
+		[
+			"",
+			"<!-- pinned above B -->",
+			PLAN_B,
+			PLAN_C,
+			"<!-- the top comment belongs to the plan below it -->",
+			PLAN_A,
+			"",
+		].join("\n"),
+	);
+});
+
+test("POST /reorder appends exactly one reorder inbox record with 1-based from/to ranks and the login", async () => {
+	const index = reorderIndex();
+	const svc = ui({ cfg: { ...CFG, paths: { ...CFG.paths, queue_index: index } } });
+	const before = nowSec();
+	const res = await post(svc, "/reorder", {
+		order: [PLAN_C, PLAN_A, PLAN_B].join("\n"),
+		before: [PLAN_A, PLAN_B, PLAN_C].join("\n"),
+		moved: PLAN_A,
+	});
+	expect(res.status).toBe(303);
+	const recs = inboxRecords();
+	expect(recs.length).toBe(1);
+	expect(recs[0]).toEqual({
+		ts: expect.any(Number),
+		kind: "reorder",
+		plan: PLAN_A,
+		from: 1,
+		to: 2,
+		login: OWNER,
+	});
+	expect(Number(recs[0]!.ts)).toBeGreaterThanOrEqual(before);
+});
+
+test("a /reorder order that is not exactly the index's plans gets 400 and leaves the file unchanged", async () => {
+	const index = reorderIndex();
+	const svc = ui({ cfg: { ...CFG, paths: { ...CFG.paths, queue_index: index } } });
+	const original = readFileSync(index, "utf8");
+	const full = [PLAN_A, PLAN_B, PLAN_C];
+	// a dropped plan
+	expect((await post(svc, "/reorder", { order: [PLAN_A, PLAN_B].join("\n"), before: full.join("\n"), moved: PLAN_A })).status).toBe(400);
+	// an added plan
+	expect((await post(svc, "/reorder", { order: [...full, PLAN_D].join("\n"), before: full.join("\n"), moved: PLAN_A })).status).toBe(400);
+	// a duplicated plan
+	expect((await post(svc, "/reorder", { order: [PLAN_A, PLAN_B, PLAN_C, PLAN_A].join("\n"), before: full.join("\n"), moved: PLAN_A })).status).toBe(400);
+	// an empty order
+	expect((await post(svc, "/reorder", { order: "", before: full.join("\n"), moved: PLAN_A })).status).toBe(400);
+	expect(readFileSync(index, "utf8")).toBe(original);
+	expect(inboxRecords()).toEqual([]);
+});
+
+test("a stale before order gets 409 and leaves the file unchanged", async () => {
+	const index = reorderIndex();
+	const svc = ui({ cfg: { ...CFG, paths: { ...CFG.paths, queue_index: index } } });
+	const original = readFileSync(index, "utf8");
+	// The page was rendered with B,A,C but the index now holds A,B,C: Main reordered meanwhile.
+	const res = await post(svc, "/reorder", {
+		order: [PLAN_C, PLAN_B, PLAN_A].join("\n"),
+		before: [PLAN_B, PLAN_A, PLAN_C].join("\n"),
+		moved: PLAN_C,
+	});
+	expect(res.status).toBe(409);
+	expect(readFileSync(index, "utf8")).toBe(original);
+	expect(inboxRecords()).toEqual([]);
+});
+
+test("a non-owner peer is refused on /reorder like /answer", async () => {
+	const index = reorderIndex();
+	const svc = ui({ cfg: { ...CFG, paths: { ...CFG.paths, queue_index: index } }, peerOf: () => "100.95.10.7" });
+	const original = readFileSync(index, "utf8");
+	const res = await post(svc, "/reorder", {
+		order: [PLAN_B, PLAN_C, PLAN_A].join("\n"),
+		before: [PLAN_A, PLAN_B, PLAN_C].join("\n"),
+		moved: PLAN_A,
+	});
+	expect(res.status).toBe(403);
+	expect(readFileSync(index, "utf8")).toBe(original);
+	expect(inboxRecords()).toEqual([]);
+});
+
+test("the queue section is one flat ranked list with a drag handle, arrow buttons and the rendered order in a before field", async () => {
+	const svc = ui();
+	const body = await (await get(svc)).text();
+	expect(body).toContain('id="qlist"');
+	expect(body).toContain(`data-plan="${PLAN_W}"`);
+	expect(body).toContain('class="qrank">1<');
+	expect(body).toContain("qhandle");
+	expect(body).toContain(">↑ top<");
+	expect(body).toContain(">↑<");
+	expect(body).toContain(">↓<");
+	expect(body).toContain(`name="before" value="${PLAN_W}"`);
+	expect(body).toContain('action="/reorder"');
+	// not grouped by repo any more
+	expect(body).not.toContain("qrepo");
+});

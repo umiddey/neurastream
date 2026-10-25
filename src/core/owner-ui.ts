@@ -7,10 +7,10 @@
 // tests never call the binary; the peer address is an injectable seam too, so tests bind
 // 127.0.0.1 while the real server binds only the tailnet address from `tailscale ip -4`.
 
-import { appendFileSync, mkdirSync, readFileSync, statSync, statfsSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync, statfsSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
-import { basename } from "node:path";
+import { basename, resolve } from "node:path";
 import type { RunSource } from "./adapter.ts";
 import type { Config } from "./config.ts";
 import { nowSec, strftime } from "./clock.ts";
@@ -250,23 +250,29 @@ function agentRowHtml(r: AgentRow): string {
 }
 
 function queueHtml(rows: QueueRow[]): string {
-	const byRepo: Record<string, QueueRow[]> = {};
-	const order: string[] = [];
-	for (const r of rows) {
-		if (!byRepo[r.repo]) {
-			byRepo[r.repo] = [];
-			order.push(r.repo);
-		}
-		byRepo[r.repo]!.push(r);
-	}
-	return order
-		.map(repo => {
-			const list = byRepo[repo]!;
-			return `<div class="qrepo"><p class="eyebrow">${esc(repo)} · ${list.length}</p><ul>${list
-				.map(r => `<li>${esc(r.title)}${r.waiting ? ` <span class="chip wait">waiting</span>` : ""}</li>`)
-				.join("")}</ul></div>`;
-		})
-		.join("");
+	const cards = rows
+		.map(
+			(r, i) => `<li class="qcard" data-plan="${esc(r.file)}">
+<span class="qrank">${i + 1}</span>
+<span class="qhandle" title="Drag to reorder" aria-label="Drag ${esc(r.title)}">⠿</span>
+<span class="qtitle">${esc(r.title)}</span>
+<span class="chip repo">${esc(r.repo)}</span>
+${r.waiting ? `<span class="chip wait">waiting</span>` : ""}
+<span class="qbtns"><button type="button" class="qmove" data-move="top">↑ top</button><button type="button" class="qmove" data-move="up">↑</button><button type="button" class="qmove" data-move="down">↓</button></span>
+</li>`,
+		)
+		.join("\n");
+	// before = the order this page was rendered with; the server refuses the move when the real
+	// order has drifted (409), so a stale page can never reorder on a guess.
+	const before = rows.map(r => r.file).join("\n");
+	return `<ul class="qlist" id="qlist">
+${cards}
+</ul>
+<form id="reorder-form" method="post" action="/reorder" hidden>
+<input type="hidden" name="before" value="${esc(before)}">
+<input type="hidden" name="order" value="">
+<input type="hidden" name="moved" value="">
+</form>`;
 }
 
 function ciHtml(rows: CiRow[]): string {
@@ -429,7 +435,22 @@ var ds=document.querySelectorAll("details[id]");
 for(var i=0;i<ds.length;i++){(function(d){var s=store(d);if(s!==null)d.open=s==="1";d.addEventListener("toggle",function(){store(d,d.open);});})(ds[i]);}
 var rb=document.querySelectorAll(".replybtn");
 for(var j=0;j<rb.length;j++){rb[j].addEventListener("click",function(){var f=this.closest("form");var box=f&&f.querySelector(".reply");if(box){box.hidden=!box.hidden;if(!box.hidden){var t=box.querySelector("textarea");if(t)t.focus();}}});}
-function busy(){var els=document.querySelectorAll("input:not([type=hidden]), textarea");for(var k=0;k<els.length;k++){if(els[k]===document.activeElement||els[k].value)return true;}return false;}
+var qlist=document.getElementById("qlist");
+var dragging=false;
+if(qlist){
+var rform=document.getElementById("reorder-form");
+var qcards=function(){return Array.prototype.slice.call(qlist.querySelectorAll(".qcard"));};
+var submitReorder=function(moved){if(!rform)return;var o=qcards().map(function(c){return c.getAttribute("data-plan");}).join("\\n");rform.querySelector("[name=order]").value=o;rform.querySelector("[name=moved]").value=moved;dragging=false;rform.submit();};
+var moveCard=function(card,how){if(how==="top"){var f=qcards()[0];if(f&&f!==card)qlist.insertBefore(card,f);}else if(how==="up"){var p=card.previousElementSibling;if(p&&p.classList.contains("qcard"))qlist.insertBefore(card,p);}else if(how==="down"){var n=card.nextElementSibling;if(n&&n.classList.contains("qcard"))qlist.insertBefore(card,n.nextSibling);}};
+qlist.addEventListener("click",function(e){var t=e.target;if(!t||!t.closest)return;var b=t.closest(".qmove");if(!b)return;var card=t.closest(".qcard");if(!card)return;moveCard(card,b.getAttribute("data-move"));submitReorder(card.getAttribute("data-plan"));});
+var drag=null;
+qlist.addEventListener("pointerdown",function(e){var t=e.target;if(!t||!t.closest)return;var h=t.closest(".qhandle");if(!h||drag)return;var card=t.closest(".qcard");if(!card)return;e.preventDefault();dragging=true;var r=card.getBoundingClientRect();var ph=document.createElement("li");ph.className="qph";ph.style.height=r.height+"px";qlist.insertBefore(ph,card);card.classList.add("dragging");card.style.width=r.width+"px";card.style.left=r.left+"px";card.style.top=r.top+"px";drag={card:card,ph:ph,y0:e.clientY,id:e.pointerId};try{h.setPointerCapture(e.pointerId);}catch(_){}});
+window.addEventListener("pointermove",function(e){if(!drag||e.pointerId!==drag.id)return;var card=drag.card;card.style.transform="translateY("+(e.clientY-drag.y0)+"px)";var r=card.getBoundingClientRect();var mid=r.top+r.height/2;var els=Array.prototype.slice.call(qlist.children);for(var i=0;i<els.length;i++){var el=els[i];if(el===card||el===drag.ph)continue;var er=el.getBoundingClientRect();if(mid<er.top+er.height/2){if(el.previousElementSibling!==drag.ph)qlist.insertBefore(drag.ph,el);}else if(el.nextElementSibling!==drag.ph){qlist.insertBefore(drag.ph,el.nextSibling);}}});
+var endDrag=function(e,submitIt){if(!drag||(e&&e.pointerId!==undefined&&e.pointerId!==drag.id))return;var card=drag.card,ph=drag.ph;card.classList.remove("dragging");card.style.transform="";card.style.width="";card.style.left="";card.style.top="";qlist.insertBefore(card,ph);qlist.removeChild(ph);drag=null;if(submitIt)submitReorder(card.getAttribute("data-plan"));else dragging=false;};
+window.addEventListener("pointerup",function(e){endDrag(e,true);});
+window.addEventListener("pointercancel",function(e){endDrag(e,false);});
+}
+function busy(){if(dragging)return true;var els=document.querySelectorAll("input:not([type=hidden]), textarea");for(var k=0;k<els.length;k++){if(els[k]===document.activeElement||els[k].value)return true;}return false;}
 setInterval(function(){if(!busy())location.reload();},${REFRESH_SEC}000);
 })();`;
 
@@ -523,7 +544,17 @@ details.block .dbody { border-top: 1px solid var(--line); padding: 10px 0 12px; 
 .chip { display: inline-block; padding: 1px 8px; border: 1px solid var(--line); border-radius: 999px; font-size: 13px; color: var(--muted); }
 .chip.bad { color: var(--red); border-color: var(--red); }
 .chip.wait { color: var(--amber); border-color: var(--amber); }
-.qrepo .eyebrow { margin-top: 10px; }
+.qlist { list-style: none; margin: 0; padding: 0; }
+.qcard { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.qcard:last-child { border-bottom: none; }
+.qcard.dragging { position: fixed; z-index: 20; background: var(--card); border: 1px solid var(--amber); border-radius: 14px; padding: 10px 12px; margin: 0; user-select: none; opacity: 0.96; }
+.qph { list-style: none; border: 2px dashed var(--line); border-radius: 14px; margin: 4px 0; }
+.qrank { font-family: ui-monospace, "SF Mono", "Roboto Mono", monospace; font-size: 14px; color: var(--muted); min-width: 1.6em; text-align: right; font-variant-numeric: tabular-nums; }
+.qhandle { touch-action: none; padding: 12px 10px; color: var(--muted); font-size: 18px; user-select: none; }
+.qtitle { flex: 1; min-width: 0; }
+.chip.repo { color: var(--teal); border-color: var(--teal); }
+.qbtns { display: flex; gap: 6px; flex-wrap: wrap; }
+.qbtns button { min-height: 48px; padding: 4px 10px; font-size: 14px; }
 .merges, .incidents { margin: 0; padding-left: 20px; }
 .merges li, .incidents li { margin: 6px 0; }
 table { border-collapse: collapse; width: 100%; font-size: 14px; }
@@ -624,6 +655,112 @@ function handleLock(cfg: Config, login: string): Response {
 	return redirect("/?sent=lock");
 }
 
+// ---- queue reorder (plan P4): the owner drags a card; INDEX.md is rewritten atomically ----
+
+/**
+ * INDEX.md's plan lines: every non-blank line that is not a `<!--` comment, normalized and
+ * resolved the way the queue reader (readIndex) does it, first occurrence of a path wins,
+ * in file order — with each line's raw text so a rewrite never re-serializes the index.
+ */
+function indexPlanLines(index: string): { path: string; raw: string }[] | null {
+	let text: string;
+	try {
+		text = readFileSync(index, "utf8");
+	} catch {
+		return null;
+	}
+	const out: { path: string; raw: string }[] = [];
+	const seen = new Set<string>();
+	for (const raw of text.split("\n")) {
+		const norm = raw
+			.trim()
+			.replace(/^[-*]\s+/, "")
+			.trim();
+		if (!norm || norm.startsWith("<!--")) continue;
+		const p = resolve(process.cwd(), expandHome(norm.replace(/`/g, "")));
+		if (!seen.has(p)) {
+			seen.add(p);
+			out.push({ path: p, raw });
+		}
+	}
+	return out;
+}
+
+/**
+ * The index text with its plan lines reordered: every non-plan line (blank or `<!--` comment)
+ * stays attached above the plan that follows it, and lines after the last plan keep the file's
+ * end. Returns null when an order path is not in the file.
+ */
+function reorderedIndexText(index: string, order: string[]): string | null {
+	let text: string;
+	try {
+		text = readFileSync(index, "utf8");
+	} catch {
+		return null;
+	}
+	const groups = new Map<string, string[]>();
+	let pending: string[] = [];
+	for (const raw of text.split("\n")) {
+		const norm = raw
+			.trim()
+			.replace(/^[-*]\s+/, "")
+			.trim();
+		if (!norm || norm.startsWith("<!--")) {
+			pending.push(raw);
+			continue;
+		}
+		const p = resolve(process.cwd(), expandHome(norm.replace(/`/g, "")));
+		if (!groups.has(p)) groups.set(p, [...pending, raw]);
+		pending = [];
+	}
+	const parts: string[] = [];
+	for (const p of order) {
+		const g = groups.get(p);
+		if (!g) return null;
+		parts.push(...g);
+	}
+	parts.push(...pending);
+	return parts.join("\n");
+}
+
+function handleReorder(cfg: Config, fields: Record<string, string>, login: string): Response {
+	const index = cfg.paths.queue_index;
+	const order = (fields.order ?? "")
+		.split("\n")
+		.map(l => l.trim())
+		.filter(l => l.length > 0);
+	const before = (fields.before ?? "")
+		.split("\n")
+		.map(l => l.trim())
+		.filter(l => l.length > 0);
+	const moved = (fields.moved ?? "").trim();
+	const current = indexPlanLines(index);
+	if (!current) return textRes("the queue index is missing", 400);
+	const paths = current.map(l => l.path);
+	if (!moved || !order.length) return textRes("order and moved are required", 400);
+	// 400: the posted order must be exactly the plans the index lists now — no adds, drops or duplicates.
+	if (new Set(order).size !== order.length) return textRes("order lists a plan more than once", 400);
+	const sortedOrder = [...order].sort();
+	const sortedPaths = [...paths].sort();
+	const sameSet = order.length === paths.length && sortedOrder.every((p, i) => p === sortedPaths[i]);
+	if (!sameSet) return textRes("order is not exactly the plans now in the index", 400);
+	// 409: the order the page was rendered with must still be the index's current order.
+	const stale = before.length !== paths.length || before.some((p, i) => p !== paths[i]);
+	if (stale) return textRes("the queue changed since the page loaded — reload and drag again", 409);
+	const from = paths.indexOf(moved);
+	const to = order.indexOf(moved);
+	if (from === -1 || to === -1) return textRes("moved is not one of the index's plans", 400);
+	const newText = reorderedIndexText(index, order);
+	if (newText === null) return textRes("the queue index no longer lists every plan", 400);
+	// Atomic write: a torn INDEX.md would break every reader, so temp file in the same dir + rename.
+	const tmp = `${index}.${randomUUID().slice(0, 8)}.tmp`;
+	writeFileSync(tmp, newText);
+	renameSync(tmp, index);
+	mkdirSync(stateDirPath(), { recursive: true });
+	appendFileSync(inboxPath(), `${JSON.stringify({ ts: nowSec(), kind: "reorder", plan: moved, from: from + 1, to: to + 1, login })}\n`);
+	return redirect(`/?sent=reorder&to=${to + 1}`);
+}
+
 /** Starts the page. Refuses to start when ui.enabled is false or ui.owner_login is empty, and on the default hostname when tailscale does not answer. */
 export function startOwnerUi(opts: OwnerUiOptions): OwnerUiServer {
 	const { cfg, tailscale, source } = opts;
@@ -688,6 +825,9 @@ export function startOwnerUi(opts: OwnerUiOptions): OwnerUiServer {
 							code = res.status;
 						} else if (req.method === "POST" && url.pathname === "/lock") {
 							res = handleLock(cfg, login);
+							code = res.status;
+						} else if (req.method === "POST" && url.pathname === "/reorder") {
+							res = handleReorder(cfg, await fieldsOf(req), login);
 							code = res.status;
 						} else {
 							res = textRes("not found", 404);
