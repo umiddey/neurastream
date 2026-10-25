@@ -1180,7 +1180,7 @@ function readWithin(abs: string, planPath: string, text: string, reads: Record<s
 	return twin !== null && fresh(twin);
 }
 
-/** The resolved path, or its twin under the plan's other root, is already in the set (cited-vs-listed compares files, not spellings). */
+/** The resolved path, or its twin under the plan's other root, is already in the set (cited-vs-listed matches files, not spellings). */
 function namedOrTwin(named: Set<string>, abs: string, planPath: string, text: string): boolean {
 	if (named.has(abs)) return true;
 	const twin = twinFile(abs, planPath, text);
