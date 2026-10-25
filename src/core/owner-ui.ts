@@ -495,6 +495,9 @@ function receiptHtml(sent: string | null, params: URLSearchParams): string {
 		case "unlock-off":
 			text = "Refused — chat unlock is off";
 			break;
+		case "stale":
+			text = "Already handled — Main cleared this question before your answer; your answer was still passed on.";
+			break;
 		default:
 			return "";
 	}
@@ -770,17 +773,45 @@ function redirect(target: string): Response {
 	return new Response(null, { status: 303, headers: { location: target } });
 }
 
-function handleAnswer(cfg: Config, fields: Record<string, string>, login: string): Response {
+/** The normal page (the GET layout) as a POST reply; the stale-answer reply is this with sent=stale. */
+function pageRes(cfg: Config, source: RunSource, params: URLSearchParams): Response {
+	const nonce = randomUUID().replaceAll("-", "");
+	return new Response(renderPage(cfg, buildPageData(cfg, source), params, nonce), {
+		status: 200,
+		headers: {
+			"content-type": "text/html; charset=utf-8",
+			"content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`,
+		},
+	});
+}
+
+/** The last answer appended per plan, for the double-press guard (P8c): memory only, no file. */
+const lastAnswerByPlan = new Map<string, { answer: string; ts: number }>();
+const DOUBLE_PRESS_SEC = 10;
+
+/** Appends the answer to the owner inbox unless this plan got the same trimmed answer in the last 10 s (P8c). */
+function appendAnswer(plan: string, question: string, answer: string, login: string): void {
+	const now = nowSec();
+	const last = lastAnswerByPlan.get(plan);
+	if (last !== undefined && last.answer === answer && now - last.ts < DOUBLE_PRESS_SEC) return;
+	mkdirSync(stateDirPath(), { recursive: true });
+	appendFileSync(inboxPath(), `${JSON.stringify({ ts: now, plan, question, answer, login })}\n`);
+	lastAnswerByPlan.set(plan, { answer, ts: now });
+}
+
+function handleAnswer(cfg: Config, source: RunSource, fields: Record<string, string>, login: string): Response {
 	const planFile = (fields.plan ?? "").trim();
 	const answer = (fields.answer_text ?? "").trim() || (fields.answer ?? "").trim();
 	if (!planFile || !answer) return textRes("plan and answer are required", 400);
 	if (answer.length > ANSWER_MAX) return textRes(`answer is longer than ${ANSWER_MAX} chars`, 400);
 	const plan = activePlans(cfg.paths.queue_index).find(p => p.file === planFile);
-	if (!plan || plan.status !== "open" || !plan.waiting || !plan.waitingLine) {
-		return textRes("plan is not open and waiting", 409);
+	if (!plan) return textRes("plan is not open and waiting", 409);
+	if (plan.status !== "open" || !plan.waiting || !plan.waitingLine) {
+		// Stale answer (P8b): Main cleared the question before the answer arrived; pass it on anyway.
+		appendAnswer(planFile, "(already cleared)", answer, login);
+		return pageRes(cfg, source, new URLSearchParams({ sent: "stale" }));
 	}
-	mkdirSync(stateDirPath(), { recursive: true });
-	appendFileSync(inboxPath(), `${JSON.stringify({ ts: nowSec(), plan: planFile, question: plan.waitingLine, answer, login })}\n`);
+	appendAnswer(planFile, plan.waitingLine, answer, login);
 	return redirect("/?sent=answer");
 }
 
@@ -907,6 +938,9 @@ function handleReorder(cfg: Config, fields: Record<string, string>, login: strin
 /** Starts the page. Refuses to start when ui.enabled is false or ui.owner_login is empty, and on the default hostname when tailscale does not answer. */
 export function startOwnerUi(opts: OwnerUiOptions): OwnerUiServer {
 	const { cfg, tailscale, source } = opts;
+	// The double-press guard (P8c) is per-server memory: a fresh server starts empty, which also
+	// keeps the tests (one server per test) hermetic.
+	lastAnswerByPlan.clear();
 	if (!cfg.ui.enabled) throw new Error("owner ui: ui.enabled is false — set it in the config first");
 	if (!cfg.ui.owner_login) throw new Error("owner ui: ui.owner_login is empty — set the tailscale login that may open the page");
 	const hostname = opts.hostname ?? tailscale.ip4();
@@ -951,17 +985,10 @@ export function startOwnerUi(opts: OwnerUiOptions): OwnerUiServer {
 							res = textRes("forbidden: origin is not this page", 403);
 							code = 403;
 						} else if (req.method === "GET" && url.pathname === "/") {
-							const nonce = randomUUID().replaceAll("-", "");
-							res = new Response(renderPage(cfg, buildPageData(cfg, source), url.searchParams, nonce), {
-								status: 200,
-								headers: {
-									"content-type": "text/html; charset=utf-8",
-									"content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`,
-								},
-							});
+							res = pageRes(cfg, source, url.searchParams);
 							code = 200;
 						} else if (req.method === "POST" && url.pathname === "/answer") {
-							res = handleAnswer(cfg, await fieldsOf(req), login);
+							res = handleAnswer(cfg, source, await fieldsOf(req), login);
 							code = res.status;
 						} else if (req.method === "POST" && url.pathname === "/unlock") {
 							res = handleUnlock(cfg, await fieldsOf(req), login);

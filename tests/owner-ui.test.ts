@@ -400,11 +400,106 @@ test("an answer longer than 2000 chars is refused", async () => {
 	expect(inboxRecords()).toEqual([]);
 });
 
-test("an answer for a plan that is not open and waiting is refused", async () => {
+test("an answer to an unknown plan is refused", async () => {
 	const svc = ui();
-	expect((await post(svc, "/answer", { plan: PLAN_D, answer: "yes" })).status).toBe(409);
 	expect((await post(svc, "/answer", { plan: join(TOY, "docs/plans/20261019_missing.md"), answer: "yes" })).status).toBe(409);
 	expect(inboxRecords()).toEqual([]);
+});
+
+test("an answer to a plan whose WAITING Main cleared still reaches Main, marked already cleared (P8b)", async () => {
+	const svc = ui();
+	try {
+		writeFileSync(PLAN_W, PLAN_TEXT("open", false)); // Main removed the WAITING line after the page was rendered
+		const res = await post(svc, "/answer", { plan: PLAN_W, answer: "yes" });
+		expect(res.status).toBe(200);
+		expect(res.headers.get("content-type")).toContain("text/html");
+		expect(await res.text()).toContain("Already handled — Main cleared this question before your answer; your answer was still passed on.");
+		const recs = inboxRecords();
+		expect(recs.length).toBe(1);
+		expect(recs[0]).toEqual({ ts: expect.any(Number), plan: PLAN_W, question: "(already cleared)", answer: "yes", login: OWNER });
+	} finally {
+		writeFileSync(PLAN_W, PLAN_TEXT("open", true));
+	}
+});
+
+test("an answer to a complete plan still reaches Main, marked already cleared (P8b)", async () => {
+	const svc = ui();
+	const res = await post(svc, "/answer", { plan: PLAN_D, answer: "yes" });
+	expect(res.status).toBe(200);
+	expect(await res.text()).toContain("Already handled — Main cleared this question before your answer; your answer was still passed on.");
+	const recs = inboxRecords();
+	expect(recs.length).toBe(1);
+	expect(recs[0]).toEqual({ ts: expect.any(Number), plan: PLAN_D, question: "(already cleared)", answer: "yes", login: OWNER });
+});
+
+test("a second press of the same answer within 10 s appends nothing (P8c)", async () => {
+	const saved = process.env.NEURASTREAM_NOW;
+	const now = nowSec();
+	try {
+		process.env.NEURASTREAM_NOW = String(now);
+		const svc = ui();
+		expect((await post(svc, "/answer", { plan: PLAN_W, answer: "yes" })).status).toBe(303);
+		process.env.NEURASTREAM_NOW = String(now + 2);
+		const again = await post(svc, "/answer", { plan: PLAN_W, answer: " yes " });
+		expect(again.status).toBe(303);
+		expect(again.headers.get("location")).toBe("/?sent=answer");
+		expect(inboxRecords().length).toBe(1);
+	} finally {
+		if (saved === undefined) delete process.env.NEURASTREAM_NOW;
+		else process.env.NEURASTREAM_NOW = saved;
+	}
+});
+
+test("the same answer after 10 s is appended again (P8c)", async () => {
+	const saved = process.env.NEURASTREAM_NOW;
+	const now = nowSec();
+	try {
+		process.env.NEURASTREAM_NOW = String(now);
+		const svc = ui();
+		await post(svc, "/answer", { plan: PLAN_W, answer: "yes" });
+		process.env.NEURASTREAM_NOW = String(now + 11);
+		expect((await post(svc, "/answer", { plan: PLAN_W, answer: "yes" })).status).toBe(303);
+		expect(inboxRecords().length).toBe(2);
+	} finally {
+		if (saved === undefined) delete process.env.NEURASTREAM_NOW;
+		else process.env.NEURASTREAM_NOW = saved;
+	}
+});
+
+test("the same text for another plan is appended (P8c)", async () => {
+	const saved = process.env.NEURASTREAM_NOW;
+	const now = nowSec();
+	try {
+		process.env.NEURASTREAM_NOW = String(now);
+		const svc = ui();
+		await post(svc, "/answer", { plan: PLAN_W, answer: "yes" });
+		process.env.NEURASTREAM_NOW = String(now + 2);
+		expect((await post(svc, "/answer", { plan: PLAN_D, answer: "yes" })).status).toBe(200);
+		const recs = inboxRecords();
+		expect(recs.length).toBe(2);
+		expect(recs.map(r => r.plan)).toEqual([PLAN_W, PLAN_D]);
+	} finally {
+		if (saved === undefined) delete process.env.NEURASTREAM_NOW;
+		else process.env.NEURASTREAM_NOW = saved;
+	}
+});
+
+test("a different text for the same plan is appended (P8c)", async () => {
+	const saved = process.env.NEURASTREAM_NOW;
+	const now = nowSec();
+	try {
+		process.env.NEURASTREAM_NOW = String(now);
+		const svc = ui();
+		await post(svc, "/answer", { plan: PLAN_W, answer: "yes" });
+		process.env.NEURASTREAM_NOW = String(now + 2);
+		expect((await post(svc, "/answer", { plan: PLAN_W, answer: "no" })).status).toBe(303);
+		const recs = inboxRecords();
+		expect(recs.length).toBe(2);
+		expect(recs.map(r => r.answer)).toEqual(["yes", "no"]);
+	} finally {
+		if (saved === undefined) delete process.env.NEURASTREAM_NOW;
+		else process.env.NEURASTREAM_NOW = saved;
+	}
 });
 
 // --- unlock / lock through the core function, logged with the ui word ---
