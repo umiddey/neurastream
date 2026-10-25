@@ -133,6 +133,16 @@ export interface Config {
 		protected: string[];
 		ledger_command: string;
 	};
+	/** Autonomy tiers (I-20261025-177): how much Main may do without asking. The owner moves the
+	 *  tier (chat `tier <name>`, or the phone page); the guards follow it. */
+	autonomy: {
+		/** Tier in force when `<state dir>/autonomy-tier` does not name one (src/core/autonomy.ts). */
+		tier: "strict" | "opinionated" | "full";
+		/** Main's project-file changes per guards.main_window_min window in tier strict. */
+		strict_edit_limit: number;
+		/** Minutes one owner `go` approves exactly one push/merge in tier strict. */
+		go_minutes: number;
+	};
 	/** The owner's phone page (`neurastream ui`): binds the tailnet address only. */
 	ui: { enabled: boolean; port: number; owner_login: string };
 	/** Static pages hosted over the tailnet. */
@@ -398,6 +408,12 @@ function check(cfg: Config): void {
 		throw new ConfigError("guards.sub_max_calls_cap must be >= guards.sub_max_calls");
 	}
 	if (!(cfg.rollover.max_session_mb > 0)) throw new ConfigError("rollover.max_session_mb must be > 0");
+	if (cfg.autonomy.tier !== "strict" && cfg.autonomy.tier !== "opinionated" && cfg.autonomy.tier !== "full")
+		throw new ConfigError('autonomy.tier must be "strict", "opinionated" or "full"');
+	if (!Number.isInteger(cfg.autonomy.strict_edit_limit) || cfg.autonomy.strict_edit_limit < 1)
+		throw new ConfigError("autonomy.strict_edit_limit must be an integer >= 1");
+	if (!Number.isInteger(cfg.autonomy.go_minutes) || cfg.autonomy.go_minutes < 1)
+		throw new ConfigError("autonomy.go_minutes must be an integer >= 1");
 	if (!Array.isArray(cfg.guards.rate_limit.patterns) || cfg.guards.rate_limit.patterns.some(p => typeof p !== "string" || p === "")) {
 		throw new ConfigError("guards.rate_limit.patterns must be a list of non-empty strings");
 	}
