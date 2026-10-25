@@ -106,8 +106,10 @@ export function parseTraceFile(file: string, runId: string): TraceEvent[] {
 				}
 			}
 			// An assistant message with no content at all would vanish (nothing to map); an empty
-			// text marks it so the phantom-output rule can see billed tokens with no words.
-			if (content.length === 0) {
+			// text marks it so the phantom-output rule can see billed tokens with no words. An
+			// aborted or errored stream (owner interrupt, provider error) drops its partial content
+			// while keeping the usage of what streamed, so it is not marked.
+			if (content.length === 0 && m.stopReason !== "aborted" && m.stopReason !== "error") {
 				out.push({ kind: "assistantText", ts, runId, text: "", model, provider, usage, responseId: str(m.responseId) });
 			}
 		} else if (role === "toolResult") {
