@@ -1,4 +1,10 @@
 # Changelog
+## Unreleased
+### Changed
+- Plan read check (I-20261025-208): a logged read counts in any checkout — a plan may cite a file Main read at the same repo-relative path in the other root (plan worktree ↔ main checkout); a cited file Main did read but that is missing from `## Code read by Main` is added to the list when the edit is allowed (`plan-guard: added <n> file(s) …`) instead of refused; reading a plan warns `plan-guard: before you edit this plan, re-read: …` when a listed entry would fail, so Main re-reads before drafting instead of losing a written edit at save time. The refusal for a file Main never read is unchanged.
+- Queue dependency order (I-20261025-208): `queue-check` fails while an open plan sits above the open plan its `Waits on:` line names, the queue summary flags such a plan with `waits on #N`, and the phone page refuses a drag that would create that order (`blocked: #N <plan> waits on #M …`) with the index file and the reorder inbox untouched.
+- Owner page: a drag held near the screen edge autoscrolls the page (pure `edgeScrollStep`: 72 px bands, growing toward the edge, capped at 24 px/frame), so the end of a queue taller than the screen is reachable while dragging.
+
 ## 0.2.28
 ### Added
 - Secrets never reach the chat (I-20261025-197): a content-based redactor (`src/core/secret-redact.ts`) runs on every tool result for Main and every subagent, on every notify post and in the new `neurastream redact` command; a token, key, password or any exact value from `~/.npmrc`, `.env…` files, `secrets.known_value_files` or credential-named env vars shows as `[REDACTED:<type>]`, whatever the file is named. Config `secrets.redact|known_value_files|extra_patterns|proxy`; `secrets.proxy: secretgate` adds secretgate as a second net on outbound traffic; `neurastream doctor` reports the redactor and proxy state.
