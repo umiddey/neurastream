@@ -1,4 +1,8 @@
 # Changelog
+## Unreleased
+### Fixed
+- Notify posts are serialized, retry Discord 429s once after the requested delay (capped at 10 seconds), batch fresh needs-you plans into one message, and post replies even when a session stop is blocked.
+
 ## 0.2.19
 ### Added
 - Main's context annotates absolute provider reset times with the caller's local time; `quota.reset_pattern` selects timestamps and explicit zones in the message take precedence over `quota.reset_tz`.

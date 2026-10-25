@@ -38,9 +38,11 @@ interface Hit {
 	text: string;
 }
 
-type FakeMode = "ok" | "status500" | "hang";
+type FakeMode = "ok" | "status500" | "hang" | "retryOnce" | "retryAlways" | "slow";
 
 let discordMode: FakeMode = "ok";
+let activeDiscordRequests = 0;
+let maxActiveDiscordRequests = 0;
 const discordHits: Hit[] = [];
 const discord = Bun.serve({
 	port: 0,
@@ -50,6 +52,16 @@ const discord = Bun.serve({
 		discordHits.push({ key, text: String(body[key] ?? "") });
 		if (discordMode === "status500") return new Response("no", { status: 500 });
 		if (discordMode === "hang") await new Promise(() => {});
+		if (discordMode === "retryOnce" && discordHits.length === 1) return Response.json({ retry_after: 0.2 }, { status: 429 });
+		if (discordMode === "retryAlways") return Response.json({ retry_after: 0 }, { status: 429 });
+		// A real overlap window is required here: fake time cannot control concurrently handled
+		// server requests or prove that two network handlers were active at once.
+		if (discordMode === "slow") {
+			activeDiscordRequests++;
+			maxActiveDiscordRequests = Math.max(maxActiveDiscordRequests, activeDiscordRequests);
+			await new Promise(resolve => setTimeout(resolve, 30));
+			activeDiscordRequests--;
+		}
 		return Response.json({});
 	},
 });
@@ -109,7 +121,8 @@ function reset(): void {
 	discordHits.length = 0;
 	slackHits.length = 0;
 	discordMode = "ok";
-	// An empty index = no open work; a MISSING index is itself a queue problem and blocks the stop.
+	activeDiscordRequests = 0;
+	maxActiveDiscordRequests = 0;
 	writeFileSync(INDEX, "");
 	delete process.env.NEURASTREAM_MAIN_LAUNCHER;
 	rmSync(GUARD_LOG, { force: true });
@@ -318,7 +331,7 @@ test("a 4500-char reply is 3 discord and 2 slack chunks, in order, nothing lost"
 	expect(slackHits.map(h => h.text).join("")).toBe(big);
 });
 
-test("a blocked stop posts nothing; the later allowed stop posts the final text", async () => {
+test("a blocked stop posts its reply; the later allowed stop posts the final text", async () => {
 	reset();
 	writeFileSync(INDEX, `${PLAN}\n`);
 	const host = adapterWith(stopCfg(bothCfg()));
@@ -326,15 +339,14 @@ test("a blocked stop posts nothing; the later allowed stop posts the final text"
 	await host.emit("agent_end", {}, ctx);
 	const blocked = await host.emit("session_stop", stopEvent(BLOCKED_REPLY), ctx);
 	expect(blocked.map(decisionOf)).toEqual(["block"]);
-	// The run continues; its next end carries the final text, the queue clears, the stop is
-	// allowed — and only the final text may ever reach the fakes.
+	await until(() => discordHits.length === 1 && slackHits.length === 1);
 	await host.emit("agent_end", {}, ctx);
 	writeFileSync(INDEX, "");
 	expect(await host.emit("session_stop", stopEvent(REPLY), ctx)).toEqual([]);
-	await until(() => discordHits.length === 1 && slackHits.length === 1);
-	expect(discordHits.map(h => h.text)).toEqual([REPLY]);
-	expect(slackHits.map(h => h.text)).toEqual([REPLY]);
-	expect(notifyLogLines().filter(l => l.includes("notify: skipped (stop blocked by guard)")).length).toBe(1);
+	await until(() => discordHits.length === 2 && slackHits.length === 2);
+	expect(discordHits.map(h => h.text)).toEqual([BLOCKED_REPLY, REPLY]);
+	expect(slackHits.map(h => h.text)).toEqual([BLOCKED_REPLY, REPLY]);
+	expect(notifyLogLines().filter(l => l.includes("notify: posted (blocked session_stop)")).length).toBe(1);
 	expect(notifyLogLines().filter(l => l.includes("notify: posted (allowed session_stop)")).length).toBe(1);
 });
 
@@ -481,16 +493,16 @@ test("handback (d): the same reply seen by both agent_end and session_stop is po
 	expect(notifyLogLines().filter(l => l.includes("notify: skipped (duplicate, allowed session_stop)")).length).toBe(1);
 });
 
-test("handback (e): a blocked stop posts nothing and logs the skip", async () => {
+test("handback (e): a blocked stop posts the reply and logs the post", async () => {
 	reset();
 	writeFileSync(INDEX, `${PLAN}\n`);
 	const host = adapterWith(stopCfg(bothCfg()));
 	const ctx = ctxFor("main");
 	const blocked = await host.emit("session_stop", stopEvent(BLOCKED_REPLY), ctx);
 	expect(blocked.map(decisionOf)).toEqual(["block"]);
-	await expectNoMore(() => discordHits.length, 0);
-	await expectNoMore(() => slackHits.length, 0);
-	expect(notifyLogLines().filter(l => l.includes("notify: skipped (stop blocked by guard)")).length).toBe(1);
+	await until(() => discordHits.length === 1 && slackHits.length === 1);
+	expect(discordHits[0]?.text).toBe(BLOCKED_REPLY);
+	expect(notifyLogLines().filter(l => l.includes("notify: posted (blocked session_stop)")).length).toBe(1);
 });
 
 test("handback (f): a willContinue agent_end whose last message has tool calls posts nothing and logs the skip", async () => {
@@ -503,16 +515,17 @@ test("handback (f): a willContinue agent_end whose last message has tool calls p
 	expect(notifyLogLines().filter(l => l.includes("notify: skipped (mid-run: stop reason toolUse + 1 tool call(s), agent_end hand-back)")).length).toBe(1);
 });
 
-test("handback (g): a blocked stop followed by a willContinue agent_end posts nothing", async () => {
+test("handback (g): blocked stop reply posts once; agent_end skips duplicate", async () => {
 	reset();
 	writeFileSync(INDEX, `${PLAN}\n`);
 	const host = adapterWith(stopCfg(bothCfg()));
 	const ctx = ctxFor("main", [{ label: "bg-1" }]);
 	const blocked = await host.emit("session_stop", stopEvent(BLOCKED_REPLY), ctx);
 	expect(blocked.map(decisionOf)).toEqual(["block"]);
+	await until(() => discordHits.length === 1 && slackHits.length === 1);
 	await host.emit("agent_end", { willContinue: true, messages: [msg(BLOCKED_REPLY)] }, ctx);
-	await expectNoMore(() => discordHits.length, 0);
-	await expectNoMore(() => slackHits.length, 0);
+	await expectNoMore(() => discordHits.length, 1);
+	await expectNoMore(() => slackHits.length, 1);
 	expect(notifyLogLines().filter(l => l.includes("notify: skipped (stop blocked, agent_end)")).length).toBe(1);
 });
 
@@ -556,7 +569,7 @@ test("needs-you (1): a new WAITING line posts one ping with the plan and the que
 	const ctx = ctxFor("main");
 	await host.emit("agent_end", {}, ctx);
 	await until(() => discordHits.length === 1 && slackHits.length === 1);
-	expect(discordHits[0]?.text).toContain("🔔 Needs you — Waiting toy: choose A or B.");
+	expect(discordHits[0]?.text).toContain("- Waiting toy: choose A or B");
 	// ui is off in this config: no phone-page link.
 	expect(discordHits[0]?.text).not.toContain("http");
 	expect(needsYouLines().filter(l => l.includes("notify: needs-you posted (waiting: ")).length).toBe(1);
@@ -587,7 +600,7 @@ test("needs-you (3): the WAITING line removed then re-added posts again", async 
 	writeFileSync(INDEX, `${WAIT_PLAN}\n`);
 	await host.emit("agent_end", {}, ctx);
 	await until(() => discordHits.length === 2 && slackHits.length === 2);
-	expect(discordHits[1]?.text).toContain("🔔 Needs you — Waiting toy: choose A or B.");
+	expect(discordHits[1]?.text).toContain("- Waiting toy: choose A or B");
 	expect(needsYouLines().filter(l => l.includes("notify: needs-you posted (waiting: ")).length).toBe(2);
 });
 
@@ -632,4 +645,65 @@ test("needs-you (6): notify off pings nothing and does not throw", async () => {
 	await expectNoMore(() => discordHits.length, 0);
 	await expectNoMore(() => slackHits.length, 0);
 	expect(needsYouLines().filter(l => l.includes("notify: needs-you skipped (notify off, waiting: ")).length).toBe(1);
+});
+
+test("needs-you batches all fresh plans into one post", async () => {
+	reset();
+	const second = join(TMP, "docs/plans/20261025_waiting-two.md");
+	const third = join(TMP, "docs/plans/20261025_waiting-three.md");
+	writeFileSync(WAIT_PLAN, WAIT_TEXT);
+	writeFileSync(second, WAIT_TEXT.replace("Waiting toy", "Waiting two").replace("choose A or B", "choose C"));
+	writeFileSync(third, WAIT_TEXT.replace("Waiting toy", "Waiting three").replace("choose A or B", "choose D"));
+	writeFileSync(INDEX, `${WAIT_PLAN}\n${second}\n${third}\n`);
+	const host = adapterWith(stopCfg(bothCfg()));
+	await host.emit("agent_end", {}, ctxFor("main"));
+	await until(() => discordHits.length === 1 && slackHits.length === 1);
+	expect(discordHits[0]?.text).toContain("🔔 Needs you (3):");
+	expect(discordHits[0]?.text).toContain("Waiting toy");
+	expect(discordHits[0]?.text).toContain("Waiting two");
+	expect(discordHits[0]?.text).toContain("Waiting three");
+	expect(needsYouLines().filter(l => l.includes("notify: needs-you posted (waiting: 3 plans)")).length).toBe(1);
+});
+
+test("blocked stop posts its reply once and agent_end does not duplicate it", async () => {
+	reset();
+	writeFileSync(INDEX, `${PLAN}\n`);
+	const host = adapterWith(stopCfg(bothCfg()));
+	const ctx = ctxFor("main", [{ label: "bg-1" }]);
+	const blocked = await host.emit("session_stop", stopEvent(BLOCKED_REPLY), ctx);
+	expect(blocked.map(decisionOf)).toEqual(["block"]);
+	await until(() => discordHits.length === 1 && slackHits.length === 1);
+	await host.emit("agent_end", { willContinue: true, messages: [msg(BLOCKED_REPLY)] }, ctx);
+	await expectNoMore(() => discordHits.length, 1);
+	await expectNoMore(() => slackHits.length, 1);
+	expect(discordHits[0]?.text).toBe(BLOCKED_REPLY);
+	expect(notifyLogLines().filter(l => l.includes("notify: posted (blocked session_stop)")).length).toBe(1);
+});
+
+test("postReply serializes concurrent calls in invocation order without overlap", async () => {
+	reset();
+	discordMode = "slow";
+	const cfg = writeConfig(`  discord_webhook_file: "${DISCORD_FILE}"`);
+	const first = postReply("first", cfg);
+	const second = postReply("second", cfg);
+	const third = postReply("third", cfg);
+	await Promise.all([first, second, third]);
+	expect(discordHits.map(hit => hit.text)).toEqual(["first", "second", "third"]);
+	expect(maxActiveDiscordRequests).toBe(1);
+});
+
+test("postReply retries one 429 after retry_after", async () => {
+	reset();
+	discordMode = "retryOnce";
+	const result = await postReply("retry me", writeConfig(`  discord_webhook_file: "${DISCORD_FILE}"`));
+	expect(result[0]).toMatchObject({ posted: true, chunks: 1, error: "" });
+	expect(discordHits).toHaveLength(2);
+});
+
+test("postReply returns the second 429 as failure", async () => {
+	reset();
+	discordMode = "retryAlways";
+	const result = await postReply("still limited", writeConfig(`  discord_webhook_file: "${DISCORD_FILE}"`));
+	expect(result[0]).toMatchObject({ posted: false, error: expect.stringContaining("answered 429") });
+	expect(discordHits).toHaveLength(2);
 });

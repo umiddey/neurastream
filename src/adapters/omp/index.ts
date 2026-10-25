@@ -578,10 +578,11 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 			adapterLog(cfg, "notify: needs-you skipped (no new waiting lines)");
 			return;
 		}
-		for (const p of fresh) {
+		const lines = fresh.map(p => {
 			const title = p.text.match(/^# (.+)$/m)?.[1] ?? basename(p.file);
-			needsYouPost(`🔔 Needs you — ${title}: ${p.waitingLine}.${phonePage()}`, `waiting: ${basename(p.file)}`);
-		}
+			return `- ${title}: ${p.waitingLine}`;
+		});
+		needsYouPost(`🔔 Needs you (${fresh.length}):\n${lines.join("\n")}${phonePage()}`, `waiting: ${fresh.length} plans`);
 	};
 	// UNLOCK: a protected-file refusal of a Main tool call means Main sits blocked until the owner
 	// unlocks — ping, at most once per 30 min.
@@ -795,7 +796,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 			const snap = rolloverSnapshot(rc);
 			if (snap.state === "need-note") {
 				adapterLog(cfg, "BLOCK stop: rollover need-note");
-				adapterLog(cfg, "notify: skipped (stop blocked: rollover need-note)");
+				notifyHandback(reply, "blocked session_stop");
 				stopBlocked = true;
 				return { decision: "block", reason: noteRequestFor(rc, snap) };
 			}
@@ -816,7 +817,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 			notifyHandback(reply, "allowed session_stop");
 			return undefined;
 		}
-		adapterLog(cfg, "notify: skipped (stop blocked by guard)");
+		notifyHandback(reply, "blocked session_stop");
 		stopBlocked = true;
 		return { decision: "block", reason: d.reason };
 	});
