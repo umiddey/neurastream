@@ -1,4 +1,8 @@
 # Changelog
+## Unreleased
+### Fixed
+- Session timestamps were read 1 h early in summer time.
+
 
 ## 0.2.15
 ### Added
