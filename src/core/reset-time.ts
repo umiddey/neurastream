@@ -84,7 +84,7 @@ export function annotateResetTimes(text: string, rule: { pattern: string; zone: 
 	const matches = [...text.matchAll(pattern)];
 	if (matches.length === 0) return text;
 	let result = "";
-	let cursor = 0;
+	let position = 0;
 	for (const match of matches) {
 		const full = match[0] ?? "";
 		const index = match.index ?? 0;
@@ -93,12 +93,12 @@ export function annotateResetTimes(text: string, rule: { pattern: string; zone: 
 		const end = index + full.length;
 		const timestampEnd = index + full.trimEnd().length;
 		if (text.slice(timestampEnd).startsWith("(= ") || text.slice(timestampEnd).startsWith(" (= ")) {
-			result += text.slice(cursor, end);
-			cursor = end;
+			result += text.slice(position, end);
+			position = end;
 			continue;
 		}
-		result += text.slice(cursor, timestampEnd);
-		cursor = end;
+		result += text.slice(position, timestampEnd);
+		position = end;
 		if (!wallText) continue;
 		const wall = parseWhen(wallText);
 		if (!wall) continue;
@@ -109,5 +109,5 @@ export function annotateResetTimes(text: string, rule: { pattern: string; zone: 
 			// A zone we cannot resolve is not a basis for guessing.
 		}
 	}
-	return result + text.slice(cursor);
+	return result + text.slice(position);
 }

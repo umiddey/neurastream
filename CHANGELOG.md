@@ -1,4 +1,8 @@
 # Changelog
+
+## Unreleased
+### Added
+- Main's context annotates absolute provider reset times with the caller's local time; `quota.reset_pattern` selects timestamps and explicit zones in the message take precedence over `quota.reset_tz`.
 ## 0.2.16
 ### Fixed
 - Session timestamps were read 1 h early in summer time.

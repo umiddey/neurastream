@@ -190,6 +190,10 @@ The wait is the `retry-after-ms=<ms>` or `retry-after: <seconds>` the error text
 
 omp retries a 429 itself while the provider's wait fits its `retry.maxDelayMs` (300000 ms by default); only a longer wait ends the turn (`Retry failed after 1 attempts: Provider requested 731000ms wait, exceeds retry.maxDelayMs`), and that turn end is what neurastream waits out.
 
+## Provider reset times
+
+Before Main reads a message, reset timestamps matching `quota.reset_pattern` are annotated with their local time, for example `reset at 2026-10-25 18:56:22 (= 2026-10-25 11:56:22 CET local)`. Set `quota.reset_tz` to the provider's time zone; an explicit zone or UTC offset in the message takes precedence.
+
 ## Trace claims (`neurastream traces claims`)
 
 Agents' final reports assert results — "530 passed", "exit 0", commit SHAs, heavy-run labels, changed files. This command reads a run's trace (its session file, read-only) and checks each claim in the run's last assistant message against what the run's own tool activity shows: a count or exit code must appear in some tool output, a commit SHA must be printed by the output of a git command the run itself ran, a heavy-run label must appear in a quoted heavy-run call, and a changed path must be carried by an edit/write call or a shell write in the path's own command segment. A claim nothing shows becomes a `claim-unbacked` finding.

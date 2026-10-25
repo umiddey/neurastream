@@ -327,7 +327,7 @@ function applyEnv(cfg: Record<string, unknown>, env: NodeJS.ProcessEnv): void {
 function check(cfg: Config): void {
 	try {
 		const pattern = cfg.quota.reset_pattern;
-		const compiled = new RegExp(pattern);
+		new RegExp(pattern);
 		let groups = 0;
 		let escaped = false;
 		let inClass = false;
