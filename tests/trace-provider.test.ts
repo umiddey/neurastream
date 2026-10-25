@@ -105,10 +105,8 @@ describe("response ids (P1)", () => {
 		expect(found[0]?.kind).toBe("odd-response-id");
 	});
 
-	test("a missing id counts as odd when the provider has a pattern", () => {
-		const found = oddResponseIds([assistant({ provider: "anthropic" })], ANTHROPIC);
-		expect(found).toHaveLength(1);
-		expect(found[0]?.fingerprint).toBe("odd-response-id:synthetic:anthropic");
+	test("a missing id is not checked: absent is not malformed", () => {
+		expect(oddResponseIds([assistant({ provider: "anthropic" })], ANTHROPIC)).toEqual([]);
 	});
 
 	test("a provider without a configured pattern is not checked", () => {
@@ -168,8 +166,16 @@ describe("unoffered tools (P2)", () => {
 		expect(unofferedTools([assistant({ tool: "task" }), result("task", false)], [])).toEqual([]);
 	});
 
-	test("a call that only ever errors stays unoffered even with a result present", () => {
+	test("a call refused as an unknown tool stays unoffered", () => {
 		expect(unofferedTools([assistant({ tool: "phantom" }), result("phantom", true)], []).map((f) => f.fingerprint)).toEqual(["unoffered-tool:synthetic:phantom"]);
+		const refused: TraceEvent = { kind: "toolResult", ts: null, runId: "synthetic", tool: "ghost", isError: true, text: "Tool ghost not found" };
+		expect(unofferedTools([assistant({ tool: "ghost" }), refused], []).map((f) => f.fingerprint)).toEqual(["unoffered-tool:synthetic:ghost"]);
+	});
+
+	test("an errored result of a real tool (guard refusal, bad args) proves its offer", () => {
+		const blocked: TraceEvent = { kind: "toolResult", ts: null, runId: "synthetic", tool: "edit", isError: true, text: "plan-guard: refused, path is protected" };
+		const bare: TraceEvent = { kind: "toolResult", ts: null, runId: "synthetic", tool: "glob", isError: true };
+		expect(unofferedTools([assistant({ tool: "edit" }), blocked, assistant({ tool: "glob" }), bare], [])).toEqual([]);
 	});
 
 	test("names parsed from the request's own tool list vouch for a call", () => {

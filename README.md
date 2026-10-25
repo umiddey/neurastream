@@ -207,8 +207,8 @@ Known boundary: a report that cites other runs' work (Main quoting a subagent, a
 Five rules check what came back against what was asked for, over one run's trace, read-only (`src/core/trace-provider.ts`):
 
 - `model-swap`: the run announced a model (`model_change`) but an assistant message shows another model or another provider, or the run resolved the request to a fallback (`resolvedModelIsFallback`).
-- `odd-response-id`: an assistant message's `responseId` misses the regex configured for its provider (`traces.provider.id_patterns`; a provider without an entry is not checked).
-- `unoffered-tool`: a toolCall for a tool the session never showed as offered — not in `traces.provider.allow_tools`, not in the request's own tool list (an http dump), and no successful result anywhere in the run.
+- `odd-response-id`: an assistant message's `responseId` misses the regex configured for its provider (`traces.provider.id_patterns`; a provider without an entry is not checked, and a message without a responseId is not checked).
+- `unoffered-tool`: a toolCall for a tool the session never showed as offered — not in `traces.provider.allow_tools`, not in the request's own tool list (an http dump), and no result anywhere in the run other than an unknown-tool refusal (`Tool <name> not found`, `No such tool`, `Unknown tool`). An error result such as a guard refusal still proves the tool exists.
 - `phantom-output`: output tokens billed for an assistant message that wrote nothing.
 - `cost-mismatch`: the run's `model_usage` cost misses the `traces.provider.prices` table ($ per million tokens) by more than ±20%, in either direction; a model without a price row is not checked.
 

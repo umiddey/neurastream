@@ -71,9 +71,10 @@ export function modelSwaps(events: TraceEvent[]): Finding[] {
 
 /**
  * Response-id shapes per provider (traces.provider.id_patterns): an id that misses the
- * configured shape — or is absent where a shape is configured — is odd. A provider without an
- * entry is not checked, and an unparseable pattern disables that one provider rather than
- * guessing what its ids should look like. Repeats fold to one finding per run and provider.
+ * configured shape is odd. An absent id is not checked — missing is not malformed, and the
+ * 7-day smoke showed absent ids on every run of some providers. A provider without an entry is
+ * not checked, and an unparseable pattern disables that one provider rather than guessing what
+ * its ids should look like. Repeats fold to one finding per run and provider.
  */
 export function oddResponseIds(events: TraceEvent[], idPatterns: Record<string, string>): Finding[] {
 	const out: Finding[] = [];
@@ -94,27 +95,32 @@ export function oddResponseIds(events: TraceEvent[], idPatterns: Record<string, 
 		}
 		const rx = shapes.get(e.provider);
 		if (!rx) continue;
-		if (e.responseId !== undefined && rx.test(e.responseId)) continue;
+		if (e.responseId === undefined || rx.test(e.responseId)) continue;
 		fold(out, seen, "odd-response-id", `run ${e.runId}: ${e.provider} answered with a responseId that misses its configured shape`,
-			`${e.provider} responseId ${e.responseId === undefined ? "<absent>" : `"${e.responseId}"`} must match ${pattern}`,
+			`${e.provider} responseId "${e.responseId}" must match ${pattern}`,
 			`odd-response-id:${e.runId}:${e.provider}`);
 	}
 	return out;
 }
 
+/** A tool result that says the harness does not know the tool at all (the refusal of a made-up call). */
+const UNKNOWN_TOOL = /^(tool \S+ not found|no such tool|unknown tool)\b/i;
+
 /**
  * Tool calls for tools the session was never shown as offered. The offered set is the config
  * allow-list plus the names parsed from the request's own tool list (an http dump, passed in by
- * the caller) plus every tool the run itself served successfully. The plan wording says
- * "earlier successful tool names"; the check accepts a success anywhere in the run on purpose:
- * a first call that succeeds proves the tool was offered (the harness refuses unknown tools, so
- * a hallucinated call errors and never succeeds), and judging only what came earlier would
- * flag the honest first use of every tool in every run.
+ * the caller) plus every tool the run itself got a result for — except a result refusing the
+ * call as an unknown tool. The plan wording says "earlier successful tool names"; the check
+ * accepts any non-refusal result anywhere in the run on purpose: judging only what came earlier
+ * would flag the honest first use of every tool, and an error (a guard refusal, bad arguments)
+ * still means the harness ran the tool — the 7-day smoke had 14 such real tools flagged.
  */
 export function unofferedTools(events: TraceEvent[], allowTools: string[], offered: string[] = []): Finding[] {
 	const proven = new Set<string>([...allowTools, ...offered]);
 	for (const e of events) {
-		if (e.kind === "toolResult" && e.isError !== true && e.tool) proven.add(e.tool);
+		if (e.kind !== "toolResult" || !e.tool) continue;
+		if (e.isError === true && UNKNOWN_TOOL.test(e.text ?? "")) continue;
+		proven.add(e.tool);
 	}
 	const out: Finding[] = [];
 	const seen = new Set<string>();
