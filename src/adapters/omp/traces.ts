@@ -6,6 +6,7 @@
 // notes, unparseable lines) is skipped.
 
 import { readFileSync, statSync } from "node:fs";
+import { dirname } from "node:path";
 import type { TraceEvent, TraceSource, TraceUsage } from "../../core/adapter.ts";
 import { asObj, jsonlAt, parseTs, runIdOf } from "./sessions.ts";
 
@@ -137,4 +138,30 @@ export function ompTraceSource(root: string): TraceSource {
 			return file ? parseTraceFile(file, runId) : [];
 		},
 	};
+}
+
+export interface RelatedTrace {
+	/** The subagent run's trace run id — the agent name. */
+	name: string;
+	mtimeSec: number;
+	events: TraceEvent[];
+}
+
+/**
+ * The subagent runs of one Main run: the depth-2 session files under the Main file's session
+ * dir (plan 20261024_0301 P5) — the runs Main spawned there, whose results Main's report cites.
+ * Non-Main run ids have none.
+ */
+export function subagentTraces(root: string, mainRunId: string): RelatedTrace[] {
+	if (!mainRunId.startsWith("MAIN ")) return [];
+	const main = ompTraceRuns(root).find((r) => r.runId === mainRunId);
+	if (!main) return [];
+	return jsonlAt(dirname(main.file), 1).map((file) => {
+		const name = runIdOf(file);
+		let mtimeSec = 0;
+		try {
+			mtimeSec = statSync(file).mtimeMs / 1000;
+		} catch {}
+		return { name, mtimeSec, events: parseTraceFile(file, name) };
+	});
 }

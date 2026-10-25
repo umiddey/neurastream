@@ -126,6 +126,18 @@ export interface ClaimVerdict {
 	how: string;
 }
 
+/**
+ * One related run's trace, passed by the caller (INCIDENT I-20261025-23): a Main run's report
+ * cites the results it received from its subagents, and that evidence sits in the subagents' own
+ * sessions, not Main's. The adapter owns file discovery — depth-2 session files under Main's
+ * session dir — core only checks the texts.
+ */
+export interface RelatedRun {
+	/** The subagent run's trace run id — the agent name. */
+	name: string;
+	events: TraceEvent[];
+}
+
 /** Every string an args object carries (commands, paths, labels), joined for substring checks. */
 function argsText(args: Record<string, unknown> | undefined): string {
 	const parts: string[] = [];
@@ -159,8 +171,14 @@ export function claimsFromEvents(events: TraceEvent[]): Claim[] {
  *   heavy-label — the label, quoted, in a heavy-run call the run actually made;
  *   changed-path — carried by an edit/write tool call's arguments, or written by a shell
  *     command (a write operator before the path in one command segment).
+ *
+ * `related` (a Main run's subagent traces) gives the result-line family a second chance: a
+ * count or exit claim nothing in the run's own output shows is still backed when a subagent's
+ * toolResult shows it (`how: "subagent:<name>"`) — Main's report cites the result it received.
+ * The other kinds keep their own-run shape checks (a sha needs its git pairing, a label the
+ * heavy-run call, a path the write), so only the pure result-line kinds cross runs.
  */
-export function verifyClaims(claims: Claim[], events: TraceEvent[]): ClaimVerdict[] {
+export function verifyClaims(claims: Claim[], events: TraceEvent[], related: RelatedRun[] = []): ClaimVerdict[] {
 	const results = events.filter((e) => e.kind === "toolResult").map((e) => e.text ?? "");
 	const calls = events
 		.filter((e) => e.kind === "toolCall")
@@ -168,20 +186,29 @@ export function verifyClaims(claims: Claim[], events: TraceEvent[]): ClaimVerdic
 	// The harness writes exactly one toolResult per toolCall, in order, so the i-th result
 	// pairs with the i-th call.
 	const paired = results.map((text, i) => ({ text, call: calls[i] }));
+	// Related-run backing: the same result-line test against every subagent's toolResults.
+	const subBacked = (c: Claim, test: (text: string) => boolean): ClaimVerdict | null => {
+		for (const r of related) {
+			if (r.events.some((e) => e.kind === "toolResult" && typeof e.text === "string" && test(e.text)))
+				return { claim: c, backed: true, how: `subagent:${r.name}` };
+		}
+		return null;
+	};
 	const verdict = (c: Claim): ClaimVerdict => {
 		const unbacked: ClaimVerdict = { claim: c, backed: false, how: "" };
 		switch (c.kind) {
 			case "tests-passed":
 			case "tests-failed": {
 				const word = c.kind === "tests-passed" ? "pass" : "fail";
-				if (results.some((t) => new RegExp(`\\b${c.count}\\s+${word}(?:ed)?\\b`, "i").test(t)))
-					return { claim: c, backed: true, how: "count in a toolResult" };
-				return unbacked;
+				const re = new RegExp(`\\b${c.count}\\s+${word}(?:ed)?\\b`, "i");
+				if (results.some((t) => re.test(t))) return { claim: c, backed: true, how: "count in a toolResult" };
+				return subBacked(c, (t) => re.test(t)) ?? unbacked;
 			}
-			case "exit":
-				if (results.some((t) => new RegExp(`\\bexit(?:\\s+code)?\\s*[:=]?\\s*${c.count}\\b`, "i").test(t)))
-					return { claim: c, backed: true, how: "exit line in a toolResult" };
-				return unbacked;
+			case "exit": {
+				const re = new RegExp(`\\bexit(?:\\s+code)?\\s*[:=]?\\s*${c.count}\\b`, "i");
+				if (results.some((t) => re.test(t))) return { claim: c, backed: true, how: "exit line in a toolResult" };
+				return subBacked(c, (t) => re.test(t)) ?? unbacked;
+			}
 			case "sha":
 				if (paired.some((p) => p.call !== undefined && /\bgit\b/.test(p.call.args) && p.text.includes(c.value ?? "\u0000")))
 					return { claim: c, backed: true, how: "in a git command's output" };

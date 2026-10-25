@@ -28,7 +28,7 @@ import { nowSec, strftime } from "./clock.ts";
 import { log } from "./guards.ts";
 import { addIncident, type IncidentView } from "./incidents.ts";
 import type { GuardBlock } from "./metrics.ts";
-import { verifyClaims, type Claim } from "./trace-claims.ts";
+import { verifyClaims, type Claim, type RelatedRun } from "./trace-claims.ts";
 import { recordPenalty } from "./agent-score.ts";
 import type { SuspiciousAction, UnreportedFinding } from "./trace-actions.ts";
 
@@ -156,12 +156,14 @@ export function ownerCorrection(text: string, patterns: RegExp[], now: number): 
 /**
  * Final-report claims (src/core/trace-claims.ts) with no backing activity in the same run's
  * trace: a "13 passed" no toolResult shows, a SHA no git command printed, a label never passed
- * to a heavy-run call, a path no edit/write call carried. Evidence is the claiming line, which
- * the extractor already masked and capped, so nothing secret reaches the incident store.
+ * to a heavy-run call, a path no edit/write call carried. `related` — the traces of the
+ * subagent runs under a Main run's session dir (INCIDENT I-20261025-23) — backs the pure
+ * result-line claims Main's report cites from its subagents. Evidence is the claiming line,
+ * which the extractor already masked and capped, so nothing secret reaches the incident store.
  */
-export function claimUnbacked(claims: Claim[], events: TraceEvent[]): Finding[] {
+export function claimUnbacked(claims: Claim[], events: TraceEvent[], related: RelatedRun[] = []): Finding[] {
 	const out: Finding[] = [];
-	for (const v of verifyClaims(claims, events)) {
+	for (const v of verifyClaims(claims, events, related)) {
 		if (v.backed) continue;
 		const c = v.claim;
 		const what = c.count !== undefined ? `${c.kind} ${c.count}` : `${c.kind} ${c.value ?? ""}`;

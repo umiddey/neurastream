@@ -12,9 +12,9 @@ import { nowSec } from "../core/clock.ts";
 import type { TraceSource } from "../core/adapter.ts";
 import { ConfigError, loadConfig, type Config } from "../core/config.ts";
 import { claimUnbacked } from "../core/incident-detectors.ts";
-import { claimsFromEvents } from "../core/trace-claims.ts";
+import { claimsFromEvents, type RelatedRun } from "../core/trace-claims.ts";
 import { actionsRules, suspiciousActions, type ActionsRules, type SuspiciousAction } from "../core/trace-actions.ts";
-import { ompTraceRuns, ompTraceSource } from "../adapters/omp/traces.ts";
+import { ompTraceRuns, ompTraceSource, subagentTraces } from "../adapters/omp/traces.ts";
 
 export const TRACES_USAGE = [
 	"usage: neurastream traces claims <runId> [--json]",
@@ -32,11 +32,14 @@ export interface RunClaimsReport {
 	unbacked: { kind: string; summary: string; evidence?: string }[];
 }
 
-/** Verify one run: claims from its final report, findings for the ones no tool output backs. */
-export function claimsReport(src: TraceSource, runId: string): RunClaimsReport {
+/** Verify one run: claims from its final report, findings for the ones no tool output backs. A
+ * Main run's report also checks the toolResult text of the subagent runs under its session dir
+ * (`related`, INCIDENT I-20261025-23): the evidence for a cited subagent result lives in the
+ * subagent's own session, and a match there backs the claim as `subagent:<name>`. */
+export function claimsReport(src: TraceSource, runId: string, related: RelatedRun[] = []): RunClaimsReport {
 	const events = src.events(runId);
 	const claims = claimsFromEvents(events);
-	const findings = claimUnbacked(claims, events);
+	const findings = claimUnbacked(claims, events, related);
 	return {
 		runId,
 		claims: claims.length,
@@ -101,9 +104,14 @@ export async function runTraces(args: string[], opts: { home?: string } = {}): P
 	const runs = ompTraceRuns(root);
 	const src = ompTraceSource(root);
 	const rules = sub === "actions" ? actionsRules(cfg) : null;
+	// A Main run's report cites its subagents' results: their traces under the Main session dir
+	// back the pure result-line claims (P5). No time filter — the text match is the guard, and
+	// a sub's file keeps being written while its Main run lives, inside whatever window.
+	const relatedOf = (id: string): RelatedRun[] =>
+		sub === "claims" ? subagentTraces(root, id).map(({ name, events }) => ({ name, events })) : [];
 	const reports: (RunClaimsReport | RunActionsReport)[] = [];
 	const reportOf = (id: string): RunClaimsReport | RunActionsReport =>
-		sub === "claims" ? claimsReport(src, id) : actionsReport(src, id, rules!);
+		sub === "claims" ? claimsReport(src, id, relatedOf(id)) : actionsReport(src, id, rules!);
 	if (windowSec !== undefined) {
 		const cutoff = nowSec() - windowSec;
 		for (const r of runs) {
