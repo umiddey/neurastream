@@ -199,6 +199,9 @@ snapshot:
     - "snap-private-tmp"
     - "*.sock"
 
+
+labels:
+  episode_days: 30
 traces:
   provider:
     # Provider-honesty rules (src/core/trace-provider.ts). The maps below are open: an empty

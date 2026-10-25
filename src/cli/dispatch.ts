@@ -14,6 +14,7 @@ import { runUninstall } from "../core/uninstall.ts";
 import { queueMigrate } from "../core/queue-migrate.ts";
 import { allowedAgents, subagentsPath } from "../core/queue/lib.ts";
 import { allowAgents, denyAgents, invalidSlugs } from "../core/subagents.ts";
+import { runLabels } from "./labels.ts";
 
 const BINS = [
 	"agent-score",
@@ -62,6 +63,8 @@ export function helpText(): string {
 		"  neurastream main [args]       run omp under the launcher (automatic session rollover)",
 		"  neurastream metrics <cmd>     self-metrics: report, ci, false-alarm, rule (see README)",
 		"  neurastream incident <cmd>    incidents Main must act on: list, add, plan, dismiss (see README)",
+		"  neurastream labels episodes [--since 30d] [--json]",
+		"                                join scored work, agent runs and spawn briefs",
 		"  neurastream traces claims <runId|--since 24h> [--json]",
 		"                                check a run's final-report claims (test counts, exit codes,",
 		"                                SHAs, heavy-run labels, changed paths) against the run's own",
@@ -101,6 +104,7 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 	if (cmd === "metrics") return runMetrics(args);
 	if (cmd === "incident") return runIncident(args);
 	if (cmd === "traces") return runTraces(args);
+	if (cmd === "labels") return runLabels(args);
 	if (cmd === "ui") return runUi(args);
 	if (cmd === "adapter") return runAdapterInstall(args);
 	if (cmd === "config") {
