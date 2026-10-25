@@ -583,11 +583,14 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		const snap = new Map<string, string>();
 		snapshotPlans(tool, input, cwd, snap, !isSub);
 		// Drain (src/core/rollover.ts): while a rollover is pending no new subagent starts; the
-		// running ones finish first. Subagents' own tool calls are unaffected.
-		if (!isSub && tool === "task" && cfg.rollover.enabled) {
+		// running ones finish first. Subagents' own tool calls are unaffected. Main's task calls
+		// also carry the running job labels for the priority gate (20261025_0215 P2).
+		let runningJobs: string[] | undefined;
+		if (!isSub && tool === "task") {
 			const rc = asRolloverCtx(ctx);
-			if (rc) {
-				const why = spawnRefusal(rolloverSnapshot(rc).state, rc.runningJobs());
+			runningJobs = rc?.runningJobs();
+			if (cfg.rollover.enabled && rc) {
+				const why = spawnRefusal(rolloverSnapshot(rc).state, runningJobs ?? []);
 				if (why) {
 					const tasks = Array.isArray(input.tasks) ? input.tasks : [];
 					adapterLog(cfg, `BLOCK spawn ${String(asRecord(tasks[0]).agent ?? "task")}: rollover pending`);
@@ -596,7 +599,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 			}
 		}
 		const d = checkTool(
-			{ tool, input, cwd, agent, agentId: id, calls: n - 1, paths: [], writes: [], command: asString(input.command) },
+			{ tool, input, cwd, agent, agentId: id, calls: n - 1, paths: [], writes: [], command: asString(input.command), runningJobs },
 			cfg,
 		);
 		if (!d.allow) {

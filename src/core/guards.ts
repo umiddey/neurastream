@@ -79,6 +79,23 @@ function spawnsFile(): string {
 	return path.join(q.STATE_DIR, "spawns.json");
 }
 
+function staffingFile(): string {
+	return path.join(q.STATE_DIR, "staffing.json");
+}
+
+/** plan → the task names of its newest spawn (staffing.json); read for the staffed check. */
+export function readStaffing(): Record<string, string[]> {
+	try {
+		const raw: unknown = JSON.parse(readFileSync(staffingFile(), "utf8"));
+		if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+		const out: Record<string, string[]> = {};
+		for (const [k, v] of Object.entries(raw)) if (Array.isArray(v)) out[k] = v.map(String);
+		return out;
+	} catch {
+		return {};
+	}
+}
+
 function readSpawns(): Record<string, string> {
 	try {
 		const raw: unknown = JSON.parse(readFileSync(spawnsFile(), "utf8"));
@@ -91,8 +108,8 @@ function readSpawns(): Record<string, string> {
 	}
 }
 
-/** Remember the "## Progress" hash of the plans an agent was just spawned on. */
-export function recordSpawns(files: string[]): void {
+/** Remember the "## Progress" hash of the plans an agent was just spawned on. With `staffing`, also record the spawn's task names per plan (staffing.json); a plan's entry is replaced by the newest spawn that names it. */
+export function recordSpawns(files: string[], staffing: Record<string, string[]> = {}): void {
 	const s = readSpawns();
 	for (const f of files) {
 		try {
@@ -105,6 +122,23 @@ export function recordSpawns(files: string[]): void {
 	} catch (err) {
 		log(`${q.STATE_DIR}/../main-guard.log`, `cannot write ${spawnsFile()}: ${err}`);
 	}
+	if (!Object.keys(staffing).length) return;
+	const st = readStaffing();
+	for (const [f, names] of Object.entries(staffing)) if (names.length) st[f] = [...names];
+	try {
+		mkdirSync(q.STATE_DIR, { recursive: true });
+		writeFileSync(staffingFile(), JSON.stringify(st, null, 1));
+	} catch (err) {
+		log(`${q.STATE_DIR}/../main-guard.log`, `cannot write ${staffingFile()}: ${err}`);
+	}
+}
+
+/** Plans with a running subagent: one of the plan's staffing names equals a running job label, or the label is that name with omp's uniqueness suffix ("-2", "-3", …; real snapshot 2026-10-25: `allocate()` keeps the exact name first, then appends). Pure; no job info staffs nothing. */
+export function staffedPlans(staffing: Record<string, string[]>, runningJobs: string[] | undefined): string[] {
+	if (!runningJobs?.length) return [];
+	return Object.entries(staffing)
+		.filter(([, names]) => names.some(n => runningJobs.some(j => j === n || j.startsWith(`${n}-`))))
+		.map(([file]) => file);
 }
 
 /** Re-key a plan's spawn hash after its Progress body was trimmed. Only a hash that matched the old body moves. Pure. */
@@ -285,12 +319,13 @@ export function planGate(text: string, label: string): [string | null, string[]]
 	return [null, named.map(p => p.file)];
 }
 
-/** Reason to refuse a `task` brief, or null; `files` receives the plans to record, `budgets` every named task's call budget (null = none). */
+/** Reason to refuse a `task` brief, or null; `files` receives the plans to record, `budgets` every named task's call budget (null = none), `staffing` each plan's named tasks of this call. */
 export function spawnProblem(
 	input: Record<string, unknown>,
 	cfg: Config,
 	files: string[] = [],
 	budgets: Record<string, number | null> = {},
+	staffing: Record<string, string[]> = {},
 ): string | null {
 	const tasks = Array.isArray(input?.tasks) ? input.tasks : [];
 	const context = String(input?.context ?? "");
@@ -310,7 +345,10 @@ export function spawnProblem(
 			if (budget < 10 || budget > cfg.guards.sub_max_calls_cap)
 				return `${label}: call budget ${budget} is outside the allowed range 10..${cfg.guards.sub_max_calls_cap}.`;
 		}
-		if (t?.name) named[label] = budget;
+		if (t?.name) {
+			named[label] = budget;
+			for (const f of plans) staffing[f] = [...(staffing[f] ?? []), label];
+		}
 		files.push(...plans);
 	}
 	Object.assign(budgets, named);
@@ -492,14 +530,15 @@ function mainTool(e: ToolEvent, input: Record<string, unknown>, cfg: Config): De
 		}
 		const files: string[] = [];
 		const budgets: Record<string, number | null> = {};
-		const why = spawnProblem(input, cfg, files, budgets);
+		const staffing: Record<string, string[]> = {};
+		const why = spawnProblem(input, cfg, files, budgets, staffing);
 		if (why) {
 			log(cfg.paths.guard_log, `BLOCK spawn: ${why}`);
 			return deny(`main-guard: ${why}`);
 		}
 		const inc = incidentSpawnProblem("spawn", JSON.stringify(input), files, cfg);
 		if (inc) return deny(`main-guard: ${inc}`);
-		recordSpawns(files);
+		recordSpawns(files, staffing);
 		recordBudgets(budgets);
 		return ALLOW;
 	}
@@ -678,7 +717,9 @@ export function checkSpawn(e: SpawnEvent, cfg: Config): Decision {
 	}
 	const inc = incidentSpawnProblem(`spawn ${e.agent}`, e.brief, named, cfg);
 	if (inc) return deny(`main-guard: ${inc}`);
-	recordSpawns(named);
+	const staffing: Record<string, string[]> = {};
+	for (const f of named) staffing[f] = [e.agent];
+	recordSpawns(named, staffing);
 	return ALLOW;
 }
 

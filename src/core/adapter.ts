@@ -93,12 +93,16 @@ export interface ToolEvent {
 	paths: string[];
 	writes: string[];
 	command: string;
+	/** Labels of the harness's own running background jobs at call time; undefined when the caller has no job info (CLI without it). */
+	runningJobs?: string[];
 }
 
 export interface SpawnEvent {
 	agent: string;
 	invocationKind: string;
 	brief: string;
+	/** Labels of the harness's own running background jobs; undefined when the caller has no job info. */
+	runningJobs?: string[];
 }
 
 export interface InjectEvent {
