@@ -1,5 +1,5 @@
 # Changelog
-## Unreleased
+## 0.2.24
 ### Added
 - Published pages expire after `pages.keep_days` (default 15). `neurastream pages publish --keep` keeps a page; `pages list` shows `expires YYYY-MM-DD` or `kept`; expired files are removed on publish, list, and serve, and serve repeats that sweep every hour.
 
