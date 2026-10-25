@@ -23,6 +23,7 @@ import { loadConfig, type Config } from "../../core/config.ts";
 import { nowSec, strftime } from "../../core/clock.ts";
 import { runDetectorsGated } from "../../core/incident-detectors.ts";
 import { checkInject, checkPlanEdit, checkStop, checkTool, MAIN_PLAN_FILE, recordMainResult, revertMainEdit, rekeySpawnFile } from "../../core/guards.ts";
+import { rateLimitWait } from "../../core/rate-limit.ts";
 import { notifyProviders, postReply } from "../../core/notify.ts";
 import { inboxPath } from "../../core/owner-ui.ts";
 import { realTailscale } from "../../core/tailscale.ts";
@@ -70,6 +71,8 @@ interface EventReply {
 	text: string;
 	stopReason: string | null;
 	toolCalls: number;
+	/** The provider's error text on a turn that ended on one (`429 … retry-after-ms=…`); null otherwise. */
+	errorMessage: string | null;
 }
 
 function lastAssistantIn(messages: unknown): EventReply | null {
@@ -87,6 +90,7 @@ function lastAssistantIn(messages: unknown): EventReply | null {
 			text,
 			stopReason: typeof m.stopReason === "string" ? m.stopReason : null,
 			toolCalls: content.filter(c => asRecord(c).type === "toolCall").length,
+			errorMessage: typeof m.errorMessage === "string" ? m.errorMessage : null,
 		};
 	}
 	return null;
@@ -419,6 +423,48 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	// emits (sessionStopWillContinue) consumes it and posts nothing — a blocked stop's reply is a
 	// mid-work report, never a hand-back.
 	let stopBlocked = false;
+	// Rate-limit wait-it-out (plan 20261025_0640): consecutive turn ends on a provider rate limit
+	// form one episode. The attempt doubles the wait, the owner chat is told once per episode, and
+	// ONE timer gives Main a new turn when the wait is over; an owner message before expiry takes
+	// over and cancels it. Any turn that ends without a limit resets the episode and disarms it.
+	let rateAttempt = 0;
+	let rateTimer: NodeJS.Timeout | null = null;
+	const rateClock = (ms: number): string => strftime(ms / 1000, "%H:%M");
+	const clearRateTimer = (): void => {
+		if (rateTimer !== null) {
+			clearTimeout(rateTimer);
+			rateTimer = null;
+		}
+	};
+	const disarmRateEpisode = (): void => {
+		clearRateTimer();
+		rateAttempt = 0;
+	};
+	// The one resume: replacing any armed timer, exactly one new user message when the wait is over.
+	const armRateResume = (untilMs: number): void => {
+		clearRateTimer();
+		rateTimer = setTimeout(() => {
+			rateTimer = null;
+			pi.sendUserMessage(`main-guard: the provider rate limit is over (waited until ${rateClock(untilMs)}). Continue the queue where you stopped.`);
+			adapterLog(cfg, `RATE-LIMIT resume: new turn sent (waited until ${rateClock(untilMs)})`);
+		}, untilMs - Date.now());
+	};
+	// A turn that ended on a rate limit: log, tell the owner once per episode, arm the resume.
+	const onRateLimitedStop = (untilMs: number, waitMs: number): void => {
+		rateAttempt++;
+		const at = rateClock(untilMs);
+		adapterLog(cfg, `RATE-LIMIT stop: resume at ${at} (${Math.round(waitMs / 1000)}s, attempt ${rateAttempt})`);
+		if (rateAttempt === 1) {
+			adapterLog(cfg, "notify: posted (rate-limit)");
+			void postReply(`⏳ Main is rate limited by its provider until ${at} (local); it resumes on its own.`, cfg).then(results => {
+				for (const r of results) if (!r.posted) adapterLog(cfg, `notify: ${r.provider}: ${r.error}`);
+			});
+		}
+		armRateResume(untilMs);
+	};
+	// The rate-limit decision for one turn end, from the event's own last assistant message.
+	const rateLimitOf = (reply: EventReply | null): { untilMs: number; waitMs: number } | null =>
+		rateLimitWait(reply?.stopReason ?? null, reply?.errorMessage ?? null, Date.now(), cfg.guards.rate_limit, rateAttempt + 1);
 	// One guard-log line per notify decision: `notify: posted|skipped (<why>)`. Fire-and-forget:
 	// the decision never awaits the post; a failed or slow post logs one line and never blocks
 	// or retries.
@@ -686,6 +732,16 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		// BEFORE agent_end, so a file read would lag a whole turn.
 		const stopMsg = asRecord(e).last_assistant_message;
 		const reply = stopMsg ? lastAssistantIn([stopMsg]) : lastAssistantIn(asRecord(e).messages);
+		// A turn that ended on a provider rate limit waits it out (plan 20261025_0640): ALLOW before
+		// the rollover and queue decisions — any block here would re-ask straight into the limit —
+		// and without touching the idle-stop counters: checkStop is not consulted.
+		const rl = rateLimitOf(reply);
+		if (rl) {
+			onRateLimitedStop(rl.untilMs, rl.waitMs);
+			return undefined;
+		}
+		// Any turn that ends without a rate limit ends the episode and disarms its resume timer.
+		disarmRateEpisode();
 		// A pending rollover decides the stop and checkStop is not consulted: its queue, incident and cancel
 		// blocks would hold Main at a wait the new session raises again through main-start, and its "spawn an
 		// agent" text is refused while the rollover is pending.
@@ -921,13 +977,24 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 			adapterLog(cfg, "notify: skipped (stop blocked, agent_end)");
 			return;
 		}
+		const reply = lastAssistantIn(asRecord(e).messages);
+		// The same rate-limit check as session_stop (plan 20261025_0640): a rate-limited deferred
+		// hand-back arms the resume timer instead of logging "no reply text" — its reply carries an
+		// error, no text. A mid-run continuation (tool calls, auto-retry) is not a turn end: the
+		// episode state stays as it is.
+		const rl = rateLimitOf(reply);
+		if (rl) {
+			onRateLimitedStop(rl.untilMs, rl.waitMs);
+			return;
+		}
 		const jobCount = asRolloverCtx(ctx)?.runningJobs().length ?? 0;
 		if (jobCount === 0) {
 			adapterLog(cfg, "notify: skipped (no pending job, agent_end)");
 			return;
 		}
-		const reply = lastAssistantIn(asRecord(e).messages);
 		if (!reply || !reply.text) {
+			// A turn that ended on some other no-text outcome is a turn end without a rate limit.
+			disarmRateEpisode();
 			adapterLog(cfg, "notify: skipped (no reply text, agent_end hand-back)");
 			return;
 		}
@@ -938,6 +1005,8 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 			);
 			return;
 		}
+		// A real hand-back: the turn ended without a rate limit — the episode is over.
+		disarmRateEpisode();
 		notifyHandback(reply, "agent_end hand-back");
 	});
 	// Turn end: page answers that arrived during the turn go out (P3b), then open plans that now
@@ -977,6 +1046,16 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		return null;
 	};
 
+	// An owner message while a rate-limit resume is pending takes over: the resume timer is
+	// cancelled (plan 20261025_0640). Registered before the chat-unlock input handler below, so it
+	// sees every owner input even when the unlock short-circuits with { handled: true }.
+	pi.on("input", (_event, ctx) => {
+		if (!isMain(ctx)) return undefined;
+		if (rateTimer === null) return undefined;
+		clearRateTimer();
+		adapterLog(cfg, "RATE-LIMIT resume cancelled: owner message");
+		return undefined;
+	});
 	// Chat unlock (guards.chat_unlock): the owner's whole message "unlock"/"unlock N"/"lock" moves
 	// the guard unlock file (src/core/queue/lib.ts chatUnlock). Only prompts the owner really typed
 	// count: the local terminal (input event, source "interactive") and collab guest prompts from
