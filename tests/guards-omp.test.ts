@@ -286,6 +286,36 @@ console.log(JSON.stringify(out));
 	expect(cli.d.note).toBe(`plan-guard: added 1 file(s) to "## Code read by Main": src/b.ts`);
 });
 
+test("plan-read note: reading a plan whose listed file went stale warns before the edit; a fresh list and a non-plan read stay silent", () => {
+	fresh();
+	const plan2 = join(TOY, "docs/plans/20261025_warn.md");
+	const listedA = join(TOY, "src/a.ts");
+	writeFileSync(plan2, TOY_PLAN.replace("\n## Progress\n", "\n## Code read by Main\n- `src/a.ts`\n\n## Progress\n"));
+	const staleLog = JSON.stringify({ [listedA]: new Date(Date.now() - 30 * 3_600_000).toISOString() });
+	const freshLog = JSON.stringify({ [listedA]: new Date().toISOString() });
+	const out = adapterRun(`${REGISTER}
+const fs = await import("node:fs"); // dynamic here: this line runs inside the runtime-built bun -e child script, static imports cannot reach it
+const out = [];
+fs.writeFileSync(${JSON.stringify(join(STATE, "main-reads.json"))}, JSON.stringify(${staleLog}));
+out.push(await h["tool_result"]({ toolName: "read", input: { path: ${JSON.stringify(plan2)} }, toolCallId: "r1" }, ${MAIN_CTX}));
+fs.writeFileSync(${JSON.stringify(join(STATE, "main-reads.json"))}, JSON.stringify(${freshLog}));
+out.push(await h["tool_result"]({ toolName: "read", input: { path: ${JSON.stringify(plan2)} }, toolCallId: "r2" }, ${MAIN_CTX}));
+fs.writeFileSync(${JSON.stringify(join(STATE, "main-reads.json"))}, JSON.stringify(${staleLog}));
+out.push(await h["tool_result"]({ toolName: "read", input: { path: ${JSON.stringify(join(TOY, "src/a.ts"))} }, toolCallId: "r3" }, ${MAIN_CTX}));
+fs.writeFileSync(${JSON.stringify(join(STATE, "main-reads.json"))}, JSON.stringify(${staleLog}));
+out.push(await h["tool_result"]({ toolName: "bash", input: { command: "grep -rn section" }, content: [{ type: "text", text: ${JSON.stringify(`${plan2}:3:- some hit`)} }], toolCallId: "r4" }, ${MAIN_CTX}));
+console.log(JSON.stringify(out));
+`);
+	const noteOf = (x: unknown) => {
+		const content = fieldOf(x, "content") as { type: string; text: string }[] | undefined;
+		return content?.[content.length - 1]?.text; // the note is appended after the result's own content
+	};
+	expect(noteOf(out[0])).toBe("plan-guard: before you edit this plan, re-read: src/a.ts");
+	expect(out[1]).toBeUndefined(); // fresh: nothing to warn about
+	expect(out[2]).toBeUndefined(); // not a plan file
+	expect(noteOf(out[3])).toBe("plan-guard: before you edit this plan, re-read: src/a.ts"); // first grep hit names the plan
+});
+
 test("spawn outside the allow-list: before_subagent_spawn refuses; listed agent via task passes; other kinds refuse", () => {
 	fresh();
 	const out = adapterRun(`${REGISTER}

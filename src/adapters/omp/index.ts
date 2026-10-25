@@ -23,7 +23,7 @@ import { chatGo, chatTier, type Tier } from "../../core/autonomy.ts";
 import { loadConfig, type Config } from "../../core/config.ts";
 import { nowSec, strftime } from "../../core/clock.ts";
 import { runDetectors, runDetectorsGated, type DetectorInput } from "../../core/incident-detectors.ts";
-import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, newProgressEntries, recordMainResult, revertMainEdit, rekeySpawnFile } from "../../core/guards.ts";
+import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, newProgressEntries, planReadNote, recordMainResult, revertMainEdit, rekeySpawnFile } from "../../core/guards.ts";
 import { rateLimitWait } from "../../core/rate-limit.ts";
 import { notifyProviders, postReply } from "../../core/notify.ts";
 import { loadKnownSecrets, redactSecrets, redactSummary } from "../../core/secret-redact.ts";
@@ -816,6 +816,10 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		if ((!c.hasAgent || c.kind === "main") && !e.isError) {
 			const text = content.map(p => asString(asRecord(p).text)).join("\n");
 			recordMainResult(asString(e.toolName), asRecord(e.input), c.cwd ?? process.cwd(), text);
+			// After the reads are recorded: a fresh hit clears its own warning, a stale list warns
+			// before Main drafts an edit the plan-read guard would refuse (I-20261025-208 P3).
+			const readNote = planReadNote(asString(e.toolName), asRecord(e.input), c.cwd ?? process.cwd(), text, cfg);
+			if (readNote) notes.push(readNote);
 		}
 		if ((!c.hasAgent || c.kind === "main") && e.isError) {
 			revertMainEdit(asString(e.toolName), asRecord(e.input), c.cwd ?? process.cwd(), cfg);

@@ -872,6 +872,36 @@ export function recordMainResult(tool: string, input: Record<string, unknown>, c
 }
 
 /**
+ * The pre-draft warning (I-20261025-208): when Main reads a plan file (the read tool, or a result
+ * whose first `path:line:` hit is the plan), the tool result gains one note naming the plan's
+ * listed files that would fail the read check right now — before Main drafts an edit the guard
+ * would refuse and throw away. Silence when every listed file is fresh in some checkout.
+ */
+export function planReadNote(tool: string, input: Record<string, unknown>, cwd: string, text: string, cfg: Config): string | undefined {
+	let planPath = "";
+	if (tool === "read" && typeof input.path === "string") planPath = path.resolve(cwd, q.expandHome(input.path));
+	else {
+		const first = [...text.matchAll(GREP_LINE)][0];
+		if (first) {
+			const base = typeof input.cwd === "string" ? path.resolve(cwd, q.expandHome(input.cwd)) : cwd;
+			planPath = path.resolve(q.shellCwd(String(input.command ?? input.code ?? ""), base), first[1] ?? "");
+		}
+	}
+	if (!planPath || !MAIN_PLAN_FILE.test(planPath)) return undefined;
+	let plan: string;
+	try {
+		plan = readFileSync(planPath, "utf8");
+	} catch {
+		return undefined;
+	}
+	const stale = planReadProblems(plan, planPath, cfg)
+		.filter(p => p.includes(" was not read by Main within "))
+		.map(p => p.slice(0, p.indexOf(" was not read by Main within ")));
+	if (!stale.length) return undefined;
+	return `plan-guard: before you edit this plan, re-read: ${stale.join(", ")}`;
+}
+
+/**
  * spawn: the allow-list, task-only and open-plan gates for one implementer launch. Covers both
  * original paths (the extension spawn event and a `task` tool call); the brief names the plan.
  */
