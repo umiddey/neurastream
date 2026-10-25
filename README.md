@@ -94,6 +94,10 @@ Owner rule: never write a plan when another agent is doing the research or readi
 
 A plan parked for the owner has one line: `WAITING on owner: <what>`. That line is the only hold, and only Main writes it (plan-guard refuses subagents). The queue summary shows it as a flag on the plan, cut at 80 characters. Compaction and the rollover handoff read the same lines through `ownerHolds`: the compaction context lists each `<plan file>: WAITING on owner: <text>` line (or `none`) and says any other "needs the owner" or "paused" claim is unverified; the handoff's generated state carries the same lines. Main does not keep holds in a handoff note.
 
+## Queue priority
+
+`INDEX.md` order is priority: the top line is rank 1. The queue summary lists plans in that order (`N. <file> [flags] <goal>`). Before a spawn, the guard checks every plan above each plan the brief names: a higher plan that is idle (open, no `WAITING on owner:`, not awaiting merge, still has an unticked phase) and not staffed by a running job must be named in a `Priority skip: <plan> — <why>` line, or the spawn is refused. Staffing is `<queue_state>/staffing.json` (each plan's newest spawn's task names) matched against omp's running job labels. The owner reorders the queue by dragging cards on the phone page.
+
 ## Owner page (`neurastream ui`)
 
 `neurastream ui on --login <tailscale login> [--port N]` does the whole setup in one sentence: it writes `ui.enabled: true` and `ui.owner_login` (plus `ui.port` with `--port`) into `~/.config/neurastream/config.yml` — every other line of the file is kept byte-for-byte — copies `templates/systemd/neurastream-ui.service` to `~/.config/systemd/user/neurastream-ui.service`, runs `systemctl --user daemon-reload`, `enable` and `restart`, then prints the phone link `http://<MagicDNS name>:<port>`. The login must be one the tailnet knows (`tailscale status --json`); when tailscale cannot answer, the check is skipped with a printed warning, never a refusal. `neurastream ui off` stops and disables the unit and sets `ui.enabled: false`, keeping `ui.owner_login` for the next `on`.
