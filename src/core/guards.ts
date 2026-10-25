@@ -133,7 +133,7 @@ export function recordSpawns(files: string[], staffing: Record<string, string[]>
 	}
 }
 
-/** Plans with a running subagent: one of the plan's staffing names equals a running job label, or the label is that name with omp's uniqueness suffix ("-2", "-3", …; real snapshot 2026-10-25: `allocate()` keeps the exact name first, then appends). Pure; no job info staffs nothing. */
+/** Plans with a running subagent: one of the plan's staffing names equals a running job label, or the label is that name with the spawner's uniqueness suffix ("-2", "-3", …; real snapshot 2026-10-25: `allocate()` keeps the exact name first, then appends). Pure; no job info staffs nothing. */
 export function staffedPlans(staffing: Record<string, string[]>, runningJobs: string[] | undefined): string[] {
 	if (!runningJobs?.length) return [];
 	return Object.entries(staffing)
