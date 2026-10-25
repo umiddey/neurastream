@@ -109,6 +109,18 @@ export interface Config {
 		chat_unlock: boolean;
 		plan_read_max_hours: number;
 		idle_stops: number;
+		/** Provider rate limits (src/core/rate-limit.ts): a turn that ends on one waits it out instead of
+		 *  asking again straight into the limit. The words and the waits come from here. */
+		rate_limit: {
+			/** Case-insensitive substrings in the error text that mark a rate limit. */
+			patterns: string[];
+			/** Wait when the error text names no retry-after. */
+			default_wait_s: number;
+			/** Cap for the parsed (or doubled) wait, before slack. */
+			max_wait_s: number;
+			/** Added on top of every wait. */
+			slack_s: number;
+		};
 		blocker_timeout_ms: number;
 		skip_tools: string[];
 		read_tools: string[];
@@ -165,6 +177,19 @@ export interface Config {
 	priority: { sleep_sec: number };
 	alerts: { temp_c: number; mem_psi: number; io_psi: number; cooldown_sec: number };
 	snapshot: { tmp_dest: string; git_repo: string; git_backup: string; excludes: string[] };
+	/** Trace action rules (src/core/trace-actions.ts): what a scanned run may read, dial and write. */
+	traces: {
+		allowed_hosts: string[];
+		/** Product names (docs/config.md) whose files another product's run may not read quietly. */
+		owned_repos: string[];
+		actions: {
+			secret_globs: string[];
+			net_tools: string[];
+			shell_patterns: string[];
+			write_roots: string[];
+			deny_globs: string[];
+		};
+	};
 	/** Optional overlay written by adapter install. Absent until an adapter is installed. */
 	adapter?: { name: string; sessions: string; pins: string; extensions: string };
 	/** Notices about legacy keys in the user's config file; empty when there are none. */
@@ -302,6 +327,12 @@ function check(cfg: Config): void {
 		throw new ConfigError("guards.sub_max_calls_cap must be >= guards.sub_max_calls");
 	}
 	if (!(cfg.rollover.max_session_mb > 0)) throw new ConfigError("rollover.max_session_mb must be > 0");
+	if (!Array.isArray(cfg.guards.rate_limit.patterns) || cfg.guards.rate_limit.patterns.some(p => typeof p !== "string" || p === "")) {
+		throw new ConfigError("guards.rate_limit.patterns must be a list of non-empty strings");
+	}
+	if (!(cfg.guards.rate_limit.default_wait_s >= 1)) throw new ConfigError("guards.rate_limit.default_wait_s must be >= 1");
+	if (!(cfg.guards.rate_limit.max_wait_s >= 1)) throw new ConfigError("guards.rate_limit.max_wait_s must be >= 1");
+	if (!(cfg.guards.rate_limit.slack_s >= 0)) throw new ConfigError("guards.rate_limit.slack_s must be >= 0");
 	if (!(cfg.rollover.exit_grace_s > 0)) throw new ConfigError("rollover.exit_grace_s must be > 0");
 	if (!(cfg.metrics.report_days >= 1)) throw new ConfigError("metrics.report_days must be >= 1");
 	if (!(cfg.ui.port >= 1 && cfg.ui.port <= 65535)) throw new ConfigError("ui.port must be between 1 and 65535");
@@ -330,6 +361,11 @@ function check(cfg: Config): void {
 			}
 		}
 		if (!rule.message) throw new ConfigError("brief.repo_rules.message must be a non-empty string");
+	}
+	for (const list of [cfg.traces.allowed_hosts, cfg.traces.owned_repos, cfg.traces.actions.secret_globs, cfg.traces.actions.net_tools, cfg.traces.actions.shell_patterns, cfg.traces.actions.write_roots, cfg.traces.actions.deny_globs]) {
+		if (list.some((v) => typeof v !== "string" || v === "")) {
+			throw new ConfigError("traces lists must be non-empty strings");
+		}
 	}
 	for (const [key, value] of Object.entries(cfg.paths)) {
 		if (key === "work_roots") {

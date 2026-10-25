@@ -176,6 +176,20 @@ Guard rules around it:
 
 "Needs you" pings use the same channels so the owner learns on the phone that a decision is his: when a Main turn ends with an open plan whose `WAITING on owner:` line was not pinged before, neurastream posts `🔔 Needs you — <plan>: <question>` (with the `neurastream ui` phone-page link when `ui.enabled: true`), and when the guard refuses a Main tool call because it touches a protected guard file, it posts `🔓 Main needs an unlock to continue (<file>)` — the unlock ping at most once per 30 minutes, each waiting question once until its line changes or disappears, remembered in `<queue_state>/notify-waiting.json`. Every decision logs one `notify: needs-you posted|skipped (<why>)` guard-log line.
 
+## Provider rate limits
+
+When a Main turn ends on a provider rate limit, neurastream waits it out instead of asking again straight into the limit. The stop guard sees the turn's error text, matches it against `guards.rate_limit.patterns` (default `["429", "rate_limit", "rate limit", "overloaded", "529"]`, case-insensitive) and, on a hit, allows the stop without consulting the normal stop rules or touching the idle-stop counters. The chat channels get one post per episode — `⏳ Main is rate limited by its provider until HH:MM (local); it resumes on its own.` — and exactly one resume timer is armed (replacing any earlier one). When the wait is over, the plugin gives Main a new turn: `main-guard: the provider rate limit is over (waited until HH:MM). Continue the queue where you stopped.`, and the guard log carries the whole story:
+
+```
+RATE-LIMIT stop: resume at 08:12 (35s, attempt 1)
+notify: posted (rate-limit)
+RATE-LIMIT resume: new turn sent (waited until 08:12)
+```
+
+The wait is the `retry-after-ms=<ms>` or `retry-after: <seconds>` the error text names (omp appends the provider's header to the error message), else `default_wait_s` (300). A turn the resume started that ends on a limit again is the same episode at attempt 2: the wait doubles, no second post. Any turn that ends without a limit ends the episode and disarms the timer. Every wait is clamped to `max_wait_s` (3600) before `slack_s` (15) is added on top. Your own message before expiry takes over and cancels the resume (`RATE-LIMIT resume cancelled: owner message`), and a rate-limited deferred hand-back (an `agent_end` while an async job is pending) arms the same timer instead of logging "no reply text". The words and the waits live in `config.yml` (`guards.rate_limit`, `docs/config.md`); turns that did not end on a rate limit are unaffected.
+
+omp retries a 429 itself while the provider's wait fits its `retry.maxDelayMs` (300000 ms by default); only a longer wait ends the turn (`Retry failed after 1 attempts: Provider requested 731000ms wait, exceeds retry.maxDelayMs`), and that turn end is what neurastream waits out.
+
 ## Trace claims (`neurastream traces claims`)
 
 Agents' final reports assert results — "530 passed", "exit 0", commit SHAs, heavy-run labels, changed files. This command reads a run's trace (its session file, read-only) and checks each claim in the run's last assistant message against what the run's own tool activity shows: a count or exit code must appear in some tool output, a commit SHA must be printed by the output of a git command the run itself ran, a heavy-run label must appear in a quoted heavy-run call, and a changed path must be carried by an edit/write call or a shell write in the path's own command segment. A claim nothing shows becomes a `claim-unbacked` finding.

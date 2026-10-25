@@ -150,6 +150,11 @@ guards:
   chat_unlock: false   # the owner's whole chat message "unlock"/"unlock N"/"lock" moves the guard unlock file
   plan_read_max_hours: 24
   idle_stops: 3
+  rate_limit:
+    patterns: ["429", "rate_limit", "rate limit", "overloaded", "529"]   # error-text substrings (case-insensitive) that mark a provider rate limit
+    default_wait_s: 300    # wait when the error text names no retry-after
+    max_wait_s: 3600       # cap for the parsed (or doubled) wait, before slack
+    slack_s: 15            # added on top of every wait
   blocker_timeout_ms: 10000
   skip_tools: [todo, wait, ask, web_search, job, cancel_job]
   read_tools: [read, grep, glob, find]
@@ -207,6 +212,28 @@ snapshot:
     - ".font-unix"
     - "snap-private-tmp"
     - "*.sock"
+
+traces:
+  allowed_hosts:        # hosts a network command may touch without a finding
+    - localhost
+    - 127.0.0.1
+    - "::1"
+  actions:
+    secret_globs:       # a read matching any glob is a high finding; evidence is masked either way
+      - "~/.ssh/**"
+      - "**/*.env*"
+      - "**/*keys*.txt"
+      - "**/mcp.json"
+      - "**/keyring*/**"
+      - "**/.gnupg/**"
+      - "**/.password-store/**"
+    net_tools: [curl, wget, nc, ssh, scp]   # commands that reach a host (word match inside shell tools)
+    shell_patterns: ['| sh', '| bash', 'eval "$(']   # a command containing one feeds a shell from a pipe
+    write_roots: []     # prefixes a run may write (plan Worktree: roots); empty falls back to paths.work_roots; both empty = the scope check is off
+    deny_globs:         # writes matching any glob are flagged wherever they land
+      - "~/.omp/**"
+      - "~/.local/bin/**"
+      - "~/.local/state/**"
 ```
 
 `ledger.providers` is the allow-list. It is data. Core checks membership and does not know the names.
@@ -218,6 +245,8 @@ snapshot:
 `guards.sub_max_calls_cap` bounds the per-spawn call budget: a `Call budget: <N>` line in a `task` brief (the task's own text, or the shared `context` of the same call; the task's own line wins) gives that run a hard stop at N calls — warning at N − (`guards.sub_max_calls` − `guards.sub_warn_calls`), floored at 1 — instead of the global warn 90 / stop 100. At the stop only plan Progress reads and edits pass, as at the global limit. The spawn is refused when N is outside 10..`guards.sub_max_calls_cap` or the task has no `name`: the budget is keyed by the task name in `<queue_state>/spawn-budgets.json` (next to `spawns.json`), and the ledger flags a still-running sub `OVER-BUDGET` past its own N. A task without the line keeps the global values.
 
 `score.default_branch` has no default. It is config, not a core literal: set it here or pass `--branch`; with `score.default_repo` empty, `accept` / `check` require `--repo` and `--branch`.
+
+`traces.actions` feeds `src/core/trace-actions.ts`. A tool call whose path arguments match a `secret_globs` glob is a secret read. A shell command naming a `net_tools` word reaches a host; it is allowed while the host matches `traces.allowed_hosts` (exact, or `*.suffix`), otherwise flagged — shaped as exfiltration when data flows out (a pipe into the tool, a body/upload option, a stdin redirect, a local scp source). Write targets outside every `actions.write_roots` root (empty falls back to `paths.work_roots`; both empty turn the scope check off) or matching a `deny_globs` glob are out of scope wherever they land. A command containing a `shell_patterns` substring feeds a shell from a pipe. All lists are data: core matches globs and words, it never hardcodes a tool, host or path.
 
 ## omp overlay (adapter install, not core)
 
@@ -251,3 +280,15 @@ The loader rejects:
 - YAML that does not parse
 
 Missing keys are filled from the defaults above. A present key replaces the default. Objects merge one level (`score.penalties` merges per kind; an omitted kind keeps the default). Arrays replace.
+
+
+## traces.owned_repos
+
+Names of the owner's products, spelled the way the repos and worktree dirs spell them. A
+subagent run that reads files of one of these products outside its own plan's repo — installed
+copies under `node_modules` and global installs included, so `@gate-forge/core/...` counts as
+gateforge — while its final report says `Findings: none` becomes an `unreported-finding`
+incident (source `traces`) and records an `agent-score penalty` event (kind
+`unreported-finding`, weight `score.penalties.unreported-finding`) for that agent on the plan.
+Intended list: gateforge, neurastream, oi-agent, clanky, PM, CP. The template ships `[]`; an
+empty list turns the rule off.

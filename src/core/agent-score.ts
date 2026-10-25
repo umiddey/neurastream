@@ -45,6 +45,13 @@ function record(ev: Record<string, unknown>, cfg: Config): void {
 	printText(`recorded: ${pyDumps(ev)}`);
 }
 
+/** Append a penalty event silently: detector folds record these; the score CLI prints its own. */
+export function recordPenalty(cfg: Config, p: { agent: string; kind: string; plan: string; note: string }): void {
+	const ev: Record<string, unknown> = { type: "penalty", agent: p.agent, kind: p.kind, plan: p.plan, note: p.note, ts: new PyFloat(nowSec()) };
+	mkdirSync(dirname(eventsPath(cfg)), { recursive: true });
+	appendFileSync(eventsPath(cfg), `${pyDumps(ev)}\n`);
+}
+
 function expandCommits(repo: string, spec: string): string[] {
 	const out: string[] = [];
 	for (const raw of spec.split(",")) {

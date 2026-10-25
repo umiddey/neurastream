@@ -323,7 +323,9 @@ test("agent-score matches the original", () => {
 			.replaceAll("Accepted (diag/val)", "Accepted (diag)")
 			.replace(/\((\d+)\/(\d+)\)/g, "($1)")
 			// the scrub dropped the default-branch wording from the accept line
-			.replace("(required; there is no default branch)", "(branch)");
+			.replace("(required; there is no default branch)", "(branch)")
+			// traces_02 P4 added the `unreported-finding` penalty kind (score.penalties); the oracle lists three
+			.replace("|unreported-finding", "");
 	for (const args of cases) {
 		const py = runPy(oracle, args, pyEnv, pyHome);
 		// The live help string hardcodes this machine. The package ships ~/Work/pm-counts and no owner date (P9 scrub).

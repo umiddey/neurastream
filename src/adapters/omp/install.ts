@@ -78,7 +78,7 @@ function copyPins(dest: string): { copied: string[]; kept: string[] } {
 	return { copied, kept };
 }
 
-function writeOverlay(file: string): "written" | "unchanged" {
+export function writeOverlay(file: string): "written" | "unchanged" {
 	let text = readFileSync(file, "utf8");
 	let changed = false;
 	if (!/^adapter:/m.test(text)) {
@@ -88,13 +88,20 @@ function writeOverlay(file: string): "written" | "unchanged" {
 	}
 	const missing = PROTECTED.filter(p => !text.includes(p));
 	if (missing.length) {
-		const lines = missing.map(p => `    - "${p}"`).join("\n");
-		if (text.includes("  protected: []")) {
-			text = text.replace("  protected: []", `  protected:\n${lines}`);
-		} else if (text.includes("\n  ledger_command:")) {
-			text = text.replace("\n  ledger_command:", `\n${lines}\n  ledger_command:`);
+		const lines = missing.map(p => `    - "${p}"\n`).join("");
+		// The items always go under their own `protected:` key: the empty list becomes a block
+		// list, an existing block list gains them under its header, a missing key is added at
+		// the top of `guards:`. Any other form (a flow list with items) is the owner's to fix.
+		if (/^ {2}protected: \[\][ \t]*$/m.test(text)) {
+			text = text.replace(/^ {2}protected: \[\][ \t]*\n?/m, `  protected:\n${lines}`);
+		} else if (/^ {2}protected:[ \t]*\n/m.test(text)) {
+			text = text.replace(/^ {2}protected:[ \t]*\n/m, `  protected:\n${lines}`);
+		} else if (/^ {2}protected:/m.test(text)) {
+			throw new Error(`${file}: guards.protected is not a block list; list it as "  protected:" with "    - " items, then rerun`);
+		} else if (/^guards:[ \t]*\n/m.test(text)) {
+			text = text.replace(/^guards:[ \t]*\n/m, `guards:\n  protected:\n${lines}`);
 		} else {
-			throw new Error(`${file} has no guards.protected list to extend`);
+			throw new Error(`${file} has no guards: section to extend`);
 		}
 		changed = true;
 	}
