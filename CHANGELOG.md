@@ -1,5 +1,7 @@
 # Changelog
 ## Unreleased
+
+## 0.2.20
 ### Fixed
 - Notify posts are serialized, retry Discord 429s once after the requested delay (capped at 10 seconds), batch fresh needs-you plans into one message, and post replies even when a session stop is blocked.
 
