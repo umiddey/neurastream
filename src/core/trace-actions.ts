@@ -107,11 +107,14 @@ function bareWord(raw: string): string {
 	return raw.replace(/^[\s'"`]+|[\s'"`;)]+$/g, "");
 }
 
+/** Characters that never appear in a file path but do in code, jq/grep patterns and URL fragments. */
+const NOT_A_PATH = /[()[\]{}|\\^<>"`]/;
+
 /** Path-like words of one command string: with a slash, or dotfiles, or home-relative. */
 function pathTokens(command: string): string[] {
 	const out: string[] = [];
 	for (const raw of command.split(/\s+/)) {
-		const tok = bareWord(raw.replace(/^\d+>&\d+$/, "")).replace(/^\d+>/, "");
+		const tok = bareWord(raw.replace(/^\d+>&\d+$/, "")).replace(/^\d+>/, "").replace(/^</, "");
 		if (tok === "") continue;
 		if (tok.includes("/") || tok.startsWith(".") || tok.startsWith("~") || tok.startsWith("$HOME")) out.push(tok);
 	}
@@ -340,7 +343,7 @@ export function suspiciousActions(events: TraceEvent[], rules: ActionsRules): Su
 		const candidates = [
 			...pathTokens(command),
 			...(scanArgs ? argStrings(ev.args).filter((s) => s.includes("/") || s.startsWith(".") || s.startsWith("~")) : []),
-		];
+		].filter((c) => !c.includes("...") && !NOT_A_PATH.test(c));
 		for (const c of candidates) {
 			const full = expandHome(c, rules.home);
 			if (writes.has(full)) continue;
