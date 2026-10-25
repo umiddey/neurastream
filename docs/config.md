@@ -264,6 +264,8 @@ traces:
 
 `guards.sub_max_calls_cap` bounds the per-spawn call budget: a `Call budget: <N>` line in a `task` brief (the task's own text, or the shared `context` of the same call; the task's own line wins) gives that run a hard stop at N calls — warning at N − (`guards.sub_max_calls` − `guards.sub_warn_calls`), floored at 1 — instead of the global warn 90 / stop 100. At the stop only plan Progress reads and edits pass, as at the global limit. The spawn is refused when N is outside 10..`guards.sub_max_calls_cap` or the task has no `name`: the budget is keyed by the task name in `<queue_state>/spawn-budgets.json` (next to `spawns.json`), and the ledger flags a still-running sub `OVER-BUDGET` past its own N. A task without the line keeps the global values.
 
+`autonomy.*` is the owner's preference layer (src/core/autonomy.ts): how much Main may do without asking. `autonomy.tier` (default `opinionated`) is the tier in force whenever `<queue_state>/autonomy-tier` does not name one of the three; the owner moves the real setting any time with the whole chat message `tier strict|opinionated|full` (when `guards.chat_unlock` is on) or the phone page's tier buttons — never a tool call, the state dir is protected. `strict` caps Main's project-file changes at `autonomy.strict_edit_limit` per `guards.main_window_min` minutes and refuses `git push`, `glab mr merge` and `gh pr merge` (seen through `sh -c`/`sudo` like the ui-start rule) until the owner types `go`: one landing, valid `autonomy.go_minutes` minutes, consumed by the first gated call. `opinionated` keeps `guards.main_edit_limit`. `full` drops the edit cap and accepts a `Priority skip: <plan> — Main: "<reason>"` line (reason ≥ 4 words) at the priority gate; the owner-quote proof still works there. Every tier keeps the owner-only moves owner-only: protected guard files, starting the phone page, notify secrets, the unlock and the tier file itself.
+
 `score.default_branch` has no default. It is config, not a core literal: set it here or pass `--branch`; with `score.default_repo` empty, `accept` / `check` require `--repo` and `--branch`.
 
 `score.waste_weight` must be between 0 and 1. It scales each model's points-per-dollar ranking by its wasted-call fraction; the default 0 leaves the existing ranking unchanged.
@@ -301,6 +303,8 @@ The loader rejects:
 - `ledger.max_slots` below 1
 - `guards.sub_warn_calls` greater than `guards.sub_max_calls`
 - `guards.sub_max_calls_cap` below `guards.sub_max_calls`
+- `autonomy.tier` that is not `strict`, `opinionated` or `full`
+- `autonomy.strict_edit_limit` or `autonomy.go_minutes` that is not an integer >= 1
 - a `paths.*` value that is not a string
 - `metrics.report_days` below 1, or a `metrics.correction_patterns` entry that does not compile as a case-insensitive regex
 - `ui.port` outside 1..65535

@@ -19,6 +19,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { appendFileSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { Decision } from "../../core/adapter.ts";
+import { chatGo, chatTier, type Tier } from "../../core/autonomy.ts";
 import { loadConfig, type Config } from "../../core/config.ts";
 import { nowSec, strftime } from "../../core/clock.ts";
 import { runDetectors, runDetectorsGated, type DetectorInput } from "../../core/incident-detectors.ts";
@@ -1092,8 +1093,10 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		return null;
 	};
 
-	// Chat unlock (guards.chat_unlock): the owner's whole message "unlock"/"unlock N"/"lock" moves
-	// the guard unlock file (src/core/queue/lib.ts chatUnlock). Only prompts the owner really typed
+	// Chat unlock + autonomy tiers (guards.chat_unlock): the owner's whole message "unlock"/
+	// "unlock N"/"lock" moves the guard unlock file, "tier <name>" sets the autonomy tier and
+	// "go" approves one strict landing (src/core/queue/lib.ts chatUnlock, src/core/autonomy.ts
+	// chatTier/chatGo). Only prompts the owner really typed
 	// count: the local terminal (input event, source "interactive") and collab guest prompts from
 	// write peers. This handler is registered BEFORE the rollover input handler below, so the unlock
 	// wins while a rollover is ready or in flight (emitInput short-circuits on { handled: true }).
@@ -1107,10 +1110,32 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 			c.notify("guard locked again");
 		}
 	};
+	// The tier switch and the one-shot `go` travel the same two owner paths and answer the same way.
+	const notifyTier = (ctx: unknown, r: { tier?: Tier }): void => {
+		const c = asRolloverCtx(ctx);
+		if (!c || r.tier === undefined) return;
+		c.notify(`tier now ${r.tier}`);
+	};
+	const notifyGo = (ctx: unknown, r: { minutes?: number }): void => {
+		const c = asRolloverCtx(ctx);
+		if (!c || r.minutes === undefined) return;
+		c.notify(`go: one push/merge approved for ${r.minutes} min`);
+	};
 	pi.on("input", (event, ctx) => {
 		if (!cfg.guards.chat_unlock || !isMain(ctx)) return undefined;
 		const e = asRecord(event);
 		if (asString(e.source) !== "interactive") return undefined;
+		const text = asString(e.text);
+		const t = chatTier(text, cfg, "interactive");
+		if (t.applied) {
+			notifyTier(ctx, t);
+			return { handled: true };
+		}
+		const g = chatGo(text, cfg, "interactive");
+		if (g.applied) {
+			notifyGo(ctx, g);
+			return { handled: true };
+		}
 		const r = q.chatUnlock(asString(e.text), cfg, "interactive");
 		if (!r.applied) return undefined;
 		notifyUnlock(ctx, r);
@@ -1146,7 +1171,17 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 				if (seenChatPrompts.has(key)) continue;
 				seenChatPrompts.add(key);
 				const r = q.chatUnlock(text, cfg, `collab:${from}`);
-				if (r.applied) notifyUnlock(ctx, r);
+				if (r.applied) {
+					notifyUnlock(ctx, r);
+					continue;
+				}
+				const t = chatTier(text, cfg, `collab:${from}`);
+				if (t.applied) {
+					notifyTier(ctx, t);
+					continue;
+				}
+				const g = chatGo(text, cfg, `collab:${from}`);
+				if (g.applied) notifyGo(ctx, g);
 			}
 		}
 		const rule = { pattern: cfg.quota.reset_pattern, zone: cfg.quota.reset_tz };

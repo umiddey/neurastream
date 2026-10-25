@@ -12,6 +12,7 @@ import { randomUUID } from "node:crypto";
 import os from "node:os";
 import { basename, resolve } from "node:path";
 import type { RunSource } from "./adapter.ts";
+import { chatTier, currentTier, type Tier } from "./autonomy.ts";
 import type { Config } from "./config.ts";
 import { nowSec, strftime } from "./clock.ts";
 import { cpuCount } from "./host.ts";
@@ -435,19 +436,21 @@ function tilesHtml(data: PageData): string {
 	return [needsTile, spendTileHtml(data), runs, plans].join("\n");
 }
 
-/** The sticky mockup top bar: logo, pill tabs, and the lock pill that posts the unlock/lock forms. */
+/** The sticky mockup top bar: logo, pill tabs, and the lock pill that posts the unlock/lock and tier forms. */
 function topBarHtml(tab: string, lockMinutesLeft: number | null, cfg: Config): string {
 	const tabs: [string, string][] = [["now", "Now"], ["queue", "Queue"], ["agents", "Agents"], ["spend", "Spend"]];
 	const pills = tabs.map(([id, label]) => `<a href="/?tab=${id}"${tab === id ? ` class="on"` : ""}>${label}</a>`).join("");
 	const lockLabel = lockMinutesLeft === null ? "🔒 Off" : `🔓 ${lockMinutesLeft} min`;
 	const unlockForm = (minutes: number) =>
 		`<form method="post" action="/unlock"><input type="hidden" name="minutes" value="${minutes}"><button class="btn" type="submit">Unlock ${minutes} min</button></form>`;
+	const tierForm = (name: Tier, label: string) =>
+		`<form method="post" action="/tier"><input type="hidden" name="tier" value="${name}"><button class="btn${currentTier(cfg) === name ? " on" : ""}" type="submit">${label}</button></form>`;
 	const off = cfg.guards.chat_unlock
 		? ""
 		: `<p class="offnote">Unlocking from the page is switched off in the config. To turn it on, set:</p><code class="offcfg">guards: chat_unlock: true</code>`;
 	return `<div class="top"><span class="logo">ns</span>
 <nav class="pills" aria-label="Sections">${pills}</nav>
-<details class="lock" id="lock-pill"><summary>${lockLabel}</summary><div class="lockmenu">${unlockForm(15)}${unlockForm(30)}<form method="post" action="/lock"><button class="btn" type="submit">Lock now</button></form>${off}</div></details>
+<details class="lock" id="lock-pill"><summary>${lockLabel}</summary><div class="lockmenu">${unlockForm(15)}${unlockForm(30)}<form method="post" action="/lock"><button class="btn" type="submit">Lock now</button></form><hr>${tierForm("strict", "Tier: strict")}${tierForm("opinionated", "Tier: opinionated")}${tierForm("full", "Tier: full")}${off}</div></details>
 </div>`;
 }
 
@@ -836,6 +839,21 @@ function handleLock(cfg: Config, login: string): Response {
 	return redirect("/?sent=lock");
 }
 
+const TIERS: readonly Tier[] = ["strict", "opinionated", "full"];
+
+// Autonomy tier from the phone page (plan 20261025_1940 P3): behind the same auth as every other
+// route, written by the core chatTier with the owner's tapped name; a bad name is a 400 before
+// the core is called, and the chat gate off redirects to the plain-words note like unlock/lock.
+function handleTier(cfg: Config, fields: Record<string, string>, login: string): Response {
+	const name = (fields.tier ?? "").trim().toLowerCase();
+	if (!(TIERS as readonly string[]).includes(name)) return textRes("tier must be strict, opinionated or full", 400);
+	const result = chatTier(`tier ${name}`, cfg, `ui:${login}`, "ui");
+	if (!result.applied) return redirect("/?sent=unlock-off");
+	mkdirSync(stateDirPath(), { recursive: true });
+	appendFileSync(inboxPath(), `${JSON.stringify({ ts: nowSec(), kind: "tier", tier: result.tier, login })}\n`);
+	return redirect(`/?sent=tier&tier=${result.tier}`);
+}
+
 // ---- queue reorder (plan P4): the owner drags a card; INDEX.md is rewritten atomically ----
 
 /**
@@ -995,6 +1013,9 @@ export function startOwnerUi(opts: OwnerUiOptions): OwnerUiServer {
 							code = res.status;
 						} else if (req.method === "POST" && url.pathname === "/lock") {
 							res = handleLock(cfg, login);
+							code = res.status;
+						} else if (req.method === "POST" && url.pathname === "/tier") {
+							res = handleTier(cfg, await fieldsOf(req), login);
 							code = res.status;
 						} else if (req.method === "POST" && url.pathname === "/reorder") {
 							res = handleReorder(cfg, await fieldsOf(req), login);
