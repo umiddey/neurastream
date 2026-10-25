@@ -1,5 +1,5 @@
 # Changelog
-## Unreleased
+## 0.2.29
 ### Changed
 - Autonomy tiers: the strict tier's chat approve word is config `autonomy.go_phrase` (default `go push`), matched as the whole trimmed message, case-insensitive with inner spaces collapsed; a bare `go` no longer approves anything and falls through as a normal message (I-20261025-201). The strict refusal, the injected tier line and the owner notice name the phrase from config.
 
