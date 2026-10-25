@@ -27,7 +27,7 @@ let agentDir: string;
 let repo: string;
 let cfg: Config;
 
-const AUTONOMY_OK = "  tier: opinionated\n  strict_edit_limit: 2\n  go_minutes: 10\n";
+const AUTONOMY_OK = '  tier: opinionated\n  strict_edit_limit: 2\n  go_minutes: 10\n  go_phrase: "go push"\n';
 
 function load(autonomy = AUTONOMY_OK, chatUnlock = true): Config {
 	mkdirSync(join(root, ".config/neurastream"), { recursive: true });
@@ -136,15 +136,26 @@ test("guards.chat_unlock off: even a real command changes nothing", () => {
 	applyQueueEnv(cfg);
 	expect(chatTier("tier full", cfg, "interactive").applied).toBe(false);
 	expect(existsSync(tierFile())).toBe(false);
-	expect(chatGo("go", cfg, "interactive").applied).toBe(false);
+	expect(chatGo("go push", cfg, "interactive").applied).toBe(false);
 	expect(existsSync(goFile())).toBe(false);
 	expect(tierLogLines()).toEqual([]);
 });
 
 // --- chatGo / takeGo ---
 
-test("go touches the file; takeGo consumes it exactly once", () => {
-	const r = chatGo("go", cfg, "interactive");
+// I-20261025-201: the approve phrase is config autonomy.go_phrase (default "go push"); a bare
+// "go" is the owner's everyday word, so it approves nothing.
+
+test("a bare go is an ordinary message: nothing applied, no autonomy-go file", () => {
+	expect(chatGo("go", cfg, "interactive").applied).toBe(false);
+	expect(chatGo("  GO  ", cfg, "interactive").applied).toBe(false);
+	expect(existsSync(goFile())).toBe(false);
+	expect(takeGo(cfg)).toBe(false);
+	expect(tierLogLines()).toEqual([]);
+});
+
+test("the approve phrase touches the file; takeGo consumes it exactly once", () => {
+	const r = chatGo("go push", cfg, "interactive");
 	expect(r).toEqual({ applied: true, minutes: 10 });
 	expect(existsSync(goFile())).toBe(true);
 	expect(takeGo(cfg)).toBe(true);
@@ -153,9 +164,26 @@ test("go touches the file; takeGo consumes it exactly once", () => {
 	expect(tierLogLines()[0]).toContain("GO chat source=interactive minutes=10");
 });
 
-test("only the whole message counts: go ahead does nothing,  GO  does", () => {
-	expect(chatGo("go ahead", cfg, "interactive").applied).toBe(false);
-	expect(chatGo("  GO  ", cfg, "interactive").applied).toBe(true);
+test("matching is the whole trimmed message, case-insensitive, inner spaces collapsed", () => {
+	expect(chatGo(" Go  Push ", cfg, "interactive").applied).toBe(true);
+	rmSync(goFile(), { force: true });
+	expect(chatGo("go\t push", cfg, "interactive").applied).toBe(true);
+	rmSync(goFile(), { force: true });
+	expect(chatGo("go push now", cfg, "interactive").applied).toBe(false);
+	expect(chatGo("go  pushes", cfg, "interactive").applied).toBe(false);
+	expect(existsSync(goFile())).toBe(false);
+});
+
+test("a custom go_phrase replaces the default: ship it works, go push does not", () => {
+	cfg = load('  tier: opinionated\n  strict_edit_limit: 2\n  go_minutes: 10\n  go_phrase: "ship it"\n');
+	applyQueueEnv(cfg);
+	clearTier();
+	expect(chatGo("Ship it", cfg, "interactive").applied).toBe(true);
+	expect(tierLogLines()[0]).toContain("GO chat source=interactive minutes=10");
+	rmSync(goFile(), { force: true });
+	expect(chatGo("go push", cfg, "interactive").applied).toBe(false);
+	expect(chatGo("go", cfg, "interactive").applied).toBe(false);
+	expect(existsSync(goFile())).toBe(false);
 });
 
 test("a stale go is refused and removed", () => {
@@ -179,6 +207,7 @@ test("bad autonomy config values are ConfigErrors", () => {
 		"  tier: strict\n  strict_edit_limit: 0\n  go_minutes: 10\n",
 		"  tier: strict\n  strict_edit_limit: 2.5\n  go_minutes: 10\n",
 		"  tier: strict\n  strict_edit_limit: 2\n  go_minutes: 0\n",
+		'  tier: strict\n  strict_edit_limit: 2\n  go_minutes: 10\n  go_phrase: ""\n',
 	]) {
 		root = mkdtempSync(join(tmpdir(), "neurastream-autonomy-bad-"));
 		roots.push(root);
@@ -262,7 +291,7 @@ test("checkInject names the tier instead of the bare edit-limit line", () => {
 	setTier("strict");
 	const d = checkInject({ agent: "main", inject: "what is next" }, cfg);
 	expect(d.inject).toContain("autonomy: strict —");
-	expect(d.inject).toContain('"go"');
+	expect(d.inject).toContain('"go push"');
 	expect(d.inject).not.toContain("Main may change project files at most");
 	setTier("full");
 	const f = checkInject({ agent: "main", inject: "what is next" }, cfg);
@@ -274,11 +303,11 @@ test("checkInject names the tier instead of the bare edit-limit line", () => {
 
 const PUSH = "git push origin feat/toy";
 
-test("tier strict refuses Main's push/merge without go", () => {
+test("tier strict refuses Main's push/merge without the approve phrase", () => {
 	setTier("strict");
 	const d = checkTool(mainEvent("bash", { command: PUSH }), cfg);
 	expect(d.allow).toBe(false);
-	expect(d.reason).toBe('main-guard: tier strict — type "go" to approve one push/merge');
+	expect(d.reason).toBe('main-guard: tier strict — type "go push" to approve one push/merge');
 	const m = checkTool(mainEvent("bash", { command: "glab mr merge 141" }), cfg);
 	expect(m.allow).toBe(false);
 	const h = checkTool(mainEvent("bash", { command: "gh pr merge 12 --squash" }), cfg);
@@ -294,16 +323,17 @@ test("tier strict sees the push through sh -c, sudo, env and chains", () => {
 
 test("a standing go lets exactly one landing through", () => {
 	setTier("strict");
-	expect(chatGo("go", cfg, "interactive").applied).toBe(true);
+	expect(chatGo("go push", cfg, "interactive").applied).toBe(true);
 	expect(checkTool(mainEvent("bash", { command: PUSH }), cfg).allow).toBe(true);
 	const second = checkTool(mainEvent("bash", { command: PUSH }), cfg);
 	expect(second.allow).toBe(false);
-	expect(second.reason).toContain('type "go"');
+	expect(second.reason).toContain('type "go push"');
 });
 
-test("a go that is not the whole message approves nothing", () => {
+test("a message that is not the whole phrase approves nothing", () => {
 	setTier("strict");
 	expect(chatGo("please go", cfg, "interactive").applied).toBe(false);
+	expect(chatGo("go push later", cfg, "interactive").applied).toBe(false);
 	expect(checkTool(mainEvent("bash", { command: PUSH }), cfg).allow).toBe(false);
 });
 

@@ -1,7 +1,8 @@
-// Regression (I-20261025-177 P2): in tier strict, Main's `git push` is refused until the owner's
-// one-shot `go`. Deliberately independent of src/core/autonomy.ts — the tier file is written
-// directly — so this exact file also runs against the old code (origin/main 67452db), where no
-// reader exists and the push goes through: the recorded fail-before.
+// Regression (I-20261025-177 P2, I-20261025-201): in tier strict, Main's `git push` is refused
+// until the owner's approve phrase (autonomy.go_phrase, default "go push"). Deliberately
+// independent of src/core/autonomy.ts — the tier file is written directly — so this exact file
+// also runs against the old code (origin/main 67452db), where no reader exists and the push goes
+// through: the recorded fail-before.
 
 import { afterAll, beforeEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -66,8 +67,8 @@ function mainEvent(tool: string, input: Record<string, unknown>): ToolEvent {
 	return { tool, input, cwd: repo, agent: "main", agentId: "main", calls: 0, paths: [], writes: [], command: String(input?.command ?? "") };
 }
 
-test("tier strict refuses Main's git push without go", () => {
+test("tier strict refuses Main's git push without the approve phrase", () => {
 	const d = checkTool(mainEvent("bash", { command: "git push origin feat/toy" }), cfg);
 	expect(d.allow).toBe(false);
-	expect(d.reason).toBe('main-guard: tier strict — type "go" to approve one push/merge');
+	expect(d.reason).toBe('main-guard: tier strict — type "go push" to approve one push/merge');
 });

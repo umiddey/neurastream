@@ -1,5 +1,6 @@
 // Autonomy tiers (I-20261025-177): one owner setting — strict / opinionated / full — that the
-// guards follow. The tier and a one-shot `go` are written only by the owner's own words (the same
+// guards follow. The tier and the one-shot approve phrase (autonomy.go_phrase, default "go push")
+// are written only by the owner's own words (the same
 // paths as chatUnlock: the terminal input event and collab write-peer messages) or the
 // authenticated phone page; never by a tool call (the state dir is protected) and never from
 // model text. Every tier keeps the owner-only moves owner-only; no tier loosens them.
@@ -59,20 +60,25 @@ export function chatTier(text: string, cfg: Config, source: string, word: "chat"
 }
 
 export interface ChatGoResult {
-	/** True when the text was a whole-message `go` command that took effect. */
+	/** True when the text was a whole-message approve phrase that took effect. */
 	applied: boolean;
 	/** The minutes this `go` stays valid (autonomy.go_minutes), for the owner notice. */
 	minutes?: number;
 }
 
+/** The shape a phrase is matched in: trimmed, lowercased, inner whitespace collapsed. */
+const goWords = (s: string): string => s.trim().toLowerCase().replace(/\s+/g, " ");
+
 /**
  * The strict tier's one-shot landing approval by chat (guards.chat_unlock): the whole trimmed
- * message "go" touches `<state dir>/autonomy-go`; the next strict push/merge consumes it
- * (takeGo). Same trust rules as chatTier.
+ * message matching `autonomy.go_phrase` (default "go push") — case-insensitive, inner spaces
+ * collapsed — touches `<state dir>/autonomy-go`; the next strict push/merge consumes it
+ * (takeGo). Same trust rules as chatTier. A bare "go" is an ordinary message (I-20261025-201):
+ * it approves nothing.
  */
 export function chatGo(text: string, cfg: Config, source: string, word: "chat" | "ui" = "chat"): ChatGoResult {
 	if (!cfg.guards.chat_unlock) return { applied: false };
-	if (text.trim().toLowerCase() !== "go") return { applied: false };
+	if (goWords(text) !== goWords(cfg.autonomy.go_phrase)) return { applied: false };
 	mkdirSync(stateDirPath(), { recursive: true });
 	writeFileSync(goFile(), "");
 	try {

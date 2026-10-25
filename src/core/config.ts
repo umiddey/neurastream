@@ -140,8 +140,10 @@ export interface Config {
 		tier: "strict" | "opinionated" | "full";
 		/** Main's project-file changes per guards.main_window_min window in tier strict. */
 		strict_edit_limit: number;
-		/** Minutes one owner `go` approves exactly one push/merge in tier strict. */
+		/** Minutes the approve phrase approves exactly one push/merge in tier strict. */
 		go_minutes: number;
+		/** The whole chat message that approves one push/merge in tier strict (default "go push"; matched case-insensitively with inner spaces collapsed). */
+		go_phrase: string;
 	};
 	/** The owner's phone page (`neurastream ui`): binds the tailnet address only. */
 	ui: { enabled: boolean; port: number; owner_login: string };
@@ -426,6 +428,8 @@ function check(cfg: Config): void {
 		throw new ConfigError("autonomy.strict_edit_limit must be an integer >= 1");
 	if (!Number.isInteger(cfg.autonomy.go_minutes) || cfg.autonomy.go_minutes < 1)
 		throw new ConfigError("autonomy.go_minutes must be an integer >= 1");
+	if (typeof cfg.autonomy.go_phrase !== "string" || cfg.autonomy.go_phrase.trim() === "")
+		throw new ConfigError("autonomy.go_phrase must be a non-empty string");
 	if (!Array.isArray(cfg.guards.rate_limit.patterns) || cfg.guards.rate_limit.patterns.some(p => typeof p !== "string" || p === "")) {
 		throw new ConfigError("guards.rate_limit.patterns must be a list of non-empty strings");
 	}
