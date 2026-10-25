@@ -808,13 +808,13 @@ function progressEntries(text: string): string[] {
 }
 
 /** Entries an edit adds or rewrites: blocks whose text was not in the Progress section before. */
-function newProgressEntries(before: string, after: string): string[] {
+export function newProgressEntries(before: string, after: string): string[] {
 	const old = new Set(progressEntries(before));
 	return progressEntries(after).filter(b => !old.has(b));
 }
 
 /** The value after "Findings:" in an entry, or null when the entry has no Findings line with content. */
-function findingsValue(block: string): string | null {
+export function findingsValue(block: string): string | null {
 	const line = block.split("\n").find(l => l.includes("Findings:"));
 	if (!line) return null;
 	return line.slice(line.indexOf("Findings:") + "Findings:".length).trim() || null;

@@ -21,16 +21,18 @@ import { basename, dirname, join } from "node:path";
 import type { Decision } from "../../core/adapter.ts";
 import { loadConfig, type Config } from "../../core/config.ts";
 import { nowSec, strftime } from "../../core/clock.ts";
-import { runDetectorsGated } from "../../core/incident-detectors.ts";
-import { checkInject, checkPlanEdit, checkStop, checkTool, MAIN_PLAN_FILE, recordMainResult, revertMainEdit, rekeySpawnFile } from "../../core/guards.ts";
+import { runDetectors, runDetectorsGated, type DetectorInput } from "../../core/incident-detectors.ts";
+import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, newProgressEntries, recordMainResult, revertMainEdit, rekeySpawnFile } from "../../core/guards.ts";
 import { notifyProviders, postReply } from "../../core/notify.ts";
 import { inboxPath } from "../../core/owner-ui.ts";
 import { realTailscale } from "../../core/tailscale.ts";
+import { actionsRules, suspiciousActions, unreportedFindings } from "../../core/trace-actions.ts";
 import { applyQueueEnv } from "../../core/queue/env.ts";
 import { mainStartText, runDailyCheck } from "../../core/main-start.ts";
 import { readBlocks } from "../../core/metrics.ts";
 import { buildHandoff, holdsBlock, notePath, noteRequest, OWNER_AWAY, ownerText, relaunchPath, rolloverState, spawnRefusal, type RolloverState } from "../../core/rollover.ts";
-import { defaultCompletedResults, defaultRunSource } from "./sessions.ts";
+import { defaultCompletedResults, defaultRunSource, runIdOf } from "./sessions.ts";
+import { parseTraceFile } from "./traces.ts";
 import { packageJsonPath, packageVersion } from "./package-root.ts";
 import * as q from "../../core/queue/lib.ts";
 // Registers the plugin-command matcher into core's writeTargets (side effect).
@@ -145,6 +147,38 @@ function mainDetectors(cfg: Config, extra: { prompt?: string; bash?: { command: 
 		runDailyCheck(cfg, defaultRunSource(cfg), nowSec());
 	} catch (err) {
 		adapterLog(cfg, `incident detectors failed: ${err instanceof Error ? err.message : String(err)}`);
+	}
+}
+
+/**
+ * D6 + D7 over a subagent's own trace, right after an allowed Progress edit (plan
+ * 20261024_0301 P6): the sub's session file (its harness session manager hands it out) is
+ * parsed as the run's trace, every high suspicious action folds as a D6 incident, and when the
+ * new Progress bullet claims `Findings: none` the cross-product reads hidden behind that claim
+ * fold as D7 (`unreported-finding`) with the agent-score penalty — the bullet is the claim
+ * source the owner named, so it replaces the final-text check. The newest added bullet decides
+ * (Progress runs newest-first). Best effort: a failure is logged, never thrown — a broken
+ * detector must not break the verified edit.
+ */
+function subActionDetectors(cfg: Config, ctx: unknown, planFile: string, before: string, after: string): void {
+	try {
+		const entries = newProgressEntries(before, after);
+		if (entries.length === 0) return;
+		const sessionFile = call(asRecord(asRecord(ctx).sessionManager), "getSessionFile");
+		if (typeof sessionFile !== "string" || sessionFile === "") return;
+		const events = parseTraceFile(sessionFile, runIdOf(sessionFile));
+		const rules = actionsRules(cfg);
+		const input: DetectorInput = { actions: suspiciousActions(events, rules) };
+		if (/^none\.?$/i.test(findingsValue(entries[0]!) ?? "")) {
+			input.unreported = unreportedFindings(events, rules, {
+				repo: basename(q.planRepo(planFile)),
+				plan: planFile,
+				claimedNone: true,
+			});
+		}
+		runDetectors(cfg, input);
+	} catch (err) {
+		adapterLog(cfg, `sub action detectors failed: ${err instanceof Error ? err.message : String(err)}`);
 	}
 }
 
@@ -645,6 +679,8 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 					const note = trimProgress(file);
 					if (note) notes.push(note);
 				}
+				// Live D6+D7 over the sub's own session as soon as it reports into the plan (P6).
+				if (d.allow && c.kind === "sub") subActionDetectors(cfg, ctx, file, before, after);
 			}
 		}
 		if ((!c.hasAgent || c.kind === "main") && asString(e.toolName) === "bash" && !e.isError) {

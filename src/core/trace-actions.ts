@@ -375,6 +375,12 @@ export interface OwnRun {
 	repo: string;
 	/** The plan the run reported into, carried onto the agent-score penalty event. */
 	plan: string;
+	/**
+	 * True when the run's new Progress bullet claims `Findings: none` (live wiring, plan P6):
+	 * the bullet is the claim source the owner named and the plan-edit guard has just verified
+	 * it, so it replaces the final-text check below.
+	 */
+	claimedNone?: boolean;
 }
 
 export interface UnreportedFinding {
@@ -425,10 +431,11 @@ const NONE_FINDINGS = /findings:\s*none\b[\s.!]*$/i;
 /**
  * Cross-product reads a subagent run hid behind a `Findings: none` line (plan P4): the run read
  * files of an owned repo other than its plan's own (`own.repo`), installed copies under
- * node_modules included, while its final report claims no findings. Read tools count only their
- * named path arguments (search text and intents are data) plus a shell command's path-like
- * words; writes of its own repo, unowned paths, runs without the none-claim and the trace
- * reader's main runs never fire. Evidence is masked like every rule's.
+ * node_modules included, while its final report claims no findings — or, with `own.claimedNone`,
+ * while its new Progress bullet does. Read tools count only their named path arguments (search
+ * text and intents are data) plus a shell command's path-like words; writes of its own repo,
+ * unowned paths, runs without the none-claim and the trace reader's main runs never fire.
+ * Evidence is masked like every rule's.
  */
 export function unreportedFindings(events: TraceEvent[], rules: ActionsRules, own: OwnRun): UnreportedFinding[] {
 	if (rules.owned_repos.length === 0) return [];
@@ -442,7 +449,7 @@ export function unreportedFindings(events: TraceEvent[], rules: ActionsRules, ow
 			break;
 		}
 	}
-	if (report === null || !NONE_FINDINGS.test(report.trimEnd())) return [];
+	if (own.claimedNone !== true && (report === null || !NONE_FINDINGS.test(report.trimEnd()))) return [];
 	const ownKey = segKey(own.repo);
 	const out: UnreportedFinding[] = [];
 	const seen = new Set<string>();

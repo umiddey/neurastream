@@ -4,13 +4,15 @@
 // tests build the rule set directly, exactly the way actionsRules(cfg) maps it.
 
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { ompTraceSource, parseTraceFile } from "../src/adapters/omp/traces.ts";
 import type { TraceEvent } from "../src/core/adapter.ts";
 import { loadConfig, ConfigError } from "../src/core/config.ts";
 import { runDetectors } from "../src/core/incident-detectors.ts";
+import { readIncidents } from "../src/core/incidents.ts";
 import { runTraces } from "../src/cli/traces.ts";
 import { readEvents } from "../src/core/agent-score.ts";
 import { actionsRules, globMatch, ownedRepoOf, suspiciousActions, unreportedFindings, type ActionsRules } from "../src/core/trace-actions.ts";
@@ -501,5 +503,180 @@ describe("unreported findings fold as traces incidents with an agent-score penal
 		expect(again).toHaveLength(1);
 		expect(again[0]!.count).toBe(2);
 		expect(readEvents(cfg4).filter((e) => e.type === "penalty")).toHaveLength(1);
+	});
+});
+
+// ---- P6: live wiring of D6 + D7 — OwnRun.claimedNone and the adapter's Progress-edit hook ----
+
+describe("unreported-finding: claimedNone replaces the final-text check (P6)", () => {
+	test("a none-claiming Progress bullet counts even when the final text lacks one", () => {
+		const owned = rules({ owned_repos: ["pm", "gateforge"] });
+		const evs: TraceEvent[] = [
+			call("read", { path: `${HOME}/Work/pm-x/node_modules/@gate-forge/core/index.js` }),
+			{ kind: "assistantText", ts: ts + 1, runId: "r1", text: "done; commit follows" },
+		];
+		expect(unreportedFindings(evs, owned, { ...OWN, claimedNone: true })).toHaveLength(1);
+		// without the bullet claim the committed final-text rule still decides
+		expect(unreportedFindings(evs, owned, OWN)).toEqual([]);
+	});
+});
+
+describe("live wiring: a sub's Progress edit runs D6+D7 over its own session (P6)", () => {
+	// Sandbox like guards-omp.test.ts: a toy plan in an owned repo ("pm" — basename of its git
+	// root), listed in the queue INDEX, plus a fake subagent session file under the sessions
+	// root. The adapter child gets a ctx whose sessionManager hands out that file, the way the
+	// harness hands a sub its own session.
+	const P6 = mkdtempSync(join(tmpdir(), "ns-actions-p6-"));
+	const P6AGENT = join(P6, ".omp/agent");
+	const P6REPO = join(P6, "Work/pm");
+	const P6PLAN = join(P6REPO, "docs/plans/20261025_p6wire.md");
+	const P6SUB = join(P6AGENT, "sessions/p6-proj/s1/P6WireGlm.jsonl");
+
+	const P6_BEFORE = `# P6 wire toy
+
+Worktree: ${P6REPO}
+Branch: feat/p6
+
+## Goal
+- Wiring toy.
+
+## Forbidden
+- Never skip tests.
+
+## Blockers
+- no-push
+
+## Phases
+- [ ] P1 do it — verify: \`true\`
+
+## Done check
+\`true\`
+
+## Progress
+Status: open
+
+- Started.
+`;
+	const P6_AFTER_NONE = P6_BEFORE.replace("- Started.", "- Started.\n- P6: wired the detectors. Findings: none");
+	const P6_AFTER_ITEM = P6_BEFORE.replace(
+		"- Started.",
+		"- P6: wired the detectors. Findings: the resolve read was for the mapping defect, fixed in the spec",
+	);
+
+	mkdirSync(join(P6REPO, "docs/plans"), { recursive: true });
+	mkdirSync(join(P6AGENT, "notes"), { recursive: true });
+	mkdirSync(join(P6AGENT, "blockers"), { recursive: true });
+	mkdirSync(join(P6, "state"), { recursive: true });
+	mkdirSync(join(P6, ".config/neurastream"), { recursive: true });
+	writeFileSync(P6PLAN, P6_BEFORE);
+	writeFileSync(join(P6AGENT, "INDEX.md"), `${P6PLAN}\n`);
+	writeFileSync(join(P6AGENT, "notes/subagents.md"), "## Allowed\n\n- `p6-worker`\n");
+	writeFileSync(join(P6AGENT, "CANCELLED.md"), "");
+	writeFileSync(
+		join(P6, ".config/neurastream/config.yml"),
+		`paths:
+  home: "${P6}"
+  work_roots: ["${P6}/Work"]
+  agent_dir: "${P6AGENT}"
+  queue_index: "${join(P6AGENT, "INDEX.md")}"
+  blockers: "${join(P6AGENT, "blockers")}"
+  subagents: "${join(P6AGENT, "notes/subagents.md")}"
+  cancelled: "${join(P6AGENT, "CANCELLED.md")}"
+  unlock: "${join(P6AGENT, ".guard-unlock")}"
+  queue_state: "${join(P6, "state")}"
+  guard_log: "${join(P6, "g.log")}"
+  plan_guard_log: "${join(P6, "pg.log")}"
+  score_state: "${join(P6, "score")}"
+traces:
+  owned_repos:
+    - gateforge
+    - neurastream
+    - pm
+    - cp
+`,
+	);
+	mkdirSync(dirname(P6SUB), { recursive: true });
+	// The sub's plan gate runs the plan's blockers on each call: real blocker scripts, paths fixed.
+	for (const b of ["no-push"]) {
+		const text = readFileSync(join(REPO, "blockers", b), "utf8").replace(
+			"../src/core/blockers.ts",
+			join(REPO, "src/core/blockers.ts"),
+		);
+		writeFileSync(join(P6AGENT, "blockers", b), text);
+		chmodSync(join(P6AGENT, "blockers", b), 0o755);
+	}
+	// The sub's own trace: a cross-product read (gateforge's installed core) plus a secret read
+	// — the D7 red flag and a D6 high in one file.
+	writeFileSync(
+		P6SUB,
+		`{"type":"message","timestamp":"2026-10-25T12:00:01.000Z","message":{"role":"assistant","model":"m1","provider":"p1","content":[{"type":"toolCall","id":"c1","name":"read","arguments":{"path":"${P6REPO}/node_modules/@gate-forge/core/dist/mapping/resolve.js","i":"Reading the resolve mapping"}}]}}\n` +
+			`{"type":"message","timestamp":"2026-10-25T12:00:02.000Z","message":{"role":"assistant","model":"m1","provider":"p1","content":[{"type":"toolCall","id":"c2","name":"bash","arguments":{"command":"cat ~/.ssh/id_ed25519"}}]}}\n`,
+	);
+
+	const P6_CTX =
+		`{"agent":{"kind":"sub","id":"P6WireGlm"},"cwd":${JSON.stringify(P6REPO)},"sessionManager":{"getSessionId":()=>"P6WireGlm","getSessionFile":()=>${JSON.stringify(P6SUB)}}}`;
+
+	// One plan edit driven through the adapter handlers: tool_call snapshots, the write lands,
+	// tool_result verifies and runs the live detectors. Returns [call, result, contentStays].
+	// The import below must stay dynamic: it runs in a spawned child whose HOME is this sandbox,
+	// because loadConfig() is read at adapter-registration time — a static import would bind the
+	// test process's own HOME instead (same reason guards-omp.test.ts imports dynamically).
+	function p6Edit(after: string, toolCallId: string): unknown[] {
+		const body = `const h = {};
+const mod = await import(${JSON.stringify(join(REPO, "src/adapters/omp/index.ts"))});
+mod.default({ on: (ev, cb) => { h[ev] = cb; }, registerCommand: () => {}, sendUserMessage: () => {} });
+const ctx = ${P6_CTX};
+const out = [];
+out.push(await h["tool_call"]({ toolName: "write", input: { path: ${JSON.stringify(P6PLAN)}, content: ${JSON.stringify(after)} }, toolCallId: ${JSON.stringify(toolCallId)} }, ctx));
+const fs = await import("node:fs");
+fs.writeFileSync(${JSON.stringify(P6PLAN)}, ${JSON.stringify(after)});
+out.push(await h["tool_result"]({ toolName: "write", input: {}, toolCallId: ${JSON.stringify(toolCallId)} }, ctx));
+out.push(fs.readFileSync(${JSON.stringify(P6PLAN)}, "utf8") === ${JSON.stringify(after)});
+console.log(JSON.stringify(out));
+`;
+		const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("QUEUE_")));
+		const r = spawnSync("bun", ["-e", body], { encoding: "utf8", cwd: "/tmp", env: { ...env, HOME: P6 }, timeout: 60000 });
+		if (r.status !== 0) throw new Error(`p6 adapter run failed: ${r.stderr}`);
+		return JSON.parse((r.stdout.trim().split("\n").pop() ?? "null"), (_k, v) => (v === null ? undefined : v)) as unknown[];
+	}
+
+	test("a Findings: none edit after a cross-product read opens one unreported-finding incident, one penalty — and D6 sees the secret read", () => {
+		const out = p6Edit(P6_AFTER_NONE, "t1");
+		expect(out[0]).toBeUndefined(); // the write itself is allowed
+		expect(out[2]).toBe(true); // the Progress-only content stays
+		const p6cfg = loadConfig({ home: P6, env: {} });
+		const unreported = readIncidents(p6cfg).filter((i) => i.kind === "unreported-finding");
+		expect(unreported).toHaveLength(1);
+		expect(unreported[0]).toMatchObject({
+			source: "traces",
+			fingerprint: `unreported-finding:P6WireGlm:${P6REPO}/node_modules/@gate-forge/core/dist/mapping/resolve.js`,
+		});
+		expect(unreported[0]!.summary).toContain("P6WireGlm read gateforge files");
+		const suspicious = readIncidents(p6cfg).filter((i) => i.kind === "suspicious-action");
+		expect(suspicious.map((i) => i.fingerprint)).toEqual([`suspicious-action:secret-read:${P6}/.ssh/id_ed25519`]);
+		const penalties = readEvents(p6cfg).filter((e) => e.type === "penalty");
+		expect(penalties).toHaveLength(1);
+		expect(penalties[0]).toMatchObject({ agent: "P6WireGlm", kind: "unreported-finding", plan: P6PLAN });
+	});
+
+	test("the same edit with a findings item opens no unreported-finding and no penalty", () => {
+		const out = p6Edit(P6_AFTER_ITEM, "t2");
+		expect(out[2]).toBe(true);
+		const p6cfg = loadConfig({ home: P6, env: {} });
+		expect(readIncidents(p6cfg).filter((i) => i.kind === "unreported-finding")).toHaveLength(1); // only the first edit's
+		expect(readEvents(p6cfg).filter((e) => e.type === "penalty")).toHaveLength(1);
+	});
+
+	test("a second identical Findings: none edit dedupes and does not re-penalize", () => {
+		// Re-run the first edit verbatim (the plan is back at BEFORE after the item edit replaced
+		// it, so the none entry is new again): the incident gets a sighting, the penalty stays 1.
+		writeFileSync(P6PLAN, P6_BEFORE);
+		const out = p6Edit(P6_AFTER_NONE, "t3");
+		expect(out[2]).toBe(true);
+		const p6cfg = loadConfig({ home: P6, env: {} });
+		const unreported = readIncidents(p6cfg).filter((i) => i.kind === "unreported-finding");
+		expect(unreported).toHaveLength(1);
+		expect(unreported[0]!.count).toBe(2);
+		expect(readEvents(p6cfg).filter((e) => e.type === "penalty")).toHaveLength(1);
 	});
 });
