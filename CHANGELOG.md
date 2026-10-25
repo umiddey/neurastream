@@ -1,5 +1,8 @@
 # Changelog
 ## Unreleased
+### Added
+- Owner page: the Now tab has a one-way "Tell Main" box for a text note and up to four images; Main receives the message with its images, and the "Sent today" list and image files expire after 12 hours.
+
 ### Changed
 - Owner page: drag drops and the ↑ top/↑/↓ buttons send the reorder over fetch — the card stays where it was dropped, the ranks renumber in place, a 409 re-fetches the list — and the 20 s refresh swaps only the page body instead of a full reload; every POST redirect returns to the tab the owner was on, and the CSP gained `connect-src 'self'` (nothing else).
 - Owner page: nothing reloads any more after the first load — answers, unlock/lock, tier buttons and the message Send POST over fetch and swap the page body in place (the server answers `{ok, sent, receipt}` JSON, a no-JS form post still gets its 303), the tab pills and other same-origin links fetch and pushState with the Back button working, and an unreachable server shows a tappable "Couldn't reach the page" line instead of a blank reload.

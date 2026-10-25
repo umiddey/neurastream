@@ -127,7 +127,7 @@ const data: PageData = {
 	},
 	machine: { freeGb: 6.2, diskMin: 20, load: 1.84, loadMax: 16, cores: 16 },
 	stats,
-	messages: [],
+	messages: [{ id: "1792953589-a1b2c3", ts: ts - 7200, text: "Please check this photo from the site visit.", images: ["1.jpg"] }],
 	lockMinutesLeft: 12,
 };
 

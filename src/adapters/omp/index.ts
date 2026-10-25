@@ -45,7 +45,7 @@ import "./package-ops.ts";
 export interface ExtensionHost {
 	on(event: string, cb: (...args: unknown[]) => unknown): void;
 	registerCommand(name: string, opts: { description?: string; handler: (args: unknown, ctx: unknown) => unknown }): void;
-	sendUserMessage(content: string): void;
+	sendUserMessage(content: string | ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[]): void;
 	sendMessage(message: { customType: string; content: string; display: boolean }, options: { triggerTurn: boolean; deliverAs: "nextTurn" }): void;
 }
 
@@ -368,7 +368,7 @@ function writeOwnerInboxCursor(n: number): void {
 
 /** The user message one inbox record becomes, or null when the record is not one Main can act on.
  * Records without `kind` are page answers (the original shape). */
-export function ownerInboxMessage(rec: Record<string, unknown>): string | null {
+export function ownerInboxMessage(rec: Record<string, unknown>): string | ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] | null {
 	const kind = rec.kind === undefined ? "answer" : asString(rec.kind);
 	const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 	switch (kind) {
@@ -393,6 +393,37 @@ export function ownerInboxMessage(rec: Record<string, unknown>): string | null {
 			const to = num(rec.to);
 			if (!plan || from === null || to === null) return null;
 			return `Owner moved ${basename(plan)} from #${from} to #${to} on the phone page; INDEX.md has the new order — work by it.`;
+		}
+		case "message": {
+			const ts = num(rec.ts);
+			const id = asString(rec.id);
+			if (ts === null || !/^[0-9]+-[0-9a-f]{6}$/.test(id)) return null;
+			const at = strftime(ts, "%H:%M");
+			const dir = join(q.stateDirPath(), "owner-messages", id);
+			let message: Record<string, unknown>;
+			try {
+				message = JSON.parse(readFileSync(join(dir, "message.json"), "utf8")) as Record<string, unknown>;
+			} catch {
+				return [{ type: "text", text: `Owner sent a message from the phone page at ${at}; it expired (12 h) before delivery.` }];
+			}
+			const text = asString(message.text);
+			const names = Array.isArray(message.images) ? message.images.filter((name): name is string => typeof name === "string" && /^[1-4]\.(png|jpg|gif|webp)$/.test(name)) : [];
+			const parts: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] = [];
+			const paths = names.map(name => join(dir, name));
+			parts.push({
+				type: "text",
+				text: `Owner message from the phone page (${at}): ${text}${paths.length ? `\nImages:\n${paths.map(path => `- ${path}`).join("\n")}` : ""}`,
+			});
+			for (const name of names) {
+				const ext = name.slice(name.lastIndexOf(".") + 1);
+				const mimeType = ext === "jpg" ? "image/jpeg" : `image/${ext}`;
+				try {
+					parts.push({ type: "image", data: readFileSync(join(dir, name)).toString("base64"), mimeType });
+				} catch {
+					return [{ type: "text", text: `Owner sent a message from the phone page at ${at}; it expired (12 h) before delivery.` }];
+				}
+			}
+			return parts;
 		}
 		default:
 			return null;

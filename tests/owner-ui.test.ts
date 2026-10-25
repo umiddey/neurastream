@@ -701,8 +701,8 @@ test("the owner inbox lives under the queue state dir", () => {
 
 // --- adapter: inbox delivery to Main (P3b) ---
 
-function fakePi(): { pi: ExtensionHost; sent: string[]; handlers: Map<string, (e: unknown, ctx: unknown) => unknown> } {
-	const sent: string[] = [];
+function fakePi(): { pi: ExtensionHost; sent: (string | ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[])[]; handlers: Map<string, (e: unknown, ctx: unknown) => unknown> } {
+	const sent: (string | ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[])[] = [];
 	// INCIDENT I-20261025-21/22: keep EVERY handler per event (the real omp runner calls them all
 	// in registration order); handlers.get(event) is the dispatcher the tests invoke.
 	const registered = new Map<string, ((e: unknown, ctx: unknown) => unknown)[]>();
@@ -727,6 +727,50 @@ function fakePi(): { pi: ExtensionHost; sent: string[]; handlers: Map<string, (e
 	};
 	return { pi, sent, handlers };
 }
+
+test("ownerInboxMessage returns phone message text and image content", () => {
+	const id = `${Math.floor(nowSec())}-abcdef`;
+	const dir = join(messagesDir(), id);
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(join(dir, "1.png"), PNG_BYTES);
+	writeFileSync(join(dir, "2.jpg"), Uint8Array.from([0xff, 0xd8, 0xff, 0x00]));
+	writeFileSync(join(dir, "message.json"), JSON.stringify({ ts: nowSec(), text: "Please inspect these.", images: ["1.png", "2.jpg"] }));
+	const ts = nowSec();
+	expect(ownerInboxMessage({ ts, kind: "message", id })).toEqual([
+		{ type: "text", text: `Owner message from the phone page (${strftime(ts, "%H:%M")}): Please inspect these.\nImages:\n- ${join(dir, "1.png")}\n- ${join(dir, "2.jpg")}` },
+		{ type: "image", data: Buffer.from(PNG_BYTES).toString("base64"), mimeType: "image/png" },
+		{ type: "image", data: Buffer.from([0xff, 0xd8, 0xff, 0x00]).toString("base64"), mimeType: "image/jpeg" },
+	]);
+});
+
+test("ownerInboxMessage handles text-only and expired phone messages", () => {
+	const id = `${Math.floor(nowSec())}-fedcba`;
+	const dir = join(messagesDir(), id);
+	mkdirSync(dir, { recursive: true });
+	const ts = nowSec();
+	writeFileSync(join(dir, "message.json"), JSON.stringify({ ts, text: "Only text.", images: [] }));
+	expect(ownerInboxMessage({ ts, kind: "message", id })).toEqual([
+		{ type: "text", text: `Owner message from the phone page (${strftime(ts, "%H:%M")}): Only text.` },
+	]);
+	const expiredTs = nowSec() - 3600;
+	expect(ownerInboxMessage({ ts: expiredTs, kind: "message", id: "123456-abcdef" })).toEqual([
+		{ type: "text", text: `Owner sent a message from the phone page at ${strftime(expiredTs, "%H:%M")}; it expired (12 h) before delivery.` },
+	]);
+});
+
+test("deliverOwnerInbox sends the structured phone message unchanged", () => {
+	const { pi, sent, handlers } = fakePi();
+	createOmpAdapter(pi, CFG);
+	const ts = nowSec();
+	const id = `${Math.floor(ts)}-123abc`;
+	const dir = join(messagesDir(), id);
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(join(dir, "1.png"), PNG_BYTES);
+	writeFileSync(join(dir, "message.json"), JSON.stringify({ ts, text: "Look.", images: ["1.png"] }));
+	appendFileSync(inboxPath(), `${JSON.stringify({ ts, kind: "message", id, login: OWNER })}\n`);
+	handlers.get("agent_end")!({ willContinue: false }, mainCtx);
+	expect(sent).toEqual([ownerInboxMessage({ ts, kind: "message", id })!]);
+});
 
 const rec = (answer: string) => JSON.stringify({ ts: nowSec(), plan: PLAN_W, question: QUESTION, answer, login: OWNER });
 
