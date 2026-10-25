@@ -348,7 +348,7 @@ function bottomBar(cfg: Config, lockMinutesLeft: number | null): string {
 
 // ---- page assembly: one unreadable source never takes the page down ----
 
-interface PageData {
+export interface PageData {
 	questions: QuestionRow[] | null;
 	agents: AgentRow[] | null;
 	queue: QueueRow[] | null;
@@ -433,7 +433,8 @@ function busy(){var els=document.querySelectorAll("input:not([type=hidden]), tex
 setInterval(function(){if(!busy())location.reload();},${REFRESH_SEC}000);
 })();`;
 
-function renderPage(cfg: Config, data: PageData, params: URLSearchParams, nonce: string): string {
+/** The whole page as one HTML string. Exported for scripts/ui-preview.ts (no server). */
+export function renderPage(cfg: Config, data: PageData, params: URLSearchParams, nonce: string): string {
 	const needs = data.questions === null ? na("Waiting on you") : data.questions.length ? data.questions.map(needCard).join("\n") : `<p class="empty">Nothing needs you right now</p>`;
 	const working =
 		data.agents === null ? na("Working now") : data.agents.length ? `<ul class="agents">${data.agents.map(agentRowHtml).join("")}</ul>` : `<p class="empty">No agents running</p>`;
@@ -501,7 +502,7 @@ main { padding-bottom: 96px; }
 .ask { margin: 0 0 2px; color: var(--muted); font-size: 14px; }
 .q { margin: 0 0 10px; }
 details.bg { margin: 8px 0; border-top: 1px solid var(--line); padding-top: 6px; }
-details.bg summary, details.block summary { cursor: pointer; min-height: 48px; display: flex; align-items: center; gap: 8px; color: var(--muted); }
+details.bg summary, details.block summary { min-height: 48px; display: flex; align-items: center; gap: 8px; color: var(--muted); }
 details.bg ul { margin: 4px 0 8px; padding-left: 20px; }
 .acts { display: flex; gap: 8px; flex-wrap: wrap; }
 button { min-height: 48px; padding: 8px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--ink); font: inherit; }
