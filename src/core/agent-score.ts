@@ -1,12 +1,13 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Config } from "./config.ts";
-import type { Run, RunSource } from "./adapter.ts";
+import type { Run, RunSource, TraceSource } from "./adapter.ts";
 import { nowSec, strftime } from "./clock.ts";
 import { exitText, helpDoc, printText } from "./help.ts";
 import { formatG, pyFixed, pyPercent0 } from "./pyfmt.ts";
 import { PyFloat, pyDumps } from "./pyjson.ts";
 import { gitRaw } from "./proc.ts";
+import { efficiencyRules, runEfficiency } from "./trace-efficiency.ts";
 
 function opt(args: string[], name: string): string | undefined {
 	const i = args.indexOf(name);
@@ -50,6 +51,18 @@ export function recordPenalty(cfg: Config, p: { agent: string; kind: string; pla
 	const ev: Record<string, unknown> = { type: "penalty", agent: p.agent, kind: p.kind, plan: p.plan, note: p.note, ts: new PyFloat(nowSec()) };
 	mkdirSync(dirname(eventsPath(cfg)), { recursive: true });
 	appendFileSync(eventsPath(cfg), `${pyDumps(ev)}\n`);
+}
+
+/**
+ * Waste counters over one agent's trace, shaped for a score event. Undefined when the agent has
+ * no trace or made no tool calls: the event then carries no waste keys at all (byte parity with
+ * events written before this existed; a text-only session must not grow keys).
+ */
+function wasteOf(traces: TraceSource | undefined, cfg: Config, agent: string): { calls: number; wasted: number; waste_pct: number } | undefined {
+	if (!traces) return undefined;
+	const eff = runEfficiency(traces.events(agent), efficiencyRules(cfg));
+	if (eff.calls === 0) return undefined;
+	return { calls: eff.calls, wasted: eff.wasted, waste_pct: eff.wastePct };
 }
 
 function expandCommits(repo: string, spec: string): string[] {
@@ -167,6 +180,9 @@ interface Row {
 	pen: number;
 	diag: number;
 	val: number;
+	/** Summed over score events that carry them (0 = no event does). */
+	calls: number;
+	wasted: number;
 	net: number;
 	total: number;
 	ppd: number | null;
@@ -240,7 +256,7 @@ function table(days: number, cfg: Config, source: RunSource): { rows: Row[]; byA
 	for (const [n, r] of byAgent) agentModel.set(n, r.model);
 	const rows = new Map<string, Row>();
 	const blank = (model: string): Row => ({
-		model, runs: 0, done: 0, running: 0, cost: 0, steer: 0, hours: 0, pts: 0, acc: 0, first: 0, pen: 0, diag: 0, val: 0,
+		model, runs: 0, done: 0, running: 0, cost: 0, steer: 0, hours: 0, pts: 0, acc: 0, first: 0, pen: 0, diag: 0, val: 0, calls: 0, wasted: 0,
 		net: 0, total: 0, ppd: null, pph: null, surv: null, fp: null,
 	});
 	for (const r of byAgent.values()) {
@@ -269,6 +285,8 @@ function table(days: number, cfg: Config, source: RunSource): { rows: Row[]; byA
 		} else if (e.type === "penalty") {
 			m.pen += cfg.score.penalties[String(e.kind)] ?? 0;
 		}
+		if (typeof e.calls === "number") m.calls += e.calls;
+		if (typeof e.wasted === "number") m.wasted += e.wasted;
 		rows.set(model, m);
 	}
 	const out: Row[] = [];
@@ -283,12 +301,23 @@ function table(days: number, cfg: Config, source: RunSource): { rows: Row[]; byA
 		out.push(m);
 	}
 	out.sort((a, b) => {
-		const ap = a.ppd !== null ? a.ppd : -1e9;
-		const bp = b.ppd !== null ? b.ppd : -1e9;
+		const ap = rankPpd(a, cfg);
+		const bp = rankPpd(b, cfg);
 		if (bp !== ap) return bp - ap;
 		return (b.pph || 0) - (a.pph || 0);
 	});
 	return { rows: out, byAgent };
+}
+
+/**
+ * ppd as the ranking uses it: with score.waste_weight > 0 a row's wasted-call fraction scales it
+ * down, clamped at 0 (weight 0 keeps every ppd — and so the ranking — exactly as before). The
+ * displayed pts/$ stays the raw ppd.
+ */
+function rankPpd(r: Row, cfg: Config): number {
+	if (r.ppd === null) return -1e9;
+	if (cfg.score.waste_weight <= 0 || r.calls === 0) return r.ppd;
+	return Math.max(0, r.ppd * (1 - cfg.score.waste_weight * (r.wasted / r.calls)));
 }
 
 function fmt(v: number | null, kind: "pct" | "1f"): string {
@@ -305,12 +334,12 @@ function board(days: number, cfg: Config, source: RunSource): void {
 			+ "(false-claim 5, rule-break 2, escaped-defect 8). Survival = finished runs that ended with a final result. Steering is approximate "
 			+ "(Main turns naming the agent).",
 		"",
-		"| # | Worker model | Runs (live) | Survival | Accepted (diag/val) | First-pass | Net pts | $ worker | $ steering | pts/$ | pts/h |",
-		"|---|---|---|---|---|---|---|---|---|---|---|",
+		"| # | Worker model | Runs (live) | Survival | Accepted (diag/val) | First-pass | Net pts | $ worker | $ steering | pts/$ | pts/h | Calls/acc | Waste |",
+		"|---|---|---|---|---|---|---|---|---|---|---|---|---|",
 	];
 	rows.forEach((r, i) => {
 		lines.push(
-			`| ${i + 1} | ${r.model} | ${r.runs} (${r.running}) | ${fmt(r.surv, "pct")} | ${r.acc} (${r.diag}/${r.val}) | ${fmt(r.fp, "pct")} | ${r.net} | ${pyFixed(r.cost, 2)} | ${pyFixed(r.steer, 2)} | ${fmt(r.ppd, "1f")} | ${fmt(r.pph, "1f")} |`,
+			`| ${i + 1} | ${r.model} | ${r.runs} (${r.running}) | ${fmt(r.surv, "pct")} | ${r.acc} (${r.diag}/${r.val}) | ${fmt(r.fp, "pct")} | ${r.net} | ${pyFixed(r.cost, 2)} | ${pyFixed(r.steer, 2)} | ${fmt(r.ppd, "1f")} | ${fmt(r.pph, "1f")} | ${r.acc > 0 && r.calls > 0 ? pyFixed(r.calls / r.acc, 1) : "-"} | ${r.calls > 0 ? pyPercent0(r.wasted / r.calls) : "-"} |`,
 		);
 	});
 	const text = `${lines.join("\n")}\n`;
@@ -366,7 +395,7 @@ function parseScoreTarget(cmd: string, rest: string[]): { agent: string } | numb
 	return { agent };
 }
 
-export function agentScore(args: string[], cfg: Config, source: RunSource): number {
+export function agentScore(args: string[], cfg: Config, source: RunSource, traces?: TraceSource): number {
 	mkdirSync(cfg.paths.score_state, { recursive: true });
 	if (args.length < 1 || args[0] === "-h" || args[0] === "--help") {
 		printText(helpDoc("agent-score"));
@@ -393,6 +422,7 @@ export function agentScore(args: string[], cfg: Config, source: RunSource): numb
 			record({
 				type: "accept", agent, plan, phase, weight: w * units, unit_weight: w, units, weight_src: src,
 				repo, branch, commits, rework: rest.includes("--rework"), note: opt(rest, "--note") ?? "",
+				...wasteOf(traces, cfg, agent),
 			}, cfg);
 			return 0;
 		}
@@ -407,6 +437,7 @@ export function agentScore(args: string[], cfg: Config, source: RunSource): numb
 			const weighted = rest.includes("--weight") ? weightFor(rest, plan, phase, cfg, cfg.score.diagnose_weight) : { w: cfg.score.diagnose_weight, src: "default" };
 			record({
 				type: "diagnose", agent, plan, phase, weight: weighted.w, weight_src: weighted.src, evidence: ev, note: opt(rest, "--note") ?? "",
+				...wasteOf(traces, cfg, agent),
 			}, cfg);
 			return 0;
 		}
@@ -432,6 +463,7 @@ export function agentScore(args: string[], cfg: Config, source: RunSource): numb
 			record({
 				type: "validate", agent, plan, phase, weight: w, weight_src: src, evidence: ev, section,
 				labels, rework: rest.includes("--rework"), note: opt(rest, "--note") ?? "",
+				...wasteOf(traces, cfg, agent),
 			}, cfg);
 			return 0;
 		}

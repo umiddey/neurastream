@@ -49,6 +49,7 @@ export interface Config {
 		board_days: number;
 		min_dollars: number;
 		min_hours: number;
+		waste_weight: number;
 	};
 	ledger: {
 		default_hours: number;
@@ -334,6 +335,9 @@ function applyEnv(cfg: Record<string, unknown>, env: NodeJS.ProcessEnv): void {
 }
 
 function check(cfg: Config): void {
+	if (!(Number.isFinite(cfg.score.waste_weight) && cfg.score.waste_weight >= 0 && cfg.score.waste_weight <= 1)) {
+		throw new ConfigError("score.waste_weight must be between 0 and 1");
+	}
 	if (cfg.ledger.max_slots < 1) throw new ConfigError("ledger.max_slots must be >= 1");
 	if (cfg.guards.sub_warn_calls > cfg.guards.sub_max_calls) {
 		throw new ConfigError("guards.sub_warn_calls must be <= guards.sub_max_calls");

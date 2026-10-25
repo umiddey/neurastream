@@ -33,6 +33,7 @@ score:
   gate_days: 7
   board_days: 7
   min_dollars: 0.01
+  waste_weight: 0           # rank multiplier for wasted-call rate (0 disables)
   min_hours: 0.05
 
 ledger:

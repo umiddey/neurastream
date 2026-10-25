@@ -6,7 +6,8 @@
 // notes, unparseable lines) is skipped.
 
 import { readFileSync, statSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
+import type { Config } from "../../core/config.ts";
 import type { TraceEvent, TraceSource, TraceUsage } from "../../core/adapter.ts";
 import { asObj, jsonlAt, parseTs, runIdOf } from "./sessions.ts";
 
@@ -179,6 +180,11 @@ export function ompTraceSource(root: string): TraceSource {
 			return file ? parseTraceFile(file, runId) : [];
 		},
 	};
+}
+
+/** TraceSource for agent-score, over the config's sessions root (the traces CLI's root rule). */
+export function ompScoreTraces(cfg: Config): TraceSource {
+	return ompTraceSource(cfg.adapter?.sessions || join(cfg.paths.home, ".omp", "agent", "sessions"));
 }
 
 export interface RelatedTrace {

@@ -10,7 +10,7 @@ import type { Config } from "./config.ts";
 export type WasteRule = "repeat-read" | "repeat-fail" | "failed-edit" | "guard-repeat" | "poll";
 
 /** First match wins; the array order is the rule order. */
-const RULE_ORDER: WasteRule[] = ["repeat-read", "repeat-fail", "failed-edit", "guard-repeat", "poll"];
+export const RULE_ORDER: WasteRule[] = ["repeat-read", "repeat-fail", "failed-edit", "guard-repeat", "poll"];
 
 export interface EfficiencyRules {
 	read_tools: string[];
@@ -94,31 +94,49 @@ export function runEfficiency(events: TraceEvent[], rules: EfficiencyRules): Eff
 		const isPoll = isShell && command !== "" && pollRe.test(command);
 		if (!isPoll) pollRun = 0;
 
-		let hit: WasteRule | null = null;
+		// Every rule sees every call and keeps its own state up to date even when another rule
+		// already counted this one (a later repeat must not be undercounted); only the counted
+		// rule is first-wins.
+		let repeatRead = false;
 		if (isRead) {
 			const argsJson = JSON.stringify(c.args ?? {});
 			const n = (readCounts.get(argsJson) ?? 0) + 1;
 			readCounts.set(argsJson, n);
-			if (n >= rules.repeat_read_min) hit = "repeat-read";
+			repeatRead = n >= rules.repeat_read_min;
 		}
-		if (hit === null && isShell && command !== "") {
-			if (failedCmds.has(command)) hit = "repeat-fail";
+		let repeatFail = false;
+		if (isShell && command !== "") {
+			repeatFail = failedCmds.has(command);
 			if (res?.isError === true) failedCmds.add(command);
 		}
-		if (hit === null && isWrite && res?.isError === true) hit = "failed-edit";
-		if (hit === null && res !== undefined) {
+		const failedEdit = isWrite && res?.isError === true;
+		let guardRepeat = false;
+		if (res !== undefined) {
 			const text = res.text ?? "";
 			const prefix = rules.guard_prefixes.find((p) => text.startsWith(p));
 			if (prefix !== undefined) {
 				const firstLine = text.split("\n", 1)[0] ?? text;
-				if (guardFirstLines.has(firstLine)) hit = "guard-repeat";
-				else guardFirstLines.add(firstLine);
+				guardRepeat = guardFirstLines.has(firstLine);
+				guardFirstLines.add(firstLine);
 			}
 		}
-		if (hit === null && isPoll) {
+		let pollHit = false;
+		if (isPoll) {
 			pollRun += 1;
-			if (pollRun >= 2) hit = "poll";
+			pollHit = pollRun >= 2;
 		}
+
+		const hit: WasteRule | null = repeatRead
+			? "repeat-read"
+			: repeatFail
+				? "repeat-fail"
+				: failedEdit
+					? "failed-edit"
+					: guardRepeat
+						? "guard-repeat"
+						: pollHit
+							? "poll"
+							: null;
 		if (hit !== null) {
 			byRule[hit] += 1;
 			steps.push({ index, rule: hit });
