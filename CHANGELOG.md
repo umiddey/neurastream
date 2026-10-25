@@ -1,5 +1,5 @@
 # Changelog
-## Unreleased
+## 0.2.27
 ### Added
 - Owner page: the Now tab has a one-way "Tell Main" box for a text note and up to four images; Main receives the message with its images, and the "Sent today" list and image files expire after 12 hours.
 
@@ -9,6 +9,9 @@
 
 ### Fixed
 - Owner page: dragging a queue card to slot 2 now lands it at slot 2 — the drag placeholder always slid to the last card's slot before (I-20261025-187); the reorder receipt says "Moved to #N of open plans" so the page's rank is not confused with INDEX.md's line numbers.
+## 0.2.26
+### Fixed
+- Provider retry-after values remain unchanged across rate-limit resume attempts; only the default wait doubles.
 
 ## 0.2.25
 ### Added
