@@ -50,6 +50,10 @@ export interface Plan {
 	waiting: boolean;
 	waitingLine: string | null;
 	priorityId: string | null;
+	/** First level-1 "# " heading in the plan, else the file basename. */
+	title: string;
+	/** Bullet lines under "## Goal", capped at 6. */
+	goal: string[];
 	errors: string[];
 }
 
@@ -179,7 +183,7 @@ function headerField(text: string, name: string): string | null {
 }
 
 export function parsePlan(repo: string, file: string, text: string | null, blockersDir = blockersDirPath()): Plan {
-	const empty = { repo, file, text: "", status: null, blockers: [], doneCheck: null, worktree: null, branch: null, appliesTo: [], waiting: false, waitingLine: null, priorityId: null };
+	const empty = { repo, file, text: "", status: null, blockers: [], doneCheck: null, worktree: null, branch: null, appliesTo: [], waiting: false, waitingLine: null, priorityId: null, title: path.basename(file), goal: [] };
 	if (text === null) return { ...empty, errors: ["plan file listed in the index does not exist"] };
 	const errors: string[] = [];
 	const secs = sections(text);
@@ -225,6 +229,8 @@ export function parsePlan(repo: string, file: string, text: string | null, block
 		waiting: /^WAITING on owner:/m.test(text),
 		waitingLine: text.match(/^WAITING on owner:[ \t]*(.*)$/m)?.[1] ?? null,
 		priorityId: text.match(/^PRIORITY-ID:\s*`?([A-Z]{2}[0-9]{2})`?/m)?.[1] ?? null,
+		title: text.match(/^# (.+)$/m)?.[1]?.trim() || path.basename(file),
+		goal: items(secs.get("goal") ?? "").slice(0, 6),
 		errors,
 	};
 }
