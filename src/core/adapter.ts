@@ -66,6 +66,8 @@ export interface TraceEvent {
 	runId: string;
 	tool?: string;
 	args?: Record<string, unknown>;
+	/** Harness call id: the toolCall part id on a call, the toolCallId on its result; pairs them. */
+	callId?: string;
 	isError?: boolean;
 	text?: string;
 	model?: string;

@@ -27,6 +27,7 @@ import { notifyProtectedPaths, notifySecretReadHit } from "./notify.ts";
 import * as q from "./queue/lib.ts";
 import type { Plan } from "./queue/lib.ts";
 
+import { nowSec } from "./clock.ts";
 const ALLOW: Decision = { allow: true, reason: "" };
 
 function deny(reason: string): Decision {
@@ -81,6 +82,43 @@ function spawnsFile(): string {
 
 function staffingFile(): string {
 	return path.join(q.STATE_DIR, "staffing.json");
+}
+
+export interface OwnerMessage {
+	at: number;
+	text: string;
+}
+
+function ownerMessagesFile(): string {
+	return path.join(q.STATE_DIR, "owner-messages.jsonl");
+}
+
+function readOwnerMessages(): OwnerMessage[] {
+	try {
+		return readFileSync(ownerMessagesFile(), "utf8").split("\n").filter(Boolean)
+			.map(line => JSON.parse(line) as OwnerMessage);
+	} catch {
+		return [];
+	}
+}
+
+export function ownerSaid(words: string, messages: OwnerMessage[], now: number): boolean {
+	const quote = words.toLowerCase().replace(/\s+/g, " ").trim();
+	if (quote.split(" ").length < 4) return false;
+	return messages.some(m => now - m.at >= 0 && now - m.at <= 86400 && m.text.toLowerCase().replace(/\s+/g, " ").includes(quote));
+}
+
+function recordOwnerMessage(text: string, cfg: Config): void {
+	if (text.trimStart().startsWith("main-guard:") || text.trimStart().startsWith("<system-notice>") || text.includes("<task-result")) return;
+	const file = ownerMessagesFile();
+	try {
+		mkdirSync(q.STATE_DIR, { recursive: true });
+		const messages = readOwnerMessages();
+		messages.push({ at: nowSec(), text });
+		writeFileSync(file, `${messages.slice(-50).map(m => JSON.stringify(m)).join("\n")}\n`);
+	} catch (err) {
+		log(cfg.paths.guard_log, `cannot write ${file}: ${err}`);
+	}
 }
 
 /** plan → the task names of its newest spawn (staffing.json); read for the staffed check. */
@@ -340,18 +378,23 @@ export interface PriorityOutcome {
 
 const SKIP_LINE = /^\s*(?:[-*]\s+)?priority skip:\s*(.+?)\s+[—–-]\s*(.+?)\s*$/gim;
 
-/** One plan is idle when a subagent could start on it right now: open, no owner hold, not awaiting merge, no template errors, and an unticked phase left. */
-function priorityIdle(p: Plan): boolean {
+/** One plan is idle when a subagent could start on it right now: open, no owner hold, not awaiting merge, no template errors, an unticked phase left, and not waiting on another open plan of the active index. */
+function priorityIdle(p: Plan, plans: Plan[]): boolean {
+	if (p.waitsOn.some(f => plans.some(w => w.file === f && w.status === "open"))) return false;
 	return p.status === "open" && !p.waiting && !q.awaitingMerge(p) && !p.errors.length && unticked(p).length > 0;
 }
 
 /**
  * Pure priority gate: for the brief's named plans, every higher plan in index order that is idle
- * and unstaffed needs a `Priority skip: <path> — <why>` line (non-empty why) in the brief;
- * otherwise the spawn is refused. `staffed === undefined` means the caller had no running-job
- * info (CLI spawn without it): never refuse. Plans already named by this call never block it.
+ * and unstaffed needs proof before a lower plan takes a free slot; otherwise the spawn is refused.
+ * Proof is either the higher plan's own `Waits on: <plan>` line for a plan still open in the index
+ * (then it is not idle at all) or a `Priority skip: <path> — owner: "<words>"` line whose quoted
+ * words (≥ 4, normalised) appear in one of `messages` (the owner's recorded words of the last
+ * 24 h; `now` is the current unix seconds). Any other skip line is refused.
+ * `staffed === undefined` means the caller had no running-job info (CLI spawn without it): never
+ * refuse. Plans already named by this call never block it.
  */
-export function priorityProblem(plans: Plan[], named: string[], staffed: string[] | undefined, brief: string): PriorityOutcome | null {
+export function priorityProblem(plans: Plan[], named: string[], staffed: string[] | undefined, brief: string, messages: OwnerMessage[] = [], now: number = nowSec()): PriorityOutcome | null {
 	if (staffed === undefined) return { unknown: true };
 	const namedRanks = named.map(f => plans.findIndex(p => p.file === f)).filter(n => n >= 0);
 	if (!namedRanks.length) return null;
@@ -365,20 +408,21 @@ export function priorityProblem(plans: Plan[], named: string[], staffed: string[
 	const skips: PrioritySkip[] = [];
 	for (let i = 0; i < higher.length; i++) {
 		const p = higher[i]!;
-		if (!priorityIdle(p) || staffed.includes(p.file)) continue;
+		if (!priorityIdle(p, plans) || staffed.includes(p.file)) continue;
 		const why = skipLines[p.file];
-		if (why) {
+		const quote = why?.match(/^owner:\s*"(.+)"\s*$/);
+		if (why && quote && ownerSaid(quote[1]!, messages, now)) {
 			skips.push({ plan: p.file, why });
 			continue;
 		}
-		return { problem: `higher plan ${p.file} (rank ${i + 1}) is idle; spawn on it first or add "Priority skip: ${p.file} — <why>"` };
+		return { problem: `higher plan ${p.file} (rank ${i + 1}) is idle; a skip needs the owner's words (Priority skip: ${p.file} — owner: "<quote>") or a "Waits on: ${p.file}" line in that plan` };
 	}
 	return skips.length ? { skips } : null;
 }
 
-/** Load staffing, run the pure priority gate and log its outcome; the refusal comes back with the caller's label, or null. */
+/** Load staffing and the owner's recorded words, run the pure priority gate and log its outcome; the refusal comes back with the caller's label, or null. */
 function priorityGate(named: string[], runningJobs: string[] | undefined, brief: string, cfg: Config, label: string): string | null {
-	const outcome = priorityProblem(q.activePlans(), named, runningJobs === undefined ? undefined : staffedPlans(readStaffing(), runningJobs), brief);
+	const outcome = priorityProblem(q.activePlans(), named, runningJobs === undefined ? undefined : staffedPlans(readStaffing(), runningJobs), brief, readOwnerMessages(), nowSec());
 	if (outcome?.unknown) log(cfg.paths.guard_log, "PRIORITY unknown jobs");
 	for (const s of outcome?.skips ?? []) log(cfg.paths.guard_log, `PRIORITY skip ${s.plan}: ${s.why}`);
 	return outcome?.problem ? `${label}: ${outcome.problem}` : null;
@@ -834,6 +878,7 @@ export function checkInject(e: InjectEvent, cfg: Config): Decision {
 	if (e.agent !== "main") return ALLOW;
 	const continuation = e.inject.trimStart().startsWith("main-guard:");
 	if (!continuation) writeWindow({ used: [], windowStart: 0 });
+	recordOwnerMessage(e.inject, cfg);
 	let summary: string;
 	try {
 		summary = q.queueSummary();
@@ -852,8 +897,8 @@ export function checkInject(e: InjectEvent, cfg: Config): Decision {
 	};
 }
 
-// Lines only Main may write: the status, owner parking, owner cancellation, cancelled-list clearance.
-const MAIN_ONLY_LINE = /^\s*(?:[-*]\s+)?(Status:|WAITING on owner:|Cancelled by owner:|False positive:)/;
+// Lines only Main may write: the status, owner parking, plan waits, owner cancellation, cancelled-list clearance.
+const MAIN_ONLY_LINE = /^\s*(?:[-*]\s+)?(Status:|WAITING on owner:|Waits on:|Cancelled by owner:|False positive:)/;
 
 function mainOnlyLines(text: string): string {
 	return text.split("\n").filter(l => MAIN_ONLY_LINE.test(l)).join("\n");
@@ -872,7 +917,7 @@ export function checkPlanEdit(e: PlanEditEvent, cfg: Config): Decision {
 		log(cfg.paths.plan_guard_log, `RESTORE ${e.path}`);
 		return {
 			allow: false,
-			reason: `plan-guard: you changed ${e.path} outside your progress entries (only "## Progress" entries are yours; the "Status:", "WAITING on owner:", "Cancelled by owner:" and "False positive:" lines are Main's, it marks a plan complete after reviewing your work). The file was restored.`,
+			reason: `plan-guard: you changed ${e.path} outside your progress entries (only "## Progress" entries are yours; the "Status:", "WAITING on owner:", "Waits on:", "Cancelled by owner:" and "False positive:" lines are Main's, it marks a plan complete after reviewing your work). The file was restored.`,
 			restore: { path: e.path, text: e.before },
 		};
 	}

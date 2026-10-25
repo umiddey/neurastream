@@ -49,6 +49,7 @@ export interface Plan {
 	appliesTo: string[];
 	waiting: boolean;
 	waitingLine: string | null;
+	waitsOn: string[];
 	priorityId: string | null;
 	/** First level-1 "# " heading in the plan, else the file basename. */
 	title: string;
@@ -112,9 +113,9 @@ export function progressBody(text: string): string {
 export type ProgressTrim = { body: string; moved: string; count: number };
 
 // Entries start at a top-level "- " line. The pointer line that a trim leaves behind is not an entry,
-// and Main-only lines (status, owner parking/cancel, cancelled-list clearance) never move to the archive.
+// and Main-only lines (status, owner parking, plan waits, owner cancel, cancelled-list clearance) never move to the archive.
 const POINTER_PREFIX = "- Older Progress entries:";
-const MAIN_ONLY_LINE = /^\s*(?:[-*]\s+)?(Status:|WAITING on owner:|Cancelled by owner:|False positive:)/;
+const MAIN_ONLY_LINE = /^\s*(?:[-*]\s+)?(Status:|WAITING on owner:|Waits on:|Cancelled by owner:|False positive:)/;
 
 /** Keep the first `keep` entries (the file lists them newest first) and move the rest. Pure. */
 export function trimProgressBody(body: string, keep: number, pointer: string): ProgressTrim | undefined {
@@ -183,7 +184,7 @@ function headerField(text: string, name: string): string | null {
 }
 
 export function parsePlan(repo: string, file: string, text: string | null, blockersDir = blockersDirPath()): Plan {
-	const empty = { repo, file, text: "", status: null, blockers: [], doneCheck: null, worktree: null, branch: null, appliesTo: [], waiting: false, waitingLine: null, priorityId: null, title: path.basename(file), goal: [] };
+	const empty = { repo, file, text: "", status: null, blockers: [], doneCheck: null, worktree: null, branch: null, appliesTo: [], waiting: false, waitingLine: null, waitsOn: [], priorityId: null, title: path.basename(file), goal: [] };
 	if (text === null) return { ...empty, errors: ["plan file listed in the index does not exist"] };
 	const errors: string[] = [];
 	const secs = sections(text);
@@ -228,6 +229,7 @@ export function parsePlan(repo: string, file: string, text: string | null, block
 		appliesTo: items(secs.get("applies to") ?? "").map(p => path.resolve(repo, expandHome(p.replace(/`/g, "")))),
 		waiting: /^WAITING on owner:/m.test(text),
 		waitingLine: text.match(/^WAITING on owner:[ \t]*(.*)$/m)?.[1] ?? null,
+		waitsOn: [...text.matchAll(/^[ \t]*(?:[-*][ \t]+)?Waits on:[ \t]*(.+)$/gm)].map(m => m[1]!.trim()),
 		priorityId: text.match(/^PRIORITY-ID:\s*`?([A-Z]{2}[0-9]{2})`?/m)?.[1] ?? null,
 		title: text.match(/^# (.+)$/m)?.[1]?.trim() || path.basename(file),
 		goal: items(secs.get("goal") ?? "").slice(0, 6),

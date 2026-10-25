@@ -7,6 +7,7 @@
 
 import { closeSync, openSync, readFileSync, readSync, readdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
+import type { Config } from "../../core/config.ts";
 import type { TraceEvent, TraceSource, TraceUsage } from "../../core/adapter.ts";
 import type { DumpParts, DumpTokens } from "../../core/trace-bloat.ts";
 import { asObj, jsonlAt, parseTs, runIdOf } from "./sessions.ts";
@@ -99,6 +100,7 @@ export function parseTraceFile(file: string, runId: string): TraceEvent[] {
 						runId,
 						tool: str(p.name) ?? "?",
 						args: asObj(p.arguments) ?? {},
+						callId: str(p.id),
 						model,
 						provider,
 						usage,
@@ -119,6 +121,7 @@ export function parseTraceFile(file: string, runId: string): TraceEvent[] {
 				ts,
 				runId,
 				tool: str(m.toolName) ?? "?",
+				callId: str(m.toolCallId),
 				isError: m.isError === true,
 				text: textOf(m.content),
 				usage,
@@ -305,6 +308,11 @@ export function ompTraceSource(root: string): TraceSource {
 			return file ? parseTraceFile(file, runId) : [];
 		},
 	};
+}
+
+/** TraceSource for agent-score, over the config's sessions root (the traces CLI's root rule). */
+export function ompScoreTraces(cfg: Config): TraceSource {
+	return ompTraceSource(cfg.adapter?.sessions || join(cfg.paths.home, ".omp", "agent", "sessions"));
 }
 
 export interface RelatedTrace {

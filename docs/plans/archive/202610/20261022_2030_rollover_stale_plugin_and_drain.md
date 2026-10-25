@@ -1,0 +1,69 @@
+# neurastream: Main rolls over even with an old plugin loaded or subagents always running
+Worktree: /home/ukd/Work/neurastream-rollover-drain
+Branch: fix/rollover-stale-drain
+
+## Goal
+- Owner (2026-10-22 ~20:1x, draft at rollover): "You are at 17MB. How the fuck did you not roll over?" Main's session `2026-10-21T19-56-16-088Z_…jsonl` reached 17.9 MB with `rollover.max_session_mb: 5`. The only note request (`main-guard.rollover`) went out at 18:11:06Z, after the owner restarted omp at 18:10Z; relaunch followed at 18:11:33Z (`/home/ukd/.local/state/main-guard.log` lines 5200-5201).
+- Causes found by Main:
+  1. A running omp process keeps the plugin code it loaded at start. That session started 2026-10-21 19:56, before the auto-rollover code (plan 20261022_0715_auto_rollover_5mb) was installed, so it never asked. Nothing tells Main that the installed neurastream is newer than the code it runs.
+  2. `wait-jobs` (note fresh, own jobs running) lasts as long as Main keeps subagents running, which is almost always for an orchestrator, and Main may keep spawning while it waits.
+  3. `asked` (`/home/ukd/Work/neurastream-rollover-drain/src/adapters/omp/index.ts` lines 360, 402-403) is set once per session file. If the note gets older than `MAX_NOTE_AGE_MS` (60 min) while jobs run, the state falls back to `need-note` and the request is never sent again: rollover is stuck.
+  4. M5 in `neurastream metrics report` groups `stop; open: <plan list>` BLOCK reasons by their full text (`reasonKey`, `/home/ukd/Work/neurastream-rollover-drain/src/core/metrics.ts` line 222), so every different open-plan list is a new reason.
+- When done, these hold:
+  1. The plugin remembers the neurastream version it loaded. At every Main turn end it re-reads `<package root>/package.json`; a different (or unreadable) version counts as "stale" and starts the same rollover path as the size threshold (note request → wait-jobs → ready → relaunch under the launcher). The note-request text names both versions.
+  2. While rollover is pending (`need-note` or `wait-jobs`), a Main spawn of a new subagent is refused with a reason saying rollover is pending and running jobs must finish first. Spawns are allowed again once the state is `below` or `ready`.
+  3. A note that expired while jobs ran gets exactly one new note request (once per expired note, never a loop).
+  4. M5 groups all `…open: <list>` reasons into one key.
+
+## Forbidden
+- Never push, tag, publish, link or install, and never bump the version. Commit only on fix/rollover-stale-drain, adding files by name. Never `git add -A`/`git add .`, never `--no-verify`.
+- Never touch the live setup (`~/.omp/agent`, `~/.local/bin`, `~/.local/state`, `~/.config`), not even to read real logs for a smoke. Tests and smokes run under a sandbox `HOME=/tmp/neurastream-home-*` with fixture files (AGENTS.md).
+- Never put harness names in `src/core/` (AGENTS.md architecture rule). Decisions go in `src/core/rollover.ts` (pure); file reads and harness calls stay in `src/adapters/omp/index.ts`.
+- Never hardcode paths; a new config knob only if needed (then `src/core/config.ts` + `templates/config.yml` + `docs/config.md`).
+- Never change other commands' output or exit codes. No new npm dependency.
+- Every `bun test`/typecheck run goes through `/home/ukd/Work/heavy-run.sh <agent> "<label>" -- <cmd>` with tool timeout 0, in the FOREGROUND. Probe first (`bun test tests/rollover.test.ts`), then the full suite.
+- `find` is broken: use grep/glob/read. One failed tool call is never a blocker; try two other ways.
+- Claim rule: report only what you ran and saw (label, exit code, log path).
+- Call budget: stop and report within ~100 tool calls per run (warning at 90, hard stop at 100). Commit each green unit immediately. You may append entries under `## Progress` of this plan only.
+- Read /home/ukd/projects/opus-implementer-method.md first and work by it.
+
+## Blockers
+- no-push
+- deny-path /home/ukd/.omp/agent/** /home/ukd/.local/bin/** /home/ukd/.local/state/** /home/ukd/.config/** /home/ukd/.npmrc INDEX.md package.json bun.lock
+- deny-command npm\s+publish bun\s+publish npm\s+link bun\s+link git\s+tag --no-verify git\s+add\s+(-A|--all|\.)
+
+## Phases
+- [x] P0 (Main) Worktree `/home/ukd/Work/neurastream-rollover-drain` on branch fix/rollover-stale-drain from origin/main a5ab6b9; plan indexed; blockers above. — difficulty: 1 — verify: `git -C /home/ukd/Work/neurastream-rollover-drain rev-parse --abbrev-ref HEAD | grep -qx fix/rollover-stale-drain`
+- [x] P1 Stale plugin (goal 1) + expired note (goal 3). Core (`src/core/rollover.ts`): `RolloverInput` gains `stale: boolean`; `rolloverState` treats `stale` like a crossed size threshold (a small but stale session goes need-note/wait-jobs/ready by the same note/jobs rules). `noteRequest` gains an optional reason so the text says "neurastream on disk is <new>, this session runs <loaded>" when stale. Adapter (`src/adapters/omp/index.ts`): read the version from `join(PACKAGE_ROOT, "package.json")` once when `createOmpAdapter` runs (PACKAGE_ROOT computed as in `src/adapters/omp/doctor.ts` line 11), re-read it in `stateOf`; unreadable = stale. `crossed` is also set when stale (note freshness needs it). Replace `asked: string | null` with a key of session file + note mtime (or null), so an expired note gets exactly one new request. Tests in `tests/rollover.test.ts` (pure core) and `tests/rollover-omp.test.ts` (adapter with fake ctx, sandbox HOME): stale+small → need-note; not stale+small → below; stale+fresh note+no jobs → ready; expired note after a request → one new request, then none for the same expired note. — difficulty: 4 — verify: `bun test tests/rollover.test.ts tests/rollover-omp.test.ts`
+- [x] P2 Drain (goal 2): when Main's rollover state is `need-note` or `wait-jobs`, a Main `task` spawn is refused before `checkSpawn` (`src/core/guards.ts` line 442) runs, reason `main-guard: rollover pending (<state>); no new subagents until the session rolls over. Running: <jobs>.`, plus one `BLOCK spawn <agent>: rollover pending` line in `guard_log`. The decision is a pure core function (state → allow/deny + reason); the adapter wires it where Main's `task` calls reach `checkSpawn`. Tests: need-note denies, wait-jobs denies, below/ready allow, subagent (non-main) spawns unaffected. — difficulty: 3 — verify: `bun test tests/rollover.test.ts tests/rollover-omp.test.ts`
+- [x] P3 M5 grouping (goal 4): `reasonKey` in `src/core/metrics.ts` collapses everything after `open: ` to `open: <list>`. Test in `tests/metrics.test.ts`: `stop; open: /a/x.md` and `stop; open: /a/x.md | /b/y.md` give one reason with count 2; existing M5 tests stay green unchanged. — difficulty: 2 — verify: `bun test tests/metrics.test.ts`
+- [x] P4 Docs + full green: README rollover section gets the stale-plugin trigger and the drain rule (2-3 lines); CHANGELOG one Unreleased line per goal; `bun run typecheck` and `bun test` green; sandbox smoke (HOME=/tmp/neurastream-home-*) driving the adapter's rollover state with a fake ctx and a package.json whose version changes mid-run, output pasted in Progress. — difficulty: 2 — verify: `bun run typecheck && bun test`
+- [x] P5 Test isolation from the caller's QUEUE_* env: run from Main's shell (omp's plugin exports QUEUE_AGENT/QUEUE_INDEX/QUEUE_STATE/QUEUE_SUBAGENTS/... to every child), `loadConfig({ home: TMP })` in `tests/rollover-omp.test.ts:102` still resolves `paths.queue_index`, `agent_dir`, `queue_state`, `subagents`, `blockers`, `cancelled`, `unlock` to the LIVE `~/.omp/agent` and `~/.local/state/queue` (env overrides in `src/core/config.ts:138-141`). So test "below and ready: a Main task spawn passes the drain and reaches the plan gate" (line 287) reads the live INDEX and fails whenever a live plan is `Status: complete` and still indexed (queue-close 2026-10-22 21:3x: `Received: "main-guard: glmfix: …20261022_2030_rollover_stale_plugin_and_drain.md (complete) is still indexed…"`), and `notePath(SESSION_ID)` writes `rollover-test-*.md` notes into the live `~/.local/state/queue/rollover/`. Fix: before `loadConfig` the test file saves and deletes every `QUEUE_*` key (the afterAll restore already exists), so every path is under TMP. Then grep `tests/` for other `loadConfig({ home` sandboxes that run before the QUEUE_* keys are cleared, and fix them the same way. Test-only: no change to `src/`. Proof: run `bun test` with the live QUEUE_* env exported (as Main's shell has it) AND a fake complete-but-indexed plan in a scratch INDEX pointed at by QUEUE_INDEX → 0 fail, and `ls ~/.local/state/queue/rollover/rollover-test-*` shows no new files after the run. — difficulty: 2 — verify: `QUEUE_INDEX=$HOME/.omp/agent/INDEX.md QUEUE_STATE=$HOME/.local/state/queue bun test tests/rollover-omp.test.ts`
+
+## Done check
+`bun run typecheck && bun test && grep -q 'stale' src/core/rollover.ts && grep -rq 'rollover pending' src && grep -qi 'rollover' CHANGELOG.md`
+
+## Code read by Main
+- `/home/ukd/Work/neurastream-rollover-drain/src/core/rollover.ts`
+- `/home/ukd/Work/neurastream-rollover-drain/src/adapters/omp/index.ts`
+- `/home/ukd/Work/neurastream-rollover-drain/src/adapters/omp/doctor.ts`
+- `/home/ukd/Work/neurastream-rollover-drain/src/core/metrics.ts`
+- `/home/ukd/Work/neurastream-rollover-drain/src/core/guards.ts`
+- `/home/ukd/.local/state/main-guard.log`
+
+## Progress
+Status: complete
+- 2026-10-22 22:4x Main: reviewed P5 1fd69e0 (test-only; 4 files). Re-ran from Main's shell with the live QUEUE_* env: 204 pass / 0 fail. Squash-merged as PR #5 (ad5c64b). Test-only, so no release needed.
+- 2026-10-22 22:3x NsTestIsolationGlm: P5 done on fix/rollover-stale-drain, commit 1fd69e0 (test-only: save + delete every inherited QUEUE_* key before the sandbox `loadConfig` in tests/rollover-omp.test.ts:102, tests/ledger-not-live.test.ts, tests/ledger-window.test.ts, tests/metrics.test.ts; existing afterAll restores; no src changes). All runs via /home/ukd/Work/heavy-run.sh, log /home/ukd/Work/.heavy-run.log: P5-iso-probe `bun test tests/rollover-omp.test.ts` 19 pass/0 fail exit 0; P5-iso-live-env `bun test` with the shell's live QUEUE_* exported (QUEUE_INDEX=/home/ukd/.omp/agent/INDEX.md) 204 pass/0 fail exit 0; P5-iso-typecheck `bun run typecheck` exit 0; P5-iso-scratch-index `bun test` with QUEUE_INDEX=/tmp/p5-scratch/INDEX.md, a scratch queue whose repo INDEX lists a template-shaped plan with `Status: complete` still indexed (verified hostile first: planGate returns "…p5-scratch-plan.md (complete) is still indexed…", the exact live failure) 204 pass/0 fail exit 0. Rollover-test notes in ~/.local/state/queue/rollover/: 0 before, 0 after both full runs. Forbidden-names scan on 1fd69e0: 0 hits.
+- 2026-10-22 21:4x Main: queue-close refused for a real reason, not a flake: tests/rollover-omp.test.ts reads the live INDEX through the inherited QUEUE_* env (see P5). Added P5 (test-only isolation fix). The 21:3x "flaky" bullet was wrong.
+- 2026-10-22 queue-close: done check failed (exit 1); reopened.
+- 2026-10-22 21:3x Main: first queue-close refused because the worktree had no node_modules (fixed with `bun install --frozen-lockfile`). The second hit 1 fail in 204 under machine load; the rerun gave 0 fails, so it's a flaky test (unnamed, not investigated).
+- 2026-10-22 queue-close: done check failed (exit 1); reopened.
+- 2026-10-22 queue-close: done check failed (exit 127); reopened.
+- 2026-10-22 21:2x Main: reviewed the diff and re-ran it in the worktree: typecheck 0, `bun test` 204 pass / 0 fail. Squash-merged as PR #3 (31bfa1a), released 0.1.14 via PR #4 (bf57007), tag v0.1.14, publish workflow green. Live install (`bun add -g neurastream@0.1.14` + `neurastream doctor`) is refused by plan-guard (protected global path) and needs the owner's `touch ~/.omp/agent/.guard-unlock`.
+- 2026-10-22 20:3x Main: plan written; P0 done (worktree at a5ab6b9).
+- 2026-10-22 21:1x NsRolloverDrainGlm: P1-P4 done on fix/rollover-stale-drain — commits fc184d4 (P1 stale plugin + expired-note re-request), 93ef29a (P2 drain), 6cc9bec (P3 M5 `open: <list>` grouping), 5e76326 (P4 docs). All runs via /home/ukd/Work/heavy-run.sh, log /home/ukd/Work/.heavy-run.log: probe-rollover-core 20 pass/0 fail exit 0; P1-rollover-stale-expired 40 pass/0 fail exit 0; P2-rollover-drain exit 1 then retry2 exit 1 (test bugs only: guard_log dir missing, QUEUE_SUBAGENTS clobbered by createOmpAdapter → live subagents.md), P2-rollover-drain-retry3 46 pass/0 fail exit 0; P3-metrics-open-list 16 pass/0 fail exit 0 (existing M5 tests unchanged); P4-full-green exit 127 (worktree had no node_modules; symlinked the main checkout's node_modules, removed after) → exit 0 with tsc clean + 204 pass/0 fail; P4-sandbox-smoke exit 0, sandbox HOME /tmp/neurastream-home-smoke-fRRDxD: below (0 messages) → install bumped 0.1.13→0.2.0 → request=main-guard.rollover names both versions → fresh note + job → wait-notice → task refused `main-guard: rollover pending (wait-jobs); no new subagents until the session rolls over. Running: GlmWorker.` + guard_log `BLOCK spawn glmworker: rollover pending` → jobs done → no rollover-pending refusal → ready under launcher: shutdowns=1, relaunch.json fields match. done-check `bun run typecheck && bun test && grep…` exit 0 (DONE-CHECK-PASS). Gate: plan goals 1-4 without a passing test 4 → 0. Forbidden-names scan per commit (`git grep -nE "\[(IP_ADDRESS|REDACTED|EMAIL|API_KEY)" -- packages`): 0 hits each. No push/tag/publish/link/install, no version bump, live setup untouched; worktree clean.
+
+## Background
+- Evidence: `/home/ukd/.local/state/main-guard.log` lines 5200-5201 (relaunch 18:11:33Z/18:11:46Z); the old session file has one `main-guard.rollover` request (18:11:06Z); note `~/.local/state/queue/rollover/01a16009-….md` mtime 20:11 local.
+- omp does not reload plugins in a running process; `bun add -g neurastream@latest` changes only the files on disk.

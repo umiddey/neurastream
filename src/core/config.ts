@@ -49,6 +49,7 @@ export interface Config {
 		board_days: number;
 		min_dollars: number;
 		min_hours: number;
+		waste_weight: number;
 	};
 	ledger: {
 		default_hours: number;
@@ -200,6 +201,15 @@ export interface Config {
 			write_roots: string[];
 			deny_globs: string[];
 		};
+		/** Waste counters (src/core/trace-efficiency.ts): what makes a tool call wasted. */
+		efficiency: {
+			/** The Nth identical read (same args JSON, no write between) counts; >= 2. */
+			repeat_read_min: number;
+			/** A toolResult text starting with one of these is a guard block. */
+			guard_prefixes: string[];
+			/** Shell commands matching this poll while nothing else runs. */
+			poll_pattern: string;
+		};
 	};
 	/** Optional overlay written by adapter install. Absent until an adapter is installed. */
 	adapter?: { name: string; sessions: string; pins: string; extensions: string };
@@ -336,6 +346,9 @@ function applyEnv(cfg: Record<string, unknown>, env: NodeJS.ProcessEnv): void {
 }
 
 function check(cfg: Config): void {
+	if (!(Number.isFinite(cfg.score.waste_weight) && cfg.score.waste_weight >= 0 && cfg.score.waste_weight <= 1)) {
+		throw new ConfigError("score.waste_weight must be between 0 and 1");
+	}
 	if (cfg.ledger.max_slots < 1) throw new ConfigError("ledger.max_slots must be >= 1");
 	if (cfg.guards.sub_warn_calls > cfg.guards.sub_max_calls) {
 		throw new ConfigError("guards.sub_warn_calls must be <= guards.sub_max_calls");
@@ -410,6 +423,17 @@ function check(cfg: Config): void {
 		if (list.some((v) => typeof v !== "string" || v === "")) {
 			throw new ConfigError("traces lists must be non-empty strings");
 		}
+	}
+	if (!(cfg.traces.efficiency.repeat_read_min >= 2)) {
+		throw new ConfigError("traces.efficiency.repeat_read_min must be >= 2");
+	}
+	if (cfg.traces.efficiency.guard_prefixes.some((p) => typeof p !== "string" || p === "")) {
+		throw new ConfigError("traces.efficiency.guard_prefixes must be non-empty strings");
+	}
+	try {
+		new RegExp(cfg.traces.efficiency.poll_pattern);
+	} catch {
+		throw new ConfigError(`traces.efficiency.poll_pattern: not a valid regex: ${cfg.traces.efficiency.poll_pattern}`);
 	}
 	for (const [key, value] of Object.entries(cfg.paths)) {
 		if (key === "work_roots") {

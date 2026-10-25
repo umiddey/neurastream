@@ -20,6 +20,7 @@ import { wipSnapshot } from "../core/wip-snapshot.ts";
 import { runtime } from "./runtime.ts";
 import { runMainLauncher } from "../adapters/omp/launch.ts";
 import { defaultCompletedResults, defaultRunSource } from "../adapters/omp/sessions.ts";
+import { ompScoreTraces } from "../adapters/omp/traces.ts";
 
 export const PORTED = [
 	"agent-score",
@@ -51,7 +52,7 @@ export async function runPorted(cmd: string, args: string[]): Promise<number> {
 	const rt = runtime();
 	switch (cmd) {
 		case "agent-score":
-			return agentScore(args, rt.cfg, rt.source);
+			return agentScore(args, rt.cfg, rt.source, ompScoreTraces(rt.cfg));
 		case "agent-ledger":
 			return agentLedger(args, rt.cfg, rt.source);
 		case "brief-lint":

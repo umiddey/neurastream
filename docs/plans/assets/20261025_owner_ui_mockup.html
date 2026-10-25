@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>neurastream – mockup</title>
+<style>
+:root{--bg:#f4f4f6;--card:#fff;--fg:#111;--mut:#6b6b76;--bd:#e4e4ea;--acc:#c026d3;--teal:#0d9488;--warn:#d97706;--ok:#16a34a;--red:#dc2626}
+@media(prefers-color-scheme:dark){:root{--bg:#0e0e11;--card:#18181c;--fg:#f2f2f4;--mut:#9a9aa6;--bd:#2a2a31}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.4 system-ui,-apple-system,sans-serif}
+.top{position:sticky;top:0;display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--bg);z-index:2}
+.logo{font-weight:800;color:var(--acc)}
+.pills{display:flex;background:var(--card);border:1px solid var(--bd);border-radius:999px;padding:3px;flex:1}
+.pills a{flex:1;text-align:center;padding:5px 0;border-radius:999px;color:var(--mut);text-decoration:none;font-size:13px}
+.pills a.on{background:var(--bg);color:var(--fg);font-weight:600;box-shadow:0 0 0 1px var(--bd)}
+.lock{border:1px solid var(--bd);background:var(--card);border-radius:999px;padding:6px 10px;font-size:13px;color:var(--fg)}
+main{padding:4px 12px 40px}
+h1{font-size:26px;margin:8px 0 2px}h2{font-size:17px;margin:22px 4px 8px;display:flex;justify-content:space-between;align-items:baseline}
+h2 small{font-size:12px;color:var(--mut);font-weight:400}
+.sub{color:var(--mut);font-size:13px;margin:0 0 12px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:14px;overflow:hidden}
+.tile{padding:14px 16px;border-top:1px solid var(--bd);display:flex;justify-content:space-between;align-items:flex-end}
+.tile:first-child{border-top:0}
+.lbl{font-size:13px;color:var(--mut)}.num{font-size:30px;font-weight:700;line-height:1.1}.note{font-size:12px;color:var(--mut)}
+svg.spark{width:130px;height:40px}
+.ask{padding:14px 16px;border-top:1px solid var(--bd)}.ask:first-child{border-top:0}
+.ask b{display:block}.ask p{margin:2px 0 10px;color:var(--mut);font-size:13px}
+.btn{border:1px solid var(--bd);background:var(--card);color:var(--fg);border-radius:999px;padding:6px 16px;font-size:14px;margin-right:6px}
+.btn.pri{background:var(--acc);border-color:var(--acc);color:#fff}
+.row{display:flex;align-items:center;gap:10px;padding:12px 14px;border-top:1px solid var(--bd)}.row:first-child{border-top:0}
+.grip{color:var(--mut);cursor:grab;font-size:18px}.n{color:var(--mut);width:18px;font-size:13px}.t{flex:1}
+.chip{font-size:11px;padding:2px 8px;border-radius:999px;white-space:nowrap}
+.c-wait{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}
+.c-run{background:color-mix(in srgb,var(--teal) 18%,transparent);color:var(--teal)}
+.c-ready{background:color-mix(in srgb,var(--mut) 15%,transparent);color:var(--mut)}
+.more{display:block;text-align:center;padding:12px;color:var(--acc);text-decoration:none;border-top:1px solid var(--bd);font-size:14px}
+.tag{position:fixed;bottom:8px;right:8px;font-size:11px;color:var(--mut)}
+</style></head><body>
+<div class="top"><span class="logo">ns</span>
+<nav class="pills"><a class="on">Now</a><a>Queue</a><a>Agents</a><a>Spend</a></nav>
+<button class="lock">🔒 Off</button></div>
+<main>
+<h1>Today</h1><p class="sub">What your agents did in the last 24 hours.</p>
+<div class="card">
+ <div class="tile"><div><div class="lbl">Needs you</div><div class="num" style="color:var(--warn)">3</div><div class="note">answer below ↓</div></div></div>
+ <div class="tile"><div><div class="lbl">Spend (list price)</div><div class="num">$98.02</div><div class="note">Main $72 · agents $26</div></div>
+  <svg class="spark" viewBox="0 0 130 40"><polyline points="0,32 16,24 32,27 48,16 64,21 80,10 96,15 112,6 130,12" fill="none" stroke="var(--acc)" stroke-width="2"/></svg></div>
+ <div class="tile"><div><div class="lbl">Agent runs</div><div class="num">47</div><div class="note">0 running · 7 died</div></div>
+  <svg class="spark" viewBox="0 0 130 40"><polyline points="0,30 16,26 32,28 48,18 64,22 80,14 96,20 112,8 130,16" fill="none" stroke="var(--teal)" stroke-width="2"/></svg></div>
+ <div class="tile"><div><div class="lbl">Plans</div><div class="num">27</div><div class="note" style="color:var(--ok)">open · 2 closed today</div></div></div>
+</div>
+<h2>Needs you</h2>
+<div class="card">
+ <div class="ask"><b>Release 0.2.15?</b><p>Provider-honesty checks are ready on main.</p>
+  <button class="btn pri">Yes</button><button class="btn">No</button><button class="btn">Reply…</button></div>
+ <div class="ask"><b>C2: 49 rows to decide</b><p>Table actions with no screen in the app. Keep, drop or test?</p>
+  <button class="btn">Open list ›</button></div>
+</div>
+<h2>Queue <small>drag ≡ to sort</small></h2>
+<div class="card">
+ <div class="row"><span class="grip">≡</span><span class="n">1</span><span class="t">Provider honesty</span><span class="chip c-wait">waits you</span></div>
+ <div class="row"><span class="grip">≡</span><span class="n">2</span><span class="t">Prompt bloat</span><span class="chip c-run">working</span></div>
+ <div class="row"><span class="grip">≡</span><span class="n">3</span><span class="t">Agent efficiency</span><span class="chip c-ready">ready</span></div>
+ <div class="row"><span class="grip">≡</span><span class="n">4</span><span class="t">Contractor lint 2</span><span class="chip c-run">checks running</span></div>
+ <a class="more">Show all 27 ›</a>
+</div>
+</main><div class="tag">mockup · not live data</div>
+</body></html>

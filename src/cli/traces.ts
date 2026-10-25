@@ -6,6 +6,8 @@
 // run's trace shows (src/core/trace-actions.ts); the high ones fold into the incident store as
 // realtime `suspicious-action` incidents (D6). Read-only over the sessions root; --json prints
 // machine-readable records.
+// `neurastream traces efficiency …` (plan 20261024_0304 P2): count the run's wasted tool calls
+// under the config's waste rules (src/core/trace-efficiency.ts).
 
 import { join } from "node:path";
 import { nowSec } from "../core/clock.ts";
@@ -15,6 +17,8 @@ import { claimUnbacked } from "../core/incident-detectors.ts";
 import { claimsFromEvents, type RelatedRun } from "../core/trace-claims.ts";
 import { actionsRules, suspiciousActions, type ActionsRules, type SuspiciousAction } from "../core/trace-actions.ts";
 import { bloatBreakdown, bloatFindings, bloatRules, callSizes, dumpFinding, type BloatBreakdown, type BloatRules } from "../core/trace-bloat.ts";
+import { efficiencyRules, runEfficiency, RULE_ORDER, type EfficiencyRules, type WasteRule } from "../core/trace-efficiency.ts";
+import { pyPercent0 } from "../core/pyfmt.ts";
 import { dumpModel, dumpParts, dumpPromptTokens, ompDumps, ompTraceRuns, ompTraceSource, ompTraceStart, subagentTraces } from "../adapters/omp/traces.ts";
 
 export const TRACES_USAGE = [
@@ -22,6 +26,8 @@ export const TRACES_USAGE = [
 	"       neurastream traces claims --since <N m|h|d> [--json]",
 	"       neurastream traces actions <runId> [--json]",
 	"       neurastream traces actions --since <N m|h|d> [--json]",
+	"       neurastream traces efficiency <runId> [--json]",
+	"       neurastream traces efficiency --since <N m|h|d> [--json]",
 	"       neurastream traces bloat [<runId>] [--since <N m|h|d>] [--json]   # default window 24h",
 ].join("\n");
 
@@ -59,6 +65,19 @@ export interface RunActionsReport {
 /** Scan one run: every suspicious tool action its trace shows, under the config's rules. */
 export function actionsReport(src: TraceSource, runId: string, rules: ActionsRules): RunActionsReport {
 	return { runId, actions: suspiciousActions(src.events(runId), rules) };
+}
+
+export interface RunEfficiencyReport {
+	runId: string;
+	calls: number;
+	wasted: number;
+	wastePct: number;
+	byRule: Record<WasteRule, number>;
+}
+
+/** Count one run's wasted tool calls under the config's waste rules. */
+export function efficiencyReport(src: TraceSource, runId: string, rules: EfficiencyRules): RunEfficiencyReport {
+	return { runId, ...runEfficiency(src.events(runId), rules) };
 }
 
 export interface RunBloatReport {
@@ -155,10 +174,10 @@ export function bloatReport(src: TraceSource, runId: string, rules: BloatRules, 
 	};
 }
 
-/** `neurastream traces claims|actions|bloat`: one run by id, or every run touched inside a --since window. */
+/** `neurastream traces claims|actions|efficiency|bloat`: one run by id, or every run touched inside a --since window. */
 export async function runTraces(args: string[], opts: { home?: string } = {}): Promise<number> {
 	const sub = args[0];
-	if (sub !== "claims" && sub !== "actions" && sub !== "bloat") {
+	if (sub !== "claims" && sub !== "actions" && sub !== "efficiency" && sub !== "bloat") {
 		console.error(TRACES_USAGE);
 		return 2;
 	}
@@ -201,7 +220,7 @@ export async function runTraces(args: string[], opts: { home?: string } = {}): P
 	}
 	const runs = ompTraceRuns(root);
 	const src = ompTraceSource(root);
-	const rules: ActionsRules | BloatRules | null = sub === "actions" ? actionsRules(cfg) : sub === "bloat" ? bloatRules(cfg) : null;
+	const rules: ActionsRules | EfficiencyRules | BloatRules | null = sub === "actions" ? actionsRules(cfg) : sub === "efficiency" ? efficiencyRules(cfg) : sub === "bloat" ? bloatRules(cfg) : null;
 	// A Main run's report cites its subagents' results: their traces under the Main session dir
 	// back the pure result-line claims (P5). No time filter — the text match is the guard, and
 	// a sub's file keeps being written while its Main run lives, inside whatever window.
@@ -213,10 +232,11 @@ export async function runTraces(args: string[], opts: { home?: string } = {}): P
 	const unmatchedDumps = assignment.unmatched;
 	const mtimeOf = (id: string): number => runs.find((r) => r.runId === id)?.mtimeSec ?? 0;
 	const assignedDumps = (id: string) => dumps.filter((dump) => dumpOwners.get(dump.file) === id);
-	const reports: (RunClaimsReport | RunActionsReport | RunBloatReport)[] = [];
-	const reportOf = (id: string): RunClaimsReport | RunActionsReport | RunBloatReport => {
+	const reports: (RunClaimsReport | RunActionsReport | RunEfficiencyReport | RunBloatReport)[] = [];
+	const reportOf = (id: string): RunClaimsReport | RunActionsReport | RunEfficiencyReport | RunBloatReport => {
 		if (sub === "claims") return claimsReport(src, id, relatedOf(id));
 		if (sub === "actions") return actionsReport(src, id, rules as ActionsRules);
+		if (sub === "efficiency") return efficiencyReport(src, id, rules as EfficiencyRules);
 		return bloatReport(src, id, rules as BloatRules, cfg.traces.bloat.tool_group, assignedDumps(id), mtimeOf(id), assignment.events.get(id));
 	};
 	if (windowSec !== undefined) {
@@ -247,6 +267,9 @@ export async function runTraces(args: string[], opts: { home?: string } = {}): P
 				console.log(`  ${u.kind}: ${u.summary}`);
 				if (u.evidence) console.log(`    evidence: ${u.evidence}`);
 			}
+		} else if ("byRule" in r) {
+			console.log(`${r.runId}: ${r.calls} calls, ${r.wasted} wasted (${pyPercent0(r.wastePct)})`);
+			for (const rule of RULE_ORDER) console.log(`  ${rule}: ${r.byRule[rule]}`);
 		} else if ("calls" in r) {
 			if (r.calls === 0 && r.findings.length === 0) {
 				console.log(`${r.runId}: no model calls in the trace`);

@@ -289,17 +289,53 @@ test("a second 429 in the episode doubles the wait, replaces the timer, posts no
 	expect(rlHits()).toHaveLength(1);
 }, 30_000);
 
-// (c) owner input cancels.
-test("an owner message before expiry cancels the resume timer", async () => {
+// A non-turn input leaves the resume armed; only an actual Main turn takes it over.
+test("slash command input leaves the resume armed until it fires", async () => {
 	reset();
-	const cfg = stopCfg(writeConfig());
-	const host = adapterWith(cfg);
+	const host = adapterWith(stopCfg(writeConfig()));
+	const ctx = ctxFor();
+	await host.emit("session_stop", stopEvent(err429(2000)), ctx);
+	await until(() => rlHits().length === 1);
+	await host.emit("input", { text: "/usage", source: "interactive" }, ctx);
+	expect(logLines().filter(l => l.includes("RATE-LIMIT resume cancelled: owner message"))).toHaveLength(0);
+	await until(() => host.sent.length === 1, 8000);
+	expect(logLines().filter(l => l.includes("RATE-LIMIT resume: new turn sent"))).toHaveLength(1);
+}, 30_000);
+
+test("handled chat unlock leaves the resume armed until it fires", async () => {
+	reset();
+	const cfg = writeConfig();
+	const host = adapterWith(stopCfg({ ...cfg, guards: { ...cfg.guards, chat_unlock: true } }));
+	const ctx = ctxFor();
+	await host.emit("session_stop", stopEvent(err429(2000)), ctx);
+	await until(() => rlHits().length === 1);
+	const unlockResults = await host.emit("input", { text: "unlock 5", source: "interactive" }, ctx);
+	expect(unlockResults).toContainEqual({ handled: true });
+	await until(() => host.sent.length === 1, 8000);
+	expect(logLines().filter(l => l.includes("RATE-LIMIT resume: new turn sent"))).toHaveLength(1);
+}, 30_000);
+
+test("a Main turn takeover cancels the resume timer once", async () => {
+	reset();
+	const host = adapterWith(stopCfg(writeConfig()));
 	const ctx = ctxFor();
 	await host.emit("session_stop", stopEvent(err429(2000)), ctx);
 	await until(() => rlHits().length === 1);
 	await host.emit("input", { text: "taking over", source: "interactive" }, ctx);
+	await host.emit("before_agent_start", { prompt: "taking over" }, ctx);
 	expect(logLines().filter(l => l.includes("RATE-LIMIT resume cancelled: owner message"))).toHaveLength(1);
 	await expectNoMore(() => host.sent.length, 0);
+}, 30_000);
+
+test("the resume's own turn does not log a cancellation", async () => {
+	reset();
+	const host = adapterWith(stopCfg(writeConfig()));
+	const ctx = ctxFor();
+	await host.emit("session_stop", stopEvent(err429(2000)), ctx);
+	await until(() => rlHits().length === 1);
+	await until(() => host.sent.length === 1, 8000);
+	await host.emit("before_agent_start", { prompt: host.sent[0] }, ctx);
+	expect(logLines().filter(l => l.includes("RATE-LIMIT resume cancelled: owner message"))).toHaveLength(0);
 }, 30_000);
 
 // (d) a normal stop with an open queue still blocks as today.

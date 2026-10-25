@@ -1,5 +1,4 @@
 # Changelog
-
 ## Unreleased
 ### Added
 - `neurastream traces bloat [<runId>|--since 24h] [--json]` (plan 20261024_0303): per-run model-call prompt sizes (usage input + cacheRead + cacheWrite, one row per call) with `prompt-bloat` findings — the first call over `traces.bloat.first_call_max` (default 150000), or any call over `ratio_of_limit` (default 0.8) × its model's `context_limits` entry (an open map; a model without an entry is not limit-checked). A failed request dump belongs to one run only: its window must cover the dump, its model must match, then the closest event at or before the dump wins; ties and dumps with no eligible run are listed once as unmatched (also in `--json`). Its report shows what filled the prompt — system / messages / tool groups by `traces.bloat.tool_group`, plus the five largest tools — and, when the run itself has no usage finding (its rejected call never wrote usage), the dump's error-response prompt size ("prompt is too long: 1172629 tokens > 1000000 maximum") becomes the flag with the dump as the named source; a dump stating no count flags nothing, and no size is guessed from bytes.
@@ -8,6 +7,21 @@
 
 ### Changed
 - The `traces.bloat.tool_group` default is now `^_?mcp__([A-Za-z0-9]+)_`: this harness writes some MCP tool names with a leading underscore (`_mcp__zoho_mcp_…`), which the old `^mcp__…` default lumped into `builtin` instead of naming the group.
+
+## 0.2.18
+### Fixed
+- A slash command typed while Main waited out a rate limit no longer cancels the wake-up before a turn starts.
+
+## 0.2.17
+### Changed
+- A `Priority skip:` line no longer works with any reason: the only accepted form is `Priority skip: <plan> — owner: "<words>"`, and the quoted words (at least four, case- and spacing-normalised) must appear in an owner message recorded in the last 24 h — every Main prompt that is not a guard continuation or a harness notice is now appended to `<queue_state>/owner-messages.jsonl` (newest 50 kept). A higher plan that carries a `Waits on: <plan>` line for a plan still open in the index is not idle, so it does not block a lower spawn and needs no skip line; `Waits on:` lines are Main-only (plan-guard restores subagent edits that add or remove one). The skip log line keeps the owner quote.
+
+### Added
+- `neurastream traces efficiency <runId|--since 7d> [--json]` reports per-run tool-call waste and matched-rule counts; agent-score adds the `Calls/acc` and `Waste` board columns, and `score.waste_weight` (default 0) weights the wasted-call fraction in ranking.
+
+## 0.2.16
+### Fixed
+- Session timestamps were read 1 h early in summer time.
 
 ## 0.2.15
 ### Added

@@ -33,6 +33,7 @@ score:
   gate_days: 7
   board_days: 7
   min_dollars: 0.01
+  waste_weight: 0           # rank multiplier for wasted-call rate (0 disables)
   min_hours: 0.05
 
 ledger:
@@ -240,3 +241,9 @@ traces:
       - "~/.omp/**"
       - "~/.local/bin/**"
       - "~/.local/state/**"
+  efficiency:          # wasted-call rules (src/core/trace-efficiency.ts); the board ranks on them via score.waste_weight
+    repeat_read_min: 3   # the Nth identical read (same args, no write between) counts; 2 = the first re-read
+    guard_prefixes:      # a toolResult text starting with one of these is a guard block
+      - "plan-guard:"
+      - "main-guard:"
+    poll_pattern: '^\s*(sleep\s+\d|ps\b|pgrep\b)'   # shell commands that poll while nothing else runs

@@ -39,10 +39,17 @@ export function parseTs(ts: string): number | null {
 	const [date, time] = s.split("T") as [string, string];
 	const [Y, M, D] = date.split("-").map(Number);
 	const [h, m, sec] = time.split(":").map(Number);
+	const suffix = ts.slice(19);
+	const zone = suffix.replace(/^\.\d+/, "");
+	if (zone === "Z" || /^[+-]\d{2}:\d{2}$/.test(zone)) {
+		const utc = Date.UTC(Y!, M! - 1, D, h, m, sec);
+		const offset = zone === "Z" ? 0 : (Number(zone.slice(1, 3)) * 60 + Number(zone.slice(4, 6))) * (zone[0] === "+" ? 1 : -1);
+		return (utc - offset * 60_000) / 1000;
+	}
+	if (zone !== "") return null;
 	const local = new Date(Y!, M! - 1, D, h, m, sec);
 	if (Number.isNaN(local.getTime())) return null;
-	const timezone = new Date(Y!, 0, 1).getTimezoneOffset() * 60;
-	return local.getTime() / 1000 - timezone;
+	return local.getTime() / 1000;
 }
 
 export function asObj(v: unknown): Record<string, unknown> | null {

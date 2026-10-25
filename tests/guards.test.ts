@@ -217,7 +217,7 @@ console.log(JSON.stringify(out));
 	expect(orig[1]).toBe(true); // the original restored the file itself
 	const refused = guardCli("plan-edit", { path: PLAN, before, after: statusFlip, agent: "sub" });
 	expect(refused.code).toBe(2);
-	expect(refused.d.reason).toBe(orig[0]);
+	expect(refused.d.reason).toBe(orig[0].replace('"WAITING on owner:", "Cancelled by owner:"', '"WAITING on owner:", "Waits on:", "Cancelled by owner:"'));
 	expect(refused.d.restore).toEqual({ path: PLAN, text: before });
 	const hacked = guardCli("plan-edit", { path: PLAN, before, after: goalHack, agent: "sub" });
 	expect(hacked.code).toBe(2);
