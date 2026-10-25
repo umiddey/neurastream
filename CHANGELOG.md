@@ -1,4 +1,8 @@
 # Changelog
+## Unreleased
+### Fixed
+- A slash command typed while Main waited out a rate limit no longer cancels the wake-up before a turn starts.
+
 ## 0.2.16
 ### Fixed
 - Session timestamps were read 1 h early in summer time.
