@@ -56,11 +56,11 @@ export function inboxPath(): string {
 	return `${stateDirPath()}/owner-inbox.jsonl`;
 }
 
-function isLoopback(peer: string): boolean {
+export function isLoopback(peer: string): boolean {
 	return peer === "::1" || peer === "localhost" || peer.startsWith("127.");
 }
 
-function isTailnet(peer: string): boolean {
+export function isTailnet(peer: string): boolean {
 	const v4 = /^(\d+)\.(\d+)\./.exec(peer);
 	if (v4) return v4[1] === "100" && Number(v4[2]) >= 64 && Number(v4[2]) <= 127;
 	return TAILNET6.test(peer);

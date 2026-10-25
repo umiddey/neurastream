@@ -130,6 +130,11 @@ ui:
   port: 7787
   owner_login: ""       # the tailscale login that may open the page; empty = the page refuses to start
 
+
+pages:
+  enabled: false
+  port: 7788
+  dir: "~/.local/share/neurastream/pages"
 rollover:
   enabled: true
   max_session_mb: 5

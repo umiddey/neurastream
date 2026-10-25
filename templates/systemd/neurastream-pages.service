@@ -1,0 +1,12 @@
+# User unit for tailnet-hosted static pages.
+[Unit]
+Description=neurastream static pages
+After=network-online.target
+
+[Service]
+ExecStart=%h/.bun/bin/neurastream pages serve
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
