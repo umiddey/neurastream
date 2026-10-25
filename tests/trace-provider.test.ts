@@ -8,9 +8,9 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { TraceEvent } from "../src/core/adapter.ts";
-import { parseTraceFile } from "../src/adapters/omp/traces.ts";
+import { parseTraceFile, offeredFromDump } from "../src/adapters/omp/traces.ts";
 import { loadConfig, TEMPLATE_PATH } from "../src/core/config.ts";
-import { modelSwaps, oddResponseIds } from "../src/core/trace-provider.ts";
+import { modelSwaps, oddResponseIds, unofferedTools } from "../src/core/trace-provider.ts";
 
 const REPO = dirname(dirname(import.meta.path));
 const FIX = join(REPO, "tests", "fixtures", "traces");
@@ -39,6 +39,10 @@ function assistant(fields: { model?: string; provider?: string; responseId?: str
 		...(fields.provider ? { provider: fields.provider } : {}),
 		...(fields.responseId ? { responseId: fields.responseId } : {}),
 	};
+}
+
+function result(tool: string, isError: boolean): TraceEvent {
+	return { kind: "toolResult", ts: null, runId: "synthetic", tool, isError, text: isError ? "No such tool" : "ok" };
 }
 
 const ANTHROPIC = { anthropic: "^msg_[A-Za-z0-9]+$" };
@@ -127,3 +131,60 @@ describe("config wiring", () => {
 		expect(Array.isArray(cfg.traces.provider.allow_tools)).toBe(true);
 	});
 });
+
+describe("unoffered tools (P2)", () => {
+	test("benign run: every call is backed by a successful result", () => {
+		expect(unofferedTools(events("provider-benign.jsonl"), [])).toEqual([]);
+	});
+
+	test("calls the session never saw succeed are unoffered; errors prove it", () => {
+		const found = unofferedTools(events("provider-tools.jsonl"), []);
+		expect(found.map((f) => f.fingerprint)).toEqual([
+			"unoffered-tool:provider-tools:made_up_tool",
+			"unoffered-tool:provider-tools:ghost_tool",
+		]);
+		for (const f of found) {
+			expect(f.kind).toBe("unoffered-tool");
+			expect(f.evidence?.length ?? 0).toBeLessThanOrEqual(160);
+		}
+	});
+
+	test("the config allow-list vouches for a tool no result ever served", () => {
+		const found = unofferedTools(events("provider-tools.jsonl"), ["ghost_tool"]);
+		expect(found.map((f) => f.fingerprint)).toEqual(["unoffered-tool:provider-tools:made_up_tool"]);
+	});
+
+	test("a first call that succeeds proves its own offer", () => {
+		expect(unofferedTools([assistant({ tool: "task" }), result("task", false)], [])).toEqual([]);
+	});
+
+	test("a call that only ever errors stays unoffered even with a result present", () => {
+		expect(unofferedTools([assistant({ tool: "phantom" }), result("phantom", true)], []).map((f) => f.fingerprint)).toEqual(["unoffered-tool:synthetic:phantom"]);
+	});
+
+	test("names parsed from the request's own tool list vouch for a call", () => {
+		expect(unofferedTools([assistant({ tool: "phantom" }), result("phantom", true)], [], ["phantom"])).toEqual([]);
+	});
+
+	test("the parser's unnamed-call placeholder is never a tool name", () => {
+		expect(unofferedTools([{ kind: "toolCall", ts: null, runId: "synthetic", tool: "?", args: {} }], [])).toEqual([]);
+	});
+
+	test("repeats of one phantom tool fold into one finding", () => {
+		const evs = [assistant({ tool: "phantom" }), assistant({ tool: "phantom" })];
+		expect(unofferedTools(evs, [])).toHaveLength(1);
+	});
+});
+
+describe("offered tools from an http dump (P2)", () => {
+	test("body.tools[].name of a dumped request, in file order", () => {
+		expect(offeredFromDump(join(FIX, "http-dump.json"))).toEqual(["read", "bash"]);
+	});
+
+	test("a missing file, broken JSON or a dump without tools offers nothing", () => {
+		expect(offeredFromDump(join(FIX, "does-not-exist.json"))).toEqual([]);
+		expect(offeredFromDump(join(REPO, "README.md"))).toEqual([]);
+		expect(offeredFromDump(join(FIX, "provider-benign.jsonl"))).toEqual([]);
+	});
+});
+

@@ -137,6 +137,30 @@ export function ompTraceRuns(root: string): { runId: string; file: string; mtime
 	return Object.entries(newest).map(([runId, v]) => ({ runId, file: v.file, mtimeSec: v.mtimeSec }));
 }
 
+/**
+ * Tool names one dumped request offered: body.tools[].name of an http-4xx dump. A dump the
+ * reader cannot open or parse offers nothing — a broken dump must not widen the offered set.
+ */
+export function offeredFromDump(file: string): string[] {
+	let text: string;
+	try {
+		text = readFileSync(file, "utf8");
+	} catch {
+		return [];
+	}
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(text);
+	} catch {
+		return [];
+	}
+	const o = asObj(parsed);
+	const body = asObj(o?.body) ?? o;
+	const tools = body?.tools;
+	if (!Array.isArray(tools)) return [];
+	return tools.map((t) => str(asObj(t)?.name)).filter((n): n is string => n !== undefined);
+}
+
 /** TraceSource over a sessions root: dated main files at depth 1, subagent files at depth 2. */
 export function ompTraceSource(root: string): TraceSource {
 	return {

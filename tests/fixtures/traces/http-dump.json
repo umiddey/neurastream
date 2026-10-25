@@ -1,0 +1,16 @@
+{
+  "provider": "anthropic",
+  "api": "anthropic-messages",
+  "model": "claude-opus-5-5",
+  "method": "POST",
+  "url": "https://api.example.internal/v1/messages",
+  "body": {
+    "model": "claude-opus-5-5",
+    "stream": true,
+    "tools": [
+      { "type": "function", "name": "read", "description": "static file and URL reader" },
+      { "type": "function", "name": "bash", "description": "shell runner" }
+    ]
+  },
+  "errorResponse": { "status": 400, "body": { "type": "error", "error": { "type": "invalid_request_error" } } }
+}
