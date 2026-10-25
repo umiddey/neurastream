@@ -207,6 +207,28 @@ snapshot:
     - ".font-unix"
     - "snap-private-tmp"
     - "*.sock"
+
+traces:
+  allowed_hosts:        # hosts a network command may touch without a finding
+    - localhost
+    - 127.0.0.1
+    - "::1"
+  actions:
+    secret_globs:       # a read matching any glob is a high finding; evidence is masked either way
+      - "~/.ssh/**"
+      - "**/*.env*"
+      - "**/*keys*.txt"
+      - "**/mcp.json"
+      - "**/keyring*/**"
+      - "**/.gnupg/**"
+      - "**/.password-store/**"
+    net_tools: [curl, wget, nc, ssh, scp]   # commands that reach a host (word match inside shell tools)
+    shell_patterns: ['| sh', '| bash', 'eval "$(']   # a command containing one feeds a shell from a pipe
+    write_roots: []     # prefixes a run may write (plan Worktree: roots); empty falls back to paths.work_roots; both empty = the scope check is off
+    deny_globs:         # writes matching any glob are flagged wherever they land
+      - "~/.omp/**"
+      - "~/.local/bin/**"
+      - "~/.local/state/**"
 ```
 
 `ledger.providers` is the allow-list. It is data. Core checks membership and does not know the names.
@@ -218,6 +240,8 @@ snapshot:
 `guards.sub_max_calls_cap` bounds the per-spawn call budget: a `Call budget: <N>` line in a `task` brief (the task's own text, or the shared `context` of the same call; the task's own line wins) gives that run a hard stop at N calls — warning at N − (`guards.sub_max_calls` − `guards.sub_warn_calls`), floored at 1 — instead of the global warn 90 / stop 100. At the stop only plan Progress reads and edits pass, as at the global limit. The spawn is refused when N is outside 10..`guards.sub_max_calls_cap` or the task has no `name`: the budget is keyed by the task name in `<queue_state>/spawn-budgets.json` (next to `spawns.json`), and the ledger flags a still-running sub `OVER-BUDGET` past its own N. A task without the line keeps the global values.
 
 `score.default_branch` has no default. It is config, not a core literal: set it here or pass `--branch`; with `score.default_repo` empty, `accept` / `check` require `--repo` and `--branch`.
+
+`traces.actions` feeds `src/core/trace-actions.ts`. A tool call whose path arguments match a `secret_globs` glob is a secret read. A shell command naming a `net_tools` word reaches a host; it is allowed while the host matches `traces.allowed_hosts` (exact, or `*.suffix`), otherwise flagged — shaped as exfiltration when data flows out (a pipe into the tool, a body/upload option, a stdin redirect, a local scp source). Write targets outside every `actions.write_roots` root (empty falls back to `paths.work_roots`; both empty turn the scope check off) or matching a `deny_globs` glob are out of scope wherever they land. A command containing a `shell_patterns` substring feeds a shell from a pipe. All lists are data: core matches globs and words, it never hardcodes a tool, host or path.
 
 ## omp overlay (adapter install, not core)
 
