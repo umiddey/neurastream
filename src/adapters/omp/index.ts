@@ -36,6 +36,7 @@ import { defaultCompletedResults, defaultRunSource, runIdOf } from "./sessions.t
 import { parseTraceFile } from "./traces.ts";
 import { packageJsonPath, packageVersion } from "./package-root.ts";
 import * as q from "../../core/queue/lib.ts";
+import { annotateResetTimes } from "../../core/reset-time.ts";
 // Registers the plugin-command matcher into core's writeTargets (side effect).
 import "./package-ops.ts";
 
@@ -1128,29 +1129,55 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	const seenChatPrompts = new Set<string>();
 	const CHAT_PROMPT_MAX_AGE_MS = 10 * 60_000;
 	pi.on("context", (event, ctx) => {
-		if (!cfg.guards.chat_unlock || !isMain(ctx)) return undefined;
+		if (!isMain(ctx)) return undefined;
 		const messages = asRecord(event).messages;
 		if (!Array.isArray(messages)) return undefined;
-		for (const raw of messages) {
-			const m = asRecord(raw);
-			if (m.role !== "custom" || m.customType !== "collab-prompt" || m.attribution !== "user") continue;
-			const from = asString(asRecord(m.details).from);
-			if (from === "") continue;
-			const text =
-				typeof m.content === "string"
-					? m.content
-					: Array.isArray(m.content)
-						? m.content.map(c => asString(asRecord(c).text)).join("")
-						: "";
-			const timestamp = typeof m.timestamp === "number" ? m.timestamp : 0;
-			if (Date.now() - timestamp > CHAT_PROMPT_MAX_AGE_MS) continue;
-			const key = `${timestamp}:${text}`;
-			if (seenChatPrompts.has(key)) continue;
-			seenChatPrompts.add(key);
-			const r = q.chatUnlock(text, cfg, `collab:${from}`);
-			if (r.applied) notifyUnlock(ctx, r);
+		if (cfg.guards.chat_unlock) {
+			for (const raw of messages) {
+				const m = asRecord(raw);
+				if (m.role !== "custom" || m.customType !== "collab-prompt" || m.attribution !== "user") continue;
+				const from = asString(asRecord(m.details).from);
+				if (from === "") continue;
+				const text =
+					typeof m.content === "string"
+						? m.content
+						: Array.isArray(m.content)
+							? m.content.map(c => asString(asRecord(c).text)).join("")
+							: "";
+				const timestamp = typeof m.timestamp === "number" ? m.timestamp : 0;
+				if (Date.now() - timestamp > CHAT_PROMPT_MAX_AGE_MS) continue;
+				const key = `${timestamp}:${text}`;
+				if (seenChatPrompts.has(key)) continue;
+				seenChatPrompts.add(key);
+				const r = q.chatUnlock(text, cfg, `collab:${from}`);
+				if (r.applied) notifyUnlock(ctx, r);
+			}
 		}
-		return undefined;
+		const rule = { pattern: cfg.quota.reset_pattern, zone: cfg.quota.reset_tz };
+		let changed = false;
+		const mapped = messages.map(raw => {
+			const message = asRecord(raw);
+			if (typeof message.content === "string") {
+				const content = annotateResetTimes(message.content, rule);
+				if (content === message.content) return raw;
+				changed = true;
+				return { ...message, content };
+			}
+			if (!Array.isArray(message.content)) return raw;
+			let contentChanged = false;
+			const content = message.content.map(part => {
+				const block = asRecord(part);
+				if (typeof block.text !== "string") return part;
+				const text = annotateResetTimes(block.text, rule);
+				if (text === block.text) return part;
+				contentChanged = true;
+				return { ...block, text };
+			});
+			if (!contentChanged) return raw;
+			changed = true;
+			return { ...message, content };
+		});
+		return changed ? { messages: mapped } : undefined;
 	});
 
 	// Under the launcher the relaunch is the only rollover path: a plain interactive message in the ready
