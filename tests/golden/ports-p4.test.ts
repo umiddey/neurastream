@@ -105,6 +105,9 @@ function stripVanished(s: string): string {
 function stripTs(s: string): string {
 	return s.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?/g, "TS");
 }
+function stripClock(s: string): string {
+	return s.replace(/^\d{2}:\d{2}$/m, "HH:MM");
+}
 
 function stripLoadavg(s: string): string {
 	return s.replace(/^[\d.]+ [\d.]+ [\d.]+ \d+\/\d+ \d+$/m, "LOADAVG");
@@ -621,9 +624,11 @@ test("priority-watch matches the original", () => {
 	const py = spawnSync("bash", [oracle], { env, encoding: "utf8", timeout: 15_000 });
 	const port = spawnSync("bun", [join(REPO, "src/cli/main.ts"), "priority-watch"], { env, encoding: "utf8", timeout: 15_000 });
 	expect(port.status).toBe(py.status);
-	expect(port.stdout).toBe(py.stdout);
+	expect(port.stdout.split("\n", 1)[0]).toMatch(/^\d{2}:\d{2}$/);
+	expect(py.stdout.split("\n", 1)[0]).toMatch(/^\d{2}:\d{2}$/);
+	expect(stripClock(port.stdout)).toBe(stripClock(py.stdout));
 	expect(port.stderr).toBe(py.stderr);
-});
+}, 35_000);
 
 function stubAlwaysIdle(home: string): void {
 	const p = join(home, ".local/bin/agent-ledger");

@@ -1,12 +1,24 @@
 # Changelog
-
 ## Unreleased
 ### Added
 - Main's context annotates absolute provider reset times with the caller's local time; `quota.reset_pattern` selects timestamps and explicit zones in the message take precedence over `quota.reset_tz`.
+
+### Fixed
+- The priority-watch golden test no longer flakes on a minute rollover between runs or the 5 s default timeout under load.
+
+## 0.2.18
+### Fixed
+- A slash command typed while Main waited out a rate limit no longer cancels the wake-up before a turn starts.
+
+## 0.2.17
+### Changed
+- A `Priority skip:` line no longer works with any reason: the only accepted form is `Priority skip: <plan> — owner: "<words>"`, and the quoted words (at least four, case- and spacing-normalised) must appear in an owner message recorded in the last 24 h — every Main prompt that is not a guard continuation or a harness notice is now appended to `<queue_state>/owner-messages.jsonl` (newest 50 kept). A higher plan that carries a `Waits on: <plan>` line for a plan still open in the index is not idle, so it does not block a lower spawn and needs no skip line; `Waits on:` lines are Main-only (plan-guard restores subagent edits that add or remove one). The skip log line keeps the owner quote.
+
+### Added
+- `neurastream traces efficiency <runId|--since 7d> [--json]` reports per-run tool-call waste and matched-rule counts; agent-score adds the `Calls/acc` and `Waste` board columns, and `score.waste_weight` (default 0) weights the wasted-call fraction in ranking.
 ## 0.2.16
 ### Fixed
 - Session timestamps were read 1 h early in summer time.
-
 
 ## 0.2.15
 ### Added

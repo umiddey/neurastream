@@ -463,8 +463,9 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	let stopBlocked = false;
 	// Rate-limit wait-it-out (plan 20261025_0640): consecutive turn ends on a provider rate limit
 	// form one episode. The attempt doubles the wait, the owner chat is told once per episode, and
-	// ONE timer gives Main a new turn when the wait is over; an owner message before expiry takes
-	// over and cancels it. Any turn that ends without a limit resets the episode and disarms it.
+	// ONE timer gives Main a new turn when the wait is over; a new Main turn before expiry takes
+	// over and cancels it. Inputs that do not start a turn leave it armed. Any turn that ends
+	// without a limit resets the episode and disarms it.
 	let rateAttempt = 0;
 	let rateTimer: NodeJS.Timeout | null = null;
 	const rateClock = (ms: number): string => strftime(ms / 1000, "%H:%M");
@@ -620,6 +621,10 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 
 	pi.on("before_agent_start", (event, ctx) => {
 		if (asCtx(ctx).kind !== "main") return;
+		if (rateTimer !== null) {
+			clearRateTimer();
+			adapterLog(cfg, "RATE-LIMIT resume cancelled: owner message");
+		}
 		const d = checkInject({ inject: asString(asRecord(event).prompt), agent: "main" }, cfg);
 		callsSinceStop = d.state?.callsSinceStop ?? callsSinceStop;
 		idleStops = d.state?.idleStops ?? idleStops;
@@ -1086,16 +1091,6 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		return null;
 	};
 
-	// An owner message while a rate-limit resume is pending takes over: the resume timer is
-	// cancelled (plan 20261025_0640). Registered before the chat-unlock input handler below, so it
-	// sees every owner input even when the unlock short-circuits with { handled: true }.
-	pi.on("input", (_event, ctx) => {
-		if (!isMain(ctx)) return undefined;
-		if (rateTimer === null) return undefined;
-		clearRateTimer();
-		adapterLog(cfg, "RATE-LIMIT resume cancelled: owner message");
-		return undefined;
-	});
 	// Chat unlock (guards.chat_unlock): the owner's whole message "unlock"/"unlock N"/"lock" moves
 	// the guard unlock file (src/core/queue/lib.ts chatUnlock). Only prompts the owner really typed
 	// count: the local terminal (input event, source "interactive") and collab guest prompts from

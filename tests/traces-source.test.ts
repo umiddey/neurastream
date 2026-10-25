@@ -45,8 +45,10 @@ test("main run: events in file order with parsed payloads", () => {
 	const tc = ev[2]!;
 	expect(tc.tool).toBe("bash");
 	expect(tc.args).toEqual({ command: "bun test" });
+	expect(tc.callId).toBe("tc-1");
 	const tr = ev[3]!;
 	expect(tr.tool).toBe("bash");
+	expect(tr.callId).toBe("tc-1");
 	expect(tr.isError).toBe(false);
 	expect(tr.text).toBe("12 pass, 0 fail");
 	const us = ev[4]!;

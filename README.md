@@ -76,6 +76,9 @@ bun test
 Green is both exiting 0.
 
 ## Scoring details
+### Trace efficiency
+
+`neurastream traces efficiency --since 7d` reports wasted tool calls from recent traces; pass a run id to inspect one run, or add `--json` for machine-readable per-run records (including step indexes and matched rules). Waste rules cover repeated reads and failed commands, failed edits, repeated guard blocks and idle polling. The agent-score board adds `Calls/acc` and `Waste` columns; `score.waste_weight` (default `0`) scales ranking by the wasted-call fraction while leaving the default ranking unchanged.
 
 `agent-score accept` records accepted work by commit; `agent-score validate <Agent> --plan <plan.md> --phase <P> --evidence <report.md> --section "<heading prefix>"` records a validation phase (checks/tests ran, report section written, no commits) with proof Main cannot fake by typing: the plan line must be ticked `- [x]`, the cited section body must name a heavy-run label run by that agent (from `paths.heavy_log`), and the phase must not be scored already. The ranking board counts it in `Accepted (diag/val)` as `N (d/v)`.
 
@@ -96,7 +99,7 @@ A plan parked for the owner has one line: `WAITING on owner: <what>`. That line 
 
 ## Queue priority
 
-`INDEX.md` order is priority: the top line is rank 1. The queue summary lists plans in that order (`N. <file> [flags] <goal>`). Before a spawn, the guard checks every plan above each plan the brief names: a higher plan that is idle (open, no `WAITING on owner:`, not awaiting merge, still has an unticked phase) and not staffed by a running job must be named in a `Priority skip: <plan> — <why>` line, or the spawn is refused. Staffing is `<queue_state>/staffing.json` (each plan's newest spawn's task names) matched against omp's running job labels. The owner reorders the queue by dragging cards on the phone page.
+`INDEX.md` order is priority: the top line is rank 1. The queue summary lists plans in that order (`N. <file> [flags] <goal>`). Before a spawn, the guard checks every plan above each plan the brief names. A higher plan that is idle — open, no `WAITING on owner:`, not awaiting merge, still has an unticked phase, and not itself waiting on another open indexed plan via a `Waits on: <plan>` line — and not staffed by a running job blocks the spawn unless the brief quotes the owner: `Priority skip: <plan> — owner: "<his words>"`, at least four words that appear in an owner message of the last 24 h (`<queue_state>/owner-messages.jsonl`, recorded from Main's prompts); any other skip line is refused. `Waits on:` lines are Main-only, like `WAITING on owner:`. Staffing is `<queue_state>/staffing.json` (each plan's newest spawn's task names) matched against omp's running job labels. The owner reorders the queue by dragging cards on the phone page.
 
 ## Owner page (`neurastream ui`)
 
@@ -186,7 +189,7 @@ notify: posted (rate-limit)
 RATE-LIMIT resume: new turn sent (waited until 08:12)
 ```
 
-The wait is the `retry-after-ms=<ms>` or `retry-after: <seconds>` the error text names (omp appends the provider's header to the error message), else `default_wait_s` (300). A turn the resume started that ends on a limit again is the same episode at attempt 2: the wait doubles, no second post. Any turn that ends without a limit ends the episode and disarms the timer. Every wait is clamped to `max_wait_s` (3600) before `slack_s` (15) is added on top. Your own message before expiry takes over and cancels the resume (`RATE-LIMIT resume cancelled: owner message`), and a rate-limited deferred hand-back (an `agent_end` while an async job is pending) arms the same timer instead of logging "no reply text". The words and the waits live in `config.yml` (`guards.rate_limit`, `docs/config.md`); turns that did not end on a rate limit are unaffected.
+The wait is the `retry-after-ms=<ms>` or `retry-after: <seconds>` the error text names (omp appends the provider's header to the error message), else `default_wait_s` (300). A turn the resume started that ends on a limit again is the same episode at attempt 2: the wait doubles, no second post. Any turn that ends without a limit ends the episode and disarms the timer. Every wait is clamped to `max_wait_s` (3600) before `slack_s` (15) is added on top. Your own message takes over and cancels the resume (`RATE-LIMIT resume cancelled: owner message`) when it starts a turn; a slash command or a handled input such as a chat unlock leaves the resume armed. A rate-limited deferred hand-back (an `agent_end` while an async job is pending) arms the same timer instead of logging "no reply text". The words and the waits live in `config.yml` (`guards.rate_limit`, `docs/config.md`); turns that did not end on a rate limit are unaffected.
 
 omp retries a 429 itself while the provider's wait fits its `retry.maxDelayMs` (300000 ms by default); only a longer wait ends the turn (`Retry failed after 1 attempts: Provider requested 731000ms wait, exceeds retry.maxDelayMs`), and that turn end is what neurastream waits out.
 
