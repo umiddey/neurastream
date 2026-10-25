@@ -90,8 +90,8 @@ flows:[["customer","site","buys"],["site","orders","new order"],["site","pay","c
 steps:["The customer picks items in the web shop.","The shop charges the card.","The order goes to the back office.","Staff pick, pack and hand the parcel to the carrier.","The customer gets the parcel and any points."],
 kids:[
 {id:"customer",nm:"Customer",role:"web or phone",kind:"actor",at:[0,0],atM:[0,0]},
-{id:"site",nm:"Web shop",role:"catalogue and checkout",st:"built",at:[1,0],atM:[1,0],c:"#3b6fd8",what:"Where customers browse, add to cart and pay.",files:"shop/web",ex:"A declined card shows a retry prompt; nothing ships."},
-{id:"orders",nm:"Orders",role:"packing and dispatch",st:"built",at:[2,0],atM:[1,1],c:"#2f9e6d",
+{id:"site",nm:"Web shop",role:"catalogue and checkout",st:"built",at:[1,0],atM:[0,1],c:"#3b6fd8",what:"Where customers browse, add to cart and pay.",files:"shop/web",ex:"A declined card shows a retry prompt; nothing ships."},
+{id:"orders",nm:"Orders",role:"packing and dispatch",st:"built",at:[2,0],atM:[0,2],c:"#2f9e6d",
 g:[3,1],flows:[["pick","pack","bag it"],["pack","returns","if wrong"]],
 kids:[
 {id:"pick",nm:"Pick",role:"walk the shelves",st:"built",at:[0,0],what:"Staff collect each item on the order list.",
@@ -102,9 +102,9 @@ kids:[
 {id:"pack",nm:"Pack",role:"box and label",st:"almost",at:[1,0],what:"Items are boxed with the packing slip. Label printing is moving to the new printer.",files:"packing plan (printer left)"},
 {id:"returns",nm:"Returns",role:"send back wrong items",st:"plan",at:[2,0],what:"Planned: a return label printed from the order page."}]},
 {id:"carrier",nm:"Carrier",role:"delivers the parcel",kind:"actor",at:[3,0],atM:[0,3]},
-{id:"pay",nm:"Card payments",role:"takes the money",st:"built",at:[1,1],atM:[0,1],c:"#c98a12",what:"A card provider charges the customer and confirms the payment.",ex:"A failed payment never creates an order."},
-{id:"stock",nm:"Stock count",role:"items left on the shelf",st:"almost",at:[2,1],atM:[1,2],c:"#7a55d6",what:"Counts drop when an order is packed. Live counts for shop pages are almost done.",files:"stock plan (live counts left)"},
-{id:"loyalty",nm:"Loyalty points",role:"reward repeat buyers",st:"plan",at:[3,1],atM:[0,2],c:"#d9782d",what:"Planned: every order earns points spendable at checkout."}
+{id:"pay",nm:"Card payments",role:"takes the money",st:"built",at:[1,1],atM:[1,0],c:"#c98a12",what:"A card provider charges the customer and confirms the payment.",ex:"A failed payment never creates an order."},
+{id:"stock",nm:"Stock count",role:"items left on the shelf",st:"almost",at:[2,1],atM:[1,1],c:"#7a55d6",what:"Counts drop when an order is packed. Live counts for shop pages are almost done.",files:"stock plan (live counts left)"},
+{id:"loyalty",nm:"Loyalty points",role:"reward repeat buyers",st:"plan",at:[3,1],atM:[1,3],c:"#d9782d",what:"Planned: every order earns points spendable at checkout."}
 ]};
 /* === END DATA === */
 
