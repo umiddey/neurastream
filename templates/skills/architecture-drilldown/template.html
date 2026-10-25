@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>neurastream — architecture</title>
+<title>Architecture</title>
 <style>
 *{box-sizing:border-box}
 html,body{margin:0;background:#f6f7f9;color:#1d2433;font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
@@ -191,7 +191,7 @@ function render(n){
   svg.append(lines,boxes,labels);
   stage.replaceChildren(svg);
   // header
-  document.getElementById("title").textContent=n===T?"neurastream — how it works":n.nm;
+  document.getElementById("title").textContent=n===T?`${T.nm} — how it works`:n.nm;document.title=`${T.nm} — architecture`;
   document.getElementById("sub").textContent=n===T?n.role:(n.what||n.role);
   const path=[];for(let x=n.id;x;x=parent[x])path.unshift(byId[x]);
   const cr=document.getElementById("crumbs");cr.replaceChildren();
