@@ -212,6 +212,17 @@ traces:
     - localhost
     - 127.0.0.1
     - "::1"
+  bloat:
+    # Prompt-size rules (src/core/trace-bloat.ts). first_call_max: the largest first-call
+    # prompt (input + cacheRead + cacheWrite tokens) a healthy run may open with. Any call
+    # whose prompt passes ratio_of_limit × its model's context_limits entry is bloat too; a
+    # model without an entry is not limit-checked (the map is open: add your models).
+    first_call_max: 150000
+    ratio_of_limit: 0.8
+    context_limits: {}
+    # Bloat breakdown: the first capture of this regex on a tool name names its group
+    # (no match = "builtin").
+    tool_group: '^mcp__([A-Za-z0-9]+)_'
   owned_repos: []      # product names another product's run may not read quietly; the intended list lives in docs/config.md
   actions:
     secret_globs:       # a read matching any glob is a high finding; evidence is masked either way

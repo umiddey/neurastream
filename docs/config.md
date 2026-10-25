@@ -218,6 +218,11 @@ traces:
     - localhost
     - 127.0.0.1
     - "::1"
+  bloat:
+    first_call_max: 150000   # the largest first-call prompt a healthy run may open with
+    ratio_of_limit: 0.8      # a call flags past ratio_of_limit × its model's context limit
+    context_limits: {}       # model -> context tokens; open map, no entry = not limit-checked
+    tool_group: '^mcp__([A-Za-z0-9]+)_'   # first capture names a tool's bloat group
   actions:
     secret_globs:       # a read matching any glob is a high finding; evidence is masked either way
       - "~/.ssh/**"
@@ -247,6 +252,8 @@ traces:
 `score.default_branch` has no default. It is config, not a core literal: set it here or pass `--branch`; with `score.default_repo` empty, `accept` / `check` require `--repo` and `--branch`.
 
 `traces.actions` feeds `src/core/trace-actions.ts`. A tool call whose path arguments match a `secret_globs` glob is a secret read. A shell command naming a `net_tools` word reaches a host; it is allowed while the host matches `traces.allowed_hosts` (exact, or `*.suffix`), otherwise flagged — shaped as exfiltration when data flows out (a pipe into the tool, a body/upload option, a stdin redirect, a local scp source). Write targets outside every `actions.write_roots` root (empty falls back to `paths.work_roots`; both empty turn the scope check off) or matching a `deny_globs` glob are out of scope wherever they land. A command containing a `shell_patterns` substring feeds a shell from a pipe. All lists are data: core matches globs and words, it never hardcodes a tool, host or path.
+
+`traces.bloat` feeds `src/core/trace-bloat.ts`. A call's prompt is what the provider read before it wrote: `usage.input + usage.cacheRead + usage.cacheWrite` of one assistant message. A run flags `prompt-bloat` when its first call opens over `bloat.first_call_max`, or when any call's prompt passes `bloat.ratio_of_limit` × its model's `bloat.context_limits` entry; a model without an entry is not limit-checked (the map is open: add your models). `bloat.tool_group` names the group of a request's tools for the breakdown: the first capture of the regex on the tool name; a name that does not match groups as `builtin`.
 
 ## omp overlay (adapter install, not core)
 

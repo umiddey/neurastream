@@ -18,7 +18,7 @@ import { maskEvidence } from "./trace-claims.ts";
  * same dishonesty in one run stay one finding (first sighting wins the evidence). Every rule
  * uses this, so masking and the evidence cap cannot be forgotten at a call site.
  */
-function fold(out: Finding[], seen: Set<string>, kind: string, summary: string, evidence: string, fingerprint: string): void {
+export function foldFinding(out: Finding[], seen: Set<string>, kind: string, summary: string, evidence: string, fingerprint: string): void {
 	if (seen.has(fingerprint)) return;
 	seen.add(fingerprint);
 	out.push({ kind, summary, evidence: maskEvidence(evidence), fingerprint });
@@ -45,7 +45,7 @@ export function modelSwaps(events: TraceEvent[]): Finding[] {
 		if (e.kind === "modelChange") {
 			announced = e;
 			if (e.fallback) {
-				fold(out, seen, "model-swap", `run ${e.runId}: the requested model was resolved to a fallback`,
+				foldFinding(out, seen, "model-swap", `run ${e.runId}: the requested model was resolved to a fallback`,
 					`run ${e.runId}: model_change for ${e.model ?? "?"} says resolvedModelIsFallback`,
 					`model-swap:${e.runId}:fallback`);
 			}
@@ -56,12 +56,12 @@ export function modelSwaps(events: TraceEvent[]): Finding[] {
 		const askedModel = slash === -1 ? announced.model : announced.model.slice(slash + 1);
 		const askedProvider = slash === -1 ? undefined : announced.model.slice(0, slash);
 		if (e.model && e.model !== askedModel) {
-			fold(out, seen, "model-swap", `run ${e.runId}: asked for ${askedModel}, an assistant message says ${e.model}`,
+			foldFinding(out, seen, "model-swap", `run ${e.runId}: asked for ${askedModel}, an assistant message says ${e.model}`,
 				`run ${e.runId}: model_change says ${announced.model}, message says model ${e.model} (provider ${e.provider ?? "?"})`,
 				`model-swap:${e.runId}:model:${askedModel}:${e.model}`);
 		}
 		if (askedProvider && e.provider && e.provider !== askedProvider) {
-			fold(out, seen, "model-swap", `run ${e.runId}: asked provider ${askedProvider}, an assistant message says ${e.provider}`,
+			foldFinding(out, seen, "model-swap", `run ${e.runId}: asked provider ${askedProvider}, an assistant message says ${e.provider}`,
 				`run ${e.runId}: model_change says ${announced.model}, message says provider ${e.provider} (model ${e.model ?? "?"})`,
 				`model-swap:${e.runId}:provider:${askedProvider}:${e.provider}`);
 		}
@@ -96,7 +96,7 @@ export function oddResponseIds(events: TraceEvent[], idPatterns: Record<string, 
 		const rx = shapes.get(e.provider);
 		if (!rx) continue;
 		if (e.responseId === undefined || rx.test(e.responseId)) continue;
-		fold(out, seen, "odd-response-id", `run ${e.runId}: ${e.provider} answered with a responseId that misses its configured shape`,
+		foldFinding(out, seen, "odd-response-id", `run ${e.runId}: ${e.provider} answered with a responseId that misses its configured shape`,
 			`${e.provider} responseId "${e.responseId}" must match ${pattern}`,
 			`odd-response-id:${e.runId}:${e.provider}`);
 	}
@@ -127,7 +127,7 @@ export function unofferedTools(events: TraceEvent[], allowTools: string[], offer
 	for (const e of events) {
 		if (e.kind !== "toolCall" || !e.tool || e.tool === "?") continue;
 		if (proven.has(e.tool)) continue;
-		fold(out, seen, "unoffered-tool", `run ${e.runId}: toolCall "${e.tool}" was never offered to the session`,
+		foldFinding(out, seen, "unoffered-tool", `run ${e.runId}: toolCall "${e.tool}" was never offered to the session`,
 			`toolCall "${e.tool}" has no successful result in the run, is not allow-listed and is not in the request's tool list`,
 			`unoffered-tool:${e.runId}:${e.tool}`);
 	}
@@ -148,7 +148,7 @@ export function phantomOutput(events: TraceEvent[]): Finding[] {
 		if (e.kind !== "assistantText" || e.text !== "" || !e.usage) continue;
 		if (!(e.usage.output > 0)) continue;
 		const id = e.responseId ?? (e.ts === null ? String(i) : String(e.ts));
-		fold(out, seen, "phantom-output", `run ${e.runId}: an assistant message billed ${e.usage.output} output tokens but wrote nothing`,
+		foldFinding(out, seen, "phantom-output", `run ${e.runId}: an assistant message billed ${e.usage.output} output tokens but wrote nothing`,
 			`assistant message billed ${e.usage.output} output tokens with empty content (responseId ${e.responseId ?? "<absent>"})`,
 			`phantom-output:${e.runId}:${id}`);
 	}
@@ -177,7 +177,7 @@ export function costMismatch(events: TraceEvent[], prices: Record<string, Provid
 		const off = expected > 0 ? Math.abs(billed - expected) / expected : Math.abs(billed);
 		if (!(off > 0.2)) continue;
 		const pct = expected > 0 ? ` (${Math.round((billed / expected - 1) * 100)}%)` : "";
-		fold(out, seen, "cost-mismatch", `run ${e.runId}: ${e.model} billed $${billed} but the price table says $${Number(expected.toFixed(6))}${pct}`,
+		foldFinding(out, seen, "cost-mismatch", `run ${e.runId}: ${e.model} billed $${billed} but the price table says $${Number(expected.toFixed(6))}${pct}`,
 			`model_usage ${e.model}: billed $${billed}, tokens in ${u.input} out ${u.output} cacheRead ${u.cacheRead} cacheWrite ${u.cacheWrite}, table says $${Number(expected.toFixed(6))}${pct}`,
 			`cost-mismatch:${e.runId}:${e.model}`);
 	}

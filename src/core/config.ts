@@ -182,6 +182,17 @@ export interface Config {
 		allowed_hosts: string[];
 		/** Product names (docs/config.md) whose files another product's run may not read quietly. */
 		owned_repos: string[];
+		/** Prompt-size rules (src/core/trace-bloat.ts): when a run flags prompt-bloat. */
+		bloat: {
+			/** The largest first-call prompt a healthy run may open with. */
+			first_call_max: number;
+			/** A call flags when its prompt passes ratio_of_limit × its model's context_limits entry. */
+			ratio_of_limit: number;
+			/** Model -> context tokens; a model without an entry is not limit-checked. Open map. */
+			context_limits: Record<string, number>;
+			/** First capture of this regex on a tool name names its bloat group (no match: "builtin"). */
+			tool_group: string;
+		};
 		actions: {
 			secret_globs: string[];
 			net_tools: string[];
@@ -363,6 +374,25 @@ function check(cfg: Config): void {
 				throw new ConfigError(`traces.provider.prices.${model}.${key} must be a number`);
 			}
 		}
+	}
+	if (typeof cfg.traces.bloat.first_call_max !== "number" || !Number.isFinite(cfg.traces.bloat.first_call_max) || !(cfg.traces.bloat.first_call_max > 0)) {
+		throw new ConfigError("traces.bloat.first_call_max must be a number > 0");
+	}
+	if (typeof cfg.traces.bloat.ratio_of_limit !== "number" || !Number.isFinite(cfg.traces.bloat.ratio_of_limit) || !(cfg.traces.bloat.ratio_of_limit > 0) || cfg.traces.bloat.ratio_of_limit > 1) {
+		throw new ConfigError("traces.bloat.ratio_of_limit must be a number in (0, 1]");
+	}
+	for (const [model, limit] of Object.entries(cfg.traces.bloat.context_limits)) {
+		if (typeof limit !== "number" || !Number.isFinite(limit) || !(limit > 0)) {
+			throw new ConfigError(`traces.bloat.context_limits.${model} must be a number > 0`);
+		}
+	}
+	if (typeof cfg.traces.bloat.tool_group !== "string" || cfg.traces.bloat.tool_group === "") {
+		throw new ConfigError("traces.bloat.tool_group must be a non-empty string");
+	}
+	try {
+		new RegExp(cfg.traces.bloat.tool_group);
+	} catch {
+		throw new ConfigError(`traces.bloat.tool_group: not a valid regex: ${cfg.traces.bloat.tool_group}`);
 	}
 	for (const rule of cfg.brief.repo_rules) {
 		for (const key of ["match", "require", "first", "unless"] as const) {
