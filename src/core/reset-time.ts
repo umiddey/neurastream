@@ -47,9 +47,12 @@ export function parseWhen(text: string): WallTime | null {
 }
 
 function zoneAbbrev(epoch: number): string {
+	// Pass the live env: Bun's default child env is the startup snapshot, so a later TZ change
+	// (tests, callers) would label the local time with the wrong zone.
+	const opts = { encoding: "utf8" as const, env: process.env };
 	const probe = process.platform === "darwin"
-		? spawnSync("date", ["-r", String(epoch), "+%Z"], { encoding: "utf8" })
-		: spawnSync("date", ["-d", `@${epoch}`, "+%Z"], { encoding: "utf8" });
+		? spawnSync("date", ["-r", String(epoch), "+%Z"], opts)
+		: spawnSync("date", ["-d", `@${epoch}`, "+%Z"], opts);
 	if (probe.status === 0 && probe.stdout?.trim()) return probe.stdout.trim();
 	const parts = new Intl.DateTimeFormat("en-US", { timeZoneName: "short" }).formatToParts(new Date(epoch * 1000));
 	return parts.find(p => p.type === "timeZoneName")?.value ?? "";
