@@ -4,7 +4,7 @@
 // 160-char evidence cap so a claim can never carry a secret forward.
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { TraceEvent } from "../src/core/adapter.ts";
@@ -14,6 +14,7 @@ import { parseTraceFile } from "../src/adapters/omp/traces.ts";
 import { claimUnbacked, runDetectors } from "../src/core/incident-detectors.ts";
 import { claimsFromEvents, extractClaims, maskEvidence, verifyClaims } from "../src/core/trace-claims.ts";
 import type { Claim } from "../src/core/trace-claims.ts";
+import { runTraces } from "../src/cli/traces.ts";
 
 describe("test result lines", () => {
 	test("passed and failed counts with evidence", () => {
@@ -273,6 +274,79 @@ test("claimsFromEvents reads only the last assistant text (the final report)", (
 
 test("claimsFromEvents on a run without assistant text: no claims", () => {
 	expect(claimsFromEvents([resultEv("2 pass")])).toEqual([]);
+});
+
+// ---- P5: cross-run claim backing (INCIDENT I-20261025-23) — a Main run's claim also checks
+// the toolResult text of the subagent runs under its session dir ----
+
+test("a Main claim backed only by a subagent's toolResult is backed via the related run", () => {
+	const main: TraceEvent[] = [
+		callEv("task", { agent: "NsXGlm", brief: "run the suite" }),
+		resultEv("started NsXGlm in the background"),
+		{ kind: "assistantText", ts: 3, runId: "MAIN 09-00-00", text: "NsXGlm: 576 pass / 0 fail, landed." },
+	];
+	const claim = claimsFromEvents(main).find((c) => c.kind === "tests-passed" && c.count === 576)!;
+	// the old own-run rule alone: no Main toolResult shows 576, so it stays unbacked
+	expect(verifyClaims([claim], main)[0]!.backed).toBe(false);
+	const verdict = verifyClaims([claim], main, [{ name: "NsXGlm", events: [resultEv("bun test\n576 pass, 0 fail")] }])[0]!;
+	expect(verdict.backed).toBe(true);
+	expect(verdict.how).toBe("subagent:NsXGlm");
+});
+
+test("with no subagent match the claim stays unbacked", () => {
+	const main: TraceEvent[] = [{ kind: "assistantText", ts: 1, runId: "MAIN 09-00-00", text: "912 passed in total." }];
+	const claim = claimsFromEvents(main)[0]!;
+	expect(verifyClaims([claim], main, [{ name: "NsXGlm", events: [resultEv("576 pass, 0 fail")] }])[0]!.backed).toBe(false);
+});
+
+test("exit claims are backed through a subagent toolResult; result-line shapes only", () => {
+	expect(
+		verifyClaims([{ kind: "exit", count: 3, evidence: "x" }], [], [{ name: "NsX", events: [resultEv("heavy job exit 3")] }])[0],
+	).toMatchObject({ backed: true, how: "subagent:NsX" });
+	// a sha is not a result-line match: it still needs the git pairing in the run's own trace
+	expect(
+		verifyClaims([{ kind: "sha", value: "abc12d4", evidence: "x" }], [], [{ name: "NsX", events: [resultEv("abc12d4 demo")] }])[0]!
+			.backed,
+	).toBe(false);
+});
+
+test("claimUnbacked threads the related runs into the verdicts", () => {
+	const claim: Claim = { kind: "tests-passed", count: 576, evidence: "NsXGlm: 576 pass" };
+	expect(claimUnbacked([claim], [], [{ name: "NsXGlm", events: [resultEv("576 pass, 0 fail")] }])).toEqual([]);
+	expect(claimUnbacked([claim], [], [])).toHaveLength(1);
+});
+
+test("the claims CLI backs a Main run's claims from the subagent traces under its session dir", async () => {
+	const H = mkdtempSync(join(tmpdir(), "ns-claims-cross-"));
+	TMP_ROOTS.push(H);
+	mkdirSync(join(H, ".config/neurastream"), { recursive: true });
+	writeFileSync(join(H, ".config/neurastream/config.yml"), `paths:\n  home: "${H}"\n`);
+	const proj = join(H, ".omp/agent/sessions/cross-proj");
+	const subDir = join(proj, "2026-10-25T10-01-00-000Z_cross-parent");
+	mkdirSync(subDir, { recursive: true });
+	writeFileSync(join(proj, "2026-10-25T10-00-00-000Z_cross-main.jsonl"), readFileSync(join(FIX, "claims-cross-main.jsonl"), "utf8"));
+	writeFileSync(join(subDir, "NsXGlm.jsonl"), readFileSync(join(FIX, "claims-cross-sub.jsonl"), "utf8"));
+	const logs: string[] = [];
+	const orig = console.log;
+	console.log = (line: string) => logs.push(line);
+	let rc = -1;
+	try {
+		rc = await runTraces(["claims", "MAIN 10-00-00"], { home: H });
+	} finally {
+		console.log = orig;
+	}
+	expect(rc).toBe(0);
+	// 576 pass and 0 fail are backed through NsXGlm's own toolResult; 912 passed shows nowhere
+	expect(logs.join("\n")).toContain("MAIN 10-00-00: 3 claims, 2 backed, 1 unbacked");
+	// a subagent run itself gets no related lookup
+	console.log = (line: string) => logs.push(line);
+	try {
+		rc = await runTraces(["claims", "NsXGlm"], { home: H });
+	} finally {
+		console.log = orig;
+	}
+	expect(rc).toBe(0);
+	expect(logs.join("\n")).toContain("NsXGlm: no verifiable claims");
 });
 
 

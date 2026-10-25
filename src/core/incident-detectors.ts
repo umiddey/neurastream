@@ -13,6 +13,11 @@
 //   D4 owner-correction: an owner message matching the M4 correction patterns.
 //   D5 claim-unbacked: a run's final report claims something its own tool output never
 //     showed (gathered by the traces claims CLI, src/cli/traces.ts).
+//   D6 suspicious-action: a high-severity suspicious tool action the run's trace shows
+//     (gathered by the traces actions CLI, src/cli/traces.ts).
+//   D7 unreported-finding: a subagent run read files of another owned repo (config
+//     traces.owned_repos) while its final report says "Findings: none"; folds as source
+//     "traces" and records an agent-score penalty event for that agent on the plan.
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -23,7 +28,9 @@ import { nowSec, strftime } from "./clock.ts";
 import { log } from "./guards.ts";
 import { addIncident, type IncidentView } from "./incidents.ts";
 import type { GuardBlock } from "./metrics.ts";
-import { verifyClaims, type Claim } from "./trace-claims.ts";
+import { verifyClaims, type Claim, type RelatedRun } from "./trace-claims.ts";
+import { recordPenalty } from "./agent-score.ts";
+import type { SuspiciousAction, UnreportedFinding } from "./trace-actions.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -149,12 +156,14 @@ export function ownerCorrection(text: string, patterns: RegExp[], now: number): 
 /**
  * Final-report claims (src/core/trace-claims.ts) with no backing activity in the same run's
  * trace: a "13 passed" no toolResult shows, a SHA no git command printed, a label never passed
- * to a heavy-run call, a path no edit/write call carried. Evidence is the claiming line, which
- * the extractor already masked and capped, so nothing secret reaches the incident store.
+ * to a heavy-run call, a path no edit/write call carried. `related` — the traces of the
+ * subagent runs under a Main run's session dir (INCIDENT I-20261025-23) — backs the pure
+ * result-line claims Main's report cites from its subagents. Evidence is the claiming line,
+ * which the extractor already masked and capped, so nothing secret reaches the incident store.
  */
-export function claimUnbacked(claims: Claim[], events: TraceEvent[]): Finding[] {
+export function claimUnbacked(claims: Claim[], events: TraceEvent[], related: RelatedRun[] = []): Finding[] {
 	const out: Finding[] = [];
-	for (const v of verifyClaims(claims, events)) {
+	for (const v of verifyClaims(claims, events, related)) {
 		if (v.backed) continue;
 		const c = v.claim;
 		const what = c.count !== undefined ? `${c.kind} ${c.count}` : `${c.kind} ${c.value ?? ""}`;
@@ -166,6 +175,25 @@ export function claimUnbacked(claims: Claim[], events: TraceEvent[]): Finding[] 
 		});
 	}
 	return out;
+}
+
+// ---- D6: a high-severity suspicious tool action ----
+
+/**
+ * Suspicious tool actions (src/core/trace-actions.ts) at severity high: secret-path reads and
+ * exfil-shaped network commands. Medium and low findings stay in the `traces actions` report;
+ * only the ones worth waking the owner for become incidents. Evidence is already masked and
+ * capped by the rule engine, so nothing secret reaches the incident store.
+ */
+export function suspiciousAction(actions: SuspiciousAction[]): Finding[] {
+	return actions
+		.filter((a) => a.severity === "high")
+		.map((a) => ({
+			kind: "suspicious-action",
+			summary: `${a.runId}: ${a.summary}`,
+			evidence: a.evidence,
+			fingerprint: `suspicious-action:${a.rule}:${a.target}`,
+		}));
 }
 
 // ---- the runner ----
@@ -184,6 +212,10 @@ export interface DetectorInput {
 	/** D5: one run's final-report claims plus the same run's trace events (the traces CLI gathers both). */
 	claims?: Claim[];
 	events?: TraceEvent[];
+	/** D6: suspicious tool actions from one or more scanned runs (the traces actions CLI gathers them). */
+	actions?: SuspiciousAction[];
+	/** D7: cross-product reads a subagent run hid behind a Findings: none line (src/core/trace-actions.ts). */
+	unreported?: UnreportedFinding[];
 }
 
 /**
@@ -230,6 +262,28 @@ export function runDetectors(cfg: Config, input: DetectorInput, now = nowSec()):
 	}
 	if (input.claims && input.events) {
 		attempt("claim-unbacked", () => claimUnbacked(input.claims!, input.events!));
+	}
+	if (input.actions) {
+		attempt("suspicious-action", () => suspiciousAction(input.actions!));
+	}
+	if (input.unreported) {
+		for (const f of input.unreported!) {
+			try {
+				const { incident, deduped } = addIncident(
+					cfg,
+					{ source: "traces", kind: "unreported-finding", summary: f.summary, evidence: f.evidence, fingerprint: `unreported-finding:${f.agent}:${f.target}` },
+					now,
+				);
+				if (!deduped) recordPenalty(cfg, { agent: f.agent, kind: "unreported-finding", plan: f.plan, note: f.summary });
+				log(
+					cfg.paths.guard_log,
+					`incident ${incident.id} [traces/${incident.kind}]${deduped ? ` sighting #${incident.count}` : " opened"}: ${incident.summary}`,
+				);
+				out.push(incident);
+			} catch (err) {
+				log(cfg.paths.guard_log, `detector unreported-finding failed: ${err instanceof Error ? err.message : String(err)}`);
+			}
+		}
 	}
 	return out;
 }

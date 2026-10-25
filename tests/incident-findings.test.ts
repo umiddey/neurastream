@@ -106,6 +106,15 @@ test("Findings: none records nothing", () => {
 	expect(openIncidents(cfg)).toHaveLength(0);
 });
 
+test("only the entry's last Findings: counts; a quoted one mid-text is resume text", () => {
+	fresh();
+	const after = entry(
+		'- 2026-10-25 08:40 (sub): resume: check the final text "…commit follows.\\n\\nFindings: none" (if false, print char codes); then commit.\n  Findings: src/a.ts:1 one; src/b.ts:2 two',
+	);
+	expect(checkPlanEdit({ path: PLAN, before: BEFORE, after, agent: "sub" }, cfg).allow).toBe(true);
+	expect(openIncidents(cfg).map(i => i.summary)).toEqual(["src/a.ts:1 one", "src/b.ts:2 two"]);
+});
+
 test("the same finding text again dedupes into the open incident", () => {
 	fresh();
 	const FINDING = "src/core/guards.ts:613 skips the mock for an undeclared kind";

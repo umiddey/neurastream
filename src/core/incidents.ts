@@ -14,7 +14,7 @@ import { nowSec, strftime } from "./clock.ts";
 import type { Config } from "./config.ts";
 import * as q from "./queue/lib.ts";
 
-export type IncidentSource = "realtime" | "daily" | "weekly" | "main" | "findings";
+export type IncidentSource = "realtime" | "daily" | "weekly" | "main" | "findings" | "traces";
 
 export interface IncidentRec {
 	id: string;
@@ -80,7 +80,7 @@ function parseLine(line: string): IncidentRec | ResolutionRec | null {
 	if (rec.type !== undefined) return null;
 	if (typeof rec.fingerprint !== "string" || typeof rec.kind !== "string" || typeof rec.summary !== "string" || typeof rec.ts !== "number")
 		return null;
-	const source = rec.source === "realtime" || rec.source === "daily" || rec.source === "weekly" || rec.source === "findings" ? rec.source : "main";
+	const source = rec.source === "realtime" || rec.source === "daily" || rec.source === "weekly" || rec.source === "findings" || rec.source === "traces" ? rec.source : "main";
 	return {
 		id: rec.id,
 		fingerprint: rec.fingerprint,

@@ -28,6 +28,7 @@ score:
     false-claim: 5
     rule-break: 2
     escaped-defect: 8
+    unreported-finding: 5
   diagnose_weight: 4
   gate_days: 7
   board_days: 7
@@ -195,3 +196,26 @@ snapshot:
     - ".font-unix"
     - "snap-private-tmp"
     - "*.sock"
+
+traces:
+  allowed_hosts:        # hosts a network command may touch without a finding
+    - localhost
+    - 127.0.0.1
+    - "::1"
+  owned_repos: []      # product names another product's run may not read quietly; the intended list lives in docs/config.md
+  actions:
+    secret_globs:       # a read matching any glob is a high finding; evidence is masked either way
+      - "~/.ssh/**"
+      - "**/*.env*"
+      - "**/*keys*.txt"
+      - "**/mcp.json"
+      - "**/keyring*/**"
+      - "**/.gnupg/**"
+      - "**/.password-store/**"
+    net_tools: [curl, wget, nc, ssh, scp]   # commands that reach a host (word match inside shell tools)
+    shell_patterns: ['| sh', '| bash', 'eval "$(']   # a command containing one feeds a shell from a pipe
+    write_roots: []     # prefixes a run may write (plan Worktree: roots); empty falls back to paths.work_roots; both empty = the scope check is off
+    deny_globs:         # writes matching any glob are flagged wherever they land
+      - "~/.omp/**"
+      - "~/.local/bin/**"
+      - "~/.local/state/**"
