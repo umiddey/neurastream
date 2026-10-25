@@ -186,14 +186,12 @@ function raw(
 	const req = request({ host: "127.0.0.1", port: svc.port, method, path, headers }, res => {
 		const chunks: Buffer[] = [];
 		res.on("data", (c: Buffer) => chunks.push(c));
-		res.on("end", () =>
-			resolve(
-				new Response(Buffer.concat(chunks).toString("utf8"), {
-					status: res.statusCode,
-					headers: { "content-type": String(res.headers["content-type"] ?? "") },
-				}),
-			),
-		);
+		res.on("end", () => {
+			// All response headers: the P2 tests read Location and Content-Security-Policy.
+			const resHeaders: Record<string, string> = {};
+			for (let i = 0; i < res.rawHeaders.length; i += 2) resHeaders[(res.rawHeaders[i] ?? "").toLowerCase()] = String(res.rawHeaders[i + 1] ?? "");
+			resolve(new Response(Buffer.concat(chunks).toString("utf8"), { status: res.statusCode, headers: resHeaders }));
+		});
 	});
 	req.on("error", reject);
 	req.end(body);
@@ -247,35 +245,35 @@ function planGuardLogLines(): string[] {
 
 // --- auth: only the owner's phone gets through ---
 
-test("GET / serves the owner: every section renders from fixture state", async () => {
+test("GET / renders the redesigned page: waiting card with title, repo eyebrow, question and goal background", async () => {
 	const svc = ui();
 	const res = await get(svc);
 	expect(res.status).toBe(200);
 	expect(res.headers.get("content-type")).toContain("text/html");
 	const body = await res.text();
-	// questions: the plan's WAITING on owner line
+	// needs-you card: title from the plan's # heading, repo label eyebrow, the ask, the goal
+	expect(body).toContain("Toy plan");
+	expect(body).toContain("toy · waiting");
+	expect(body).toContain("What I need from you");
 	expect(body).toContain(QUESTION);
-	expect(body).toContain(PLAN_W);
-	// agents: the running ledger row
+	expect(body).toContain("Owner page toy.");
+	// working row: the running ledger agent
 	expect(body).toContain("owner-ui-alice-run");
 	expect(body).toContain("RUNNING");
-	// queue: the open plan with its status (the completed plan is not queued)
-	expect(body).toContain("20261019_wait.md");
-	expect(body).not.toContain("20261019_done.md");
 	// merges/CI: the metrics ci row
 	expect(body).toContain("!77");
 	// incidents
 	expect(body).toContain("toy incident the page must show");
-	// agent scores: the ranking board
+	// agent scores: the ranking board (a non-table board renders as text lines)
 	expect(body).toContain("alice 4.2");
-	// machine health: disk and load numbers
+	// machine health in the strip
 	expect(body).toContain("disk");
-	expect(body).toContain("load");
-	// unlock state
-	expect(body).toContain("locked");
-	// mobile page plumbing: auto-refresh every 20 s
-	expect(body).toContain('http-equiv="refresh"');
-	expect(body).toContain('content="20"');
+	// lock state
+	expect(body).toMatch(/Locked/);
+	// the redesign: progressive disclosure, no raw text dumps, no meta refresh
+	expect(body).toContain("<details");
+	expect(body).not.toContain("<pre>");
+	expect(body).not.toContain("http-equiv");
 });
 
 test("the machine's own tailnet address gets 403", async () => {
@@ -431,12 +429,18 @@ test("POST /lock removes the unlock file and logs LOCK ui source=ui:<login>", as
 	expect(lines[0]).toContain(`LOCK ui source=ui:${OWNER}`);
 });
 
-test("unlock with the chat gate off is refused and logs nothing", async () => {
+test("unlock or lock with the chat gate off redirects to the explanation and changes nothing", async () => {
 	const svc = ui({ cfg: { ...CFG, guards: { ...CFG.guards, chat_unlock: false } } });
 	const res = await post(svc, "/unlock", { minutes: "5" });
-	expect(res.status).toBe(409);
+	expect(res.status).toBe(303);
+	expect(res.headers.get("location")).toBe("/?sent=unlock-off");
 	expect(existsSync(unlockPath())).toBe(false);
 	expect(planGuardLogLines().some(l => l.includes("UNLOCK"))).toBe(false);
+	expect(inboxRecords()).toEqual([]);
+	const lock = await post(svc, "/lock", {});
+	expect(lock.status).toBe(303);
+	expect(lock.headers.get("location")).toBe("/?sent=unlock-off");
+	expect(existsSync(unlockPath())).toBe(false);
 	expect(inboxRecords()).toEqual([]);
 });
 
@@ -708,6 +712,36 @@ test("parseWhoisLogin reads UserProfile.LoginName from the multi-line `tailscale
 	expect(parseWhoisLogin(out)).toBe("owner@example.com");
 	expect(parseWhoisLogin(JSON.stringify({ User: { LoginName: "owner@example.com" } }))).toBeNull();
 	expect(parseWhoisLogin("not json")).toBeNull();
+});
+
+// --- P2: the redesigned page's receipt, all-clear and CSP plumbing ---
+
+test("zero waiting plans render the all-clear state", async () => {
+	const emptyIndex = join(TMP, "empty-index.md");
+	writeFileSync(emptyIndex, `${PLAN_D}\n`);
+	const svc = ui({ cfg: { ...CFG, paths: { ...CFG.paths, queue_index: emptyIndex } } });
+	const body = await (await get(svc)).text();
+	expect(body).toContain("All clear");
+	expect(body).toContain("Nothing needs you right now");
+});
+
+test("the CSP header nonce equals the inline script nonce, and there is no meta refresh", async () => {
+	const svc = ui();
+	const res = await get(svc);
+	const csp = res.headers.get("content-security-policy") ?? "";
+	expect(csp).toContain("default-src 'none'");
+	const nonce = /nonce-([A-Za-z0-9]+)/.exec(csp)?.[1];
+	expect(nonce).toBeTruthy();
+	const body = await res.text();
+	expect(body).toContain(`<script nonce="${nonce}">`);
+	expect(body).not.toContain("http-equiv");
+});
+
+test("POST /answer redirects to the one-time receipt", async () => {
+	const svc = ui();
+	const res = await post(svc, "/answer", { plan: PLAN_W, answer: "yes" });
+	expect(res.status).toBe(303);
+	expect(res.headers.get("location")).toBe("/?sent=answer");
 });
 
 // --- P1: typed page data (the plain-language card rows) ---

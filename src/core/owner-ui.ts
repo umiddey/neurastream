@@ -8,6 +8,7 @@
 // 127.0.0.1 while the real server binds only the tailnet address from `tailscale ip -4`.
 
 import { appendFileSync, mkdirSync, readFileSync, statSync, statfsSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import os from "node:os";
 import { basename } from "node:path";
 import type { RunSource } from "./adapter.ts";
@@ -78,20 +79,6 @@ export function authenticate(cfg: Config, tailscale: Tailscale, peer: string): A
 }
 
 // ---- sections ----
-
-interface Section {
-	title: string;
-	body: string;
-}
-
-function section(title: string, build: () => string): Section {
-	try {
-		return { title, body: build() };
-	} catch {
-		// One unreadable source must never take the page down.
-		return { title, body: "<p>unavailable</p>" };
-	}
-}
 
 function esc(s: string): string {
 	return s.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
@@ -231,112 +218,351 @@ export function machineRow(cfg: Config): MachineRow {
 
 // ---- rendering (consumes the rows above, never the readers directly) ----
 
-function answerForm(row: QuestionRow): string {
+function needCard(row: QuestionRow, i: number): string {
+	const goals = row.goal.map(g => `<li>${esc(g)}</li>`).join("");
+	const wait = row.waitingMin < 60 ? `waiting ${row.waitingMin} min` : `waiting ${Math.max(1, Math.round(row.waitingMin / 60))} h`;
+	const bg = row.goal.length ? `<details class="bg" id="bg-${i}"><summary>Background</summary><ul>${goals}</ul></details>` : "";
+	return `<article class="card need">
+<p class="eyebrow">${esc(row.repo)} · ${esc(wait)}</p>
+<h3>${esc(row.title)}</h3>
+<p class="ask">What I need from you</p>
+<p class="q">${esc(row.waitingLine)}</p>
+${bg}
+<form method="post" action="/answer">
+<input type="hidden" name="plan" value="${esc(row.plan)}">
+<div class="acts">
+<button class="primary" type="submit" name="answer" value="yes">Yes, go ahead</button>
+<button type="submit" name="answer" value="no">No</button>
+<button type="button" class="replybtn">Reply…</button>
+</div>
+<div class="reply" hidden>
+<textarea name="answer_text" maxlength="${ANSWER_MAX}" rows="3" placeholder="Type your reply"></textarea>
+<button class="primary" type="submit">Send reply</button>
+</div>
+</form>
+</article>`;
+}
+
+function agentRowHtml(r: AgentRow): string {
+	const dot = r.status === "running" ? "ok" : "warn";
+	const mins = r.minutes > 0 ? ` · ${r.minutes} min` : "";
+	return `<li class="agent"><span class="dot ${dot}" aria-hidden="true"></span><span class="aid">${esc(r.id)}</span><span class="model">${esc(r.model)}</span><span class="detail">${esc(r.detail)}${mins}</span></li>`;
+}
+
+function queueHtml(rows: QueueRow[]): string {
+	const byRepo: Record<string, QueueRow[]> = {};
+	const order: string[] = [];
+	for (const r of rows) {
+		if (!byRepo[r.repo]) {
+			byRepo[r.repo] = [];
+			order.push(r.repo);
+		}
+		byRepo[r.repo]!.push(r);
+	}
+	return order
+		.map(repo => {
+			const list = byRepo[repo]!;
+			return `<div class="qrepo"><p class="eyebrow">${esc(repo)} · ${list.length}</p><ul>${list
+				.map(r => `<li>${esc(r.title)}${r.waiting ? ` <span class="chip wait">waiting</span>` : ""}</li>`)
+				.join("")}</ul></div>`;
+		})
+		.join("");
+}
+
+function ciHtml(rows: CiRow[]): string {
+	return `<ul class="merges">${rows
+		.map(r => `<li><span class="mono">${esc(r.mr)}</span> · ${r.tries} pipeline${r.tries === 1 ? "" : "s"} · ${esc(strftime(r.ts, "%m-%d %H:%M"))}</li>`)
+		.join("")}</ul>`;
+}
+
+function incidentsHtml(rows: IncidentRow[]): string {
+	return `<ul class="incidents">${rows
+		.map(r => `<li><span class="mono">${esc(r.id)}</span> <span class="chip bad">${esc(r.kind)}</span> ${esc(r.summary)}${r.count > 1 ? ` · ${r.count}x` : ""}</li>`)
+		.join("")}</ul>`;
+}
+
+function scoresHtml(d: ScoresData): string {
+	const head = d.header.length ? `<thead><tr>${d.header.map(c => `<th>${esc(c)}</th>`).join("")}</tr></thead>` : "";
+	const body = d.rows.length ? `<tbody>${d.rows.map(r => `<tr>${r.map(c => `<td>${esc(c)}</td>`).join("")}</tr>`).join("")}</tbody>` : "";
+	const table = head ? `<table>${head}${body}</table>` : "";
+	const text = d.text.map(t => `<p>${esc(t)}</p>`).join("");
+	return table + text;
+}
+
+function machineHtml(cfg: Config, m: MachineRow): string {
+	const row = (label: string, value: string, bad = false) =>
+		`<div class="mrow"><span>${esc(label)}</span><span class="mono${bad ? " bad" : ""}">${esc(value)}</span></div>`;
 	return [
-		`<form method="post" action="/answer">`,
-		`<input type="hidden" name="plan" value="${esc(row.plan)}">`,
-		`<p><strong>${esc(basename(row.plan))}</strong><br>${esc(row.waitingLine)}</p>`,
-		`<button type="submit" name="answer" value="yes">yes</button>`,
-		`<button type="submit" name="answer" value="no">no</button>`,
-		`<input type="text" name="answer_text" maxlength="${ANSWER_MAX}" placeholder="short answer">`,
-		`<button type="submit">send</button>`,
-		`</form>`,
-	].join("\n");
+		row("Disk free", `${m.freeGb.toFixed(0)} GB (min ${m.diskMin} GB)`, m.freeGb < m.diskMin),
+		row("Load", `${m.load.toFixed(2)} (max ${m.loadMax})`, m.load > m.loadMax),
+		row("Cores", String(m.cores)),
+	].join("");
 }
 
-function questionsBody(cfg: Config): string {
-	const waiting = questionRows(cfg);
-	return waiting.length ? waiting.map(answerForm).join("\n") : "<p>nothing is waiting on you</p>";
+function detailsBlock(id: string, label: string, count: string, inner: string): string {
+	return `<details id="${id}"><summary>${esc(label)} <span class="chip">${esc(count)}</span></summary><div class="dbody">${inner}</div></details>`;
 }
 
-function guardsBody(cfg: Config): string {
-	let state = "<p>guards locked</p>";
+function na(label: string): string {
+	return `<p class="na">${esc(label)} unavailable</p>`;
+}
+
+function receiptHtml(sent: string | null, params: URLSearchParams): string {
+	if (!sent) return "";
+	let text: string;
+	switch (sent) {
+		case "answer":
+			text = `Sent to Main · ${strftime(nowSec(), "%H:%M")}`;
+			break;
+		case "unlock": {
+			const minutes = Number(params.get("minutes"));
+			text = Number.isInteger(minutes) && minutes > 0 ? `Unlocked for ${minutes} min` : "Unlocked";
+			break;
+		}
+		case "lock":
+			text = "Locked";
+			break;
+		case "reorder": {
+			const to = Number(params.get("to"));
+			text = Number.isInteger(to) && to > 0 ? `Moved to #${to} · Main sees it next turn` : "Moved · Main sees it next turn";
+			break;
+		}
+		case "unlock-off":
+			text = "Refused — chat unlock is off";
+			break;
+		default:
+			return "";
+	}
+	return `<div class="receipt" role="status">${esc(text)}</div>`;
+}
+
+function bottomBar(cfg: Config, lockMinutesLeft: number | null): string {
+	const state = lockMinutesLeft === null ? "Locked" : `Unlocked · ${lockMinutesLeft} min left`;
+	const unlockBtn = (minutes: number) =>
+		`<form method="post" action="/unlock"><input type="hidden" name="minutes" value="${minutes}"><button type="submit">Unlock ${minutes} min</button></form>`;
+	const off = cfg.guards.chat_unlock
+		? ""
+		: `<p class="offnote">Unlocking from the page is switched off in the config. To turn it on, set:</p><code class="offcfg">guards: chat_unlock: true</code>`;
+	return `<footer class="bar"><div class="barline"><div class="barinner"><p class="lockstate${lockMinutesLeft === null ? "" : " on"}">${esc(state)}</p><div class="barbtns">${unlockBtn(15)}${unlockBtn(30)}<form method="post" action="/lock"><button type="submit">Lock now</button></form></div></div></div>${off}</footer>`;
+}
+
+// ---- page assembly: one unreadable source never takes the page down ----
+
+interface PageData {
+	questions: QuestionRow[] | null;
+	agents: AgentRow[] | null;
+	queue: QueueRow[] | null;
+	ci: CiRow[] | null;
+	incidents: IncidentRow[] | null;
+	scores: ScoresData | null;
+	machine: MachineRow | null;
+	/** Minutes left in the guard unlock; null = locked. */
+	lockMinutesLeft: number | null;
+}
+
+function safe<T>(build: () => T): T | null {
+	try {
+		return build();
+	} catch {
+		// One unreadable source must never take the page down.
+		return null;
+	}
+}
+
+function lockMinutesLeft(cfg: Config): number | null {
 	try {
 		const end = statSync(unlockPath()).mtimeMs + cfg.guards.unlock_minutes * 60_000;
 		const left = Math.round((end - Date.now()) / 60_000);
-		if (left > 0) state = `<p>guards <strong>unlocked</strong> for ~${left} more min</p>`;
-	} catch {}
-	const button = (minutes: number) =>
-		`<form method="post" action="/unlock"><input type="hidden" name="minutes" value="${minutes}"><button type="submit">unlock ${minutes}</button></form>`;
-	return [
-		state,
-		button(5),
-		button(15),
-		button(30),
-		`<form method="post" action="/lock"><button type="submit">lock now</button></form>`,
-	].join("\n");
+		return left > 0 ? left : null;
+	} catch {
+		return null;
+	}
 }
 
-function agentsBody(cfg: Config, source: RunSource): string {
-	const live = agentRows(cfg, source).map(r => `${r.id}  ${r.detail}  ${r.model}`);
-	return live.length ? `<pre>${esc(live.join("\n"))}</pre>` : "<p>no agents running or waiting</p>";
+export function buildPageData(cfg: Config, source: RunSource): PageData {
+	return {
+		questions: safe(() => questionRows(cfg)),
+		agents: safe(() => agentRows(cfg, source)),
+		queue: safe(() => queueRows(cfg)),
+		ci: safe(() => ciRows(cfg)),
+		incidents: safe(() => incidentRows(cfg)),
+		scores: safe(() => scoresData(cfg)),
+		machine: safe(() => machineRow(cfg)),
+		lockMinutesLeft: lockMinutesLeft(cfg),
+	};
 }
 
-function queueBody(cfg: Config): string {
-	const plans = queueRows(cfg).map(r => `${basename(r.file)} — ${r.status}${r.waiting ? " — WAITING on owner" : ""}`);
-	return plans.length ? `<pre>${esc(plans.join("\n"))}</pre>` : "<p>the queue is empty</p>";
+function stripHtml(data: PageData): string {
+	const n = data.questions?.length ?? null;
+	const left =
+		n === null
+			? `<span class="count na">–</span>`
+			: n === 0
+				? `<span class="count clear">All clear</span>`
+				: `<a class="count" href="#needs" aria-label="${n} plans need you">${n}</a>`;
+	const working = data.agents === null ? "working –" : `${data.agents.length} working`;
+	const ci =
+		data.incidents === null
+			? "CI –"
+			: data.incidents.length
+				? `<span class="bad">${data.incidents.length === 1 ? "1 incident" : `${data.incidents.length} incidents`}</span>`
+				: `<span class="fine">CI ok</span>`;
+	const m = data.machine;
+	const disk =
+		m === null
+			? "disk –"
+			: m.freeGb < m.diskMin
+				? `<span class="bad">disk ${m.freeGb.toFixed(0)} GB</span>`
+				: m.load > m.loadMax
+					? `<span class="bad">load ${m.load.toFixed(1)}</span>`
+					: `disk ${m.freeGb.toFixed(0)} GB`;
+	return `<header class="strip"><div class="barinner stripinner">${left}<div class="signals"><span>${esc(working)}</span><span>${ci}</span><span>${disk}</span></div></div></header>`;
 }
 
-function ciBody(cfg: Config): string {
-	const rows = ciRows(cfg).map(r => `${r.mr} — ${r.tries} pipeline(s) — ${strftime(r.ts, "%m-%d %H:%M")}`);
-	return rows.length ? `<pre>${esc(rows.join("\n"))}</pre>` : "<p>no CI runs recorded</p>";
-}
+const FAVICON =
+	"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%23D98E04'/%3E%3C/svg%3E";
 
-function incidentsBody(cfg: Config): string {
-	const open = incidentRows(cfg).map(i => `${i.id} [${i.kind}] ${i.summary}${i.count > 1 ? ` — ${i.count}x` : ""}`);
-	return open.length ? `<pre>${esc(open.join("\n"))}</pre>` : "<p>no open incidents</p>";
-}
+const SCRIPT = `(function(){
+if(location.search)history.replaceState(null,"",location.pathname);
+function store(d,v){var k="nsui:"+d.id;if(v===undefined)return sessionStorage.getItem(k);sessionStorage.setItem(k,v?"1":"0");}
+var ds=document.querySelectorAll("details[id]");
+for(var i=0;i<ds.length;i++){(function(d){var s=store(d);if(s!==null)d.open=s==="1";d.addEventListener("toggle",function(){store(d,d.open);});})(ds[i]);}
+var rb=document.querySelectorAll(".replybtn");
+for(var j=0;j<rb.length;j++){rb[j].addEventListener("click",function(){var f=this.closest("form");var box=f&&f.querySelector(".reply");if(box){box.hidden=!box.hidden;if(!box.hidden){var t=box.querySelector("textarea");if(t)t.focus();}}});}
+function busy(){var els=document.querySelectorAll("input:not([type=hidden]), textarea");for(var k=0;k<els.length;k++){if(els[k]===document.activeElement||els[k].value)return true;}return false;}
+setInterval(function(){if(!busy())location.reload();},${REFRESH_SEC}000);
+})();`;
 
-function scoresBody(cfg: Config): string {
-	const d = scoresData(cfg);
-	const table = d.header.length ? [d.header.join(" | "), ...d.rows.map(r => r.join(" | "))] : [];
-	return `<pre>${esc([...d.text, ...table].join("\n"))}</pre>`;
-}
-
-function machineBody(cfg: Config): string {
-	const m = machineRow(cfg);
-	const disk = `disk ${m.freeGb.toFixed(0)} GB free in ${cfg.machine.disk_path} (min ${m.diskMin} GB)${m.freeGb < m.diskMin ? " — LOW" : ""}`;
-	const loadLine = `load ${m.load.toFixed(2)} on ${m.cores} cores (max ${m.loadMax})${m.load > m.loadMax ? " — HIGH" : ""}`;
-	return `<pre>${esc([disk, loadLine].join("\n"))}</pre>`;
-}
-
-function buildSections(cfg: Config, source: RunSource): Section[] {
-	return [
-		section("Waiting on you", () => questionsBody(cfg)),
-		section("Guards", () => guardsBody(cfg)),
-		section("Agents", () => agentsBody(cfg, source)),
-		section("Queue", () => queueBody(cfg)),
-		section("Merges / CI", () => ciBody(cfg)),
-		section("Incidents", () => incidentsBody(cfg)),
-		section("Agent scores", () => scoresBody(cfg)),
-		section("Machine", () => machineBody(cfg)),
-	];
-}
-
-function renderPage(sections: Section[]): string {
-	const body = sections.map(s => `<section><h2>${esc(s.title)}</h2>${s.body}</section>`).join("\n");
+function renderPage(cfg: Config, data: PageData, params: URLSearchParams, nonce: string): string {
+	const needs = data.questions === null ? na("Waiting on you") : data.questions.length ? data.questions.map(needCard).join("\n") : `<p class="empty">Nothing needs you right now</p>`;
+	const working =
+		data.agents === null ? na("Working now") : data.agents.length ? `<ul class="agents">${data.agents.map(agentRowHtml).join("")}</ul>` : `<p class="empty">No agents running</p>`;
+	const queue = detailsBlock(
+		"d-queue",
+		"Queue",
+		data.queue === null ? "–" : String(data.queue.length),
+		data.queue === null ? na("Queue") : data.queue.length ? queueHtml(data.queue) : `<p class="empty">The queue is empty</p>`,
+	);
+	const merges = detailsBlock(
+		"d-merges",
+		"Merges",
+		data.ci === null ? "–" : String(data.ci.length),
+		data.ci === null ? na("Merges") : data.ci.length ? ciHtml(data.ci) : `<p class="empty">No CI runs recorded</p>`,
+	);
+	const incidents = detailsBlock(
+		"d-incidents",
+		"Incidents",
+		data.incidents === null ? "–" : String(data.incidents.length),
+		data.incidents === null ? na("Incidents") : data.incidents.length ? incidentsHtml(data.incidents) : `<p class="empty">No open incidents</p>`,
+	);
+	const scores = detailsBlock(
+		"d-scores",
+		"Agent scores",
+		data.scores === null ? "–" : String(data.scores.rows.length + data.scores.text.length),
+		data.scores === null ? na("Agent scores") : scoresHtml(data.scores),
+	);
+	const machine = detailsBlock(
+		"d-machine",
+		"Machine",
+		data.machine === null ? "–" : `${data.machine.freeGb.toFixed(0)} GB`,
+		data.machine === null ? na("Machine") : machineHtml(cfg, data.machine),
+	);
 	return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="refresh" content="${REFRESH_SEC}">
+<meta name="color-scheme" content="light dark">
 <title>neurastream</title>
+<link rel="icon" href="${FAVICON}">
 <style>
-:root { color-scheme: light dark; }
-body { font-family: system-ui, sans-serif; margin: 0 auto; padding: 1rem; max-width: 40rem; font-size: 1.05rem; line-height: 1.45; }
-section { border: 1px solid #8884; border-radius: 10px; padding: 0.75rem 1rem; margin-bottom: 1rem; }
-h2 { font-size: 1.15rem; margin: 0 0 0.5rem; }
-button { font-size: 1.15rem; padding: 0.55rem 1.1rem; margin: 0.2rem 0.2rem 0.2rem 0; border-radius: 8px; }
-input[type=text] { font-size: 1.1rem; padding: 0.5rem; width: 55%; border-radius: 8px; }
-pre { white-space: pre-wrap; margin: 0; font-size: 0.95rem; overflow-wrap: anywhere; }
-form { margin: 0.3rem 0; }
-@media (prefers-color-scheme: dark) { body { background: #111; color: #eee; } section { border-color: #6668; } }
-@media (prefers-color-scheme: light) { body { background: #fff; color: #111; } }
+:root { color-scheme: light dark; --ink:#1C2430; --page:#EEF1F5; --card:#FFFFFF; --line:#D5DBE3; --muted:#5E6A7A; --amber:#D98E04; --teal:#0F8A8A; --red:#C8382F; --on-amber:#10141A; }
+@media (prefers-color-scheme: dark) { :root { --ink:#E6EAF0; --page:#10141A; --card:#1A2029; --line:#2A323D; --muted:#94A0B0; } }
+* { box-sizing: border-box; }
+html { scroll-padding-top: 72px; }
+body { margin: 0; background: var(--page); color: var(--ink); font: 17px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+.barinner { max-width: 36rem; margin: 0 auto; padding: 0 16px; }
+.mono, .aid, .model { font-family: ui-monospace, "SF Mono", "Roboto Mono", monospace; font-size: 14px; }
+.strip { position: sticky; top: 0; z-index: 5; background: var(--page); border-bottom: 1px solid var(--line); }
+.stripinner { display: flex; align-items: center; justify-content: space-between; min-height: 64px; }
+.count { color: var(--amber); font-size: 34px; font-weight: 800; font-variant-numeric: tabular-nums; text-decoration: none; }
+.count.clear { color: var(--teal); font-size: 20px; font-weight: 700; }
+.count.na { color: var(--muted); font-size: 20px; }
+.signals { display: flex; gap: 12px; color: var(--muted); font-size: 14px; text-align: right; }
+.bad { color: var(--red); font-weight: 600; }
+.fine { color: var(--teal); }
+main { padding-bottom: 96px; }
+.receipt { max-width: 36rem; margin: 12px auto 0; padding: 10px 16px; background: var(--card); border: 1px solid var(--teal); border-radius: 14px; color: var(--teal); font-weight: 600; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; margin: 16px 0; }
+.need { border-left: 4px solid var(--amber); }
+.eyebrow { margin: 0 0 2px; color: var(--muted); font-size: 14px; }
+.need .eyebrow { color: var(--amber); }
+.card h3 { margin: 2px 0 8px; font-size: 20px; font-weight: 650; }
+.ask { margin: 0 0 2px; color: var(--muted); font-size: 14px; }
+.q { margin: 0 0 10px; }
+details.bg { margin: 8px 0; border-top: 1px solid var(--line); padding-top: 6px; }
+details.bg summary, details.block summary { cursor: pointer; min-height: 48px; display: flex; align-items: center; gap: 8px; color: var(--muted); }
+details.bg ul { margin: 4px 0 8px; padding-left: 20px; }
+.acts { display: flex; gap: 8px; flex-wrap: wrap; }
+button { min-height: 48px; padding: 8px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--ink); font: inherit; }
+button.primary { background: var(--amber); border-color: var(--amber); color: var(--on-amber); font-weight: 650; }
+:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+.reply { margin-top: 8px; }
+.reply textarea { width: 100%; padding: 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--page); color: var(--ink); font: inherit; }
+.agents { list-style: none; margin: 0; padding: 0; }
+.agent { display: flex; align-items: baseline; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.agent:last-child { border-bottom: none; }
+.dot { width: 10px; height: 10px; border-radius: 50%; align-self: center; flex: none; }
+.dot.ok { background: var(--teal); }
+.dot.warn { background: var(--amber); }
+.model { color: var(--muted); }
+.detail { color: var(--muted); }
+details.block { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 4px 16px; margin: 12px 0; }
+details.block .dbody { border-top: 1px solid var(--line); padding: 10px 0 12px; }
+.chip { display: inline-block; padding: 1px 8px; border: 1px solid var(--line); border-radius: 999px; font-size: 13px; color: var(--muted); }
+.chip.bad { color: var(--red); border-color: var(--red); }
+.chip.wait { color: var(--amber); border-color: var(--amber); }
+.qrepo .eyebrow { margin-top: 10px; }
+.merges, .incidents { margin: 0; padding-left: 20px; }
+.merges li, .incidents li { margin: 6px 0; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+th { color: var(--muted); font-weight: 600; }
+.mrow { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.mrow:last-child { border-bottom: none; }
+.empty { color: var(--muted); }
+.na { color: var(--muted); font-style: italic; }
+.bar { position: sticky; bottom: 0; z-index: 5; background: var(--page); border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); }
+.barline { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 64px; flex-wrap: wrap; padding-top: 6px; padding-bottom: 6px; }
+.lockstate { margin: 0; font-weight: 650; color: var(--muted); }
+.lockstate.on { color: var(--teal); }
+.barbtns { display: flex; gap: 8px; flex-wrap: wrap; }
+.barbtns button { min-height: 40px; padding: 6px 10px; font-size: 15px; }
+.offnote { margin: 0; color: var(--muted); font-size: 14px; }
+.offcfg { display: block; font-family: ui-monospace, "SF Mono", "Roboto Mono", monospace; font-size: 14px; padding: 4px 0 10px; }
+@media (max-width: 360px) { .signals { display: none; } }
 </style>
 </head>
 <body>
-${body}
+${stripHtml(data)}
+${receiptHtml(params.get("sent"), params)}
+<main>
+<section id="needs"><h2 class="srt">Needs you</h2>
+${needs}
+</section>
+<section id="working"><h2 class="srt">Working now</h2>
+${working}
+</section>
+<div class="barinner">
+${queue}
+${merges}
+${incidents}
+${scores}
+${machine}
+</div>
+</main>
+${bottomBar(cfg, data.lockMinutesLeft)}
+<script nonce="${nonce}">${SCRIPT}</script>
 </body>
 </html>`;
 }
@@ -358,8 +584,8 @@ function textRes(body: string, status: number): Response {
 	return new Response(`${body}\n`, { status, headers: { "content-type": "text/plain; charset=utf-8" } });
 }
 
-function redirect(): Response {
-	return new Response(null, { status: 303, headers: { location: "/" } });
+function redirect(target: string): Response {
+	return new Response(null, { status: 303, headers: { location: target } });
 }
 
 function handleAnswer(cfg: Config, fields: Record<string, string>, login: string): Response {
@@ -373,28 +599,28 @@ function handleAnswer(cfg: Config, fields: Record<string, string>, login: string
 	}
 	mkdirSync(stateDirPath(), { recursive: true });
 	appendFileSync(inboxPath(), `${JSON.stringify({ ts: nowSec(), plan: planFile, question: plan.waitingLine, answer, login })}\n`);
-	return redirect();
+	return redirect("/?sent=answer");
 }
 
 function handleUnlock(cfg: Config, fields: Record<string, string>, login: string): Response {
 	const minutes = fields.minutes ?? "";
 	if (minutes !== "" && !/^\d+$/.test(minutes)) return textRes("minutes must be a number", 400);
 	const result = chatUnlock(minutes === "" ? "unlock" : `unlock ${minutes}`, cfg, `ui:${login}`, "ui");
-	if (!result.applied) return textRes("unlock refused: guards.chat_unlock is off", 409);
+	if (!result.applied) return redirect("/?sent=unlock-off");
 	mkdirSync(stateDirPath(), { recursive: true });
 	appendFileSync(
 		inboxPath(),
 		`${JSON.stringify({ ts: nowSec(), kind: "unlock", minutes: result.minutes, until: result.until, login })}\n`,
 	);
-	return redirect();
+	return redirect(`/?sent=unlock&minutes=${result.minutes}`);
 }
 
 function handleLock(cfg: Config, login: string): Response {
 	const result = chatUnlock("lock", cfg, `ui:${login}`, "ui");
-	if (!result.applied) return textRes("lock refused: guards.chat_unlock is off", 409);
+	if (!result.applied) return redirect("/?sent=unlock-off");
 	mkdirSync(stateDirPath(), { recursive: true });
 	appendFileSync(inboxPath(), `${JSON.stringify({ ts: nowSec(), kind: "lock", login })}\n`);
-	return redirect();
+	return redirect("/?sent=lock");
 }
 
 /** Starts the page. Refuses to start when ui.enabled is false or ui.owner_login is empty, and on the default hostname when tailscale does not answer. */
@@ -444,9 +670,13 @@ export function startOwnerUi(opts: OwnerUiOptions): OwnerUiServer {
 							res = textRes("forbidden: origin is not this page", 403);
 							code = 403;
 						} else if (req.method === "GET" && url.pathname === "/") {
-							res = new Response(renderPage(buildSections(cfg, source)), {
+							const nonce = randomUUID().replaceAll("-", "");
+							res = new Response(renderPage(cfg, buildPageData(cfg, source), url.searchParams, nonce), {
 								status: 200,
-								headers: { "content-type": "text/html; charset=utf-8" },
+								headers: {
+									"content-type": "text/html; charset=utf-8",
+									"content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`,
+								},
 							});
 							code = 200;
 						} else if (req.method === "POST" && url.pathname === "/answer") {
