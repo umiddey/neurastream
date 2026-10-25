@@ -1,4 +1,8 @@
 # Changelog
+## Unreleased
+### Added
+- `neurastream traces briefs [--since <N m|h|d>] [--json] [--report]` lists each spawn brief of Main's runs with its features (length, `file:line`, verify, phase, plan, budget, acceptance lines), its agent's waste and whether it was accepted; `--report` compares briefs with and without each feature. Brief text never prints. `traces.briefs` in the config sets the patterns and length buckets.
+
 ## 0.2.18
 ### Fixed
 - A slash command typed while Main waited out a rate limit no longer cancels the wake-up before a turn starts.

@@ -199,6 +199,19 @@ export interface Config {
 			/** Shell commands matching this poll while nothing else runs. */
 			poll_pattern: string;
 		};
+		/** Brief-quality rules (src/core/trace-briefs.ts): what a spawn brief names, and how the report buckets briefs by length. */
+		briefs: {
+			/** A brief whose text matches this names a verify command. */
+			verify_pattern: string;
+			/** A brief whose text matches this names a phase. */
+			phase_pattern: string;
+			/** A brief whose text matches this names a plan file. */
+			plan_pattern: string;
+			/** Ascending char edges that split briefs into length buckets in the report. */
+			char_buckets: number[];
+			/** The report shows a mean only when at least this many rows sit on that side; >= 1. */
+			min_n: number;
+		};
 	};
 	/** Optional overlay written by adapter install. Absent until an adapter is installed. */
 	adapter?: { name: string; sessions: string; pins: string; extensions: string };
@@ -404,6 +417,20 @@ function check(cfg: Config): void {
 		new RegExp(cfg.traces.efficiency.poll_pattern);
 	} catch {
 		throw new ConfigError(`traces.efficiency.poll_pattern: not a valid regex: ${cfg.traces.efficiency.poll_pattern}`);
+	}
+	const briefs = cfg.traces.briefs;
+	for (const key of ["verify_pattern", "phase_pattern", "plan_pattern"] as const) {
+		if (typeof briefs[key] !== "string") throw new ConfigError(`traces.briefs.${key} must be a string`);
+		try {
+			new RegExp(briefs[key]);
+		} catch {
+			throw new ConfigError(`traces.briefs.${key}: not a valid regex: ${briefs[key]}`);
+		}
+	}
+	if (!Number.isInteger(briefs.min_n) || briefs.min_n < 1) throw new ConfigError("traces.briefs.min_n must be an integer >= 1");
+	const edges = briefs.char_buckets;
+	if (!Array.isArray(edges) || edges.some((v, i) => !Number.isInteger(v) || v < 1 || (i > 0 && v <= edges[i - 1]!))) {
+		throw new ConfigError("traces.briefs.char_buckets must be ascending positive integers");
 	}
 	for (const [key, value] of Object.entries(cfg.paths)) {
 		if (key === "work_roots") {

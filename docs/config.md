@@ -241,6 +241,12 @@ traces:
       - "plan-guard:"
       - "main-guard:"
     poll_pattern: '^\s*(sleep\s+\d|ps\b|pgrep\b)'   # shell commands that poll while nothing else runs
+  briefs:              # brief-quality rules (src/core/trace-briefs.ts): what a spawn brief names, and the report's length buckets
+    verify_pattern: '\b(?:bun test|bun run typecheck|pytest|npm test|go test|cargo test)\b'
+    phase_pattern: '\bP\d+\b'
+    plan_pattern: 'docs/plans/\S+\.md'
+    char_buckets: [1500, 4000]   # brief length edges: <1500, 1500-3999, >=4000
+    min_n: 5             # the report shows a mean only with at least this many rows on that side
 ```
 
 `ledger.providers` is the allow-list. It is data. Core checks membership and does not know the names.
@@ -258,6 +264,8 @@ traces:
 `traces.actions` feeds `src/core/trace-actions.ts`. A tool call whose path arguments match a `secret_globs` glob is a secret read. A shell command naming a `net_tools` word reaches a host; it is allowed while the host matches `traces.allowed_hosts` (exact, or `*.suffix`), otherwise flagged — shaped as exfiltration when data flows out (a pipe into the tool, a body/upload option, a stdin redirect, a local scp source). Write targets outside every `actions.write_roots` root (empty falls back to `paths.work_roots`; both empty turn the scope check off) or matching a `deny_globs` glob are out of scope wherever they land. A command containing a `shell_patterns` substring feeds a shell from a pipe. All lists are data: core matches globs and words, it never hardcodes a tool, host or path.
 
 `traces.efficiency` feeds `src/core/trace-efficiency.ts`, the waste counters behind `neurastream traces efficiency` and the board's waste columns. A call is wasted under the first rule that matches, at most once: `repeat-read` — a read-tool call with the same arguments JSON as an earlier one and no write-tool call between them, the `repeat_read_min`-th and later count; `repeat-fail` — a shell command repeated after an earlier result flagged it as an error, with no write-tool call between, every repeat counts; `failed-edit` — a write-tool call whose result is an error; `guard-repeat` — a toolResult text starting with a `guard_prefixes` entry whose first line repeats an earlier block's first line, every repeat counts; `poll` — shell commands matching `poll_pattern` in an unbroken run of consecutive calls, every one after the first counts. The read and fail chains reset on any write-tool call (a rerun after a change is not a blind repeat); the read tool names, shell tool names and write tool names come from the `guards` section.
+
+`traces.briefs` feeds `src/core/trace-briefs.ts`, the brief-quality report behind `neurastream traces briefs [--since N m|h|d] [--json] [--report]` (default window 30d). Each spawn a Main run made is one row: a `task` call whose result says `Spawned` (a refused spawn sent nothing). The row carries the brief's features: `chars`, `fileLines` (a `path:line` location), `verify`, `phase` and `plan` (the three patterns above), `budget` (a `Call budget:` line) and `acceptance` (non-empty lines under Acceptance headings). Each row joins to its agent's waste from `traces.efficiency` and to whether a score event of type accept, validate or diagnose named the agent. The report compares briefs with and without each feature and buckets them by `char_buckets`; a mean shows only with at least `min_n` rows on that side. `--json` carries these features and lengths, never the brief text.
 
 ## omp overlay (adapter install, not core)
 
