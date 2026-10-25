@@ -42,6 +42,38 @@ export interface RunSource {
 	mainSession(file?: string): MainSession | null;
 }
 
+// Trace events: the raw activity of one run, used for claimed-vs-done checks and cross-run
+// questions. Harness-specific parsing lives in the adapters; core only defines the shape.
+
+export interface TraceUsage {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	totalTokens: number;
+	cost: number;
+}
+
+export type TraceEventKind = "toolCall" | "toolResult" | "usage" | "modelChange" | "assistantText";
+
+export interface TraceEvent {
+	kind: TraceEventKind;
+	/** Unix seconds; null when the source line carries no readable timestamp. */
+	ts: number | null;
+	runId: string;
+	tool?: string;
+	args?: Record<string, unknown>;
+	isError?: boolean;
+	text?: string;
+	model?: string;
+	provider?: string;
+	usage?: TraceUsage;
+}
+
+export interface TraceSource {
+	events(runId: string): TraceEvent[];
+}
+
 export interface Decision {
 	allow: boolean;
 	reason: string;

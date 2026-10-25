@@ -11,16 +11,19 @@
 //   D3 block-loop: the same guard BLOCK reason (keyed like M5) logged incidents.block_repeat
 //     times within one hour.
 //   D4 owner-correction: an owner message matching the M4 correction patterns.
+//   D5 claim-unbacked: a run's final report claims something its own tool output never
+//     showed (gathered by the traces claims CLI, src/cli/traces.ts).
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Run } from "./adapter.ts";
+import type { Run, TraceEvent } from "./adapter.ts";
 import type { Config } from "./config.ts";
 import { nowSec, strftime } from "./clock.ts";
 import { log } from "./guards.ts";
 import { addIncident, type IncidentView } from "./incidents.ts";
 import type { GuardBlock } from "./metrics.ts";
+import { verifyClaims, type Claim } from "./trace-claims.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -141,6 +144,30 @@ export function ownerCorrection(text: string, patterns: RegExp[], now: number): 
 	};
 }
 
+// ---- D5: the final report claims something the run's own tool output never showed ----
+
+/**
+ * Final-report claims (src/core/trace-claims.ts) with no backing activity in the same run's
+ * trace: a "13 passed" no toolResult shows, a SHA no git command printed, a label never passed
+ * to a heavy-run call, a path no edit/write call carried. Evidence is the claiming line, which
+ * the extractor already masked and capped, so nothing secret reaches the incident store.
+ */
+export function claimUnbacked(claims: Claim[], events: TraceEvent[]): Finding[] {
+	const out: Finding[] = [];
+	for (const v of verifyClaims(claims, events)) {
+		if (v.backed) continue;
+		const c = v.claim;
+		const what = c.count !== undefined ? `${c.kind} ${c.count}` : `${c.kind} ${c.value ?? ""}`;
+		out.push({
+			kind: "claim-unbacked",
+			summary: `final report claims ${what.trim()} but the run's tool output never shows it`,
+			evidence: c.evidence,
+			fingerprint: `claim-unbacked:${c.kind}:${c.count ?? c.value ?? ""}`,
+		});
+	}
+	return out;
+}
+
 // ---- the runner ----
 
 /** The plain inputs the callers gather; a detector without its input does not run. */
@@ -154,6 +181,9 @@ export interface DetectorInput {
 	bash?: { command: string; output: string };
 	/** D4: the owner prompt at before_agent_start; never a main-guard continuation. */
 	prompt?: string;
+	/** D5: one run's final-report claims plus the same run's trace events (the traces CLI gathers both). */
+	claims?: Claim[];
+	events?: TraceEvent[];
 }
 
 /**
@@ -197,6 +227,9 @@ export function runDetectors(cfg: Config, input: DetectorInput, now = nowSec()):
 			const f = ownerCorrection(input.prompt!, cfg.metrics.correction_patterns.map(p => new RegExp(p, "i")), now);
 			return f ? [f] : [];
 		});
+	}
+	if (input.claims && input.events) {
+		attempt("claim-unbacked", () => claimUnbacked(input.claims!, input.events!));
 	}
 	return out;
 }

@@ -1,0 +1,7 @@
+{"type":"session","timestamp":"2026-10-24T10:00:00.000Z","id":"fix-main-sess"}
+{"type":"model_change","timestamp":"2026-10-24T10:00:01.000Z","model":"test-model","provider":"test-provider","resolvedModelIsFallback":false}
+this line is not json and must be skipped
+{"type":"message","timestamp":"2026-10-24T10:00:02.000Z","message":{"role":"user","content":[{"type":"text","text":"run the suite"}]}}
+{"type":"message","timestamp":"2026-10-24T10:00:03.000Z","message":{"role":"assistant","model":"test-model","provider":"test-provider","api":"test-api","responseId":"resp-1","stopReason":"toolUse","usage":{"input":100,"output":20,"cacheRead":50,"cacheWrite":0,"totalTokens":170,"cost":{"total":0.001}},"content":[{"type":"text","text":"running the suite now"},{"type":"toolCall","id":"tc-1","name":"bash","arguments":{"command":"bun test"},"intent":"Running the suite"}]}}
+{"type":"message","timestamp":"2026-10-24T10:00:04.000Z","message":{"role":"toolResult","toolCallId":"tc-1","toolName":"bash","isError":false,"content":[{"type":"text","text":"12 pass, 0 fail"}]}}
+{"type":"model_usage","timestamp":"2026-10-24T10:00:05.000Z","model":"test-model","provider":"test-provider","usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0,"totalTokens":15,"cost":{"total":0.0001}}}

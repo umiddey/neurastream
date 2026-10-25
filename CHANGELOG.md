@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+### Added
+- `neurastream traces claims <runId|--since 24h> [--json]`: check what a run's final report claims (test counts, exit codes, commit SHAs, heavy-run labels, changed paths) against what the same run's tool output actually shows; anything nothing backs becomes a `claim-unbacked` finding. A SHA only counts when the git command whose output printed it is the call the run itself made (results pair with their own tool calls), paths must end in a real file extension (dotted API symbols and session-UUID fragments are not files), and files agents wrote through the shell (redirect, heredoc, `tee`/`touch`/`cp`/`mv`) back changed-path claims like edit/write calls do.
+
 ## 0.2.12
 ### Added
 - "Needs you" pings: when a Main turn ends with an open plan whose `WAITING on owner:` line has not been pinged before, neurastream posts `🔔 Needs you — <plan title>: <question>` (plus the `neurastream ui` phone-page link when `ui.enabled: true` and the machine's MagicDNS name is known) to the configured Discord/Slack webhooks; and when the guard refuses a Main tool call because it touches a protected guard file, it posts `🔓 Main needs an unlock to continue (<file>). Tap "unlock N" on the phone page.` at most once per 30 minutes. Deterministic, no model call, Main session only, fire-and-forget; each waiting question posts once until its line changes or disappears (keys remembered in `<queue_state>/notify-waiting.json`), and every decision logs one `notify: needs-you posted|skipped (<why>)` guard-log line.

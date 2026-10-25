@@ -27,13 +27,13 @@ function walk(dir: string, depth: number, out: string[]): void {
 	}
 }
 
-function jsonlAt(root: string, levels: number): string[] {
+export function jsonlAt(root: string, levels: number): string[] {
 	const out: string[] = [];
 	walk(root, levels, out);
 	return out;
 }
 
-function parseTs(ts: string): number | null {
+export function parseTs(ts: string): number | null {
 	const s = ts.slice(0, 19);
 	if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(s)) return null;
 	const [date, time] = s.split("T") as [string, string];
@@ -45,7 +45,7 @@ function parseTs(ts: string): number | null {
 	return local.getTime() / 1000 - timezone;
 }
 
-function asObj(v: unknown): Record<string, unknown> | null {
+export function asObj(v: unknown): Record<string, unknown> | null {
 	return typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
 }
 
@@ -53,6 +53,12 @@ function costOf(m: Record<string, unknown>): number {
 	const u = asObj(m.usage);
 	const c = u ? asObj(u.cost) : null;
 	return c && typeof c.total === "number" ? c.total : 0;
+}
+
+/** Ledger run id for a session file: `MAIN <HH-MM-SS>` for dated main files, stem otherwise. */
+export function runIdOf(file: string): string {
+	const stem = basename(file).slice(0, -6);
+	return /^\d{4}/.test(stem) ? `MAIN ${stem.slice(11, 19)}` : stem;
 }
 
 function build(file: string, cfg: Config, mtime: number): Run | null {
@@ -64,7 +70,7 @@ function build(file: string, cfg: Config, mtime: number): Run | null {
 	}
 	const stem = basename(file).slice(0, -6);
 	const isMain = /^\d{4}/.test(stem);
-	const id = isMain ? `MAIN ${stem.slice(11, 19)}` : stem;
+	const id = runIdOf(file);
 	let model = "?";
 	let scoreModel = "?";
 	let calls = 0;

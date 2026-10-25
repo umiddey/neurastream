@@ -172,6 +172,18 @@ Guard rules around it:
 
 "Needs you" pings use the same channels so the owner learns on the phone that a decision is his: when a Main turn ends with an open plan whose `WAITING on owner:` line was not pinged before, neurastream posts `🔔 Needs you — <plan>: <question>` (with the `neurastream ui` phone-page link when `ui.enabled: true`), and when the guard refuses a Main tool call because it touches a protected guard file, it posts `🔓 Main needs an unlock to continue (<file>)` — the unlock ping at most once per 30 minutes, each waiting question once until its line changes or disappears, remembered in `<queue_state>/notify-waiting.json`. Every decision logs one `notify: needs-you posted|skipped (<why>)` guard-log line.
 
+## Trace claims (`neurastream traces claims`)
+
+Agents' final reports assert results — "530 passed", "exit 0", commit SHAs, heavy-run labels, changed files. This command reads a run's trace (its session file, read-only) and checks each claim in the run's last assistant message against what the run's own tool activity shows: a count or exit code must appear in some tool output, a commit SHA must be printed by the output of a git command the run itself ran, a heavy-run label must appear in a quoted heavy-run call, and a changed path must be carried by an edit/write call or a shell write in the path's own command segment. A claim nothing shows becomes a `claim-unbacked` finding.
+
+```
+neurastream traces claims --since 24h            # every run touched in the window
+neurastream traces claims NsTracesVerifyGlm      # one run, by id
+neurastream traces claims --since 24h --json     # machine-readable
+```
+
+Known boundary: a report that cites other runs' work (Main quoting a subagent, a relaunched agent quoting its predecessor) can produce `claim-unbacked` findings that are true in this run's trace but provable only in the cited run's own trace.
+
 ## Self-metrics
 
 `neurastream metrics report [--days N]` compares this window (the last `metrics.report_days`, default 7) with the one before it, writes `<paths.notes>/metrics.md`, and prints the same report. Worst change is marked `◀ worst`. The five numbers:
