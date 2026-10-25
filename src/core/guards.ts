@@ -1065,8 +1065,7 @@ const NO_SECTION = `no "## Code read by Main" section lists a file (list each fi
 
 /** Read evidence behind a plan edit: section present, each listed path read within the window, no unlisted cited path. */
 function planReadProblems(text: string, planPath: string, cfg: Config): string[] {
-	const section = READ_SECTION.exec(text)?.[1] ?? "";
-	const listed = [...section.matchAll(LISTED_PATH)].map(m => (m[1] ?? "").replace(/:[\d,+\- ]+$/, ""));
+	const listed = [...(READ_SECTION.exec(text)?.[1] ?? "").matchAll(LISTED_PATH)].map(m => (m[1] ?? "").replace(/:[\d,+\- ]+$/, ""));
 	if (!listed.length) return [NO_SECTION];
 	const reads = readMainReads();
 	const maxMs = cfg.guards.plan_read_max_hours * 3_600_000;
@@ -1076,11 +1075,11 @@ function planReadProblems(text: string, planPath: string, cfg: Config): string[]
 		const abs = planFile(p, planPath, text);
 		named.add(abs);
 		if (!isFile(abs)) problems.push(`${p} does not exist`);
-		else if (!(Date.parse(reads[abs] ?? "") >= Date.now() - maxMs)) problems.push(`${p} was not read by Main within ${cfg.guards.plan_read_max_hours} h`);
+		else if (!readWithin(abs, planPath, text, reads, maxMs)) problems.push(`${p} was not read by Main within ${cfg.guards.plan_read_max_hours} h`);
 	}
 	for (const [, cited = ""] of q.outsideProgress(text).matchAll(CITED_PATH)) {
 		const abs = planFile(cited, planPath, text);
-		if (abs.includes("/docs/plans/") || named.has(abs) || !isFile(abs)) continue;
+		if (abs.includes("/docs/plans/") || namedOrTwin(named, abs, planPath, text) || !isFile(abs)) continue;
 		problems.push(`${cited} is cited but not listed under "## Code read by Main"`);
 	}
 	return problems;
@@ -1090,11 +1089,46 @@ function planReadProblems(text: string, planPath: string, cfg: Config): string[]
 function planFile(p: string, planPath: string, text: string): string {
 	const home = q.expandHome(p);
 	if (path.isAbsolute(home)) return home;
+	const roots = planRoots(planPath, text);
+	const root = roots.find(r => isFile(path.join(r, home))) ?? roots[roots.length - 1]!;
+	return path.join(root, home);
+}
+
+/** The roots a plan-relative path resolves against: the plan's Worktree (when set), then its repo (dirname³ of the plan file). */
+function planRoots(planPath: string, text: string): string[] {
 	const wt = /^Worktree:\s*(\S+)/m.exec(text)?.[1];
 	const repo = path.dirname(path.dirname(path.dirname(planPath)));
-	const roots = wt && wt !== "-" ? [wt, repo] : [repo];
-	const root = roots.find(r => isFile(path.join(r, home))) ?? repo;
-	return path.join(root, home);
+	return wt && wt !== "-" ? [wt, repo] : [repo];
+}
+
+/** The same repo-relative file under the plan's other root (Worktree ↔ main checkout), or null when `abs` sits under neither. */
+function twinFile(abs: string, planPath: string, text: string): string | null {
+	const roots = planRoots(planPath, text);
+	for (const root of roots) {
+		const prefixed = root.endsWith("/") ? root : `${root}/`;
+		if (!abs.startsWith(prefixed)) continue;
+		for (const other of roots) {
+			if (other === root) continue;
+			return `${other.endsWith("/") ? other : `${other}/`}${abs.slice(prefixed.length)}`;
+		}
+	}
+	return null;
+}
+
+/** Main read this file within the window — at the resolved path or at its twin under the plan's other root (I-20261025-208 evidence: the same file read in the main checkout must cover its Worktree copy). */
+function readWithin(abs: string, planPath: string, text: string, reads: Record<string, string>, maxMs: number): boolean {
+	const cutoff = Date.now() - maxMs;
+	const fresh = (f: string) => Date.parse(reads[f] ?? "") >= cutoff;
+	if (fresh(abs)) return true;
+	const twin = twinFile(abs, planPath, text);
+	return twin !== null && fresh(twin);
+}
+
+/** The resolved path, or its twin under the plan's other root, is already in the set (cited-vs-listed compares files, not spellings). */
+function namedOrTwin(named: Set<string>, abs: string, planPath: string, text: string): boolean {
+	if (named.has(abs)) return true;
+	const twin = twinFile(abs, planPath, text);
+	return twin !== null && named.has(twin);
 }
 
 function isFile(file: string): boolean {

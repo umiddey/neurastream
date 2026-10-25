@@ -142,3 +142,77 @@ test("a new plan (no before text) with no Main reads is refused in full", () => 
 	expect(d.reason).toContain("src/a.ts");
 	expect(d.restore).toEqual({ path: PLAN_FILE, text: null });
 });
+
+// P1: the same file read in either checkout counts — the plan's Worktree and the main checkout
+// hold one file under two roots, so a read at either root covers the listed or cited path.
+const WT_TMP = mkdtempSync(join(tmpdir(), "plan-read-twin-"));
+const TWIN_REPO = join(WT_TMP, "repo");
+const TWIN_WT = join(WT_TMP, "wt");
+const TWIN_PLAN = join(TWIN_REPO, "docs/plans/20261025_1200_twin.md");
+const TWIN_SRC_IN_REPO = join(TWIN_REPO, "src/a.ts");
+const TWIN_SRC_IN_WT = join(TWIN_WT, "src/a.ts");
+mkdirSync(join(TWIN_REPO, "src"), { recursive: true });
+mkdirSync(join(TWIN_REPO, "docs/plans"), { recursive: true });
+mkdirSync(join(TWIN_WT, "src"), { recursive: true });
+writeFileSync(TWIN_SRC_IN_REPO, "export const v = 1;\n");
+writeFileSync(TWIN_SRC_IN_WT, "export const v = 1;\n");
+
+function twinPlan(worktree: string, listed: string, citation = ""): string {
+	return `# Twin plan
+
+Worktree: ${worktree}
+Branch: feat/twin
+
+## Goal
+- Twin-root toy.${citation}
+
+## Forbidden
+- Nothing else.
+
+## Blockers
+- ok.sh
+
+## Phases
+- [ ] P1 the thing; verify: \`true\`
+
+## Done check
+\`true\`
+
+## Code read by Main
+- \`${listed}\`
+
+## Progress
+Status: open
+`;
+}
+
+test("a file Main read only in the main checkout covers its Worktree copy (listed relative path resolves to the Worktree)", () => {
+	readLogWith({ [TWIN_SRC_IN_REPO]: new Date().toISOString() });
+	const before = twinPlan(TWIN_WT, "src/a.ts").replace("- Twin-root toy.", "- before.");
+	const after = twinPlan(TWIN_WT, "src/a.ts").replace("- Twin-root toy.", "- after.");
+	expect(checkPlanEdit({ path: TWIN_PLAN, before, after, agent: "main" }, GUARD_CFG).allow).toBe(true);
+});
+
+test("a file Main read only in the Worktree covers the main-checkout path listed by its absolute spelling", () => {
+	readLogWith({ [TWIN_SRC_IN_WT]: new Date().toISOString() });
+	const before = twinPlan(TWIN_WT, TWIN_SRC_IN_REPO).replace("- Twin-root toy.", "- before.");
+	const after = twinPlan(TWIN_WT, TWIN_SRC_IN_REPO).replace("- Twin-root toy.", "- after.");
+	expect(checkPlanEdit({ path: TWIN_PLAN, before, after, agent: "main" }, GUARD_CFG).allow).toBe(true);
+});
+
+test("a citation of the Worktree copy is covered when the main-checkout twin is the listed (and read) one", () => {
+	readLogWith({ [TWIN_SRC_IN_REPO]: new Date().toISOString() });
+	const before = twinPlan(TWIN_WT, TWIN_SRC_IN_REPO, " See src/a.ts:3.").replace("- Twin-root toy.", "- before.");
+	const after = twinPlan(TWIN_WT, TWIN_SRC_IN_REPO, " See src/a.ts:3.").replace("- Twin-root toy.", "- after.");
+	expect(checkPlanEdit({ path: TWIN_PLAN, before, after, agent: "main" }, GUARD_CFG).allow).toBe(true);
+});
+
+test("a file Main read in neither checkout is still refused with the was-not-read message", () => {
+	readLogWith({});
+	// A clean before: the read list (and its problem) is new in this edit, so the refusal is Main's doing.
+	const before = twinPlan(TWIN_WT, "src/a.ts").replace("\n## Code read by Main\n- `src/a.ts`\n", "\n");
+	const after = twinPlan(TWIN_WT, "src/a.ts");
+	const d = checkPlanEdit({ path: TWIN_PLAN, before, after, agent: "main" }, GUARD_CFG);
+	expect(d.allow).toBe(false);
+	expect(d.reason).toContain("src/a.ts was not read by Main within");
+});
