@@ -38,5 +38,7 @@ Read /home/ukd/projects/opus-implementer-method.md first.
 
 ## Progress
 Status: open
+WAITING on owner: install 0.2.22 (`bun add -g` is guard-locked): run `bun add -g neurastream@0.2.22 && neurastream install`, or type `unlock 30` in chat; then Main runs P4 (pages on, publish the diagram)
 - 2026-10-25 17:05 Main: plan written while the diagram runs on the throwaway server; P4 replaces it with the real feature. Findings: none
 - 2026-10-25 NsPagesP1P3: completed P1–P3 in `/home/ukd/Work/neurastream-pages`; commits `db68c08`, `01751ff`, `4b5aa5d`. Full suite: 816 passed, 3 skipped; typecheck passed. Findings: none
+- 2026-10-25 ~18:35 Main: rebased onto v0.2.21 (73986d1, 503d050, ef889e3), heavy-run 824 pass, 3 skip, 0 fail, typecheck ok; accepts recorded; merged e691158; released v0.2.22. Findings: none
