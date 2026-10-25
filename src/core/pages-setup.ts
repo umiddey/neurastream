@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join, basename, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { configFile, loadConfig } from "./config.ts";
+import { recordPublish } from "./pages-expiry.ts";
 import { realTailscale, type Tailscale } from "./tailscale.ts";
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const PAGES_UNIT_TEMPLATE = join(HERE, "../../templates/systemd/neurastream-pages.service");
@@ -45,9 +46,9 @@ export function pagesOff(opts: Setup = {}): number {
  const cfg=loadConfig({home}); writeFileSync(file,editBlock(old,{enabled:false,port:cfg.pages.port,dir:cfg.pages.dir}));
  const r=runner(["--user","stop","neurastream-pages"]); if(r.status!==0){console.error(r.stderr);return 1;} return 0;
 }
-export function publishPage(file: string, name: string | undefined, force: boolean, dir: string): string {
+export function publishPage(file: string, name: string | undefined, force: boolean, dir: string, keep = false, keepDays = 15, now = new Date()): string {
  const source=basename(file), base=(name ?? source.slice(0,source.length-extname(source).length)).toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"");
  const targetName=base+extname(source).toLowerCase(), target=join(dir,targetName); mkdirSync(dir,{recursive:true});
- if(existsSync(target)){const a=readFileSync(file),b=readFileSync(target); if(a.equals(b)) return targetName; if(!force) throw new Error(`pages: ${targetName} exists with different content (use --force)`);}
- copyFileSync(file,target); return targetName;
+ if(existsSync(target)){const a=readFileSync(file),b=readFileSync(target); if(a.equals(b)){recordPublish(dir,targetName,keep,keepDays,now);return targetName;} if(!force) throw new Error(`pages: ${targetName} exists with different content (use --force)`);}
+ copyFileSync(file,target); recordPublish(dir,targetName,keep,keepDays,now); return targetName;
 }
