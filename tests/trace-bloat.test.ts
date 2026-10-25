@@ -321,7 +321,8 @@ traces:
 	);
 	writeFileSync(join(P9SESSIONS, "2026-10-25T10-00-00-000Z_bloat.jsonl"), readFileSync(join(FIX, "bloat-run.jsonl"), "utf8"));
 	writeFileSync(join(P9SESSIONS, "2026-10-25T11-00-00-000Z_aggregate.jsonl"), readFileSync(join(FIX, "bloat-aggregate-api.jsonl"), "utf8"));
-	writeFileSync(join(P9SESSIONS, "2026-10-25T09-00-00-000Z_bloat.jsonl"), readFileSync(join(FIX, "bloat-run.jsonl"), "utf8"));
+	// same calls, but the session starts after the dump, so its window never holds it whatever "now" is
+	writeFileSync(join(P9SESSIONS, "2026-10-25T09-00-00-000Z_bloat.jsonl"), readFileSync(join(FIX, "bloat-run.jsonl"), "utf8").replace('"timestamp":"2026-10-24T10:00:00.000Z"', '"timestamp":"2026-10-24T10:00:30.000Z"'));
 	// one dump inside the fresh run's window (after its first event, before its mtime), one
 	// an hour before any run of the fixture, named like the real ones: <epoch-ms>-<id>.json
 	const IN_MS = parseTs("2026-10-24T10:00:05.000Z")! * 1000 + 5000;
