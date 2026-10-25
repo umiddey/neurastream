@@ -7,7 +7,7 @@
 // tests never call the binary; the peer address is an injectable seam too, so tests bind
 // 127.0.0.1 while the real server binds only the tailnet address from `tailscale ip -4`.
 
-import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync, statfsSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, statfsSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
 import { basename, resolve } from "node:path";
@@ -23,6 +23,11 @@ import { activePlans, chatUnlock, expandHome, stateDirPath, unlockPath, type Pla
 import type { Tailscale } from "./tailscale.ts";
 
 const ANSWER_MAX = 2000;
+const MESSAGE_MAX = 4000;
+const MESSAGE_IMAGES_MAX = 4;
+const MESSAGE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+/** How long the page keeps an owner message: 12 h, then the sweep removes it (owner, 2026-10-25 19:10). */
+export const OWNER_MESSAGE_KEEP_SEC = 43200;
 const REFRESH_SEC = 20;
 // Tailscale hands out addresses from 100.64.0.0/10 (CGNAT) and its own ULA /48 for IPv6.
 const TAILNET6 = /^fd7a:115c:a1e0:/i;
@@ -304,7 +309,120 @@ export function nowStats(cfg: Config, source: RunSource, now: number): NowStats 
 	return { spend24, mainSpend, agentSpend, runs24, running, died, spendByHour, runsByHour, byModel, openPlans: queueRows(cfg).length };
 }
 
+// ---- owner messages (plan P13): a one-way note plus images, kept for 12 h ----
+
+/** Where the page stores owner messages: under the queue state dir, one dir per message. */
+function ownerMessagesDir(): string {
+	return `${stateDirPath()}/owner-messages`;
+}
+
+export interface MessageRow {
+	id: string;
+	ts: number;
+	text: string;
+	images: string[];
+}
+
+/** The image type from the first bytes — PNG, JPEG, GIF or WEBP — never from the client's name or content type. */
+function imageType(bytes: Uint8Array): "png" | "jpeg" | "gif" | "webp" | null {
+	if (
+		bytes.length >= 8 &&
+		bytes[0] === 0x89 &&
+		bytes[1] === 0x50 &&
+		bytes[2] === 0x4e &&
+		bytes[3] === 0x47 &&
+		bytes[4] === 0x0d &&
+		bytes[5] === 0x0a &&
+		bytes[6] === 0x1a &&
+		bytes[7] === 0x0a
+	)
+		return "png";
+	if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "jpeg";
+	if (bytes.length >= 6 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38) return "gif";
+	if (
+		bytes.length >= 12 &&
+		bytes[0] === 0x52 &&
+		bytes[1] === 0x49 &&
+		bytes[2] === 0x46 &&
+		bytes[3] === 0x46 &&
+		bytes[8] === 0x57 &&
+		bytes[9] === 0x45 &&
+		bytes[10] === 0x42 &&
+		bytes[11] === 0x50
+	)
+		return "webp";
+	return null;
+}
+
+const IMAGE_EXT: Record<string, string> = { png: "png", jpeg: "jpg", gif: "gif", webp: "webp" };
+const IMAGE_MIME: Record<string, string> = { png: "image/png", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp" };
+
+/** Removes every message dir older than the keep window; runs on every GET / and every POST /message. */
+export function sweepOwnerMessages(now: number): void {
+	let names: string[];
+	try {
+		names = readdirSync(ownerMessagesDir());
+	} catch {
+		return;
+	}
+	for (const name of names) {
+		const ts = Number(name.slice(0, name.indexOf("-")));
+		if (Number.isFinite(ts) && now - ts <= OWNER_MESSAGE_KEEP_SEC) continue;
+		rmSync(`${ownerMessagesDir()}/${name}`, { recursive: true, force: true });
+	}
+}
+
+/** The messages newer than the keep window for the "Sent today" list, newest first. A torn dir is skipped, not fatal. */
+export function recentOwnerMessages(now: number): MessageRow[] {
+	let names: string[] = [];
+	try {
+		names = readdirSync(ownerMessagesDir());
+	} catch {
+		return [];
+	}
+	const rows: MessageRow[] = [];
+	for (const id of names) {
+		const dirTs = Number(id.slice(0, id.indexOf("-")));
+		if (!Number.isFinite(dirTs) || now - dirTs >= OWNER_MESSAGE_KEEP_SEC) continue;
+		try {
+			const meta = JSON.parse(readFileSync(`${ownerMessagesDir()}/${id}/message.json`, "utf8")) as Record<string, unknown>;
+			rows.push({
+				id,
+				ts: Number(meta.ts) || dirTs,
+				text: typeof meta.text === "string" ? meta.text : "",
+				images: Array.isArray(meta.images) ? meta.images.filter((n): n is string => typeof n === "string") : [],
+			});
+		} catch {}
+	}
+	return rows.sort((a, b) => b.ts - a.ts);
+}
+
 // ---- rendering (consumes the rows above, never the readers directly) ----
+
+/** The "Tell Main" card: one textarea, image picks, a Send button — no chat thread. Under it, "Sent today": this view's messages newer than the keep window, newest first, thumbnails served from /message-image. */
+function messageCard(messages: MessageRow[] | null): string {
+	const form = `<form class="msgform" method="post" action="/message" enctype="multipart/form-data">
+<textarea name="text" maxlength="${MESSAGE_MAX}" rows="3" placeholder="What Main should know — a fix, a link, a photo"></textarea>
+<input type="file" name="images" accept="image/*" multiple>
+<button class="btn pri" type="submit">Send</button>
+</form>`;
+	let sent = "";
+	if (messages === null) sent = na("Sent today");
+	else if (messages.length) {
+		const rows = messages
+			.map(m => {
+				const imgs = m.images.map(n => `<a href="/message-image/${esc(m.id)}/${esc(n)}"><img class="mthumb" src="/message-image/${esc(m.id)}/${esc(n)}" alt=""></a>`).join("");
+				return `<div class="msg"><span class="mtime">${esc(strftime(m.ts, "%H:%M"))}</span><span class="mtext">${esc(m.text)}</span>${imgs ? `<span class="mimgs">${imgs}</span>` : ""}</div>`;
+			})
+			.join("");
+		sent = `<p class="mlabel">Sent today</p>${rows}`;
+	}
+	return `<h2>Tell Main</h2>
+<div class="card">
+${form}
+${sent}
+</div>`;
+}
 
 function needCard(row: QuestionRow, i: number, tab: string): string {
 	const goals = row.goal.map(g => `<li>${esc(g)}</li>`).join("");
@@ -483,6 +601,7 @@ function receiptHtml(sent: string | null, params: URLSearchParams): string {
 	let text: string;
 	switch (sent) {
 		case "answer":
+		case "message":
 			text = `Sent to Main · ${strftime(nowSec(), "%H:%M")}`;
 			break;
 		case "unlock": {
@@ -523,6 +642,8 @@ export interface PageData {
 	machine: MachineRow | null;
 	/** The 24 h tile numbers; null when the run source is unreadable. */
 	stats: NowStats | null;
+	/** The owner's messages newer than the keep window, newest first; null when unreadable. */
+	messages: MessageRow[] | null;
 	/** Minutes left in the guard unlock; null = locked. */
 	lockMinutesLeft: number | null;
 }
@@ -556,6 +677,7 @@ export function buildPageData(cfg: Config, source: RunSource): PageData {
 		scores: safe(() => scoresData(cfg)),
 		machine: safe(() => machineRow(cfg)),
 		stats: safe(() => nowStats(cfg, source, nowSec())),
+		messages: safe(() => recentOwnerMessages(nowSec())),
 		lockMinutesLeft: lockMinutesLeft(cfg),
 	};
 }
@@ -649,7 +771,8 @@ export function renderPage(cfg: Config, data: PageData, params: URLSearchParams,
 	const machine = data.machine === null ? na("Machine") : machineHtml(cfg, data.machine);
 	const body =
 		tab === "now"
-			? `<h1>Today</h1>
+			? `${messageCard(data.messages)}
+<h1>Today</h1>
 <p class="sub">What your agents did in the last 24 hours.</p>
 <div class="card">
 ${tilesHtml(data)}
@@ -748,6 +871,16 @@ svg.spark{width:130px;height:40px;flex:none}
 :focus-visible{outline:2px solid var(--acc);outline-offset:2px}
 .reply{margin-top:8px}
 .reply textarea{width:100%;padding:10px;border-radius:10px;border:1px solid var(--bd);background:var(--bg);color:var(--fg);font:inherit}
+.msgform{padding:14px 16px;display:flex;flex-direction:column;gap:10px}
+.msgform textarea{width:100%;padding:10px;border-radius:10px;border:1px solid var(--bd);background:var(--bg);color:var(--fg);font:inherit}
+.msgform input[type=file]{font-size:13px;color:var(--mut);max-width:100%}
+.mlabel{margin:0;padding:10px 16px 2px;color:var(--mut);font-size:13px}
+.msg{display:flex;gap:10px;padding:10px 16px;border-top:1px solid var(--bd);align-items:baseline;flex-wrap:wrap}
+.msg:first-of-type{border-top:0}
+.mtime{color:var(--mut);font-size:12px;font-variant-numeric:tabular-nums;flex:none}
+.mtext{flex:1 1 12em;min-width:0;font-size:14px}
+.mimgs{display:flex;gap:6px}
+img.mthumb{width:56px;height:56px;object-fit:cover;border-radius:10px;border:1px solid var(--bd);display:block}
 details.bg{margin:8px 0;border-top:1px solid var(--bd);padding-top:6px}
 details.bg summary{color:var(--mut)}
 details.bg ul{margin:4px 0 8px;padding-left:20px;color:var(--mut);font-size:13px}
@@ -834,7 +967,7 @@ function pageRes(cfg: Config, source: RunSource, params: URLSearchParams): Respo
 		status: 200,
 		headers: {
 			"content-type": "text/html; charset=utf-8",
-			"content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src data:; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`,
+			"content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src 'self' data:; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`,
 		},
 	});
 }
@@ -867,6 +1000,66 @@ function handleAnswer(cfg: Config, source: RunSource, fields: Record<string, str
 	}
 	appendAnswer(planFile, plan.waitingLine, answer, login);
 	return redirect(sentTo(fields.tab ?? "", "sent=answer"));
+}
+
+// ---- POST /message (plan P13): the owner's one-way note plus images, inboxed by id ----
+
+async function handleMessage(req: Request, login: string): Promise<Response> {
+	sweepOwnerMessages(nowSec());
+	const form = await req.formData();
+	let text = "";
+	const files: File[] = [];
+	for (const [key, value] of form.entries()) {
+		if (key === "text" && typeof value === "string") text = value.trim();
+		else if (key === "images" && typeof value !== "string") files.push(value);
+	}
+	if (!text && !files.length) return textRes("write a text or attach an image", 400);
+	if (text.length > MESSAGE_MAX) return textRes(`text is longer than ${MESSAGE_MAX} chars`, 400);
+	if (files.length > MESSAGE_IMAGES_MAX) return textRes(`at most ${MESSAGE_IMAGES_MAX} images per message`, 400);
+	const images: { bytes: Uint8Array; kind: string }[] = [];
+	for (const file of files) {
+		if (file.size > MESSAGE_IMAGE_MAX_BYTES) return textRes("an image is larger than 10 MB", 400);
+		const data = new Uint8Array(await file.arrayBuffer());
+		const kind = imageType(data);
+		if (!kind) return textRes("attachments must be PNG, JPEG, GIF or WEBP images — the type is read from the file itself", 400);
+		images.push({ bytes: data, kind });
+	}
+	const ts = nowSec();
+	// The dir name starts with a whole-second ts: the sweep and the image route both parse it.
+	const id = `${Math.floor(ts)}-${randomUUID().slice(0, 6)}`;
+	const dir = `${ownerMessagesDir()}/${id}`;
+	mkdirSync(dir, { recursive: true });
+	const names: string[] = [];
+	for (let i = 0; i < images.length; i++) {
+		const name = `${i + 1}.${IMAGE_EXT[images[i]!.kind]}`;
+		writeFileSync(`${dir}/${name}`, images[i]!.bytes);
+		names.push(name);
+	}
+	writeFileSync(`${dir}/message.json`, `${JSON.stringify({ ts, text, login, images: names })}\n`);
+	mkdirSync(stateDirPath(), { recursive: true });
+	// The text stays out of owner-inbox.jsonl; Main reads message.json through the id (P14).
+	appendFileSync(inboxPath(), `${JSON.stringify({ ts, kind: "message", id, login })}\n`);
+	return redirect("/?sent=message");
+}
+
+/** Serves one stored message image. Both path pieces are shape-checked and the name must be in message.json — raw input never reaches a path join. */
+function handleMessageImage(id: string, file: string): Response {
+	if (!/^[0-9]+-[0-9a-f]{6}$/.test(id) || !/^[0-9]+\.(png|jpg|gif|webp)$/.test(file)) return textRes("not found", 404);
+	let meta: Record<string, unknown>;
+	try {
+		meta = JSON.parse(readFileSync(`${ownerMessagesDir()}/${id}/message.json`, "utf8")) as Record<string, unknown>;
+	} catch {
+		return textRes("not found", 404);
+	}
+	const names = Array.isArray(meta.images) ? meta.images.filter((n): n is string => typeof n === "string") : [];
+	if (!names.includes(file)) return textRes("not found", 404);
+	try {
+		return new Response(readFileSync(`${ownerMessagesDir()}/${id}/${file}`), {
+			headers: { "content-type": IMAGE_MIME[file.slice(file.lastIndexOf(".") + 1)] ?? "application/octet-stream" },
+		});
+	} catch {
+		return textRes("not found", 404);
+	}
 }
 
 function handleUnlock(cfg: Config, fields: Record<string, string>, login: string): Response {
@@ -1059,8 +1252,16 @@ export function startOwnerUi(opts: OwnerUiOptions): OwnerUiServer {
 							res = textRes("forbidden: origin is not this page", 403);
 							code = 403;
 						} else if (req.method === "GET" && url.pathname === "/") {
+							sweepOwnerMessages(nowSec());
 							res = pageRes(cfg, source, url.searchParams);
 							code = 200;
+						} else if (req.method === "POST" && url.pathname === "/message") {
+							res = await handleMessage(req, login);
+							code = res.status;
+						} else if (req.method === "GET" && url.pathname.startsWith("/message-image/")) {
+							const mim = /^\/message-image\/([^/]+)\/([^/]+)$/.exec(url.pathname);
+							res = mim ? handleMessageImage(mim[1]!, mim[2]!) : textRes("not found", 404);
+							code = res.status;
 						} else if (req.method === "POST" && url.pathname === "/answer") {
 							res = handleAnswer(cfg, source, await fieldsOf(req), login);
 							code = res.status;

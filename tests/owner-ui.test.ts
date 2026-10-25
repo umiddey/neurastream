@@ -6,7 +6,7 @@
 // tests.
 
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -153,6 +153,7 @@ beforeEach(() => {
 	rmSync(unlockPath(), { force: true });
 	rmSync(join(stateDirPath(), "autonomy-tier"), { force: true });
 	rmSync(join(stateDirPath(), "autonomy-go"), { force: true });
+	rmSync(join(stateDirPath(), "owner-messages"), { recursive: true, force: true });
 	rmSync(CFG.paths.guard_log, { force: true });
 	rmSync(CFG.paths.plan_guard_log, { force: true });
 });
@@ -177,7 +178,7 @@ function raw(
 	svc: OwnerUiServer,
 	method: string,
 	path: string,
-	opts: { host?: string | null; origin?: string | null; body?: Record<string, string>; accept?: string } = {},
+	opts: { host?: string | null; origin?: string | null; body?: Record<string, string>; accept?: string; rawBody?: Uint8Array; contentType?: string } = {},
 ): Promise<Response> {
 	const host = opts.host === null ? null : (opts.host ?? `${OWN_IP}:${svc.port}`);
 	const headers: Record<string, string> = {};
@@ -185,20 +186,22 @@ function raw(
 	if (opts.origin) headers.origin = opts.origin;
 	if (opts.accept) headers.accept = opts.accept;
 	const body = opts.body === undefined ? undefined : new URLSearchParams(opts.body).toString();
-	if (body !== undefined) headers["content-type"] = "application/x-www-form-urlencoded";
+	if (opts.rawBody !== undefined) headers["content-type"] = opts.contentType ?? "application/octet-stream";
+	else if (body !== undefined) headers["content-type"] = "application/x-www-form-urlencoded";
 	const { promise, resolve, reject } = Promise.withResolvers<Response>();
 	const req = request({ host: "127.0.0.1", port: svc.port, method, path, headers }, res => {
 		const chunks: Buffer[] = [];
 		res.on("data", (c: Buffer) => chunks.push(c));
 		res.on("end", () => {
-			// All response headers: the P2 tests read Location and Content-Security-Policy.
+			// All response headers: the P2 tests read Location and Content-Security-Policy. The body
+			// stays bytes so the P13 image route can be compared byte for byte.
 			const resHeaders: Record<string, string> = {};
 			for (let i = 0; i < res.rawHeaders.length; i += 2) resHeaders[(res.rawHeaders[i] ?? "").toLowerCase()] = String(res.rawHeaders[i + 1] ?? "");
-			resolve(new Response(Buffer.concat(chunks).toString("utf8"), { status: res.statusCode, headers: resHeaders }));
+			resolve(new Response(Buffer.concat(chunks), { status: res.statusCode, headers: resHeaders }));
 		});
 	});
 	req.on("error", reject);
-	req.end(body);
+	req.end(opts.rawBody !== undefined ? opts.rawBody : body);
 	return promise;
 }
 
@@ -229,6 +232,44 @@ function inboxRecords(): Record<string, unknown>[] {
 	} catch {
 		return [];
 	}
+}
+
+// --- P13 helpers: multipart posts and the message store ---
+
+const PNG_BYTES = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d]);
+const PDF_BYTES = Uint8Array.from([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34]); // %PDF-1.4
+
+function messagesDir(): string {
+	return join(stateDirPath(), "owner-messages");
+}
+
+function storedMessages(): Record<string, unknown>[] {
+	try {
+		return readdirSync(messagesDir()).map(id => JSON.parse(readFileSync(join(messagesDir(), id, "message.json"), "utf8")) as Record<string, unknown>);
+	} catch {
+		return [];
+	}
+}
+
+/** A real multipart body for POST /message (the page's form enctype); files go in as raw bytes. */
+function postMessage(svc: OwnerUiServer, fields: Record<string, string>, files: { field: string; filename: string; bytes: Uint8Array }[]): Promise<Response> {
+	const boundary = `nsuitest${Math.random().toString(16).slice(2)}`;
+	const enc = new TextEncoder();
+	const parts: Uint8Array[] = [];
+	for (const [k, v] of Object.entries(fields)) parts.push(enc.encode(`--${boundary}\r\ncontent-disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`));
+	for (const f of files) {
+		parts.push(enc.encode(`--${boundary}\r\ncontent-disposition: form-data; name="${f.field}"; filename="${f.filename}"\r\ncontent-type: application/octet-stream\r\n\r\n`));
+		parts.push(f.bytes);
+		parts.push(enc.encode("\r\n"));
+	}
+	parts.push(enc.encode(`--${boundary}--\r\n`));
+	const body = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+	let at = 0;
+	for (const p of parts) {
+		body.set(p, at);
+		at += p.length;
+	}
+	return raw(svc, "POST", "/message", { origin: `http://${OWN_IP}:${svc.port}`, rawBody: body, contentType: `multipart/form-data; boundary=${boundary}` });
 }
 
 function guardLogLines(): string[] {
@@ -1359,11 +1400,113 @@ test("the page CSP allows fetch to itself only, and the script fetch-swaps main 
 	const csp = res.headers.get("content-security-policy") ?? "";
 	expect(csp).toContain("connect-src 'self'");
 	expect(csp).not.toContain("connect-src *");
+	expect(csp).toContain("img-src 'self' data:");
 	const body = await res.text();
 	expect(body).toContain("createHTMLDocument");
 	expect(body).not.toContain("location.reload");
 	// the reorder goes over fetch asking for JSON
 	expect(body).toContain('"accept":"application/json"');
+});
+
+// --- P13: the Tell Main message box ---
+
+test("the Now tab has the Tell Main card above Today; the receipt says Sent to Main (P13)", async () => {
+	const svc = ui();
+	const body = await (await get(svc)).text();
+	const tellAt = body.indexOf("Tell Main");
+	expect(tellAt).toBeGreaterThan(-1);
+	expect(body.indexOf("<h1>Today</h1>")).toBeGreaterThan(tellAt);
+	expect(body).toContain('action="/message" enctype="multipart/form-data"');
+	expect(body).toContain('name="images" accept="image/*" multiple');
+	expect(body).toContain('maxlength="4000"');
+	const res = await get(svc, "/?sent=message");
+	expect(await res.text()).toContain("Sent to Main ·");
+});
+
+test("POST /message stores a text-only note and appends one inbox line carrying only the id (P13)", async () => {
+	const svc = ui();
+	const res = await postMessage(svc, { text: "  disk nearly full on the pm box  " }, []);
+	expect(res.status).toBe(303);
+	expect(res.headers.get("location")).toBe("/?sent=message");
+	const recs = inboxRecords();
+	expect(recs).toHaveLength(1);
+	expect(recs[0]).toMatchObject({ kind: "message", login: OWNER });
+	expect(String(recs[0]!.id)).toMatch(/^[0-9]+-[0-9a-f]{6}$/);
+	expect(String(recs[0]!)).not.toContain("disk nearly full");
+	const dirs = readdirSync(messagesDir());
+	expect(dirs).toEqual([String(recs[0]!.id)]);
+	const meta = JSON.parse(readFileSync(join(messagesDir(), dirs[0]!, "message.json"), "utf8")) as Record<string, unknown>;
+	expect(meta).toMatchObject({ text: "disk nearly full on the pm box", login: OWNER, images: [] });
+	expect(typeof meta.ts).toBe("number");
+});
+
+test("POST /message stores a PNG named .bin by its detected type, bytes intact (P13)", async () => {
+	const svc = ui();
+	const res = await postMessage(svc, { text: "screenshot" }, [{ field: "images", filename: "shot.bin", bytes: PNG_BYTES }]);
+	expect(res.status).toBe(303);
+	const id = String(inboxRecords()[0]!.id);
+	expect(JSON.parse(readFileSync(join(messagesDir(), id, "message.json"), "utf8")).images).toEqual(["1.png"]);
+	expect([...readFileSync(join(messagesDir(), id, "1.png"))]).toEqual([...PNG_BYTES]);
+});
+
+test("a PDF named x.png is refused with a plain reason and stores nothing (P13)", async () => {
+	const svc = ui();
+	const res = await postMessage(svc, { text: "look" }, [{ field: "images", filename: "x.png", bytes: PDF_BYTES }]);
+	expect(res.status).toBe(400);
+	expect(await res.text()).toContain("PNG, JPEG, GIF or WEBP");
+	expect(storedMessages()).toEqual([]);
+	expect(inboxRecords()).toEqual([]);
+});
+
+test("five images, an empty message and an over-long text are refused (P13)", async () => {
+	const svc = ui();
+	const five = [1, 2, 3, 4, 5].map(i => ({ field: "images", filename: `${i}.png`, bytes: PNG_BYTES }));
+	expect((await postMessage(svc, { text: "five" }, five)).status).toBe(400);
+	expect((await postMessage(svc, {}, [])).status).toBe(400);
+	expect((await postMessage(svc, { text: "x".repeat(4001) }, [])).status).toBe(400);
+	expect(storedMessages()).toEqual([]);
+	expect(inboxRecords()).toEqual([]);
+});
+
+test("a stranger's message gets 403 like /answer and stores nothing (P13)", async () => {
+	const svc = ui({ peerOf: () => "100.95.10.7" });
+	const res = await postMessage(svc, { text: "hi" }, []);
+	expect(res.status).toBe(403);
+	expect(storedMessages()).toEqual([]);
+	expect(inboxRecords()).toEqual([]);
+});
+
+test("GET /message-image serves the stored bytes and refuses a foreign name or a path guess (P13)", async () => {
+	const svc = ui();
+	await postMessage(svc, { text: "photo" }, [{ field: "images", filename: "p.png", bytes: PNG_BYTES }]);
+	const id = String(inboxRecords()[0]!.id);
+	const img = await get(svc, `/message-image/${id}/1.png`);
+	expect(img.status).toBe(200);
+	expect(img.headers.get("content-type")).toBe("image/png");
+	expect([...new Uint8Array(await img.arrayBuffer())]).toEqual([...PNG_BYTES]);
+	// a name not in message.json
+	expect((await get(svc, `/message-image/${id}/2.png`)).status).toBe(404);
+	// traversal and junk ids never reach a path join
+	expect((await get(svc, `/message-image/${id}/..%2Fowner-inbox.jsonl`)).status).toBe(404);
+	expect((await get(svc, "/message-image/not-an-id/1.png")).status).toBe(404);
+	expect((await get(svc, "/message-image/extra/parts/1.png")).status).toBe(404);
+});
+
+test("a 13 h old message is swept by a GET; an 11 h old one stays and shows (P13)", async () => {
+	const svc = ui();
+	const now = nowSec();
+	const mk = (ageHours: number, text: string) => {
+		const ts = now - ageHours * 3600;
+		const dir = join(messagesDir(), `${ts}-abc123`);
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "message.json"), `${JSON.stringify({ ts, text, login: OWNER, images: [] })}\n`);
+	};
+	mk(13, "expired note");
+	mk(11, "still fresh note");
+	const body = await (await get(svc)).text();
+	expect(existsSync(join(messagesDir(), `${now - 13 * 3600}-abc123`))).toBe(false);
+	expect(body).toContain("still fresh note");
+	expect(body).not.toContain("expired note");
 });
 
 test("the queue section is one flat ranked list with a drag handle, arrow buttons and the rendered order in a before field", async () => {

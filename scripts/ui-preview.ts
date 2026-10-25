@@ -127,6 +127,7 @@ const data: PageData = {
 	},
 	machine: { freeGb: 6.2, diskMin: 20, load: 1.84, loadMax: 16, cores: 16 },
 	stats,
+	messages: [],
 	lockMinutesLeft: 12,
 };
 
