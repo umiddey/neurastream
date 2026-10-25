@@ -178,6 +178,18 @@ export interface Config {
 	/** Chat notify (src/core/notify.ts): Main's final reply goes to these webhooks at session_stop.
 	 *  The values are paths to secret files holding the webhook URLs — never the URLs themselves. */
 	notify: { discord_webhook_file: string; slack_webhook_file: string; prefix: string };
+	/** Content redaction (src/core/secret-redact.ts, plan 20261025_2204): every tool result, every
+	 *  notify post and `neurastream redact` go through it. Detection is by content, not file name. */
+	secrets: {
+		redact: boolean;
+		/** Files whose `KEY=value` lines are secret values; top-level dotenv files under
+		 *  paths.work_roots are read as well. */
+		known_value_files: string[];
+		/** The owner's own shapes: `{type, regex}`; a hit prints as `[REDACTED:<type>]`. */
+		extra_patterns: { type: string; regex: string }[];
+		/** A second net on the wire: wrap the harness in `secretgate wrap --` at launch. */
+		proxy: "none" | "secretgate";
+	};
 	priority: { sleep_sec: number };
 	alerts: { temp_c: number; mem_psi: number; io_psi: number; cooldown_sec: number };
 	snapshot: { tmp_dest: string; git_repo: string; git_backup: string; excludes: string[] };
@@ -511,6 +523,24 @@ function check(cfg: Config): void {
 	const edges = briefs.char_buckets;
 	if (!Array.isArray(edges) || edges.some((v, i) => !Number.isInteger(v) || v < 1 || (i > 0 && v <= edges[i - 1]!))) {
 		throw new ConfigError("traces.briefs.char_buckets must be ascending positive integers");
+	}
+	if (cfg.secrets.proxy !== "none" && cfg.secrets.proxy !== "secretgate") {
+		throw new ConfigError('secrets.proxy must be "none" or "secretgate"');
+	}
+	if (typeof cfg.secrets.redact !== "boolean") throw new ConfigError("secrets.redact must be true or false");
+	if (!Array.isArray(cfg.secrets.known_value_files) || cfg.secrets.known_value_files.some((p) => typeof p !== "string" || p === "")) {
+		throw new ConfigError("secrets.known_value_files must be a list of non-empty paths");
+	}
+	if (!Array.isArray(cfg.secrets.extra_patterns)) throw new ConfigError("secrets.extra_patterns must be a list");
+	for (const pattern of cfg.secrets.extra_patterns) {
+		if (!isObj(pattern) || typeof pattern.type !== "string" || pattern.type === "" || typeof pattern.regex !== "string" || pattern.regex === "") {
+			throw new ConfigError("secrets.extra_patterns entries must be {type, regex} with non-empty strings");
+		}
+		try {
+			new RegExp(pattern.regex);
+		} catch {
+			throw new ConfigError(`secrets.extra_patterns.${pattern.type}: not a valid regex: ${pattern.regex}`);
+		}
 	}
 	for (const [key, value] of Object.entries(cfg.paths)) {
 		if (key === "work_roots") {

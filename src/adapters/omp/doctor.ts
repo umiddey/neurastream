@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import { blockState, renderBlock } from "../../core/agents-md.ts";
 import { loadConfig } from "../../core/config.ts";
 import { notifyFindings } from "../../core/notify.ts";
+import { loadKnownSecrets, proxyOnPath } from "../../core/secret-redact.ts";
 import { readIndex } from "../../core/queue/lib.ts";
 import { realTailscale, type Tailscale } from "../../core/tailscale.ts";
 
@@ -217,6 +218,15 @@ export function doctorReport(home: string, env: NodeJS.ProcessEnv = process.env,
 	const notify = notifyFindings(cfg);
 	problems.push(...notify.problems);
 	warnings.push(...notify.warnings);
+	// Secrets (plan 20261025_2204): the redactor's state and the second net, count only — doctor
+	// never prints a value. A missing proxy binary is a warning, never a problem: the launch path
+	// falls back to a plain harness start.
+	const known = loadKnownSecrets(cfg).length;
+	const proxy = proxyOnPath();
+	ok.push(`secrets: redactor ${cfg.secrets.redact ? "on" : "off"}, ${known} known value(s), secretgate ${proxy ? "installed" : "missing"}, proxy ${cfg.secrets.proxy}`);
+	if (cfg.secrets.proxy === "secretgate" && !proxy) {
+		warnings.push("secrets.proxy is secretgate but secretgate is not on PATH; the harness starts without the proxy (README: Secrets)");
+	}
 	const viewed = npmViewVersion(name, env);
 	let registry: string | null = null;
 	if ("warning" in viewed) warnings.push(viewed.warning);

@@ -197,6 +197,12 @@ quota:
   reset_pattern: 'reset at (\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?)\s*(Z|UTC|GMT|[+-]\d{2}:?\d{2}|[A-Z]{2,5}\b)?'
   label: "quota"
 
+secrets:
+  redact: true
+  known_value_files: ["~/.npmrc"]
+  extra_patterns: []
+  proxy: "none"
+
 priority:
   sleep_sec: 120
 
@@ -264,6 +270,8 @@ traces:
 
 `ledger.providers` is the allow-list. It is data. Core checks membership and does not know the names.
 
+`secrets.*` feeds `src/core/secret-redact.ts`. With `secrets.redact` on, every tool result (Main and every subagent, before the model, the chat and the session log see it), every notify post and `neurastream redact` (stdin → stdout, hit summary on stderr) go through the redactor; each hit prints as `[REDACTED:<type>]` and only types and counts are ever logged. Detection is by content, never by file name: built-in shapes (npm, GitHub, GitLab, `sk-` keys, AWS, Google, Slack, Discord webhooks, Stripe, JWT, PEM private keys, URL credentials, `.npmrc` `_authToken`/`_password`, generic `password|secret|token|api_key|…` assignments of 8+ characters), then `secrets.extra_patterns` (`{type, regex}`), then the exact known values (8+ characters) from credential-named env vars, the `KEY=value` lines of `secrets.known_value_files`, every top-level `.env…` file under `paths.work_roots` and the notify webhook secret files; known values are re-read when a file's mtime or size changes. `secrets.proxy: secretgate` launches the harness as `secretgate wrap -- <cmd>` as a second net on outbound traffic; a missing `secretgate` binary prints one warning and launches normally. `neurastream doctor` shows the redactor state, the number of known values (count only) and the proxy state.
+
 `ledger.idle_not_live_min` is the idle time, in minutes, after which `agent-ledger --cap` stops counting a RUNNING or WAITING agent as using a provider slot. Such agents are listed on a `NOT LIVE` line; their session has been dead or stalled that long. Default 60.
 
 `guards.protected` starts empty. Init and adapter install append the paths they own (package bins, notes, blockers, and, for the omp adapter, the pin dir and extension dir). Core does not hardcode those paths.
@@ -316,6 +324,7 @@ The loader rejects:
 - `ui.port` outside 1..65535
 - `pages.keep_days` below 1, or not an integer
 - a `brief.repo_rules` entry whose `match`, `require`, `first` or `unless` does not compile as a case-insensitive regex, or whose `message` is empty
+- `secrets.proxy` that is not `none` or `secretgate`, a `secrets.known_value_files` entry that is not a non-empty path, or a `secrets.extra_patterns` entry without a non-empty `type` and a `regex` that compiles
 - YAML that does not parse
 
 Missing keys are filled from the defaults above. A present key replaces the default. Objects merge one level (`score.penalties` merges per kind; an omitted kind keeps the default). Arrays replace.

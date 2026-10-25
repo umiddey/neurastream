@@ -6,6 +6,7 @@
 import { dirname } from "node:path";
 import { readFileSync, statSync } from "node:fs";
 import { configFile, type Config } from "./config.ts";
+import { loadKnownSecrets, redactSecrets } from "./secret-redact.ts";
 
 export type NotifyProviderName = "discord" | "slack";
 
@@ -207,6 +208,10 @@ export function postReply(text: string, cfg: Config): Promise<NotifyPostResult[]
 		const providers = notifyProviders(cfg);
 		const body = cfg.notify.prefix ? `${cfg.notify.prefix} ${text}` : text;
 		if (body.trim() === "") return providers.map(p => ({ provider: p.name, posted: false, chunks: 0, error: "empty reply; nothing posted" }));
+		// The chat is where a secret does its damage (plan 20261025_2204): a reply can carry a value
+		// the owner pasted or one the redactor's tool_result pass never saw, so the post is scrubbed
+		// here too, after the prefix and before the split.
+		const scrubbed = cfg.secrets.redact ? redactSecrets(body, loadKnownSecrets(cfg), cfg.secrets.extra_patterns).text : body;
 		const out: NotifyPostResult[] = [];
 		for (const p of providers) {
 			const { url, why } = webhookUrl(p);
@@ -215,7 +220,7 @@ export function postReply(text: string, cfg: Config): Promise<NotifyPostResult[]
 				continue;
 			}
 			const limit = p.name === "discord" ? DISCORD_LIMIT : SLACK_LIMIT;
-			out.push(await postChunks(p, url, notifyChunks(body, limit)));
+			out.push(await postChunks(p, url, notifyChunks(scrubbed, limit)));
 		}
 		return out;
 	});

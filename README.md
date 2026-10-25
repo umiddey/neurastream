@@ -195,6 +195,38 @@ Guard rules around it:
 
 "Needs you" pings use the same channels so the owner learns on the phone that a decision is his: when a Main turn ends with an open plan whose `WAITING on owner:` line was not pinged before, neurastream posts `🔔 Needs you — <plan>: <question>` (with the `neurastream ui` phone-page link when `ui.enabled: true`), and when the guard refuses a Main tool call because it touches a protected guard file, it posts `🔓 Main needs an unlock to continue (<file>)` — the unlock ping at most once per 30 minutes, each waiting question once until its line changes or disappears, remembered in `<queue_state>/notify-waiting.json`. Every decision logs one `notify: needs-you posted|skipped (<why>)` guard-log line.
 
+## Secrets never reach the chat
+
+A value the machine holds is hidden before the model, the chat and the session log see it (`src/core/secret-redact.ts`, plan 20261025_2204, incident I-20261025-197). Detection is by **content**, not by file name — the old name list never knew about `~/.npmrc`.
+
+- Every tool result of Main and of every subagent goes through the redactor at the omp `tool_result` hook (redact first, then the plan/guard logic works on markers). A hit becomes `[REDACTED:<type>]` and the result gains one line `secret-redact: hid N value(s) (<types>)`. The key name stays: `password = [REDACTED:generic-secret]`.
+- Shapes: npm, GitHub, GitLab, OpenAI/Anthropic/OpenRouter (`sk-…`), the AWS key id and the value after `aws_secret_access_key`, Google, Slack, Discord webhooks, Stripe, JWTs, PEM private keys, URL credentials, `_authToken`/`_password`, and `(password|passwd|secret|token|api_key|access_key|client_secret) = …` with a value of 8 or more characters.
+- Exact values are hidden wherever they appear, whatever the file is called: env vars whose name looks like a credential, `~/.npmrc`, every file in `secrets.known_value_files`, every top-level dotenv file under `paths.work_roots`, and the notify webhook files. File contents are cached per process and re-read when a file's mtime or size changes.
+- `neurastream redact < file` prints the redacted text on stdout and the hit summary on stderr, so another harness hook can pipe a tool result through the same rules. Notify posts (`notify test`, Main's final reply) are scrubbed before they leave.
+- `neurastream doctor` reports `secrets: redactor on, N known value(s), secretgate installed|missing, proxy none|secretgate` — a count only, never a value.
+
+Config (`docs/config.md`, `templates/config.yml`):
+
+```yaml
+secrets:
+  redact: true
+  known_value_files: ["~/.npmrc"]
+  extra_patterns: []       # your own shapes: [{type: "my-token", regex: "myapp_[A-Za-z0-9]{32}"}]
+  proxy: "none"            # or "secretgate"
+```
+
+### secretgate as a second net
+
+The redactor keeps a secret out of the chat screen and the local session log; it cannot stop a value that reaches the harness another way. [secretgate](https://github.com/secretgate/secretgate) (Apache-2.0) is a local proxy that cleans what leaves the machine, so the two together cover both ends:
+
+```bash
+pipx install secretgate     # the binary must be on PATH
+secretgate ca init          # create its CA; the command prints the CA path
+# trust that CA for this machine (firefox/chrome/system store, whichever you use)
+```
+
+Then set `secrets.proxy: secretgate` and restart Main: `neurastream main` starts omp as `secretgate wrap -- omp`. When the binary is missing, omp starts normally and one warning says the second net is off — the owner is never blocked by it.
+
 ## Provider rate limits
 
 When a Main turn ends on a provider rate limit, neurastream waits it out instead of asking again straight into the limit. The stop guard sees the turn's error text, matches it against `guards.rate_limit.patterns` (default `["429", "rate_limit", "rate limit", "overloaded", "529"]`, case-insensitive) and, on a hit, allows the stop without consulting the normal stop rules or touching the idle-stop counters. The chat channels get one post per episode — `⏳ Main is rate limited by its provider until HH:MM (local); it resumes on its own.` — and exactly one resume timer is armed (replacing any earlier one). When the wait is over, the plugin gives Main a new turn: `main-guard: the provider rate limit is over (waited until HH:MM). Continue the queue where you stopped.`, and the guard log carries the whole story:

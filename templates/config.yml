@@ -186,6 +186,12 @@ notify:
   slack_webhook_file: ""     # file holding the Slack webhook URL; "" = off
   prefix: ""                 # optional label prepended to each posted reply, e.g. "Main:"
 
+secrets:                     # content redaction (src/core/secret-redact.ts); a hit prints as [REDACTED:<type>]
+  redact: true               # every tool result, every notify post and `neurastream redact` go through the redactor
+  known_value_files: ["~/.npmrc"]   # files whose KEY=value lines are secret values; every top-level `.env…` file under paths.work_roots is read too
+  extra_patterns: []         # your own shapes, e.g. [{type: "my-token", regex: "myapp_[A-Za-z0-9]{32}"}]
+  proxy: "none"              # "none" | "secretgate": launch the harness as `secretgate wrap -- omp` (README: Secrets)
+
 priority:
   sleep_sec: 120
 

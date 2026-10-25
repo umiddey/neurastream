@@ -11,12 +11,39 @@ import { mainStartText } from "../../core/main-start.ts";
 import { applyQueueEnv } from "../../core/queue/env.ts";
 import * as q from "../../core/queue/lib.ts";
 import { buildHandoff, holdsBlock, MAX_NOTE_AGE_MS, OWNER_AWAY, relaunchPath } from "../../core/rollover.ts";
+import { PROXY_BIN, proxyOnPath } from "../../core/secret-redact.ts";
 import { adapterLog } from "./index.ts";
 import { PACKAGE_ROOT, packageJsonPath, packageVersion } from "./package-root.ts";
 import { defaultCompletedResults, defaultRunSource } from "./sessions.ts";
 
 /** The harness the launcher runs. Tests pass another path through LaunchOptions. */
 export const OMP_BIN = "omp";
+
+export interface ProxyPlan {
+	/** The command to spawn. */
+	cmd: string;
+	/** Arguments that come before the harness's own: `wrap -- <harness>` when proxied. */
+	prefix: string[];
+	/** One stderr line when the proxy was asked for but cannot run; empty otherwise. */
+	warning: string;
+}
+
+/**
+ * `secretgate wrap -- <harness>` when `secrets.proxy: secretgate`, so everything the harness sends
+ * leaves through the proxy's own redaction net. A missing binary never blocks the owner: the
+ * harness starts normally and one warning says why the second net is off.
+ */
+export function proxyPlan(harness: string, cfg: Config, onPath: boolean = proxyOnPath()): ProxyPlan {
+	if (cfg.secrets.proxy !== "secretgate") return { cmd: harness, prefix: [], warning: "" };
+	if (!onPath) {
+		return {
+			cmd: harness,
+			prefix: [],
+			warning: `neurastream: secrets.proxy is secretgate but ${PROXY_BIN} is not on PATH; starting ${harness} without the proxy`,
+		};
+	}
+	return { cmd: PROXY_BIN, prefix: ["wrap", "--", harness], warning: "" };
+}
 
 /** Flags that take the next argument as their value (omp 18.11.1 --help shows them as `--flag=<value>`). */
 export const VALUE_FLAGS: Record<string, true> = {
@@ -105,6 +132,8 @@ interface RelaunchRequest {
 export async function runMainLauncher(args: string[], cfg: Config, opts: LaunchOptions = {}): Promise<number> {
 	applyQueueEnv(cfg);
 	const harness = opts.harness ?? OMP_BIN;
+	const proxy = proxyPlan(harness, cfg);
+	if (proxy.warning) console.error(proxy.warning);
 	const mainStart = opts.mainStart ?? mainStartText;
 	const carried = carriedArgs(args);
 	const loaded = packageVersion(packageJsonPath());
@@ -141,7 +170,7 @@ export async function runMainLauncher(args: string[], cfg: Config, opts: LaunchO
 	}
 	for (;;) {
 		const started = Date.now();
-		const code = await runChild(harness, runArgs, { ...process.env, NEURASTREAM_MAIN_LAUNCHER: "1" });
+		const code = await runChild(proxy.cmd, [...proxy.prefix, ...runArgs], { ...process.env, NEURASTREAM_MAIN_LAUNCHER: "1" });
 		const req = readRequest(started, cfg);
 		if (req === null) return code;
 		const installed = packageVersion(packageJsonPath());

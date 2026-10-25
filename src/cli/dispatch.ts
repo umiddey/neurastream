@@ -1,6 +1,8 @@
+import { readFileSync } from "node:fs";
 import { pagesDoctor } from "../core/pages-doctor.ts";
 import { ConfigError, configFile, loadConfig, type Config } from "../core/config.ts";
 import { postReply } from "../core/notify.ts";
+import { loadKnownSecrets, redactSecrets, redactSummary } from "../core/secret-redact.ts";
 import { applyQueueEnv } from "../core/queue/env.ts";
 import { runAdapterInstall } from "../adapters/omp/install.ts";
 import { runDoctor } from "../adapters/omp/doctor.ts";
@@ -57,6 +59,8 @@ export function helpText(): string {
 		"                                config + agent-dir state); prints the list, refuses outside HOME",
 		"  neurastream doctor            report hand-edited live files and a stale install",
 		"  neurastream notify test       post a test message to the configured Discord/Slack webhooks",
+		"  neurastream redact            filter stdin through the secret redactor: stdout gets the text,",
+		"                                stderr the hit summary (types and counts only)",
 		"  neurastream queue migrate     fold the old repo INDEX.md files into the one main index",
 		"  neurastream config [--json]   print the merged config (defaults + file + env)",
 		"  neurastream guard <event> --json",
@@ -122,6 +126,7 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 		return runDoctor();
 	}
 	if (cmd === "notify") return runNotify(args);
+	if (cmd === "redact") return runRedact(args);
 	if (cmd === "uninstall") return runUninstall(args);
 	if (cmd === "queue" && args[0] === "migrate") {
 		try {
@@ -175,6 +180,30 @@ function runNotify(args: string[]): number | Promise<number> {
 		if (results.length === 0) console.log("notify: no provider configured (notify.discord_webhook_file / notify.slack_webhook_file)");
 		return failed > 0 ? 1 : 0;
 	});
+}
+
+const REDACT_USAGE = "usage: neurastream redact < text   (stdin to stdout; the hit summary goes to stderr)";
+
+/** `neurastream redact`: the core the adapter and notify use, as a filter, so another harness hook
+ *  can pipe a tool result through the same rules. The text is passed through untouched except for
+ *  the markers; stderr gets the type names and counts, never a value. */
+function runRedact(args: string[]): number {
+	if (args.length > 0) {
+		console.error(REDACT_USAGE);
+		return 2;
+	}
+	let cfg: Config;
+	try {
+		cfg = loadConfig();
+	} catch (err) {
+		console.error(err instanceof ConfigError ? err.message : String(err));
+		return 1;
+	}
+	const text = readFileSync(0, "utf8");
+	const result = redactSecrets(text, loadKnownSecrets(cfg), cfg.secrets.extra_patterns);
+	process.stdout.write(result.text);
+	console.error(result.hits.length > 0 ? redactSummary(result.hits) : "secret-redact: nothing to hide");
+	return 0;
 }
 
 const AGENTS_USAGE = "usage: neurastream agents list | allow <slug>... | deny <slug>...";

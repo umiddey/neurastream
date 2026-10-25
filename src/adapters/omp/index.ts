@@ -26,6 +26,7 @@ import { runDetectors, runDetectorsGated, type DetectorInput } from "../../core/
 import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, newProgressEntries, recordMainResult, revertMainEdit, rekeySpawnFile } from "../../core/guards.ts";
 import { rateLimitWait } from "../../core/rate-limit.ts";
 import { notifyProviders, postReply } from "../../core/notify.ts";
+import { loadKnownSecrets, redactSecrets, redactSummary } from "../../core/secret-redact.ts";
 import { inboxPath } from "../../core/owner-ui.ts";
 import { realTailscale } from "../../core/tailscale.ts";
 import { actionsRules, ownedRepoOf, suspiciousActions, unreportedFindings } from "../../core/trace-actions.ts";
@@ -265,6 +266,28 @@ function snapshotPlans(tool: string, input: Record<string, unknown>, cwd: string
 			snap.set(p, readFileSync(p, "utf8"));
 		} catch {}
 	}
+}
+
+// Secrets never reach the model, the chat or the session log (plan 20261025_2204): every tool
+// result of every agent — Main and subs both fire tool_result — is redacted here before the rest of
+// the handler, the model, the chat and the session file see it. The rewritten content goes back
+// with one line naming what was hidden; a clean result keeps its original shape and returns nothing.
+function redactToolResult(content: unknown[], cfg: Config): { content: unknown[]; note: string } {
+	if (!cfg.secrets.redact || content.length === 0) return { content, note: "" };
+	const known = loadKnownSecrets(cfg);
+	const hits = new Map<string, number>();
+	let changed = false;
+	const out = content.map(part => {
+		const p = asRecord(part);
+		if (p.type !== "text" || typeof p.text !== "string" || p.text === "") return part;
+		const r = redactSecrets(p.text, known, cfg.secrets.extra_patterns);
+		if (r.hits.length === 0) return part;
+		changed = true;
+		for (const hit of r.hits) hits.set(hit.type, (hits.get(hit.type) ?? 0) + hit.count);
+		return { ...p, text: r.text };
+	});
+	if (!changed) return { content, note: "" };
+	return { content: out, note: redactSummary([...hits].map(([type, count]) => ({ type, count }))) };
 }
 
 // Session rollover helpers: the harness context read through runtime checks, and the file size and
@@ -750,7 +773,11 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		const c = asCtx(ctx);
 		const id = asString(e.toolCallId);
 		const snap = pending.get(id);
-		const notes: string[] = [];
+		// Redact first: everything below (plan checks, detectors, the returned content, the model,
+		// the chat and the session log) then works on text that holds markers, never values.
+		const redacted = redactToolResult(Array.isArray(e.content) ? e.content : [], cfg);
+		const content = redacted.content;
+		const notes: string[] = redacted.note ? [redacted.note] : [];
 		if (snap) {
 			pending.delete(id);
 			for (const [file, before] of snap) {
@@ -779,7 +806,6 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 			if (PUSH_MERGE.test(asString(asRecord(e.input).command))) autoClose(cfg);
 		}
 		if ((!c.hasAgent || c.kind === "main") && !e.isError) {
-			const content = Array.isArray(e.content) ? e.content : [];
 			const text = content.map(p => asString(asRecord(p).text)).join("\n");
 			recordMainResult(asString(e.toolName), asRecord(e.input), c.cwd ?? process.cwd(), text);
 		}
@@ -788,12 +814,11 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		}
 		// Real-time detectors after each Main bash result, crashes included (D2 wants the stack).
 		if ((!c.hasAgent || c.kind === "main") && asString(e.toolName) === "bash") {
-			const content = Array.isArray(e.content) ? e.content : [];
 			mainDetectors(cfg, {
 				bash: { command: asString(asRecord(e.input).command), output: content.map(p => asString(asRecord(p).text)).join("\n") },
 			});
 		}
-		if (notes.length) return { content: [...(Array.isArray(e.content) ? e.content : []), ...notes.map(text => ({ type: "text", text }))] };
+		if (notes.length) return { content: [...content, ...notes.map(text => ({ type: "text", text }))] };
 		return undefined;
 	});
 

@@ -1,4 +1,8 @@
 # Changelog
+## 0.2.28
+### Added
+- Secrets never reach the chat (I-20261025-197): a content-based redactor (`src/core/secret-redact.ts`) runs on every tool result for Main and every subagent, on every notify post and in the new `neurastream redact` command; a token, key, password or any exact value from `~/.npmrc`, `.env…` files, `secrets.known_value_files` or credential-named env vars shows as `[REDACTED:<type>]`, whatever the file is named. Config `secrets.redact|known_value_files|extra_patterns|proxy`; `secrets.proxy: secretgate` adds secretgate as a second net on outbound traffic; `neurastream doctor` reports the redactor and proxy state.
+
 ## 0.2.27
 ### Added
 - Owner page: the Now tab has a one-way "Tell Main" box for a text note and up to four images; Main receives the message with its images, and the "Sent today" list and image files expire after 12 hours.
