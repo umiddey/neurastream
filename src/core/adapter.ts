@@ -17,6 +17,9 @@ export interface Run {
 	cacheRead: number;
 	cost: number;
 	inputTokens: number;
+	/** The run's prefill tokens: the sum of input + cacheRead + cacheWrite over its assistant
+	 *  usage — the prompt side of `tokens`, and the ledger's tok/call numerator. */
+	prefillTokens: number;
 	status: RunStatus;
 	statusDetail: string;
 	startedAt: number | null;

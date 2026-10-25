@@ -1,7 +1,7 @@
 import { afterAll, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { Run, RunSource } from "../src/core/adapter.ts";
 import { loadConfig } from "../src/core/config.ts";
 import {
@@ -275,6 +275,42 @@ test("report compares this window with the previous one, marks the worst change,
 	expect(r.text).toContain("- old rule (approved");
 	expect(r.text).toContain("→");
 	expect(r.md).toContain("GENERATED");
+});
+
+test("report ends with the weekly prompt-bloat line when the caller supplies one", () => {
+	const cfg = cfgWith(join(TMP, "home-bloatline"), "");
+	const source = { listRuns: () => [], mainSession: () => null } as unknown as RunSource;
+	const bloat = { runs: 9, flagged: 2, largest: { runId: "MAIN 01-03-38", firstCall: 1172629 } };
+	const r = buildReport(cfg, source, DAYS, NOW, undefined, bloat);
+	expect(r.text).toContain("Prompt bloat over 9 runs: 2 flagged, largest first call 1172629 tokens (MAIN 01-03-38)");
+	const none = buildReport(cfg, source, DAYS, NOW, undefined, { runs: 9, flagged: 0, largest: null });
+	expect(none.text).toContain("Prompt bloat over 9 runs: 0 flagged");
+	expect(buildReport(cfg, source, DAYS, NOW).text).not.toContain("Prompt bloat");
+});
+
+test("metrics report scans the window's runs for the bloat line: a rejected call with no usage flags from its dump", async () => {
+	const home = join(TMP, "home-bloatscan");
+	const sessions = join(home, ".omp/agent/sessions/scan-proj");
+	const dumps = join(home, ".omp/logs/http-400-requests");
+	mkdirSync(sessions, { recursive: true });
+	mkdirSync(dumps, { recursive: true });
+	writeFileSync(
+		join(sessions, "2026-10-24T10-00-00-000Z_scan.jsonl"),
+		[
+			{ type: "session", timestamp: "2026-10-24T10:00:00.000Z", id: "x" },
+			{ type: "message", timestamp: "2026-10-24T10:00:01.000Z", message: { role: "assistant", model: "big-model", provider: "p", responseId: "rr", stopReason: "toolUse", content: [] } },
+		]
+			.map((l) => JSON.stringify(l))
+			.join("\n") + "\n",
+	);
+	const rejected = JSON.parse(readFileSync(join(dirname(import.meta.path), "fixtures", "traces", "bloat-dump-rejected.json"), "utf8")) as unknown;
+	writeFileSync(join(dumps, `${Date.parse("2026-10-24T10:02:00.000Z")}-synthscan01.json`), JSON.stringify(rejected));
+	const cfg = cfgWith(home, "");
+	cfg.metrics.report_days = DAYS;
+	const source = { listRuns: () => [], mainSession: () => null } as unknown as RunSource;
+	expect(reportCmd(cfg, source, ["--days", String(DAYS)], NOW)).toBe(0);
+	const written = Bun.file(join(cfg.paths.notes, "metrics.md"));
+	expect(await written.text()).toContain("Prompt bloat over 1 runs: 1 flagged, largest first call 1172629 tokens (MAIN 10-00-00)");
 });
 
 test("metrics report writes notes/metrics.md and exits 0; a bad --days exits 2", () => {

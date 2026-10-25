@@ -8,7 +8,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { TraceEvent, TraceSource, TraceUsage } from "../../core/adapter.ts";
-import type { DumpParts } from "../../core/trace-bloat.ts";
+import type { DumpParts, DumpTokens } from "../../core/trace-bloat.ts";
 import { asObj, jsonlAt, parseTs, runIdOf } from "./sessions.ts";
 
 function str(v: unknown): string | undefined {
@@ -221,6 +221,45 @@ export function dumpParts(file: string): DumpParts {
 		messages: body.messages === undefined ? 0 : JSON.stringify(body.messages).length,
 		tools: tools.map((t) => ({ name: str(asObj(t)?.name) ?? "?", bytes: JSON.stringify(t).length })),
 	};
+}
+
+/**
+ * What one dumped request's error response states about its own prompt: "<N> tokens > <M>
+ * maximum" (the provider's rejection line) — or, when that shape is missing, a bare
+ * "<N> tokens" — plus the request's model. A dump whose error response states no count, or a
+ * dump the reader cannot open or parse, states nothing: a flag must never be guessed from
+ * bytes alone.
+ */
+export function dumpPromptTokens(file: string): DumpTokens | null {
+	let text: string;
+	try {
+		text = readFileSync(file, "utf8");
+	} catch {
+		return null;
+	}
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(text);
+	} catch {
+		return null;
+	}
+	const o = asObj(parsed);
+	const body = asObj(o?.body) ?? o ?? {};
+	const message = str(asObj(o?.errorResponse)?.message);
+	if (message === undefined) return null;
+	const count = (v: string | undefined) => {
+		const n = v === undefined ? NaN : Number(v.replaceAll(",", ""));
+		return Number.isFinite(n) ? n : undefined;
+	};
+	const m = /(\d[\d,]*)\s*tokens?\s*>\s*([\d,]+)\s*maximum/.exec(message);
+	const tokens = count(m?.[1]) ?? count(/(\d[\d,]*)\s*tokens?\b(?!\s*>)/.exec(message)?.[1]);
+	if (tokens === undefined) return null;
+	const out: DumpTokens = { tokens };
+	const limit = count(m?.[2]);
+	if (limit !== undefined) out.limit = limit;
+	const model = str(body.model);
+	if (model !== undefined) out.model = model;
+	return out;
 }
 
 /** TraceSource over a sessions root: dated main files at depth 1, subagent files at depth 2. */

@@ -1,0 +1,21 @@
+{
+  "provider": "test-provider",
+  "api": "test-api",
+  "model": "big-model",
+  "method": "POST",
+  "url": "https://test.example/v1/messages",
+  "body": {
+    "model": "big-model",
+    "system": "You are a synthetic test.",
+    "messages": [{ "role": "user", "content": "hello" }],
+    "tools": [
+      { "name": "bash", "parameters": {} },
+      { "name": "_mcp__zoho_getthing", "parameters": {} }
+    ],
+    "max_tokens": 64
+  },
+  "errorResponse": {
+    "status": 400,
+    "message": "400 {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"prompt is too long: 1172629 tokens > 1000000 maximum\"},\"request_id\":\"req_synthetic0000\"}"
+  }
+}

@@ -221,8 +221,8 @@ traces:
     ratio_of_limit: 0.8
     context_limits: {}
     # Bloat breakdown: the first capture of this regex on a tool name names its group
-    # (no match = "builtin").
-    tool_group: '^mcp__([A-Za-z0-9]+)_'
+    # (no match = "builtin"). The leading _? keeps underscore-prefixed MCP names grouped.
+    tool_group: '^_?mcp__([A-Za-z0-9]+)_'
   owned_repos: []      # product names another product's run may not read quietly; the intended list lives in docs/config.md
   actions:
     secret_globs:       # a read matching any glob is a high finding; evidence is masked either way

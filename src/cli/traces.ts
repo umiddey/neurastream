@@ -14,8 +14,8 @@ import { ConfigError, loadConfig, type Config } from "../core/config.ts";
 import { claimUnbacked } from "../core/incident-detectors.ts";
 import { claimsFromEvents, type RelatedRun } from "../core/trace-claims.ts";
 import { actionsRules, suspiciousActions, type ActionsRules, type SuspiciousAction } from "../core/trace-actions.ts";
-import { bloatBreakdown, bloatFindings, bloatRules, callSizes, type BloatBreakdown, type BloatRules } from "../core/trace-bloat.ts";
-import { dumpParts, ompDumps, ompTraceRuns, ompTraceSource, subagentTraces } from "../adapters/omp/traces.ts";
+import { bloatBreakdown, bloatFindings, bloatRules, callSizes, dumpFinding, type BloatBreakdown, type BloatRules } from "../core/trace-bloat.ts";
+import { dumpParts, dumpPromptTokens, ompDumps, ompTraceRuns, ompTraceSource, subagentTraces } from "../adapters/omp/traces.ts";
 
 export const TRACES_USAGE = [
 	"usage: neurastream traces claims <runId> [--json]",
@@ -72,6 +72,9 @@ export interface RunBloatReport {
 	findings: { kind: string; summary: string; evidence?: string }[];
 	/** What filled the prompt, from the run's dumped failed request; present only when a dump sits in the run's window. */
 	breakdown?: BloatBreakdown;
+	/** The prompt the matched dump's error response states, when it states one — a rejected
+	 *  call wrote no usage, so this may be the run's real first call. */
+	dumpPrompt?: { tokens: number; limit?: number };
 }
 
 /**
@@ -80,12 +83,16 @@ export interface RunBloatReport {
  * request; a dump belongs to the run whose trace window covers that instant: first readable
  * event ts <= dump <= trace file mtime (the file keeps growing while the run lives, so the
  * dump of a request that never produced an event is still inside). A run with no readable
- * timestamps matches no dump.
+ * timestamps matches no dump. A rejected call never wrote usage, so when the run's own usage
+ * flags nothing, the dump's error response states the prompt and dumpFinding flags from it —
+ * a dump stating no count flags nothing, and no size is guessed from bytes.
  */
 export function bloatReport(src: TraceSource, runId: string, rules: BloatRules, groupRegex: string, dumps: { file: string; ms: number }[], mtimeSec: number): RunBloatReport {
 	const events = src.events(runId);
 	const sizes = callSizes(events);
+	const findings = bloatFindings(events, rules);
 	let breakdown: BloatBreakdown | undefined;
+	let dumpPrompt: { tokens: number; limit?: number } | undefined;
 	let first: number | undefined;
 	for (const e of events) {
 		if (e.ts !== null) {
@@ -95,15 +102,26 @@ export function bloatReport(src: TraceSource, runId: string, rules: BloatRules, 
 	}
 	if (first !== undefined) {
 		const dump = dumps.find((d) => d.ms >= first * 1000 && d.ms <= Math.round(mtimeSec * 1000));
-		if (dump) breakdown = bloatBreakdown(dumpParts(dump.file), groupRegex);
+		if (dump) {
+			breakdown = bloatBreakdown(dumpParts(dump.file), groupRegex);
+			const stated = dumpPromptTokens(dump.file);
+			if (stated) {
+				dumpPrompt = { tokens: stated.tokens, ...(stated.limit !== undefined ? { limit: stated.limit } : {}) };
+				if (findings.length === 0) {
+					const f = dumpFinding(runId, stated, rules);
+					if (f) findings.push(f);
+				}
+			}
+		}
 	}
 	return {
 		runId,
 		calls: sizes.length,
 		firstPrompt: sizes[0]?.prompt ?? null,
 		maxPrompt: sizes.length > 0 ? sizes.reduce((m, c) => Math.max(m, c.prompt), 0) : null,
-		findings: bloatFindings(events, rules).map((f) => ({ kind: f.kind, summary: f.summary, evidence: f.evidence })),
+		findings,
 		...(breakdown ? { breakdown } : {}),
+		...(dumpPrompt ? { dumpPrompt } : {}),
 	};
 }
 
@@ -196,11 +214,11 @@ export async function runTraces(args: string[], opts: { home?: string } = {}): P
 				if (u.evidence) console.log(`    evidence: ${u.evidence}`);
 			}
 		} else if ("calls" in r) {
-			if (r.calls === 0) {
+			if (r.calls === 0 && r.findings.length === 0) {
 				console.log(`${r.runId}: no model calls in the trace`);
 				continue;
 			}
-			console.log(`${r.runId}: ${r.calls} calls, first ${r.firstPrompt}, max ${r.maxPrompt} (${r.findings.length === 0 ? "no prompt-bloat" : `${r.findings.length} prompt-bloat`})`);
+			console.log(`${r.runId}: ${r.calls} calls, first ${r.firstPrompt ?? "-"}, max ${r.maxPrompt ?? "-"} (${r.findings.length === 0 ? "no prompt-bloat" : `${r.findings.length} prompt-bloat`})`);
 			for (const f of r.findings) {
 				console.log(`  ${f.kind}: ${f.summary}`);
 				if (f.evidence) console.log(`    evidence: ${f.evidence}`);

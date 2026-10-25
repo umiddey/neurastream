@@ -228,6 +228,30 @@ traces:
 
 Finding evidence is masked (long token-like runs never survive verbatim) and capped at 160 characters, so a response id or a tool call line cannot carry a secret into the findings.
 
+## Prompt bloat (`neurastream traces bloat`)
+
+`neurastream traces bloat [--since 24h] [--json]` (or one run by id) lists, per run, every model call's prompt — `usage.input + usage.cacheRead + usage.cacheWrite`, one row per call — and flags `prompt-bloat` when
+
+- the run's FIRST call opens over `traces.bloat.first_call_max` (a run that starts huge stays huge), or
+- any call passes `traces.bloat.ratio_of_limit` × its model's `traces.bloat.context_limits` entry (an open map; a model without an entry is not limit-checked).
+
+A failed request dumped under `~/.omp/logs/http-400-requests` (named `<epoch-ms>-<id>.json`) belongs to the run whose trace window covers that instant — first readable event ts ≤ dump ≤ trace file mtime. For such a run the report shows what filled the prompt: system, messages and the tool groups (tools grouped by the first capture of `traces.bloat.tool_group` on the tool name; no match = `builtin`) plus the five largest individual tools.
+
+A rejected call never wrote usage, so a run can carry a 1.17M-token prompt with no usage row and no finding of its own. When a run has no usage finding, the matched dump's error response is read: a stated prompt size ("prompt is too long: 1172629 tokens > 1000000 maximum") becomes the flag, with the dump named as the source. A dump whose error response states no count flags nothing, and no size is ever guessed from bytes.
+
+`neurastream metrics report` ends with a weekly line — `Prompt bloat over N runs: K flagged, largest first call X tokens (<run>)` — over every run touched in the window (largest first call = the run's usage, else the matched dump's stated prompt). The agent ledger shows a `tok/call` column: prompt tokens ÷ calls per run.
+
+Config (defaults):
+
+```yaml
+traces:
+  bloat:
+    first_call_max: 150000
+    ratio_of_limit: 0.8
+    context_limits: {}   # e.g. claude-opus-5-5: 1000000
+    tool_group: '^_?mcp__([A-Za-z0-9]+)_'
+```
+
 ## Self-metrics
 
 `neurastream metrics report [--days N]` compares this window (the last `metrics.report_days`, default 7) with the one before it, writes `<paths.notes>/metrics.md`, and prints the same report. Worst change is marked `◀ worst`. The five numbers:
@@ -240,7 +264,7 @@ Finding evidence is masked (long token-like runs never survive verbatim) and cap
 
 Caveat: M4 is a whole-run measure. A main run counts entirely by its last write time, so a run that spans a window edge counts in the window it ends in.
 
-The report ends with a `Provider honesty over N runs: …` line — provider-honesty findings (see Provider honesty above) over every run touched in the window.
+The report ends with a `Provider honesty over N runs: …` line — provider-honesty findings (see Provider honesty above) over every run touched in the window — and a `Prompt bloat over N runs: …` line (see Prompt bloat above) over the same runs.
 
 Weekly loop: run `neurastream metrics report`, then propose ONE rule change to the owner. When the owner decides, record it with `neurastream metrics rule "<text>" --approved|--rejected`; approved rules get a before/after check once a full window has passed. Record CI with `neurastream metrics ci <repo-dir> <mr-id>` and guard false alarms with `neurastream metrics false-alarm <log-ts> --why "<text>"`. main-start shows the report as due when it is missing or older than `metrics.report_days`.
 

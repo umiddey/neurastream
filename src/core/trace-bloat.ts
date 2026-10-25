@@ -148,3 +148,45 @@ export function bloatBreakdown(parts: DumpParts, groupRegex: string): BloatBreak
 	const tools = [...parts.tools].sort((a, b) => b.bytes - a.bytes).slice(0, 5);
 	return { parts: rows, tools };
 }
+
+/** What a dumped failed request states about its own prompt, as the adapter reads it out. */
+export interface DumpTokens {
+	/** The prompt token count the dump's error response states. */
+	tokens: number;
+	/** The context maximum the error response states, when it names one. */
+	limit?: number;
+	/** The model the request went out with. */
+	model?: string;
+}
+
+/**
+ * The dump-fed counterpart of the usage findings: a rejected request never produced a usage
+ * row, so its size exists only in the dump's error response (which is why the evidence names
+ * the dump, and why a count the dump does not state flags nothing — bytes are never turned
+ * into tokens by guessing). Flags when the stated prompt passes the first-call ceiling, or
+ * ratio_of_limit × the stated maximum (the provider's own number beats any config guess), or
+ * ratio_of_limit × the model's context_limits entry. Null when nothing crosses.
+ */
+export function dumpFinding(runId: string, dump: DumpTokens, rules: BloatRules): Finding | null {
+	const over: string[] = [];
+	if (dump.tokens > rules.first_call_max) over.push(`over the ${rules.first_call_max} first-call ceiling`);
+	const stated = dump.limit;
+	const limit = stated ?? (dump.model !== undefined ? limitOf(dump.model, rules.context_limits) : undefined);
+	if (limit !== undefined && dump.tokens > rules.ratio_of_limit * limit) {
+		over.push(`${Math.round((dump.tokens / limit) * 100)}% of its ${limit} limit`);
+	}
+	if (over.length === 0) return null;
+	const out: Finding[] = [];
+	foldFinding(
+		out,
+		new Set(),
+		"prompt-bloat",
+		`run ${runId}: the request dumped inside this run's window was rejected with a ${dump.tokens} token prompt (${over.join(", ")})`,
+		`dumped request (model ${dump.model ?? "?"}) rejected: prompt ${dump.tokens}` +
+			(stated !== undefined ? ` > ${stated} maximum` : "") +
+			(limit !== undefined && stated === undefined ? `; limit ${limit} from traces.bloat.context_limits` : "") +
+			", stated by the dump's error response",
+		`prompt-bloat:${runId}:dump`,
+	);
+	return out[0] ?? null;
+}

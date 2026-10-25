@@ -210,6 +210,7 @@ function ledgerRow(id: string, statusDetail: string): Run {
 		cacheRead: 0,
 		cost: 0.1,
 		inputTokens: 0,
+		prefillTokens: 0,
 		status: "running",
 		statusDetail,
 		startedAt: lastWriteAt - 600,

@@ -49,6 +49,7 @@ function sub(id: string, idleMin: number, statusDetail: string): Run {
 		cacheRead: 0,
 		cost: 0.1,
 		inputTokens: 0,
+		prefillTokens: 0,
 		status: "running",
 		statusDetail,
 		startedAt: lastWriteAt - 600,
@@ -80,6 +81,15 @@ function ledger(args: string[], rows: Run[]): { code: number; out: string } {
 		spy.mockRestore();
 	}
 }
+
+test("the tok/call column divides prompt tokens by calls; zero calls reads 0", () => {
+	const a = sub("agent-a", 0, "RUNNING");
+	a.calls = 3;
+	a.prefillTokens = 600000;
+	const { out } = ledger([], [a]);
+	expect(out).toContain("tok/call");
+	expect(out).toContain("200000");
+});
 
 test("--cap leaves out two agents idle 120 min; the fresh one takes the only zai slot", () => {
 	const rows = [

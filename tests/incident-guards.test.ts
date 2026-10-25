@@ -244,6 +244,7 @@ function row(id: string, statusDetail: string, lastWriteMinAgo: number): Run {
 		cacheRead: 0,
 		cost: 0.1,
 		inputTokens: 0,
+		prefillTokens: 0,
 		status: statusDetail.includes("OVER-BUDGET") ? "done" : "running",
 		statusDetail,
 		startedAt: lastWriteAt - 600,

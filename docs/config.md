@@ -222,7 +222,7 @@ traces:
     first_call_max: 150000   # the largest first-call prompt a healthy run may open with
     ratio_of_limit: 0.8      # a call flags past ratio_of_limit × its model's context limit
     context_limits: {}       # model -> context tokens; open map, no entry = not limit-checked
-    tool_group: '^mcp__([A-Za-z0-9]+)_'   # first capture names a tool's bloat group
+    tool_group: '^_?mcp__([A-Za-z0-9]+)_'   # first capture names a tool's bloat group
   actions:
     secret_globs:       # a read matching any glob is a high finding; evidence is masked either way
       - "~/.ssh/**"

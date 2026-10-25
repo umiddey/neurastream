@@ -231,8 +231,20 @@ test("agent-ledger matches the original", () => {
 	);
 	writeSession(home, "proj/BudgetHog.jsonl", Array.from({ length: 101 }, () => usage("anthropic", "claude", 1000, 0, 1)).join("\n"), 1759999950);
 	writeSession(home, "proj/old/Ancient.jsonl", usage("zai", "old", 10, 0, 1), 1750000000);
+	// The port is ahead of the frozen oracle by the specced tok/call column (plan 20261024_0303:
+	// prefill tokens / calls, right-aligned width 8 between Mtok and cache%). Fold the port side
+	// back so every other number and line still compares exactly.
+	const toOracle = (s: string): string =>
+		s
+			.split("\n")
+			.map((l) => l.replace(/^(.{28} .{38} .{5} .{7}) .{8} /, "$1 "))
+			.join("\n");
+	const matchPort = (args: string[]) => {
+		const port = runPort("agent-ledger", args, env);
+		match(runPy(oracle, args, env), { code: port.code, stderr: port.stderr, stdout: toOracle(port.stdout) });
+	};
 	for (const args of [[], ["--all"], ["--hours", "1"], ["--hours", "1", "--all"]]) {
-		match(runPy(oracle, args, env), runPort("agent-ledger", args, env));
+		matchPort(args);
 	}
 	for (const args of [
 		["--cap", "--priority"],
@@ -241,7 +253,7 @@ test("agent-ledger matches the original", () => {
 		["--cap", "--provider", "nope", "--slots", "1"],
 		["--cap", "--provider"],
 	]) {
-		match(runPy(oracle, args, env), runPort("agent-ledger", args, env));
+		matchPort(args);
 	}
 });
 

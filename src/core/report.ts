@@ -181,7 +181,19 @@ export interface ProviderSummary {
 	byKind: Record<string, number>;
 }
 
-export function buildReport(cfg: Config, source: RunSource, days: number, now: number, provider?: ProviderSummary): Report {
+/** Weekly prompt-bloat counts the report appends; built next to ProviderSummary by the same
+ *  CLI caller, folding src/core/trace-bloat.ts findings over the runs touched in the window. */
+export interface BloatSummary {
+	/** Runs scanned inside the window. */
+	runs: number;
+	/** Runs with at least one prompt-bloat finding over those runs. */
+	flagged: number;
+	/** The largest first call among the flagged runs — the run's usage, else its matched
+	 *  dump's stated prompt (a rejected call wrote no usage) — with the run id. */
+	largest: { runId: string; firstCall: number } | null;
+}
+
+export function buildReport(cfg: Config, source: RunSource, days: number, now: number, provider?: ProviderSummary, bloat?: BloatSummary): Report {
 	const inp = loadInputs(cfg, source, now, days);
 	const events = [...inp.events, ...readMetricEvents(cfg)];
 	const blocks = readBlocks(cfg);
@@ -225,6 +237,13 @@ export function buildReport(cfg: Config, source: RunSource, days: number, now: n
 							.filter(([, n]) => n > 0)
 							.map(([k, n]) => `${n} ${k}`)
 							.join(", ") || "no findings"),
+				]
+			: []),
+		...(bloat
+			? [
+					"",
+					`Prompt bloat over ${bloat.runs} runs: ${bloat.flagged} flagged` +
+						(bloat.largest ? `, largest first call ${bloat.largest.firstCall} tokens (${bloat.largest.runId})` : ""),
 				]
 			: []),
 	].join("\n");

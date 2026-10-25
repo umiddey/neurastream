@@ -132,7 +132,7 @@ describe("config (P1)", () => {
 			first_call_max: 150000,
 			ratio_of_limit: 0.8,
 			context_limits: {},
-			tool_group: "^mcp__([A-Za-z0-9]+)_",
+			tool_group: "^_?mcp__([A-Za-z0-9]+)_",
 		});
 		expect(bloatRules(cfg)).toEqual({ first_call_max: 150000, ratio_of_limit: 0.8, context_limits: {} });
 	});
@@ -204,7 +204,7 @@ function hash(s: string): number {
 
 // ---- P2: the dumped-request breakdown and the `traces bloat` CLI ----
 
-import { dumpParts, ompDumpDir, ompDumps } from "../src/adapters/omp/traces.ts";
+import { dumpParts, ompDumpDir, ompDumps, ompTraceSource } from "../src/adapters/omp/traces.ts";
 import { bloatBreakdown } from "../src/core/trace-bloat.ts";
 import { runTraces } from "../src/cli/traces.ts";
 
@@ -380,6 +380,109 @@ traces:
 		expect(dumps.map((d) => d.ms)).toEqual([OUT_MS, IN_MS]);
 		expect(readdirSync(P9DUMPS)).toContain("not-a-dump.txt");
 		expect(ompDumpDir(P9)).toBe(P9DUMPS);
+	});
+});
+
+// ---- P3: the flag a REJECTED call feeds (its trace carries no usage, the dump does) ----
+
+import { statSync } from "node:fs";
+import { dumpPromptTokens } from "../src/adapters/omp/traces.ts";
+import { bloatReport } from "../src/cli/traces.ts";
+import { dumpFinding } from "../src/core/trace-bloat.ts";
+
+describe("dumpPromptTokens (P3)", () => {
+	test("the prompt count and maximum the error response states, with the request's model", () => {
+		expect(dumpPromptTokens(join(FIX, "bloat-dump-rejected.json"))).toEqual({
+			tokens: 1172629,
+			limit: 1000000,
+			model: "big-model",
+		});
+	});
+
+	test("a stated count without a maximum still reads; no count anywhere reads as null", () => {
+		const only = join(TMP, "count-only.json");
+		writeFileSync(only, JSON.stringify({ body: { model: "m" }, errorResponse: { status: 400, message: "request of 999999 tokens rejected" } }));
+		expect(dumpPromptTokens(only)).toEqual({ tokens: 999999, model: "m" });
+		const none = join(TMP, "no-count.json");
+		writeFileSync(none, JSON.stringify({ body: { model: "m" }, errorResponse: { status: 400, message: "invalid api key" } }));
+		expect(dumpPromptTokens(none)).toBeNull();
+		const noErr = join(TMP, "no-error.json");
+		writeFileSync(noErr, JSON.stringify({ body: { model: "m" } }));
+		expect(dumpPromptTokens(noErr)).toBeNull();
+		expect(dumpPromptTokens(join(TMP, "missing.json"))).toBeNull();
+	});
+});
+
+describe("dumpFinding (P3)", () => {
+	test("flags the stated prompt over the first-call ceiling, and names the error response as the source", () => {
+		const f = dumpFinding("r1", { tokens: 1172629, limit: 1000000, model: "big-model" }, DEFAULTS)!;
+		expect(f.kind).toBe("prompt-bloat");
+		expect(f.fingerprint).toBe("prompt-bloat:r1:dump");
+		expect(f.summary).toContain("1172629");
+		expect(f.summary).toContain("first-call ceiling");
+		expect(f.evidence).toContain("error response");
+	});
+
+	test("the stated maximum and the model's config limit are ceilings too; under every ceiling is null", () => {
+		const high = { first_call_max: 1000000, ratio_of_limit: 0.8, context_limits: { "big-model": 1000000 } };
+		expect(dumpFinding("r1", { tokens: 900000, model: "big-model" }, high)).not.toBeNull();
+		expect(dumpFinding("r1", { tokens: 700000, model: "big-model" }, high)).toBeNull();
+		expect(dumpFinding("r1", { tokens: 900000, limit: 1000000, model: "small-model" }, high)).not.toBeNull();
+		expect(dumpFinding("r1", { tokens: 100000, model: "big-model" }, DEFAULTS)).toBeNull();
+	});
+});
+
+describe("bloatReport dump flag (P3)", () => {
+	const P10 = mkdtempSync(join(tmpdir(), "ns-trace-bloat-p3-"));
+	const P10SESSIONS = join(P10, ".omp/agent/sessions/bloat-proj");
+	const P10DUMPS = ompDumpDir(P10);
+	mkdirSync(P10SESSIONS, { recursive: true });
+	mkdirSync(P10DUMPS, { recursive: true });
+	mkdirSync(join(P10, ".config/neurastream"), { recursive: true });
+	writeFileSync(join(P10, ".config/neurastream/config.yml"), `paths:\n  home: "${P10}"\n`);
+	// A run whose rejected call produced no usage row: its only mapped event is an assistant
+	// message with no content and no usage, so calls reads 0 while a first ts still exists.
+	writeFileSync(
+		join(P10SESSIONS, "2026-10-24T01-00-00-000Z_reject.jsonl"),
+		[
+			{ type: "session", timestamp: "2026-10-24T01:00:00.000Z", id: "x" },
+			{ type: "message", timestamp: "2026-10-24T01:00:01.000Z", message: { role: "assistant", model: "big-model", provider: "test-provider", responseId: "rr", stopReason: "toolUse", content: [] } },
+		]
+			.map((l) => JSON.stringify(l))
+			.join("\n") + "\n",
+	);
+	writeFileSync(join(P10SESSIONS, "2026-10-24T10-00-00-000Z_flagged.jsonl"), readFileSync(join(FIX, "bloat-run.jsonl"), "utf8"));
+	const REJ_MS = parseTs("2026-10-24T01:02:00.000Z")! * 1000;
+	const IN_MS = parseTs("2026-10-24T10:00:05.000Z")! * 1000;
+	writeFileSync(join(P10DUMPS, `${REJ_MS}-synthrej01.json`), readFileSync(join(FIX, "bloat-dump-rejected.json"), "utf8"));
+	writeFileSync(join(P10DUMPS, `${IN_MS}-synthrej02.json`), readFileSync(join(FIX, "bloat-dump-rejected.json"), "utf8"));
+	afterAll(() => rmSync(P10, { recursive: true, force: true }));
+
+	const GROUP10 = "^_?mcp__([A-Za-z0-9]+)_";
+	// The trace source reads a sessions ROOT: dated files one project dir below it.
+	const src = ompTraceSource(join(P10, ".omp/agent/sessions"));
+	const dumps = ompDumps(P10);
+
+	test("a run whose rejected call has no usage flags from the matched dump's stated prompt", () => {
+		const file = join(P10SESSIONS, "2026-10-24T01-00-00-000Z_reject.jsonl");
+		const rep = bloatReport(src, "MAIN 01-00-00", DEFAULTS, GROUP10, dumps, statSync(file).mtimeMs / 1000);
+		expect(rep.calls).toBe(0);
+		expect(rep.firstPrompt).toBeNull();
+		expect(rep.dumpPrompt).toEqual({ tokens: 1172629, limit: 1000000 });
+		expect(rep.findings).toHaveLength(1);
+		expect(rep.findings[0]!.kind).toBe("prompt-bloat");
+		expect(rep.findings[0]!.summary).toContain("1172629");
+		expect(rep.breakdown).toBeDefined();
+	});
+
+	test("a run its own usage already flags keeps those findings; the dump prompt is still recorded", () => {
+		const file = join(P10SESSIONS, "2026-10-24T10-00-00-000Z_flagged.jsonl");
+		const rules = { ...DEFAULTS, context_limits: { "test-model": 100000 } };
+		const rep = bloatReport(src, "MAIN 10-00-00", rules, GROUP10, dumps, statSync(file).mtimeMs / 1000);
+		expect(rep.findings.map((f) => f.summary)).toEqual([
+			"run MAIN 10-00-00: call 7 (test-model) prompt 85000 tokens is 85% of its 100000 context limit",
+		]);
+		expect(rep.dumpPrompt).toEqual({ tokens: 1172629, limit: 1000000 });
 	});
 });
 
