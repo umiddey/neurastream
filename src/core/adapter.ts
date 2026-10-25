@@ -17,6 +17,9 @@ export interface Run {
 	cacheRead: number;
 	cost: number;
 	inputTokens: number;
+	/** The run's prefill tokens: the sum of input + cacheRead + cacheWrite over its assistant
+	 *  usage — the prompt side of `tokens`, and the ledger's tok/call numerator. */
+	prefillTokens: number;
 	status: RunStatus;
 	statusDetail: string;
 	startedAt: number | null;
@@ -69,6 +72,8 @@ export interface TraceEvent {
 	text?: string;
 	model?: string;
 	provider?: string;
+	/** Adapter-provided API identifier for the message carrying this event. */
+	api?: string;
 	usage?: TraceUsage;
 	/** Provider response id of the assistant message; absent when the line carries none. */
 	responseId?: string;

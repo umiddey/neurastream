@@ -5,10 +5,11 @@
 // trace-relevant data is mapped; anything else (session banners, custom lines, compaction
 // notes, unparseable lines) is skipped.
 
-import { readFileSync, statSync } from "node:fs";
+import { closeSync, openSync, readFileSync, readSync, readdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Config } from "../../core/config.ts";
 import type { TraceEvent, TraceSource, TraceUsage } from "../../core/adapter.ts";
+import type { DumpParts, DumpTokens } from "../../core/trace-bloat.ts";
 import { asObj, jsonlAt, parseTs, runIdOf } from "./sessions.ts";
 
 function str(v: unknown): string | undefined {
@@ -83,6 +84,7 @@ export function parseTraceFile(file: string, runId: string): TraceEvent[] {
 		const role = str(m.role);
 		const model = str(m.model);
 		const provider = str(m.provider);
+		const api = str(m.api);
 		const usage = usageOf(m.usage);
 		if (role === "assistant") {
 			const content = Array.isArray(m.content) ? m.content : [];
@@ -91,7 +93,7 @@ export function parseTraceFile(file: string, runId: string): TraceEvent[] {
 				if (!p) continue;
 				if (p.type === "text") {
 					const t = String(p.text ?? "");
-					if (t.trim()) out.push({ kind: "assistantText", ts, runId, text: t, model, provider, usage, responseId: str(m.responseId) });
+					if (t.trim()) out.push({ kind: "assistantText", ts, runId, text: t, model, provider, api, usage, responseId: str(m.responseId) });
 				} else if (p.type === "toolCall") {
 					out.push({
 						kind: "toolCall",
@@ -102,6 +104,7 @@ export function parseTraceFile(file: string, runId: string): TraceEvent[] {
 						callId: str(p.id),
 						model,
 						provider,
+						api,
 						usage,
 						responseId: str(m.responseId),
 					});
@@ -112,7 +115,7 @@ export function parseTraceFile(file: string, runId: string): TraceEvent[] {
 			// aborted or errored stream (owner interrupt, provider error) drops its partial content
 			// while keeping the usage of what streamed, so it is not marked.
 			if (content.length === 0 && m.stopReason !== "aborted" && m.stopReason !== "error") {
-				out.push({ kind: "assistantText", ts, runId, text: "", model, provider, usage, responseId: str(m.responseId) });
+				out.push({ kind: "assistantText", ts, runId, text: "", model, provider, api, usage, responseId: str(m.responseId) });
 			}
 		} else if (role === "toolResult") {
 			out.push({
@@ -148,6 +151,29 @@ export function ompTraceRuns(root: string): { runId: string; file: string; mtime
 	return Object.entries(newest).map(([runId, v]) => ({ runId, file: v.file, mtimeSec: v.mtimeSec }));
 }
 
+/** Read only the session banner at the start of a trace; null means it is unreadable. */
+export function ompTraceStart(file: string): number | null {
+	let fd: number;
+	try {
+		fd = openSync(file, "r");
+	} catch {
+		return null;
+	}
+	const buffer = Buffer.allocUnsafe(4096);
+	try {
+		const bytes = readSync(fd, buffer, 0, buffer.length, 0);
+		for (const line of buffer.toString("utf8", 0, bytes).split("\n")) {
+			try {
+				const value = JSON.parse(line) as { type?: unknown; timestamp?: unknown };
+				if (value.type === "session" && typeof value.timestamp === "string") return parseTs(value.timestamp);
+			} catch {}
+		}
+		return null;
+	} finally {
+		closeSync(fd);
+	}
+}
+
 /**
  * Tool names one dumped request offered: body.tools[].name of an http-4xx dump. A dump the
  * reader cannot open or parse offers nothing — a broken dump must not widen the offered set.
@@ -170,6 +196,110 @@ export function offeredFromDump(file: string): string[] {
 	const tools = body?.tools;
 	if (!Array.isArray(tools)) return [];
 	return tools.map((t) => str(asObj(t)?.name)).filter((n): n is string => n !== undefined);
+}
+
+/** The harness log dir holding the whole failed requests (http-4xx dumps), named by epoch ms. */
+export function ompDumpDir(home: string): string {
+	return join(home, ".omp", "logs", "http-400-requests");
+}
+
+/**
+ * Every request dump under the harness log dir, oldest first. Dumps are named
+ * `<epoch ms of the failed request>-<request id>.json`; anything else in the dir is not a dump.
+ */
+export function ompDumps(home: string): { file: string; ms: number }[] {
+	let names: string[];
+	try {
+		names = readdirSync(ompDumpDir(home));
+	} catch {
+		return [];
+	}
+	const out: { file: string; ms: number }[] = [];
+	for (const name of names) {
+		const m = /^(\d+)-[A-Za-z0-9]+\.json$/.exec(name);
+		if (m) out.push({ file: join(ompDumpDir(home), name), ms: Number(m[1]) });
+	}
+	return out.sort((a, b) => a.ms - b.ms);
+}
+
+/** Model requested by a failed request dump, if the JSON contains one. */
+export function dumpModel(file: string): string | undefined {
+	try {
+		const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
+		const o = asObj(parsed);
+		const body = asObj(o?.body);
+		return str(body?.model) ?? str(o?.model);
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * What a dumped request's prompt is made of, in JSON.stringify characters: body.system,
+ * body.messages and every body.tools[] entry with its name (a nameless tool keeps its bytes
+ * as "?"). A dump the reader cannot open or parse breaks down to zeros — a broken dump must
+ * not look like a prompt that was mostly empty.
+ */
+export function dumpParts(file: string): DumpParts {
+	let text: string;
+	try {
+		text = readFileSync(file, "utf8");
+	} catch {
+		return { system: 0, messages: 0, tools: [] };
+	}
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(text);
+	} catch {
+		return { system: 0, messages: 0, tools: [] };
+	}
+	const o = asObj(parsed);
+	const body = asObj(o?.body) ?? o ?? {};
+	const tools = Array.isArray(body.tools) ? body.tools : [];
+	return {
+		system: body.system === undefined ? 0 : JSON.stringify(body.system).length,
+		messages: body.messages === undefined ? 0 : JSON.stringify(body.messages).length,
+		tools: tools.map((t) => ({ name: str(asObj(t)?.name) ?? "?", bytes: JSON.stringify(t).length })),
+	};
+}
+
+/**
+ * What one dumped request's error response states about its own prompt: "<N> tokens > <M>
+ * maximum" (the provider's rejection line) — or, when that shape is missing, a bare
+ * "<N> tokens" — plus the request's model. A dump whose error response states no count, or a
+ * dump the reader cannot open or parse, states nothing: a flag must never be guessed from
+ * bytes alone.
+ */
+export function dumpPromptTokens(file: string): DumpTokens | null {
+	let text: string;
+	try {
+		text = readFileSync(file, "utf8");
+	} catch {
+		return null;
+	}
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(text);
+	} catch {
+		return null;
+	}
+	const o = asObj(parsed);
+	const body = asObj(o?.body) ?? o ?? {};
+	const message = str(asObj(o?.errorResponse)?.message);
+	if (message === undefined) return null;
+	const count = (v: string | undefined) => {
+		const n = v === undefined ? NaN : Number(v.replaceAll(",", ""));
+		return Number.isFinite(n) ? n : undefined;
+	};
+	const m = /(\d[\d,]*)\s*tokens?\s*>\s*([\d,]+)\s*maximum/.exec(message);
+	const tokens = count(m?.[1]) ?? count(/(\d[\d,]*)\s*tokens?\b(?!\s*>)/.exec(message)?.[1]);
+	if (tokens === undefined) return null;
+	const out: DumpTokens = { tokens };
+	const limit = count(m?.[2]);
+	if (limit !== undefined) out.limit = limit;
+	const model = str(body.model);
+	if (model !== undefined) out.model = model;
+	return out;
 }
 
 /** TraceSource over a sessions root: dated main files at depth 1, subagent files at depth 2. */

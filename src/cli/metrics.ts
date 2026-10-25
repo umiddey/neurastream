@@ -8,10 +8,12 @@ import { ConfigError, loadConfig, type Config } from "../core/config.ts";
 import { appendMetric } from "../core/metrics.ts";
 import { nowSec } from "../core/clock.ts";
 import type { RunSource } from "../core/adapter.ts";
-import { buildReport, type ProviderSummary } from "../core/report.ts";
+import { buildReport, type BloatSummary, type ProviderSummary } from "../core/report.ts";
 import { providerFindings } from "../core/trace-provider.ts";
+import { bloatRules } from "../core/trace-bloat.ts";
 import { defaultRunSource } from "../adapters/omp/sessions.ts";
-import { ompTraceRuns, ompTraceSource } from "../adapters/omp/traces.ts";
+import { ompDumps, ompTraceRuns, ompTraceSource } from "../adapters/omp/traces.ts";
+import { assignDumps, bloatReport } from "./traces.ts";
 
 export const METRICS_USAGE = [
 	"usage: neurastream metrics ci <repo-dir> <mr-id>",
@@ -108,6 +110,33 @@ function providerSummary(cfg: Config, now: number, days: number): ProviderSummar
 	return { runs, byKind };
 }
 
+/** Prompt-bloat counts over every run touched inside the window, folded from the
+ *  src/core/trace-bloat.ts findings the same scans build (dump flag included, since a
+ *  rejected call flags only through its dump). */
+function bloatSummary(cfg: Config, now: number, days: number): BloatSummary {
+	const root = cfg.adapter?.sessions || join(cfg.paths.home, ".omp", "agent", "sessions");
+	const cutoff = now - days * 86400;
+	const src = ompTraceSource(root);
+	const rules = bloatRules(cfg);
+	const dumps = ompDumps(cfg.paths.home);
+	let runs = 0;
+	let flagged = 0;
+	let largest: BloatSummary["largest"] = null;
+	const allRuns = ompTraceRuns(root);
+	const { owners, events: assignmentEvents } = assignDumps(allRuns, src, dumps);
+	for (const r of allRuns) {
+		if (r.mtimeSec < cutoff) continue;
+		runs++;
+		const owned = dumps.filter((dump) => owners.get(dump.file) === r.runId);
+		const rep = bloatReport(src, r.runId, rules, cfg.traces.bloat.tool_group, owned, r.mtimeSec, assignmentEvents.get(r.runId));
+		if (rep.findings.length === 0) continue;
+		flagged++;
+		const firstCall = Math.max(rep.firstPrompt ?? 0, rep.dumpPrompt?.tokens ?? 0);
+		if (firstCall > 0 && (largest === null || firstCall > largest.firstCall)) largest = { runId: r.runId, firstCall };
+	}
+	return { runs, flagged, largest };
+}
+
 /** Writes notes/metrics.md and prints the same report: this window against the previous one. */
 export function reportCmd(cfg: Config, source: RunSource, args: string[], now: number): number {
 	const raw = flagValue(args, "--days");
@@ -116,7 +145,7 @@ export function reportCmd(cfg: Config, source: RunSource, args: string[], now: n
 		console.error(METRICS_USAGE);
 		return 2;
 	}
-	const { md, text } = buildReport(cfg, source, days, now, providerSummary(cfg, now, days));
+	const { md, text } = buildReport(cfg, source, days, now, providerSummary(cfg, now, days), bloatSummary(cfg, now, days));
 	mkdirSync(cfg.paths.notes, { recursive: true });
 	writeFileSync(join(cfg.paths.notes, "metrics.md"), md);
 	console.log(text);

@@ -11,14 +11,15 @@
 
 import { join } from "node:path";
 import { nowSec } from "../core/clock.ts";
-import type { TraceSource } from "../core/adapter.ts";
+import type { TraceEvent, TraceSource } from "../core/adapter.ts";
 import { ConfigError, loadConfig, type Config } from "../core/config.ts";
 import { claimUnbacked } from "../core/incident-detectors.ts";
 import { claimsFromEvents, type RelatedRun } from "../core/trace-claims.ts";
 import { actionsRules, suspiciousActions, type ActionsRules, type SuspiciousAction } from "../core/trace-actions.ts";
+import { bloatBreakdown, bloatFindings, bloatRules, callSizes, dumpFinding, type BloatBreakdown, type BloatRules } from "../core/trace-bloat.ts";
 import { efficiencyRules, runEfficiency, RULE_ORDER, type EfficiencyRules, type WasteRule } from "../core/trace-efficiency.ts";
 import { pyPercent0 } from "../core/pyfmt.ts";
-import { ompTraceRuns, ompTraceSource, subagentTraces } from "../adapters/omp/traces.ts";
+import { dumpModel, dumpParts, dumpPromptTokens, ompDumps, ompTraceRuns, ompTraceSource, ompTraceStart, subagentTraces } from "../adapters/omp/traces.ts";
 
 export const TRACES_USAGE = [
 	"usage: neurastream traces claims <runId> [--json]",
@@ -27,6 +28,7 @@ export const TRACES_USAGE = [
 	"       neurastream traces actions --since <N m|h|d> [--json]",
 	"       neurastream traces efficiency <runId> [--json]",
 	"       neurastream traces efficiency --since <N m|h|d> [--json]",
+	"       neurastream traces bloat [<runId>] [--since <N m|h|d>] [--json]   # default window 24h",
 ].join("\n");
 
 const SINCE = /^(\d+)(m|h|d)$/;
@@ -78,10 +80,108 @@ export function efficiencyReport(src: TraceSource, runId: string, rules: Efficie
 	return { runId, ...runEfficiency(src.events(runId), rules) };
 }
 
-/** `neurastream traces claims|actions|efficiency`: one run by id, or every run touched inside a --since window. */
+export interface RunBloatReport {
+	runId: string;
+	/** Model calls in the run (usage-bearing assistant messages, folded per response id). */
+	calls: number;
+	/** Prompt tokens (input + cacheRead + cacheWrite) of the first call; null when the run made none. */
+	firstPrompt: number | null;
+	maxPrompt: number | null;
+	/** prompt-bloat findings; evidence masked and capped. */
+	findings: { kind: string; summary: string; evidence?: string }[];
+	/** What filled the prompt, from the uniquely assigned failed-request dump. */
+	breakdown?: BloatBreakdown;
+	/** The prompt the assigned dump's error response states. */
+	dumpPrompt?: { tokens: number; limit?: number };
+	/** At least one trace event uses an API whose usage aggregates internal calls. */
+	aggregated: boolean;
+}
+
+/**
+ * Scan one run's calls and findings, and report the dump assigned to it by the caller. The
+ * command assigns dumps across runs by window, matching model and closest event timestamp.
+ */
+export interface DumpAssignmentRun { runId: string; file: string; mtimeSec: number }
+export interface DumpAssignment { owners: Map<string, string>; unmatched: { file: string; ms: number }[]; events: Map<string, TraceEvent[]> }
+
+/** Assign each dump once, parsing only traces whose session start and mtime contain it. */
+export function assignDumps(runs: DumpAssignmentRun[], src: TraceSource, dumps: { file: string; ms: number }[]): DumpAssignment {
+	const owners = new Map<string, string>();
+	const unmatched: { file: string; ms: number }[] = [];
+	const cached = new Map<string, ReturnType<TraceSource["events"]>>();
+	for (const dump of dumps) {
+		const model = dumpModel(dump.file);
+		const eligible: { ts: number; runId: string }[] = [];
+		for (const run of runs) {
+			if (dump.ms > Math.round(run.mtimeSec * 1000)) continue;
+			const start = ompTraceStart(run.file);
+			if (start !== null && dump.ms < start * 1000) continue;
+			let events = cached.get(run.runId);
+			if (!events) {
+				events = src.events(run.runId);
+				cached.set(run.runId, events);
+			}
+			let firstTs: number | undefined;
+			let closestTs: number | undefined;
+			for (const event of events) {
+				if (event.ts === null || event.ts * 1000 > dump.ms) continue;
+				if (firstTs === undefined || event.ts < firstTs) firstTs = event.ts;
+				if (model !== undefined && event.model === model && (closestTs === undefined || event.ts > closestTs)) closestTs = event.ts;
+			}
+			if (firstTs !== undefined && dump.ms >= firstTs * 1000 && closestTs !== undefined) eligible.push({ runId: run.runId, ts: closestTs });
+		}
+		const bestTs = eligible.reduce((best, item) => Math.max(best, item.ts), -Infinity);
+		const best = eligible.filter((item) => item.ts === bestTs);
+		if (best.length === 1) owners.set(dump.file, best[0]!.runId);
+		else unmatched.push(dump);
+	}
+	return { owners, unmatched, events: cached };
+}
+
+export function bloatReport(src: TraceSource, runId: string, rules: BloatRules, groupRegex: string, dumps: { file: string; ms: number }[], mtimeSec: number, parsedEvents?: TraceEvent[]): RunBloatReport {
+	const events = parsedEvents ?? src.events(runId);
+	const sizes = callSizes(events, rules.aggregate_apis);
+	const findings = bloatFindings(events, rules);
+	const aggregated = events.some((event) => event.api !== undefined && rules.aggregate_apis?.includes(event.api));
+	let breakdown: BloatBreakdown | undefined;
+	let dumpPrompt: { tokens: number; limit?: number } | undefined;
+	let first: number | undefined;
+	for (const e of events) {
+		if (e.ts !== null) {
+			first = e.ts;
+			break;
+		}
+	}
+	if (first !== undefined) {
+		const dump = dumps.find((d) => d.ms >= first * 1000 && d.ms <= Math.round(mtimeSec * 1000));
+		if (dump) {
+			breakdown = bloatBreakdown(dumpParts(dump.file), groupRegex);
+			const stated = dumpPromptTokens(dump.file);
+			if (stated) {
+				dumpPrompt = { tokens: stated.tokens, ...(stated.limit !== undefined ? { limit: stated.limit } : {}) };
+				if (findings.length === 0) {
+					const f = dumpFinding(runId, stated, rules);
+					if (f) findings.push(f);
+				}
+			}
+		}
+	}
+	return {
+		runId,
+		calls: sizes.length,
+		firstPrompt: sizes[0]?.prompt ?? null,
+		maxPrompt: sizes.length > 0 ? sizes.reduce((m, c) => Math.max(m, c.prompt), 0) : null,
+		findings,
+		aggregated,
+		...(breakdown ? { breakdown } : {}),
+		...(dumpPrompt ? { dumpPrompt } : {}),
+	};
+}
+
+/** `neurastream traces claims|actions|efficiency|bloat`: one run by id, or every run touched inside a --since window. */
 export async function runTraces(args: string[], opts: { home?: string } = {}): Promise<number> {
 	const sub = args[0];
-	if (sub !== "claims" && sub !== "actions" && sub !== "efficiency") {
+	if (sub !== "claims" && sub !== "actions" && sub !== "efficiency" && sub !== "bloat") {
 		console.error(TRACES_USAGE);
 		return 2;
 	}
@@ -116,21 +216,33 @@ export async function runTraces(args: string[], opts: { home?: string } = {}): P
 			runId = a;
 		}
 	}
+	// `bloat` without a selector scans the plan's default window instead of demanding one.
+	if (sub === "bloat" && runId === undefined && windowSec === undefined) windowSec = 24 * 3600;
 	if ((runId !== undefined) === (windowSec !== undefined)) {
 		console.error(TRACES_USAGE);
 		return 2;
 	}
 	const runs = ompTraceRuns(root);
 	const src = ompTraceSource(root);
-	const rules = sub === "actions" ? actionsRules(cfg) : sub === "efficiency" ? efficiencyRules(cfg) : null;
+	const rules: ActionsRules | EfficiencyRules | BloatRules | null = sub === "actions" ? actionsRules(cfg) : sub === "efficiency" ? efficiencyRules(cfg) : sub === "bloat" ? bloatRules(cfg) : null;
 	// A Main run's report cites its subagents' results: their traces under the Main session dir
 	// back the pure result-line claims (P5). No time filter — the text match is the guard, and
 	// a sub's file keeps being written while its Main run lives, inside whatever window.
 	const relatedOf = (id: string): RelatedRun[] =>
 		sub === "claims" ? subagentTraces(root, id).map(({ name, events }) => ({ name, events })) : [];
-	const reports: (RunClaimsReport | RunActionsReport | RunEfficiencyReport)[] = [];
-	const reportOf = (id: string): RunClaimsReport | RunActionsReport | RunEfficiencyReport =>
-		sub === "claims" ? claimsReport(src, id, relatedOf(id)) : sub === "actions" ? actionsReport(src, id, rules as ActionsRules) : efficiencyReport(src, id, rules as EfficiencyRules);
+	const dumps = sub === "bloat" ? ompDumps(cfg.paths.home) : [];
+	const assignment = sub === "bloat" ? assignDumps(runs, src, dumps) : { owners: new Map<string, string>(), unmatched: [] as { file: string; ms: number }[], events: new Map<string, TraceEvent[]>() };
+	const dumpOwners = assignment.owners;
+	const unmatchedDumps = assignment.unmatched;
+	const mtimeOf = (id: string): number => runs.find((r) => r.runId === id)?.mtimeSec ?? 0;
+	const assignedDumps = (id: string) => dumps.filter((dump) => dumpOwners.get(dump.file) === id);
+	const reports: (RunClaimsReport | RunActionsReport | RunEfficiencyReport | RunBloatReport)[] = [];
+	const reportOf = (id: string): RunClaimsReport | RunActionsReport | RunEfficiencyReport | RunBloatReport => {
+		if (sub === "claims") return claimsReport(src, id, relatedOf(id));
+		if (sub === "actions") return actionsReport(src, id, rules as ActionsRules);
+		if (sub === "efficiency") return efficiencyReport(src, id, rules as EfficiencyRules);
+		return bloatReport(src, id, rules as BloatRules, cfg.traces.bloat.tool_group, assignedDumps(id), mtimeOf(id), assignment.events.get(id));
+	};
 	if (windowSec !== undefined) {
 		const cutoff = nowSec() - windowSec;
 		for (const r of runs) {
@@ -145,7 +257,7 @@ export async function runTraces(args: string[], opts: { home?: string } = {}): P
 		reports.push(reportOf(runId!));
 	}
 	if (json) {
-		console.log(JSON.stringify(reports, null, 2));
+		console.log(JSON.stringify(sub === "bloat" ? { reports, unmatchedDumps } : reports, null, 2));
 		return 0;
 	}
 	for (const r of reports) {
@@ -162,6 +274,23 @@ export async function runTraces(args: string[], opts: { home?: string } = {}): P
 		} else if ("byRule" in r) {
 			console.log(`${r.runId}: ${r.calls} calls, ${r.wasted} wasted (${pyPercent0(r.wastePct)})`);
 			for (const rule of RULE_ORDER) console.log(`  ${rule}: ${r.byRule[rule]}`);
+		} else if ("calls" in r) {
+			if (r.aggregated) {
+				console.log(`${r.runId}: usage aggregated by provider, per-call size unknown`);
+			} else if (r.calls === 0 && r.findings.length === 0) {
+				console.log(`${r.runId}: no model calls in the trace`);
+				continue;
+			} else {
+				console.log(`${r.runId}: ${r.calls} calls, first ${r.firstPrompt ?? "-"}, max ${r.maxPrompt ?? "-"} (${r.findings.length === 0 ? "no prompt-bloat" : `${r.findings.length} prompt-bloat`})`);
+			}
+			for (const f of r.findings) {
+				console.log(`  ${f.kind}: ${f.summary}`);
+				if (f.evidence) console.log(`    evidence: ${f.evidence}`);
+			}
+			if (r.breakdown) {
+				console.log(`  prompt parts: ${r.breakdown.parts.map((p) => `${p.name} ${p.bytes}`).join(", ")}`);
+				console.log(`  top tools: ${r.breakdown.tools.map((t) => `${t.name} ${t.bytes}`).join(", ")}`);
+			}
 		} else {
 			if (r.actions.length === 0) {
 				console.log(`${r.runId}: no suspicious actions in the trace`);
@@ -174,6 +303,10 @@ export async function runTraces(args: string[], opts: { home?: string } = {}): P
 				if (a.evidence) console.log(`    evidence: ${a.evidence}`);
 			}
 		}
+	}
+	if (unmatchedDumps.length > 0) {
+		console.log("unmatched dumps:");
+		for (const dump of unmatchedDumps) console.log(`  ${dump.ms} ${dump.file}`);
 	}
 	return 0;
 }

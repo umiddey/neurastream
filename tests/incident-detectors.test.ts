@@ -58,6 +58,7 @@ function run(id: string, status: Run["status"], lastWriteAt = NOW - 60): Run {
 		cacheRead: 90,
 		cost: 0.01,
 		inputTokens: 10,
+		prefillTokens: 0,
 		status,
 		statusDetail: status.toUpperCase(),
 		startedAt: NOW - 7200,

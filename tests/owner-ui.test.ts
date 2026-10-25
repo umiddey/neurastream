@@ -103,6 +103,7 @@ function run(over: Partial<Run>): Run {
 		cacheRead: 10,
 		cost: 0.2,
 		inputTokens: 0,
+		prefillTokens: 0,
 		status: "done",
 		statusDetail: "done",
 		startedAt: null,

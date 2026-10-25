@@ -16,12 +16,14 @@ function opt(args: string[], name: string): string | undefined {
 
 function rowLine(r: Run): string {
 	const pct = r.tokens ? (100 * r.cacheRead) / r.tokens : 0;
+	const perCall = r.calls ? r.prefillTokens / r.calls : 0;
 	const when = strftime(r.lastWriteAt, "%m-%d %H:%M");
 	return [
 		r.id.slice(0, 28).padEnd(28, " "),
 		r.model.slice(0, 38).padEnd(38, " "),
 		String(r.calls).padStart(5, " "),
 		pyFixedWidth(r.tokens / 1e6, 1, 7),
+		pyFixedWidth(perCall, 0, 8),
 		`${pyFixedWidth(pct, 0, 5)}%`,
 		pyFixedWidth(r.cost, 2, 7),
 		when,
@@ -50,6 +52,7 @@ export function agentLedger(args: string[], cfg: Config, source: RunSource): num
 		"model".padEnd(38, " "),
 		"calls".padStart(5, " "),
 		"Mtok".padStart(7, " "),
+		"tok/call".padStart(8, " "),
 		"cache%".padStart(6, " "),
 		"$list".padStart(7, " "),
 		"last-write  ended",

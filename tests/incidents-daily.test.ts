@@ -172,6 +172,7 @@ test("a fake run source drives the daily M2 metric: idle calls spike opens its o
 		cacheRead: 0,
 		cost: 0,
 		inputTokens: 0,
+		prefillTokens: 0,
 		status: "done",
 		statusDetail: "done",
 		startedAt: NOW - 7200,

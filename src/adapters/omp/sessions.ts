@@ -94,6 +94,7 @@ function build(file: string, cfg: Config, mtime: number): Run | null {
 	let first: number | null = null;
 	let last: number | null = null;
 	let inputTokens = 0;
+	let prefillTokens = 0;
 	const messages: RunMessage[] = [];
 
 	for (const line of text.split("\n")) {
@@ -153,6 +154,7 @@ function build(file: string, cfg: Config, mtime: number): Run | null {
 			const cr = typeof u.cacheRead === "number" ? u.cacheRead : 0;
 			const cw = typeof u.cacheWrite === "number" ? u.cacheWrite : 0;
 			inputTokens = input + cr + cw;
+			prefillTokens += inputTokens;
 		}
 		if (typeof m.errorMessage === "string") {
 			const head = m.errorMessage.split("\n")[0] ?? "";
@@ -197,6 +199,7 @@ function build(file: string, cfg: Config, mtime: number): Run | null {
 		cacheRead: cache,
 		cost,
 		inputTokens,
+		prefillTokens,
 		status,
 		statusDetail: state,
 		startedAt: first,
