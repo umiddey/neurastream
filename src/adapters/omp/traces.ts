@@ -10,6 +10,7 @@ import { dirname, join } from "node:path";
 import type { Config } from "../../core/config.ts";
 import type { TraceEvent, TraceSource, TraceUsage } from "../../core/adapter.ts";
 import type { DumpParts, DumpTokens } from "../../core/trace-bloat.ts";
+import type { SpawnBrief } from "../../core/trace-briefs.ts";
 import { asObj, jsonlAt, parseTs, runIdOf } from "./sessions.ts";
 
 function str(v: unknown): string | undefined {
@@ -341,4 +342,40 @@ export function subagentTraces(root: string, mainRunId: string): RelatedTrace[] 
 		} catch {}
 		return { name, mtimeSec, events: parseTraceFile(file, name) };
 	});
+}
+
+/**
+ * The spawn briefs of one Main run (plan 20261024_0305 traces_06): each `task` spawn whose result
+ * is a success, one entry per spawned agent. A refused spawn (`main-guard:` error) spawned nothing.
+ * The brief is the shared context, then the task's own text, so the task's trailing sections (such as
+ * `# Acceptance`) end the brief. guards.briefBudget reads the first `Call budget` line of it.
+ */
+export function spawnBriefs(root: string, mainRunId: string): SpawnBrief[] {
+	const main = ompTraceRuns(root).find((r) => r.runId === mainRunId);
+	return main ? spawnBriefsIn(main.file, mainRunId) : [];
+}
+
+/** The spawn briefs in one session file; the CLI calls this per file so it never rescans the root. */
+export function spawnBriefsIn(file: string, runId: string): SpawnBrief[] {
+	const events = parseTraceFile(file, runId);
+	const results = new Map<string, TraceEvent>();
+	for (const e of events) if (e.kind === "toolResult" && e.callId) results.set(e.callId, e);
+	const out: SpawnBrief[] = [];
+	for (const e of events) {
+		if (e.kind !== "toolCall" || e.tool !== "task" || !e.callId) continue;
+		const res = results.get(e.callId);
+		if (!res || res.isError || !(res.text ?? "").startsWith("Spawned")) continue;
+		const named = new Set([...(res.text ?? "").matchAll(/`([^`]+)`/g)].map((m) => m[1] ?? ""));
+		const args = e.args ?? {};
+		const context = str(args.context) ?? "";
+		const tasks = Array.isArray(args.tasks) ? args.tasks : [];
+		for (const t of tasks) {
+			const task = asObj(t);
+			const name = str(task?.name);
+			if (!task || !name || !named.has(name)) continue;
+			const brief = [context, str(task.task) ?? ""].filter((s) => s !== "").join("\n\n");
+			out.push({ agent: name, brief, ts: e.ts });
+		}
+	}
+	return out;
 }

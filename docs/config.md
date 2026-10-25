@@ -248,6 +248,12 @@ traces:
       - "plan-guard:"
       - "main-guard:"
     poll_pattern: '^\s*(sleep\s+\d|ps\b|pgrep\b)'   # shell commands that poll while nothing else runs
+  briefs:              # brief-quality rules (src/core/trace-briefs.ts): what a spawn brief names, and the report's length buckets
+    verify_pattern: '\b(?:bun test|bun run typecheck|pytest|npm test|go test|cargo test)\b'
+    phase_pattern: '\bP\d+[a-z]?\b'
+    plan_pattern: 'docs/plans/\S+\.md'
+    char_buckets: [1500, 4000]   # brief length edges: <1500, 1500-3999, >=4000
+    min_n: 5             # the report shows a mean only with at least this many rows on that side
 ```
 
 `ledger.providers` is the allow-list. It is data. Core checks membership and does not know the names.
@@ -267,6 +273,8 @@ traces:
 `traces.bloat` feeds `src/core/trace-bloat.ts`. A call's prompt is what the provider read before it wrote: `usage.input + usage.cacheRead + usage.cacheWrite` of one assistant message. A run flags `prompt-bloat` when its first non-aggregated call opens over `bloat.first_call_max`, or when any non-aggregated call's prompt passes `bloat.ratio_of_limit` × its model's `bloat.context_limits` entry; a model without an entry is not limit-checked (the map is open: add your models). APIs listed in `bloat.aggregate_apis` (default `["cursor-agent"]`) report turn-level totals, not individual calls, so they are excluded from call sizes and the metrics largest-first-call value; the CLI labels them "usage aggregated by provider, per-call size unknown". `bloat.tool_group` names the group of a request's tools for the breakdown: the first capture of the regex on the tool name; a name that does not match groups as `builtin`.
 
 `traces.efficiency` feeds `src/core/trace-efficiency.ts`, the waste counters behind `neurastream traces efficiency` and the board's waste columns. A call is wasted under the first rule that matches, at most once: `repeat-read` — a read-tool call with the same arguments JSON as an earlier one and no write-tool call between them, the `repeat_read_min`-th and later count; `repeat-fail` — a shell command repeated after an earlier result flagged it as an error, with no write-tool call between, every repeat counts; `failed-edit` — a write-tool call whose result is an error; `guard-repeat` — a toolResult text starting with a `guard_prefixes` entry whose first line repeats an earlier block's first line, every repeat counts; `poll` — shell commands matching `poll_pattern` in an unbroken run of consecutive calls, every one after the first counts. The read and fail chains reset on any write-tool call (a rerun after a change is not a blind repeat); the read tool names, shell tool names and write tool names come from the `guards` section.
+
+`traces.briefs` feeds `src/core/trace-briefs.ts`, the brief-quality report behind `neurastream traces briefs [--since N m|h|d] [--json] [--report]` (default window 30d). Each spawn a Main run made is one row: a `task` call whose result says `Spawned` (a refused spawn sent nothing). The row carries the brief's features: `chars`, `fileLines` (a `path:line` location), `verify`, `phase` and `plan` (the three patterns above), `budget` (a `Call budget:` line) and `acceptance` (non-empty lines under Acceptance headings). Each row joins to its agent's waste from `traces.efficiency` and to whether a score event of type accept, validate or diagnose named the agent. The report compares briefs with and without each feature and buckets them by `char_buckets`; a mean shows only with at least `min_n` rows on that side. `--json` carries these features and lengths, never the brief text.
 
 ## omp overlay (adapter install, not core)
 

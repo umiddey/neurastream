@@ -6,6 +6,7 @@
 - `neurastream metrics report` ends with a weekly `Prompt bloat over N runs: K flagged, largest first call X tokens (<run>)` line over every run touched in the window (largest first call = the run's usage, else the matched dump's stated prompt), next to the provider-honesty line.
 - `agent-ledger` gains a `tok/call` column: the run's prompt tokens ÷ its calls.
 - `traces.bloat.aggregate_apis` defaults to `["cursor-agent"]`; aggregate turn-level usage is excluded from per-call bloat findings and the metrics largest-first-call value.
+- `neurastream traces briefs [--since <N m|h|d>] [--json] [--report]` lists each spawn brief of Main's runs with its features (length, `file:line`, verify, phase, plan, budget, acceptance lines), its agent's waste and whether it was accepted; `--report` compares briefs with and without each feature. Brief text never prints. `traces.briefs` in the config sets the patterns and length buckets.
 
 ### Changed
 - The `traces.bloat.tool_group` default is now `^_?mcp__([A-Za-z0-9]+)_`: this harness writes some MCP tool names with a leading underscore (`_mcp__zoho_mcp_…`), which the old `^mcp__…` default lumped into `builtin` instead of naming the group.

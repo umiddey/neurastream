@@ -8,6 +8,9 @@
 // machine-readable records.
 // `neurastream traces efficiency …` (plan 20261024_0304 P2): count the run's wasted tool calls
 // under the config's waste rules (src/core/trace-efficiency.ts).
+// `neurastream traces briefs …` (plan 20261024_0305 P1-P2): every spawn brief of the runs touched in a
+// --since window, joined to its agent's waste and acceptance (src/core/trace-briefs.ts). Brief text is
+// never printed; --json carries features and lengths only.
 
 import { join } from "node:path";
 import { nowSec } from "../core/clock.ts";
@@ -19,7 +22,9 @@ import { actionsRules, suspiciousActions, type ActionsRules, type SuspiciousActi
 import { bloatBreakdown, bloatFindings, bloatRules, callSizes, dumpFinding, type BloatBreakdown, type BloatRules } from "../core/trace-bloat.ts";
 import { efficiencyRules, runEfficiency, RULE_ORDER, type EfficiencyRules, type WasteRule } from "../core/trace-efficiency.ts";
 import { pyPercent0 } from "../core/pyfmt.ts";
-import { dumpModel, dumpParts, dumpPromptTokens, ompDumps, ompTraceRuns, ompTraceSource, ompTraceStart, subagentTraces } from "../adapters/omp/traces.ts";
+import { dumpModel, dumpParts, dumpPromptTokens, ompDumps, ompTraceRuns, ompTraceSource, ompTraceStart, spawnBriefsIn, subagentTraces } from "../adapters/omp/traces.ts";
+import { briefReport, briefRows, type SideStat } from "../core/trace-briefs.ts";
+import { readEvents } from "../core/agent-score.ts";
 
 export const TRACES_USAGE = [
 	"usage: neurastream traces claims <runId> [--json]",
@@ -29,6 +34,7 @@ export const TRACES_USAGE = [
 	"       neurastream traces efficiency <runId> [--json]",
 	"       neurastream traces efficiency --since <N m|h|d> [--json]",
 	"       neurastream traces bloat [<runId>] [--since <N m|h|d>] [--json]   # default window 24h",
+	"       neurastream traces briefs [--since <N m|h|d>] [--json] [--report]",
 ].join("\n");
 
 const SINCE = /^(\d+)(m|h|d)$/;
@@ -178,10 +184,60 @@ export function bloatReport(src: TraceSource, runId: string, rules: BloatRules, 
 	};
 }
 
-/** `neurastream traces claims|actions|efficiency|bloat`: one run by id, or every run touched inside a --since window. */
+/** `traces briefs`: every spawn brief of the runs touched inside the window (default 30d), joined to its agent's waste and acceptance. */
+function briefsCommand(cfg: Config, root: string, rest: string[]): number {
+	let windowSec = 30 * 86400;
+	let json = false;
+	let report = false;
+	for (let i = 0; i < rest.length; i++) {
+		const a = rest[i]!;
+		if (a === "--json") {
+			json = true;
+		} else if (a === "--report") {
+			report = true;
+		} else if (a === "--since") {
+			const m = SINCE.exec(rest[++i] ?? "");
+			if (!m) {
+				console.error(TRACES_USAGE);
+				return 2;
+			}
+			windowSec = Number(m[1]) * (m[2] === "h" ? 3600 : m[2] === "d" ? 86400 : 60);
+		} else {
+			console.error(TRACES_USAGE);
+			return 2;
+		}
+	}
+	const cutoff = nowSec() - windowSec;
+	const briefs = ompTraceRuns(root)
+		.filter((r) => r.mtimeSec >= cutoff)
+		.flatMap((r) => spawnBriefsIn(r.file, r.runId));
+	const rows = briefRows(briefs, ompTraceSource(root), readEvents(cfg), { brief: cfg.traces.briefs, efficiency: efficiencyRules(cfg) });
+	const summary = briefReport(rows, { min_n: cfg.traces.briefs.min_n, char_buckets: cfg.traces.briefs.char_buckets });
+	if (json) {
+		console.log(JSON.stringify(report ? summary : rows, null, 2));
+		return 0;
+	}
+	if (report) {
+		const side = (s: SideStat): string =>
+			`n=${s.n} waste=${s.waste === null ? "n too small" : pyPercent0(s.waste)} accept=${s.accept === null ? "n too small" : pyPercent0(s.accept)}`;
+		for (const f of summary.features) console.log(`${f.feature}: with [${side(f.with)}] | without [${side(f.without)}]`);
+		for (const b of summary.buckets) console.log(`chars ${b.label}: [${side(b.stat)}]`);
+		return 0;
+	}
+	if (rows.length === 0) console.log("no spawn briefs in the window");
+	for (const r of rows) {
+		const f = r.features;
+		const flags = [f.fileLines && "file:line", f.verify && "verify", f.budget && "budget", f.phase && "phase", f.plan && "plan"].filter(Boolean).join(",") || "-";
+		const waste = r.waste_pct === null ? "-" : pyPercent0(r.waste_pct);
+		console.log(`${r.agent}: ${f.chars} chars, ${f.acceptance} acceptance lines, flags ${flags}, waste ${waste}, ${r.accepted ? "accepted" : "not accepted"}`);
+	}
+	return 0;
+}
+
+/** `neurastream traces claims|actions|efficiency|bloat|briefs`: one run by id, or every run touched inside a --since window (briefs: a window only). */
 export async function runTraces(args: string[], opts: { home?: string } = {}): Promise<number> {
 	const sub = args[0];
-	if (sub !== "claims" && sub !== "actions" && sub !== "efficiency" && sub !== "bloat") {
+	if (sub !== "claims" && sub !== "actions" && sub !== "efficiency" && sub !== "bloat" && sub !== "briefs") {
 		console.error(TRACES_USAGE);
 		return 2;
 	}
@@ -193,6 +249,7 @@ export async function runTraces(args: string[], opts: { home?: string } = {}): P
 		return 1;
 	}
 	const root = cfg.adapter?.sessions || join(cfg.paths.home, ".omp", "agent", "sessions");
+	if (sub === "briefs") return briefsCommand(cfg, root, args.slice(1));
 	const rest = args.slice(1);
 	let runId: string | undefined;
 	let windowSec: number | undefined;
