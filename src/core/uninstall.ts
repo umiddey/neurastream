@@ -102,6 +102,19 @@ function bins(cfg: Config, out: UninstallTarget[]): void {
 	}
 }
 
+/** A skill dir is ours only when every file in it matches the shipped copy; any file the owner added keeps it. */
+function sameTree(live: string, shipped: string): boolean {
+	if (!lstatSync(live).isDirectory()) return false;
+	const names = readdirSync(live).sort();
+	if (names.join("\0") !== readdirSync(shipped).sort().join("\0")) return false;
+	return names.every((name) => {
+		const a = join(live, name);
+		const b = join(shipped, name);
+		if (lstatSync(a).isDirectory()) return lstatSync(b).isDirectory() && sameTree(a, b);
+		return lstatSync(a).isFile() && readFileSync(a).equals(readFileSync(b));
+	});
+}
+
 function adapterSurface(cfg: Config, out: UninstallTarget[], kept: string[]): void {
 	const adapter = cfg.adapter;
 	if (!adapter) return;
@@ -123,6 +136,17 @@ function adapterSurface(cfg: Config, out: UninstallTarget[], kept: string[]): vo
 			} else {
 				kept.push(`${live} (pin differs from the shipped template; kept)`);
 			}
+		}
+	}
+
+	const skillsDir = join(cfg.paths.home, ".agents/skills");
+	const shippedSkills = join(PACKAGE_ROOT, "templates/skills");
+	if (existsSync(shippedSkills)) {
+		for (const name of readdirSync(shippedSkills).sort()) {
+			const live = join(skillsDir, name);
+			if (!existsSync(live)) continue;
+			if (sameTree(live, join(shippedSkills, name))) out.push({ path: live, what: `template-identical skill ${name}` });
+			else kept.push(`${live} (skill differs from the shipped copy; kept)`);
 		}
 	}
 

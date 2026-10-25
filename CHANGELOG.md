@@ -1,5 +1,7 @@
 # Changelog
 ## Unreleased
+### Added
+- Skill pack: `templates/skills/architecture-drilldown` (`SKILL.md`, `template.html`) is copied to `~/.agents/skills/` by `adapter install omp` when missing, kept when present, removed by `uninstall` only when byte-identical, and checked by `doctor`.
 
 ## 0.2.20
 ### Fixed

@@ -127,3 +127,21 @@ test("planned paths outside HOME are refused and nothing is removed", () => {
 	expect(existsSync(join(h, ".config/neurastream/config.yml"))).toBe(true);
 	expect(existsSync(join(h, ".omp/plugins/node_modules/neurastream"))).toBe(true);
 }, 60_000);
+
+test("an identical shipped skill is removed; a skill dir with an owner file is kept", () => {
+	const clean = home();
+	setup(clean);
+	const cleanDir = join(clean, ".agents/skills/architecture-drilldown");
+	expect(existsSync(join(cleanDir, "SKILL.md"))).toBe(true);
+	expect(run(clean, ["--yes"]).code).toBe(0);
+	expect(existsSync(cleanDir)).toBe(false);
+
+	const edited = home();
+	setup(edited);
+	const editedDir = join(edited, ".agents/skills/architecture-drilldown");
+	writeFileSync(join(editedDir, "notes.md"), "mine\n");
+	const r = run(edited, ["--yes"]);
+	expect(r.code).toBe(0);
+	expect(r.stdout).toContain("kept:");
+	expect(readFileSync(join(editedDir, "notes.md"), "utf8")).toBe("mine\n");
+}, 60_000);
