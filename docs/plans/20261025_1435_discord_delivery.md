@@ -39,6 +39,7 @@ Read /home/ukd/projects/opus-implementer-method.md first.
 
 ## Progress
 Status: open
+WAITING on owner: install 0.2.21 (contains this fix since 0.2.20; `bun add -g` is guard-locked): run `bun add -g neurastream@0.2.21 && neurastream install`, or type `unlock 30` in chat
 - 2026-10-25 14:35 Main: plan written from the guard-log evidence in the Goal. Findings: none
 - 2026-10-25 NsDiscordDelivery: P1/P2 implemented; targeted notify tests 29/29 pass, full suite 817 pass/3 skip/0 fail and typecheck pass. Findings: none
 - 2026-10-25 NsDiscordDelivery: Final targeted notify run 29/29 pass and `bun run typecheck` pass; later full-suite run was 812 pass/3 skip/5 fail, with four `EDQUOT` writes and one git ref-lock error in `tests/golden/ports-p4.test.ts`. Findings: environmental full-suite failures reported; earlier full run was green

@@ -1,6 +1,10 @@
 # Changelog
 ## Unreleased
 
+## 0.2.22
+### Added
+- `neurastream pages on|off|serve|publish|list` serves published static files from a systemd user unit on the tailnet, with owner-login authentication, safe direct-file serving, and doctor checks.
+
 ## 0.2.21
 ### Added
 - Skill pack: `templates/skills/architecture-drilldown` (`SKILL.md`, `template.html`) is copied to `~/.agents/skills/` by `adapter install omp` when missing, kept when present, removed by `uninstall` only when byte-identical, and checked by `doctor`.
@@ -11,7 +15,6 @@
 
 ## 0.2.19
 ### Added
-- `neurastream pages on|off|serve|publish|list` serves published static files from a systemd user unit on the tailnet, with owner-login authentication, safe direct-file serving, and doctor checks.
 - Main's context annotates absolute provider reset times with the caller's local time; `quota.reset_pattern` selects timestamps and explicit zones in the message take precedence over `quota.reset_tz`.
 - `neurastream traces bloat [<runId>|--since 24h] [--json]` (plan 20261024_0303): per-run model-call prompt sizes (usage input + cacheRead + cacheWrite, one row per call) with `prompt-bloat` findings — the first call over `traces.bloat.first_call_max` (default 150000), or any call over `ratio_of_limit` (default 0.8) × its model's `context_limits` entry (an open map; a model without an entry is not limit-checked). A failed request dump belongs to one run only: its window must cover the dump, its model must match, then the closest event at or before the dump wins; ties and dumps with no eligible run are listed once as unmatched (also in `--json`). Its report shows what filled the prompt — system / messages / tool groups by `traces.bloat.tool_group`, plus the five largest tools — and, when the run itself has no usage finding (its rejected call never wrote usage), the dump's error-response prompt size ("prompt is too long: 1172629 tokens > 1000000 maximum") becomes the flag with the dump as the named source; a dump stating no count flags nothing, and no size is guessed from bytes.
 - `neurastream metrics report` ends with a weekly `Prompt bloat over N runs: K flagged, largest first call X tokens (<run>)` line over every run touched in the window (largest first call = the run's usage, else the matched dump's stated prompt), next to the provider-honesty line.
