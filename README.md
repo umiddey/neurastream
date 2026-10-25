@@ -119,6 +119,10 @@ A request is served only when the peer is a tailnet address that is neither loop
 
 An answer appends one record to `<queue_state>/owner-inbox.jsonl` (plan, question, answer, login); unlock/lock go through the core unlock and log `UNLOCK ui source=ui:<login> minutes=N`. Main's session delivers each record once as a user message — at turn end and on a 15 s poll while idle — and marks the consumed rows in `<queue_state>/owner-inbox.cursor`; subagent sessions never deliver. Both files sit under the queue state dir, so guards refuse agent writes to them: an agent cannot forge an owner answer. Guards also refuse agent commands that start the page (`neurastream ui`, or `systemctl --user start/restart/enable` of `neurastream-ui`): starting it is the owner's move.
 
+## Static pages (`neurastream pages`)
+
+`neurastream pages on [--port N] [--dir D]` installs the systemd user unit and serves regular files in the configured pages directory on the tailnet; `pages publish <file> [name] [--force]` publishes an artifact and prints its MagicDNS URL. `pages list` lists published files and `pages off` stops the service. Requests are limited to the configured owner's tailnet login or loopback; hidden files, symlinks and paths outside the directory are not served.
+
 ## Session rollover
 
 Main's session file grows with every turn. When it reaches `rollover.max_session_mb` (default 5, `docs/config.md`), Main writes a handoff note to `<queue_state>/rollover/<session id>.md`. The note covers the work in progress and its state, the decisions made and why, the next step, and the files involved. Main is asked for it once per session file, when a turn ends.
