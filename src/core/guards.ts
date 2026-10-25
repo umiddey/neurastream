@@ -934,11 +934,12 @@ function newProgressEntries(before: string, after: string): string[] {
 	return progressEntries(after).filter(b => !old.has(b));
 }
 
-/** The value after "Findings:" in an entry, or null when the entry has no Findings line with content. */
+/** The value after the entry's last "Findings:", or null when it has no Findings line with content. A "Findings:"
+ *  quoted earlier in the entry (e.g. inside resume steps) is entry text, never the findings (I-20261025-51). */
 function findingsValue(block: string): string | null {
-	const line = block.split("\n").find(l => l.includes("Findings:"));
+	const line = block.split("\n").findLast(l => l.includes("Findings:"));
 	if (!line) return null;
-	return line.slice(line.indexOf("Findings:") + "Findings:".length).trim() || null;
+	return line.slice(line.lastIndexOf("Findings:") + "Findings:".length).trim() || null;
 }
 
 // Main's plan text outside "## Progress" must rest on files Main read itself (planReadProblems).
