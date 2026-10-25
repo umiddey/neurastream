@@ -84,6 +84,7 @@ export function parseTraceFile(file: string, runId: string): TraceEvent[] {
 		const role = str(m.role);
 		const model = str(m.model);
 		const provider = str(m.provider);
+		const api = str(m.api);
 		const usage = usageOf(m.usage);
 		if (role === "assistant") {
 			const content = Array.isArray(m.content) ? m.content : [];
@@ -92,7 +93,7 @@ export function parseTraceFile(file: string, runId: string): TraceEvent[] {
 				if (!p) continue;
 				if (p.type === "text") {
 					const t = String(p.text ?? "");
-					if (t.trim()) out.push({ kind: "assistantText", ts, runId, text: t, model, provider, usage, responseId: str(m.responseId) });
+					if (t.trim()) out.push({ kind: "assistantText", ts, runId, text: t, model, provider, api, usage, responseId: str(m.responseId) });
 				} else if (p.type === "toolCall") {
 					out.push({
 						kind: "toolCall",
@@ -103,6 +104,7 @@ export function parseTraceFile(file: string, runId: string): TraceEvent[] {
 						callId: str(p.id),
 						model,
 						provider,
+						api,
 						usage,
 						responseId: str(m.responseId),
 					});
@@ -113,7 +115,7 @@ export function parseTraceFile(file: string, runId: string): TraceEvent[] {
 			// aborted or errored stream (owner interrupt, provider error) drops its partial content
 			// while keeping the usage of what streamed, so it is not marked.
 			if (content.length === 0 && m.stopReason !== "aborted" && m.stopReason !== "error") {
-				out.push({ kind: "assistantText", ts, runId, text: "", model, provider, usage, responseId: str(m.responseId) });
+				out.push({ kind: "assistantText", ts, runId, text: "", model, provider, api, usage, responseId: str(m.responseId) });
 			}
 		} else if (role === "toolResult") {
 			out.push({

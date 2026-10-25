@@ -22,12 +22,16 @@ export interface CallSize {
 	prompt: number;
 }
 
-/** One row per model call: usage-bearing assistant messages, folded per response id. */
-export function callSizes(events: TraceEvent[]): CallSize[] {
+/** One row per non-aggregate model call: usage-bearing assistant messages, folded per response id. */
+export function callSizes(events: TraceEvent[], aggregateApis: readonly string[] = []): CallSize[] {
 	const out: CallSize[] = [];
 	let last = "";
 	for (const e of events) {
 		if (e.kind !== "toolCall" && e.kind !== "assistantText") continue;
+		if (e.api !== undefined && aggregateApis.includes(e.api)) {
+			last = "";
+			continue;
+		}
 		const u = e.usage;
 		if (!u) continue;
 		// Parts of one assistant message share the response id and carry the same usage; a
@@ -48,6 +52,8 @@ export interface BloatRules {
 	ratio_of_limit: number;
 	/** Model -> context tokens; a model without an entry is not limit-checked. */
 	context_limits: Record<string, number>;
+	/** APIs whose usage aggregates several internal model calls. */
+	aggregate_apis?: string[];
 }
 
 /** Maps config onto the rule set (cfg.traces.bloat), the way actionsRules maps the traces lists. */
@@ -56,6 +62,7 @@ export function bloatRules(cfg: Config): BloatRules {
 		first_call_max: cfg.traces.bloat.first_call_max,
 		ratio_of_limit: cfg.traces.bloat.ratio_of_limit,
 		context_limits: cfg.traces.bloat.context_limits,
+		aggregate_apis: cfg.traces.bloat.aggregate_apis,
 	};
 }
 
@@ -75,7 +82,7 @@ export function bloatFindings(events: TraceEvent[], rules: BloatRules): Finding[
 	const out: Finding[] = [];
 	const seen = new Set<string>();
 	const runId = events[0]?.runId ?? "?";
-	const calls = callSizes(events);
+	const calls = callSizes(events, rules.aggregate_apis);
 	if (calls.length === 0) return out;
 	const first = calls[0]!;
 	if (first.prompt > rules.first_call_max) {

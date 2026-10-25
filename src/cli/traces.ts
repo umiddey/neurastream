@@ -93,6 +93,8 @@ export interface RunBloatReport {
 	breakdown?: BloatBreakdown;
 	/** The prompt the assigned dump's error response states. */
 	dumpPrompt?: { tokens: number; limit?: number };
+	/** At least one trace event uses an API whose usage aggregates internal calls. */
+	aggregated: boolean;
 }
 
 /**
@@ -138,8 +140,9 @@ export function assignDumps(runs: DumpAssignmentRun[], src: TraceSource, dumps: 
 
 export function bloatReport(src: TraceSource, runId: string, rules: BloatRules, groupRegex: string, dumps: { file: string; ms: number }[], mtimeSec: number, parsedEvents?: TraceEvent[]): RunBloatReport {
 	const events = parsedEvents ?? src.events(runId);
-	const sizes = callSizes(events);
+	const sizes = callSizes(events, rules.aggregate_apis);
 	const findings = bloatFindings(events, rules);
+	const aggregated = events.some((event) => event.api !== undefined && rules.aggregate_apis?.includes(event.api));
 	let breakdown: BloatBreakdown | undefined;
 	let dumpPrompt: { tokens: number; limit?: number } | undefined;
 	let first: number | undefined;
@@ -169,6 +172,7 @@ export function bloatReport(src: TraceSource, runId: string, rules: BloatRules, 
 		firstPrompt: sizes[0]?.prompt ?? null,
 		maxPrompt: sizes.length > 0 ? sizes.reduce((m, c) => Math.max(m, c.prompt), 0) : null,
 		findings,
+		aggregated,
 		...(breakdown ? { breakdown } : {}),
 		...(dumpPrompt ? { dumpPrompt } : {}),
 	};
@@ -271,11 +275,14 @@ export async function runTraces(args: string[], opts: { home?: string } = {}): P
 			console.log(`${r.runId}: ${r.calls} calls, ${r.wasted} wasted (${pyPercent0(r.wastePct)})`);
 			for (const rule of RULE_ORDER) console.log(`  ${rule}: ${r.byRule[rule]}`);
 		} else if ("calls" in r) {
-			if (r.calls === 0 && r.findings.length === 0) {
+			if (r.aggregated) {
+				console.log(`${r.runId}: usage aggregated by provider, per-call size unknown`);
+			} else if (r.calls === 0 && r.findings.length === 0) {
 				console.log(`${r.runId}: no model calls in the trace`);
 				continue;
+			} else {
+				console.log(`${r.runId}: ${r.calls} calls, first ${r.firstPrompt ?? "-"}, max ${r.maxPrompt ?? "-"} (${r.findings.length === 0 ? "no prompt-bloat" : `${r.findings.length} prompt-bloat`})`);
 			}
-			console.log(`${r.runId}: ${r.calls} calls, first ${r.firstPrompt ?? "-"}, max ${r.maxPrompt ?? "-"} (${r.findings.length === 0 ? "no prompt-bloat" : `${r.findings.length} prompt-bloat`})`);
 			for (const f of r.findings) {
 				console.log(`  ${f.kind}: ${f.summary}`);
 				if (f.evidence) console.log(`    evidence: ${f.evidence}`);

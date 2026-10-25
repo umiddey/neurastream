@@ -191,6 +191,8 @@ export interface Config {
 			ratio_of_limit: number;
 			/** Model -> context tokens; a model without an entry is not limit-checked. Open map. */
 			context_limits: Record<string, number>;
+			/** APIs whose usage aggregates multiple internal calls and is not per-call size. */
+			aggregate_apis: string[];
 			/** First capture of this regex on a tool name names its bloat group (no match: "builtin"). */
 			tool_group: string;
 		};
@@ -393,6 +395,9 @@ function check(cfg: Config): void {
 	}
 	if (typeof cfg.traces.bloat.ratio_of_limit !== "number" || !Number.isFinite(cfg.traces.bloat.ratio_of_limit) || !(cfg.traces.bloat.ratio_of_limit > 0) || cfg.traces.bloat.ratio_of_limit > 1) {
 		throw new ConfigError("traces.bloat.ratio_of_limit must be a number in (0, 1]");
+	}
+	if (!Array.isArray(cfg.traces.bloat.aggregate_apis) || cfg.traces.bloat.aggregate_apis.some((api) => typeof api !== "string" || api === "")) {
+		throw new ConfigError("traces.bloat.aggregate_apis must be a list of non-empty strings");
 	}
 	for (const [model, limit] of Object.entries(cfg.traces.bloat.context_limits)) {
 		if (typeof limit !== "number" || !Number.isFinite(limit) || !(limit > 0)) {

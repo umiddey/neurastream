@@ -72,6 +72,8 @@ export interface TraceEvent {
 	text?: string;
 	model?: string;
 	provider?: string;
+	/** Adapter-provided API identifier for the message carrying this event. */
+	api?: string;
 	usage?: TraceUsage;
 	/** Provider response id of the assistant message; absent when the line carries none. */
 	responseId?: string;

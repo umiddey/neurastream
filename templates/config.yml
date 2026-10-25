@@ -221,6 +221,8 @@ traces:
     first_call_max: 150000
     ratio_of_limit: 0.8
     context_limits: {}
+    # APIs whose usage aggregates multiple internal calls; these are not per-call sizes.
+    aggregate_apis: ["cursor-agent"]
     # Bloat breakdown: the first capture of this regex on a tool name names its group
     # (no match = "builtin"). The leading _? keeps underscore-prefixed MCP names grouped.
     tool_group: '^_?mcp__([A-Za-z0-9]+)_'

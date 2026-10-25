@@ -32,6 +32,24 @@ function called(prompt: number, model = "test-model", over: Partial<TraceEvent> 
 }
 
 const DEFAULTS: BloatRules = { first_call_max: 150000, ratio_of_limit: 0.8, context_limits: {} };
+// P3d red: usage from aggregate APIs must not be treated as per-call size.
+describe("aggregate API usage (P3d)", () => {
+	const events = parseTraceFile(join(FIX, "bloat-aggregate-api.jsonl"), "CpDemoHikoP3b");
+	const rules: BloatRules = { ...DEFAULTS, aggregate_apis: ["cursor-agent"] };
+
+	test("cursor-agent's 8M turn usage is neither a call nor a bloat finding", () => {
+		expect(events[0]?.api).toBe("cursor-agent");
+		expect(callSizes(events, rules.aggregate_apis)).toEqual([]);
+		expect(bloatFindings(events, rules)).toEqual([]);
+	});
+
+	test("the same 8M message from another API remains a bloat call", () => {
+		const ordinaryApi = events.map((event) => ({ ...event, api: "anthropic-messages" }));
+		expect(callSizes(ordinaryApi, rules.aggregate_apis)).toHaveLength(1);
+		expect(bloatFindings(ordinaryApi, rules)).toHaveLength(1);
+	});
+});
+
 
 describe("callSizes (P1)", () => {
 	test("one row per model call in order; accounting and toolResult usage are not calls", () => {
@@ -132,9 +150,10 @@ describe("config (P1)", () => {
 			first_call_max: 150000,
 			ratio_of_limit: 0.8,
 			context_limits: {},
+			aggregate_apis: ["cursor-agent"],
 			tool_group: "^_?mcp__([A-Za-z0-9]+)_",
 		});
-		expect(bloatRules(cfg)).toEqual({ first_call_max: 150000, ratio_of_limit: 0.8, context_limits: {} });
+		expect(bloatRules(cfg)).toEqual({ first_call_max: 150000, ratio_of_limit: 0.8, context_limits: {}, aggregate_apis: ["cursor-agent"] });
 	});
 
 	test("a user config overrides the bloat keys; context_limits is an open map", () => {
@@ -158,6 +177,7 @@ traces:
 			first_call_max: 200000,
 			ratio_of_limit: 0.5,
 			context_limits: { "big-model": 200000 },
+			aggregate_apis: ["cursor-agent"],
 			tool_group: "^x__([a-z]+)_",
 		});
 	});
@@ -168,6 +188,7 @@ traces:
 			["    ratio_of_limit: 1.5", /ratio_of_limit/],
 			["    first_call_max: 0", /first_call_max/],
 			["    context_limits:\n      m: -1", /context_limits/],
+			["    aggregate_apis: [1]", /aggregate_apis/],
 			["    tool_group: \"(\"", /tool_group/],
 			["    nope: 1", /unknown key traces\.bloat\.nope/],
 		];
@@ -299,6 +320,7 @@ traces:
 `,
 	);
 	writeFileSync(join(P9SESSIONS, "2026-10-25T10-00-00-000Z_bloat.jsonl"), readFileSync(join(FIX, "bloat-run.jsonl"), "utf8"));
+	writeFileSync(join(P9SESSIONS, "2026-10-25T11-00-00-000Z_aggregate.jsonl"), readFileSync(join(FIX, "bloat-aggregate-api.jsonl"), "utf8"));
 	writeFileSync(join(P9SESSIONS, "2026-10-25T09-00-00-000Z_bloat.jsonl"), readFileSync(join(FIX, "bloat-run.jsonl"), "utf8"));
 	// one dump inside the fresh run's window (after its first event, before its mtime), one
 	// an hour before any run of the fixture, named like the real ones: <epoch-ms>-<id>.json
@@ -326,9 +348,9 @@ traces:
 		return Array.isArray(parsed) ? parsed : parsed.reports;
 	}
 
-	test("--since 48h lists both runs; only the run whose window holds the dump gets a breakdown", async () => {
+	test("--since 48h lists all runs; only the run whose window holds the dump gets a breakdown", async () => {
 		const reports = await jsonReports(["--since", "48h"]);
-		expect(reports.map((r) => r.runId).sort()).toEqual(["MAIN 09-00-00", "MAIN 10-00-00"]);
+		expect(reports.map((r) => r.runId).sort()).toEqual(["MAIN 09-00-00", "MAIN 10-00-00", "MAIN 11-00-00"]);
 		const fresh = reports.find((r) => r.runId === "MAIN 10-00-00")!;
 		expect(fresh.calls).toBe(8);
 		expect(fresh.firstPrompt).toBe(40000);
@@ -344,7 +366,7 @@ traces:
 
 	test("without --since the window defaults to 24h", async () => {
 		const reports = await jsonReports([]);
-		expect(reports.map((r) => r.runId)).toEqual(["MAIN 10-00-00"]);
+		expect(reports.map((r) => r.runId).sort()).toEqual(["MAIN 10-00-00", "MAIN 11-00-00"]);
 	});
 
 	test("one run by id gets the same report; selector rules match claims and actions", async () => {
@@ -356,6 +378,20 @@ traces:
 		expect(await runTraces(["nope"], { home: P9 })).toBe(2);
 	});
 
+	test("aggregate API output states per-call size is unknown", async () => {
+		const logs: string[] = [];
+		const orig = console.log;
+		console.log = (line: string) => logs.push(line);
+		let rc = -1;
+		try {
+			rc = await runTraces(["bloat", "MAIN 11-00-00"], { home: P9 });
+		} finally {
+			console.log = orig;
+		}
+		expect(rc).toBe(0);
+		expect(logs).toContain("MAIN 11-00-00: usage aggregated by provider, per-call size unknown");
+		expect(logs.some((line) => line.includes("prompt-bloat"))).toBe(false);
+	});
 	test("text output prints counts, findings, parts and top tools", async () => {
 		const logs: string[] = [];
 		const orig = console.log;
