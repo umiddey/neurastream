@@ -322,8 +322,8 @@ traces:
 			console.log = orig;
 		}
 		expect(rc).toBe(0);
-		const parsed: unknown = JSON.parse(logs.join("\n"));
-		return Array.isArray(parsed) ? parsed as Record<string, unknown>[] : (parsed as { reports: Record<string, unknown>[] }).reports;
+		const parsed = JSON.parse(logs.join("\n"));
+		return Array.isArray(parsed) ? parsed : parsed.reports;
 	}
 
 	test("--since 48h lists both runs; only the run whose window holds the dump gets a breakdown", async () => {
@@ -521,7 +521,7 @@ describe("overlapping run dump ownership (P3b)", () => {
 		const owners = output.reports.filter((r) => r.dumpPrompt !== undefined);
 		expect(owners).toHaveLength(1);
 		expect(owners[0]!.runId).toBe("MAIN 01-00-10");
-		expect((owners[0]!.dumpPrompt as { tokens: number }).tokens).toBe(1172629);
+		expect(owners[0]!.dumpPrompt).toEqual({ tokens: 1172629, limit: 1000000 });
 		expect(output.unmatchedDumps).toHaveLength(0);
 	});
 });
