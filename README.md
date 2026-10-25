@@ -26,12 +26,12 @@ flowchart LR
 | Queue (`queue-check`, `queue-close`, `queue-cancel`) | Every open plan is a file in a main checkout, listed in the one main index (`paths.queue_index`, one absolute path per line — never repo directories) and follows a template; one plan = one worktree. A plan leaves the queue only when its branch is merged into remote main and its done check passes; a failing check reopens it. Closing removes the plan's worktree when it is clean and its branch landed — a plain `git worktree remove`; a dirty, unmerged or unremovable worktree and the repo's main checkout are kept with the reason. Branches leave only via `git branch -d`, so a branch whose merge git cannot see stays. |
 | Blockers | Each plan's phase 0 lists what helpers may not do: push, touch a path, run a command, or write a text. The guard judges the command that runs and the files it changes, not words inside commit messages, quoted text or heredoc bodies: `git commit -m "... push ..."` is allowed, `git push` is refused. |
 | Guards | Helpers may only edit their plan's `## Progress`; every new entry ends with a `Findings:` line (`Findings: none`, or one item per finding with `file:line` evidence) or the edit is refused and the file restored, and each item becomes an incident. Helpers get a warning at call 90 and are stopped at call 100; Main can set a different stop for one run with a `Call budget: <N>` line in the task brief (see "Main reads the code for its plans" below). Protected files need an owner unlock (a file the owner touches, valid 30 minutes). With `guards.chat_unlock` on (default off), the owner's whole chat message `unlock` / `unlock N` / `lock` — typed in the terminal or through a collab guest prompt from a write peer — moves that file instead; nothing a model, a subagent or a tool produces can. |
-| Ledger (`agent-ledger`) | Tokens, cost, state and exit reason per agent; `--cap` refuses a spawn when a provider already runs 2. |
+| Ledger (`agent-ledger`) | Tokens, cost, state and exit reason per agent; `--cap` refuses a spawn when a provider already runs `ledger.max_running_per_provider` (default 2), when a run is `OVER-BUDGET` (unless `--incident <id>`), or when a priority plan has no running agent (unless `--priority`). |
 | Scoring (`agent-score`) | Points only for work Main accepted by commit, times the phase difficulty. Ranked per dollar and per hour. |
 | Brief lint (`brief-lint`) | Refuses a helper brief that misses a required rule (acceptance, stop condition, no push, call budget). |
 | Machine health (`machine-guard`, `main-start`, `heavy-run`) | Load, free memory, disk and `/tmp` limits; one heavy test run at a time. |
 | Unlanded work (`wip-check`, `wip-snapshot`, `wip-backup`) | Lists branches on no remote and dirty worktrees; snapshots them as hidden commits; can push them to a backup repo. |
-| Session rollover | When the main session file passes 5 MB, the next owner message starts a fresh session from a handoff note. |
+| Session rollover | When the main session file passes 5 MB, or the installed neurastream version differs from the running plugin, Main writes a handoff note; under `neurastream main` a fresh session starts on its own, under plain omp the next owner message starts it. |
 | Owner page (`neurastream ui`) | One phone-sized page over Tailscale (`ui.*` config): the plans waiting on the owner with answer buttons, the guard unlock, running agents, the queue, recent merges/CI, open incidents, agent scores, machine health. Serves only a tailnet peer whose `tailscale whois` login equals `ui.owner_login`, only with a Host header naming the tailnet address or the MagicDNS name — DNS rebinding and every other visitor get a 403. Answers land in the owner inbox and reach Main once each; agents cannot start the page or write the inbox. |
 
 ## Requirements
@@ -213,6 +213,10 @@ omp retries a 429 itself while the provider's wait fits its `retry.maxDelayMs` (
 
 Before Main reads a message, reset timestamps matching `quota.reset_pattern` are annotated with their local time, for example `reset at 2026-10-25 18:56:22 (= 2026-10-25 11:56:22 CET local)`. Set `quota.reset_tz` to the provider's time zone; an explicit zone or UTC offset in the message takes precedence.
 
+## Suspicious actions (`neurastream traces actions`)
+
+`neurastream traces actions <runId|--since 24h> [--json]` lists the suspicious tool actions a run's trace shows: reads of secret paths (`traces.actions.secret_globs`), network commands (`net_tools`) to unknown hosts, pipes into a shell (`shell_patterns`), and writes outside `write_roots` (empty = `paths.work_roots`; both empty = off) or on `deny_globs`. The high ones also open realtime suspicious-action incidents.
+
 ## Trace claims (`neurastream traces claims`)
 
 Agents' final reports assert results — "530 passed", "exit 0", commit SHAs, heavy-run labels, changed files. This command reads a run's trace (its session file, read-only) and checks each claim in the run's last assistant message against what the run's own tool activity shows: a count or exit code must appear in some tool output, a commit SHA must be printed by the output of a git command the run itself ran, a heavy-run label must appear in a quoted heavy-run call, and a changed path must be carried by an edit/write call or a shell write in the path's own command segment. A claim nothing shows becomes a `claim-unbacked` finding.
@@ -323,7 +327,7 @@ Live copies are never hand-edited. `neurastream doctor` names each hand-edited i
 - Managed: the text between the markers. Install replaces it. A second install changes nothing.
 - Yours: every line outside the markers. Install keeps it byte for byte. A file with no markers gets the block appended.
 - Drift: `neurastream doctor` reports `stale:` when the text between the markers differs from the package's block, and `missing:` when the markers are absent. Edits outside the markers are never reported.
-- Edit limit: the project-file changes Main gets per window come from `guards.main_edit_limit` and `guards.main_window_min`, not from the block text.
+- Edit limit: the project-file changes Main gets per window come from the config, not from the block text: `guards.main_edit_limit` per `guards.main_window_min` in tier `opinionated`, `autonomy.strict_edit_limit` in tier `strict`, no cap in tier `full`.
 
 ## License
 
