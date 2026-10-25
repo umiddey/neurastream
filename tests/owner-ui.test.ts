@@ -18,7 +18,7 @@ import { appendMetric } from "../src/core/metrics.ts";
 import { checkTool } from "../src/core/guards.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { createOmpAdapter, ownerInboxCursorPath, ownerInboxMessage, type ExtensionHost } from "../src/adapters/omp/index.ts";
-import { inboxPath, agentRows, ciRows, incidentRows, machineRow, questionRows, queueRows, scoresData, startOwnerUi, type OwnerUiOptions, type OwnerUiServer } from "../src/core/owner-ui.ts";
+import { inboxPath, agentRows, buildPageData, ciRows, incidentRows, machineRow, nowStats, questionRows, queueRows, scoresData, startOwnerUi, type OwnerUiOptions, type OwnerUiServer } from "../src/core/owner-ui.ts";
 import { runUi } from "../src/cli/ui.ts";
 import { parsePlan, stateDirPath, unlockPath } from "../src/core/queue/lib.ts";
 import { parseWhoisLogin, type Tailscale } from "../src/core/tailscale.ts";
@@ -848,6 +848,70 @@ test("machineRow: free GB, disk minimum, load, load max and cores", () => {
 	expect(m.cores).toBeGreaterThan(0);
 	expect(m.loadMax).toBeGreaterThan(0);
 	expect(m.load).toBeGreaterThanOrEqual(0);
+});
+
+// --- P6: nowStats, the numbers behind the top tiles ---
+
+test("nowStats: the 24 h window — exactly 24 h old is out, 23:59 h is in — and hourly buckets oldest → newest", () => {
+	const now = 1_800_000_000;
+	const source: RunSource = {
+		listRuns: since => {
+			expect(since).toBe(now - 86400);
+			return [
+				run({ id: "edge-out", cost: 1, startedAt: null, lastWriteAt: now - 86_400 }),
+				run({ id: "edge-in", cost: 2, startedAt: null, lastWriteAt: now - 86_340 }),
+				run({ id: "fresh", cost: 4, startedAt: now - 60, lastWriteAt: now - 30 }),
+				run({ id: "older", cost: 8, startedAt: null, lastWriteAt: now - 86_400 - 3600 }),
+			];
+		},
+		mainSession: () => null,
+	};
+	const s = nowStats(CFG, source, now);
+	expect(s.runs24).toBe(2);
+	expect(s.spend24).toBeCloseTo(6);
+	// 23:59 h ago sits in the oldest bucket (0); a minute ago in the newest (23)
+	expect(s.runsByHour[0]).toBe(1);
+	expect(s.runsByHour[23]).toBe(1);
+	expect(s.spendByHour[0]).toBeCloseTo(2);
+	expect(s.spendByHour[23]).toBeCloseTo(4);
+	expect(s.openPlans).toBe(1); // the toy INDEX lists one open plan
+});
+
+test("nowStats: running and died counts, main vs sub spend split and per-model spend", () => {
+	const now = 1_800_000_000;
+	const source: RunSource = {
+		listRuns: () => [
+			run({ id: "m1", kind: "main", model: "zai/glm-5.3-flash", cost: 0.7, status: "running", startedAt: now - 600, lastWriteAt: now - 10 }),
+			run({ id: "s1", kind: "sub", model: "zai/glm-5.3-flash", cost: 0.2, status: "died", startedAt: now - 7200, lastWriteAt: now - 3600 }),
+			run({ id: "s2", kind: "sub", model: "grok/grok-4-fast", cost: 0.1, status: "done", startedAt: now - 50_000, lastWriteAt: now - 40_000 }),
+			run({ id: "s3", kind: "sub", model: "grok/grok-4-fast", cost: 0.3, status: "waiting", startedAt: null, lastWriteAt: now - 100 }),
+		],
+		mainSession: () => null,
+	};
+	const s = nowStats(CFG, source, now);
+	expect(s.running).toBe(1);
+	expect(s.died).toBe(1);
+	expect(s.runs24).toBe(4);
+	expect(s.mainSpend).toBeCloseTo(0.7);
+	expect(s.agentSpend).toBeCloseTo(0.6);
+	expect(s.spend24).toBeCloseTo(1.3);
+	expect(s.byModel.map(m => m.model)).toEqual(["glm-5.3-flash", "grok-4-fast"]);
+	expect(s.byModel[0]!.spend).toBeCloseTo(0.9);
+	expect(s.byModel[0]!.runs).toBe(2);
+	expect(s.byModel[1]!.spend).toBeCloseTo(0.4);
+	expect(s.byModel[1]!.runs).toBe(2);
+});
+
+test("buildPageData wraps nowStats in the safe() rule: a throwing run source gives stats null and a live page", () => {
+	const bad: RunSource = {
+		listRuns: () => {
+			throw new Error("boom");
+		},
+		mainSession: () => null,
+	};
+	const d = buildPageData(CFG, bad);
+	expect(d.stats).toBeNull();
+	expect(d.questions).toHaveLength(1);
 });
 
 // --- P4: queue reorder by drag and drop ---

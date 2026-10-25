@@ -216,6 +216,71 @@ export function machineRow(cfg: Config): MachineRow {
 	return { freeGb, diskMin: cfg.machine.disk_min_gb, load, loadMax, cores };
 }
 
+/** The numbers behind the top tiles: everything in the last 24 h plus the open-plan count. */
+export interface NowStats {
+	/** Total list-price spend over the last 24 h. */
+	spend24: number;
+	/** The "main" kind's share of spend24. */
+	mainSpend: number;
+	/** The "sub" kind's share of spend24. */
+	agentSpend: number;
+	/** Runs seen in the last 24 h. */
+	runs24: number;
+	/** Of those, the ones still running. */
+	running: number;
+	/** Of those, the ones that died. */
+	died: number;
+	/** Spend per hour over the last 24 h: 24 buckets, oldest → newest. */
+	spendByHour: number[];
+	/** Runs started per hour over the last 24 h: 24 buckets, oldest → newest. */
+	runsByHour: number[];
+	/** Spend and run count per short model name (after the last /), costliest first. */
+	byModel: { model: string; spend: number; runs: number }[];
+	/** Open plans in INDEX.md. */
+	openPlans: number;
+}
+
+/**
+ * Pure tile math over `source.listRuns(now - 86400)`: a run is in the window when its
+ * bucket time — `startedAt`, else `lastWriteAt` — is newer than exactly 24 h ago, and it
+ * counts in the hourly bucket of that time. The run source pre-filters by its own mtime,
+ * so the strict window check here is the one rule that decides.
+ */
+export function nowStats(cfg: Config, source: RunSource, now: number): NowStats {
+	const cut = now - 86400;
+	const spendByHour = Array.from({ length: 24 }, () => 0);
+	const runsByHour = Array.from({ length: 24 }, () => 0);
+	const models = new Map<string, { spend: number; runs: number }>();
+	let spend24 = 0;
+	let mainSpend = 0;
+	let agentSpend = 0;
+	let runs24 = 0;
+	let running = 0;
+	let died = 0;
+	for (const r of source.listRuns(cut)) {
+		const ts = r.startedAt ?? r.lastWriteAt;
+		if (ts <= cut) continue;
+		spend24 += r.cost;
+		runs24++;
+		if (r.kind === "main") mainSpend += r.cost;
+		else agentSpend += r.cost;
+		if (r.status === "running") running++;
+		if (r.status === "died") died++;
+		// A future clock (skew) clamps into the newest bucket, never out of the array.
+		const hoursAgo = Math.min(23, Math.max(0, Math.floor((now - ts) / 3600)));
+		const at = 23 - hoursAgo;
+		spendByHour[at]! += r.cost;
+		runsByHour[at]! += 1;
+		const short = r.model.slice(r.model.lastIndexOf("/") + 1);
+		const m = models.get(short) ?? { spend: 0, runs: 0 };
+		m.spend += r.cost;
+		m.runs += 1;
+		models.set(short, m);
+	}
+	const byModel = [...models.entries()].map(([model, v]) => ({ model, spend: v.spend, runs: v.runs })).sort((a, b) => b.spend - a.spend);
+	return { spend24, mainSpend, agentSpend, runs24, running, died, spendByHour, runsByHour, byModel, openPlans: queueRows(cfg).length };
+}
+
 // ---- rendering (consumes the rows above, never the readers directly) ----
 
 function needCard(row: QuestionRow, i: number): string {
@@ -362,6 +427,8 @@ export interface PageData {
 	incidents: IncidentRow[] | null;
 	scores: ScoresData | null;
 	machine: MachineRow | null;
+	/** The 24 h tile numbers; null when the run source is unreadable. */
+	stats: NowStats | null;
 	/** Minutes left in the guard unlock; null = locked. */
 	lockMinutesLeft: number | null;
 }
@@ -394,6 +461,7 @@ export function buildPageData(cfg: Config, source: RunSource): PageData {
 		incidents: safe(() => incidentRows(cfg)),
 		scores: safe(() => scoresData(cfg)),
 		machine: safe(() => machineRow(cfg)),
+		stats: safe(() => nowStats(cfg, source, nowSec())),
 		lockMinutesLeft: lockMinutesLeft(cfg),
 	};
 }
