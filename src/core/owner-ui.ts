@@ -491,8 +491,9 @@ function receiptHtml(sent: string | null, params: URLSearchParams): string {
 			text = "Locked";
 			break;
 		case "reorder": {
+			// The rank counts the OPEN plans (what the page shows), not every INDEX.md line.
 			const to = Number(params.get("to"));
-			text = Number.isInteger(to) && to > 0 ? `Moved to #${to} · Main sees it next turn` : "Moved · Main sees it next turn";
+			text = Number.isInteger(to) && to > 0 ? `Moved to #${to} of open plans · Main sees it next turn` : "Moved · Main sees it next turn";
 			break;
 		}
 		case "unlock-off":
@@ -559,7 +560,20 @@ export function buildPageData(cfg: Config, source: RunSource): PageData {
 const FAVICON =
 	"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%23D98E04'/%3E%3C/svg%3E";
 
+/**
+ * Where a dropped card goes among the other cards, by vertical midpoint (y grows downward):
+ * in front of the FIRST card whose midpoint is greater than the dragged card's, else after the
+ * last card. Returns an index into `mids` (the first slot) or `mids.length` (after the last).
+ * Pure and exported so the page script — which inlines this exact source via toString() — and
+ * the test run the same code: dragging card 1 toward card 2 lands it at 2, never second-to-last.
+ */
+export function dropSlot(mids: number[], mid: number): number {
+	for (let i = 0; i < mids.length; i++) if (mids[i]! > mid) return i;
+	return mids.length;
+}
+
 const SCRIPT = `(function(){
+var dropSlot=${dropSlot.toString()};
 if(location.search)history.replaceState(null,"",location.pathname);
 function store(d,v){var k="nsui:"+d.id;if(v===undefined)return sessionStorage.getItem(k);sessionStorage.setItem(k,v?"1":"0");}
 var ds=document.querySelectorAll("details[id]");
@@ -576,7 +590,9 @@ var moveCard=function(card,how){if(how==="top"){var f=qcards()[0];if(f&&f!==card
 qlist.addEventListener("click",function(e){var t=e.target;if(!t||!t.closest)return;var b=t.closest(".qmove");if(!b)return;var card=t.closest(".qcard");if(!card)return;moveCard(card,b.getAttribute("data-move"));submitReorder(card.getAttribute("data-plan"));});
 var drag=null;
 qlist.addEventListener("pointerdown",function(e){var t=e.target;if(!t||!t.closest)return;var h=t.closest(".qhandle");if(!h||drag)return;var card=t.closest(".qcard");if(!card)return;e.preventDefault();dragging=true;var r=card.getBoundingClientRect();var ph=document.createElement("li");ph.className="qph";ph.style.height=r.height+"px";qlist.insertBefore(ph,card);card.classList.add("dragging");card.style.width=r.width+"px";card.style.left=r.left+"px";card.style.top=r.top+"px";drag={card:card,ph:ph,y0:e.clientY,id:e.pointerId};try{h.setPointerCapture(e.pointerId);}catch(_){}});
-window.addEventListener("pointermove",function(e){if(!drag||e.pointerId!==drag.id)return;var card=drag.card;card.style.transform="translateY("+(e.clientY-drag.y0)+"px)";var r=card.getBoundingClientRect();var mid=r.top+r.height/2;var els=Array.prototype.slice.call(qlist.children);for(var i=0;i<els.length;i++){var el=els[i];if(el===card||el===drag.ph)continue;var er=el.getBoundingClientRect();if(mid<er.top+er.height/2){if(el.previousElementSibling!==drag.ph)qlist.insertBefore(drag.ph,el);}else if(el.nextElementSibling!==drag.ph){qlist.insertBefore(drag.ph,el.nextSibling);}}});
+window.addEventListener("pointermove",function(e){if(!drag||e.pointerId!==drag.id)return;var card=drag.card;card.style.transform="translateY("+(e.clientY-drag.y0)+"px)";var r=card.getBoundingClientRect();var mid=r.top+r.height/2;var mids=[];var els=[];var ch=qlist.children;for(var i=0;i<ch.length;i++){var el=ch[i];if(el===card||el===drag.ph)continue;var er=el.getBoundingClientRect();mids.push(er.top+er.height/2);els.push(el);}
+var k=dropSlot(mids,mid);
+if(k<mids.length){if(els[k].previousElementSibling!==drag.ph)qlist.insertBefore(drag.ph,els[k]);}else if(mids.length&&els[mids.length-1].nextElementSibling!==drag.ph){qlist.insertBefore(drag.ph,els[mids.length-1].nextSibling);}});
 var endDrag=function(e,submitIt){if(!drag||(e&&e.pointerId!==undefined&&e.pointerId!==drag.id))return;var card=drag.card,ph=drag.ph;card.classList.remove("dragging");card.style.transform="";card.style.width="";card.style.left="";card.style.top="";qlist.insertBefore(card,ph);qlist.removeChild(ph);drag=null;if(submitIt)submitReorder(card.getAttribute("data-plan"));else dragging=false;};
 window.addEventListener("pointerup",function(e){endDrag(e,true);});
 window.addEventListener("pointercancel",function(e){endDrag(e,false);});

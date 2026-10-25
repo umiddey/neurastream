@@ -18,7 +18,7 @@ import { appendMetric } from "../src/core/metrics.ts";
 import { checkTool } from "../src/core/guards.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { createOmpAdapter, ownerInboxCursorPath, ownerInboxMessage, type ExtensionHost } from "../src/adapters/omp/index.ts";
-import { inboxPath, agentRows, buildPageData, ciRows, incidentRows, machineRow, nowStats, questionRows, queueRows, scoresData, startOwnerUi, type OwnerUiOptions, type OwnerUiServer } from "../src/core/owner-ui.ts";
+import { inboxPath, agentRows, buildPageData, ciRows, dropSlot, incidentRows, machineRow, nowStats, questionRows, queueRows, scoresData, startOwnerUi, type OwnerUiOptions, type OwnerUiServer } from "../src/core/owner-ui.ts";
 import { runUi } from "../src/cli/ui.ts";
 import { parsePlan, stateDirPath, unlockPath } from "../src/core/queue/lib.ts";
 import { parseWhoisLogin, type Tailscale } from "../src/core/tailscale.ts";
@@ -1264,6 +1264,26 @@ test("a non-owner peer is refused on /reorder like /answer", async () => {
 	expect(res.status).toBe(403);
 	expect(readFileSync(index, "utf8")).toBe(original);
 	expect(inboxRecords()).toEqual([]);
+});
+
+// --- P10: the drag drop lands where the owner aimed it ---
+
+test("dropSlot: a drag from #1 toward #2 lands in slot 2, not second-to-last (P10)", async () => {
+	// before the FIRST card below the drag point; a drop above the top stays top; past the end lands after the last.
+	// (The old loop kept moving the placeholder in front of every card below the drag point, so
+	// the last write won and the card always landed before the LAST card — second-to-last.)
+	expect(dropSlot([10, 30, 50, 70], 25)).toBe(1);
+	expect(dropSlot([10, 30, 50, 70], 5)).toBe(0);
+	expect(dropSlot([10, 30, 50, 70], 99)).toBe(4);
+	// the page script inlines this exact function, so what the test runs is what the page runs
+	const svc = ui();
+	expect(await (await get(svc)).text()).toContain("var dropSlot=");
+});
+
+test("the reorder receipt says the rank is among open plans (P10)", async () => {
+	const svc = ui();
+	const res = await get(svc, "/?sent=reorder&to=2");
+	expect(await res.text()).toContain("Moved to #2 of open plans");
 });
 
 test("the queue section is one flat ranked list with a drag handle, arrow buttons and the rendered order in a before field", async () => {

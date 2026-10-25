@@ -1,4 +1,8 @@
 # Changelog
+## Unreleased
+### Fixed
+- Owner page: dragging a queue card to slot 2 now lands it at slot 2 — the drag placeholder always slid to the last card's slot before (I-20261025-187); the reorder receipt says "Moved to #N of open plans" so the page's rank is not confused with INDEX.md's line numbers.
+
 ## 0.2.25
 ### Added
 - Autonomy tiers (I-20261025-177): one owner setting, `autonomy.tier` (`strict` / `opinionated` / `full`, default `opinionated`), that the guards follow. The owner moves it with the whole chat message `tier <name>` (when `guards.chat_unlock` is on) or the phone page's tier buttons; it lives in `<queue_state>/autonomy-tier`, a protected path. `strict` caps Main's project-file changes at `autonomy.strict_edit_limit` (default 2) per `guards.main_window_min` minutes and refuses `git push` / `glab mr merge` / `gh pr merge` (through `sh -c`/`sudo` too) until the owner types `go` — one landing, valid `autonomy.go_minutes` minutes (default 10). `opinionated` keeps today's limits. `full` drops the edit cap and accepts `Priority skip: <plan> — Main: "<reason>"` (≥ 4 words) at the priority gate. Main's prompt names the tier (`autonomy: <tier> — …`), and no tier loosens the owner-only moves (guard files, phone page start, notify secrets, unlock, the tier setting itself).
