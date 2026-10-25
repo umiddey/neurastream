@@ -38,9 +38,11 @@ interface Hit {
 	text: string;
 }
 
-type FakeMode = "ok" | "status500" | "hang" | "retryOnce" | "retryAlways";
+type FakeMode = "ok" | "status500" | "hang" | "retryOnce" | "retryAlways" | "slow";
 
 let discordMode: FakeMode = "ok";
+let activeDiscordRequests = 0;
+let maxActiveDiscordRequests = 0;
 const discordHits: Hit[] = [];
 const discord = Bun.serve({
 	port: 0,
@@ -52,6 +54,14 @@ const discord = Bun.serve({
 		if (discordMode === "hang") await new Promise(() => {});
 		if (discordMode === "retryOnce" && discordHits.length === 1) return Response.json({ retry_after: 0.2 }, { status: 429 });
 		if (discordMode === "retryAlways") return Response.json({ retry_after: 0 }, { status: 429 });
+		// A real overlap window is required here: fake time cannot control concurrently handled
+		// server requests or prove that two network handlers were active at once.
+		if (discordMode === "slow") {
+			activeDiscordRequests++;
+			maxActiveDiscordRequests = Math.max(maxActiveDiscordRequests, activeDiscordRequests);
+			await new Promise(resolve => setTimeout(resolve, 30));
+			activeDiscordRequests--;
+		}
 		return Response.json({});
 	},
 });
@@ -111,7 +121,8 @@ function reset(): void {
 	discordHits.length = 0;
 	slackHits.length = 0;
 	discordMode = "ok";
-	// An empty index = no open work; a MISSING index is itself a queue problem and blocks the stop.
+	activeDiscordRequests = 0;
+	maxActiveDiscordRequests = 0;
 	writeFileSync(INDEX, "");
 	delete process.env.NEURASTREAM_MAIN_LAUNCHER;
 	rmSync(GUARD_LOG, { force: true });
@@ -669,14 +680,16 @@ test("blocked stop posts its reply once and agent_end does not duplicate it", as
 	expect(notifyLogLines().filter(l => l.includes("notify: posted (blocked session_stop)")).length).toBe(1);
 });
 
-test("postReply serializes concurrent calls in invocation order", async () => {
+test("postReply serializes concurrent calls in invocation order without overlap", async () => {
 	reset();
+	discordMode = "slow";
 	const cfg = writeConfig(`  discord_webhook_file: "${DISCORD_FILE}"`);
 	const first = postReply("first", cfg);
 	const second = postReply("second", cfg);
 	const third = postReply("third", cfg);
 	await Promise.all([first, second, third]);
 	expect(discordHits.map(hit => hit.text)).toEqual(["first", "second", "third"]);
+	expect(maxActiveDiscordRequests).toBe(1);
 });
 
 test("postReply retries one 429 after retry_after", async () => {
