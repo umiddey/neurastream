@@ -77,7 +77,7 @@ function explicitZoneEpoch(wall: WallTime, zone: string): number {
 export function annotateResetTimes(text: string, rule: { pattern: string; zone: string }): string {
 	let pattern: RegExp;
 	try {
-		pattern = new RegExp(rule.pattern, "gi");
+		pattern = new RegExp(rule.pattern, "g");
 	} catch {
 		return text;
 	}
@@ -98,7 +98,7 @@ export function annotateResetTimes(text: string, rule: { pattern: string; zone: 
 			continue;
 		}
 		result += text.slice(position, timestampEnd);
-		position = end;
+		position = timestampEnd;
 		if (!wallText) continue;
 		const wall = parseWhen(wallText);
 		if (!wall) continue;

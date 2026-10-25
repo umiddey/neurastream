@@ -45,6 +45,33 @@ test("annotates multiple times and leaves text without matches unchanged", () =>
 	}
 });
 
+test("does not treat lowercase prose or a following newline as explicit zones", () => {
+	const before = process.env.TZ;
+	process.env.TZ = "Europe/Berlin";
+	try {
+		for (const suffix of ["then retry", "or later", "\nnext"]) {
+			const text = `reset at 2026-10-25 18:56${suffix.startsWith("\n") ? suffix : ` ${suffix}`}`;
+			const separator = suffix.startsWith("\n") ? "\n" : " ";
+			expect(annotateResetTimes(text, rule)).toBe(`reset at 2026-10-25 18:56 (= 2026-10-25 11:56:00 CET local)${separator}${suffix.trimStart()}`);
+		}
+	} finally {
+		if (before === undefined) delete process.env.TZ;
+		else process.env.TZ = before;
+	}
+});
+
+test("preserves whitespace following an annotated time", () => {
+	const before = process.env.TZ;
+	process.env.TZ = "Europe/Berlin";
+	try {
+		const text = "reset at 2026-10-25 18:56 UTC 99 left";
+		expect(annotateResetTimes(text, rule)).toBe("reset at 2026-10-25 18:56 UTC (= 2026-10-25 19:56:00 CET local) 99 left");
+	} finally {
+		if (before === undefined) delete process.env.TZ;
+		else process.env.TZ = before;
+	}
+});
+
 test("does not guess when an explicit abbreviation cannot be resolved", () => {
 	const text = `${input} XYZ`;
 	expect(annotateResetTimes(text, rule)).toBe(text);
