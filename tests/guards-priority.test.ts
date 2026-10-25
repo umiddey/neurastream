@@ -1,17 +1,19 @@
-// Staffing record and priority gate (plan 20261025_0215_index_priority P2/P3): the spawn records
+// Staffing record and priority gate (plan 20261025_0215 P2/P3, tightened by 20261025_1040): the spawn records
 // which task names it was spawned with (staffing.json), running job labels mark a plan staffed,
-// and a spawn on a lower plan needs a `Priority skip: <path> — <why>` line for every higher idle
-// plan. Everything runs in-process against a sandbox HOME (applyQueueEnv points the queue library
+// and a spawn on a lower plan needs proof for every higher idle plan: the higher plan's own
+// `Waits on: <plan>` line for an open indexed plan, or a `Priority skip: <plan> — owner: "<words>"`
+// quote (≥ 4 words) that owner-messages.jsonl recorded in the last 24 h. Everything runs in-process
+// against a sandbox HOME (applyQueueEnv points the queue library
 // at it; the caller's QUEUE_* and NEURASTREAM_NOW are restored afterAll).
 
 import { afterAll, expect, test } from "bun:test";
 import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { SpawnEvent, ToolEvent } from "../src/core/adapter.ts";
+import type { InjectEvent, SpawnEvent, ToolEvent } from "../src/core/adapter.ts";
 import type { Config } from "../src/core/config.ts";
 import { loadConfig } from "../src/core/config.ts";
-import { checkSpawn, checkTool, priorityProblem, readStaffing, recordSpawns, staffedPlans } from "../src/core/guards.ts";
+import { checkInject, checkPlanEdit, checkSpawn, checkTool, ownerSaid, priorityProblem, readStaffing, recordSpawns, staffedPlans } from "../src/core/guards.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { activePlans, closeLog, stateDirPath } from "../src/core/queue/lib.ts";
 
@@ -189,11 +191,14 @@ test("priorityProblem: pure ranks, staffing and the unknown-jobs pass", () => {
 	});
 	// both higher plans staffed: allowed
 	expect(priorityProblem(plans, [LOW], [HIGH, MID], "")).toBeNull();
-	// both skips justified
-	expect(priorityProblem(plans, [LOW], [], `Priority skip: ${HIGH} — first\nPriority skip: ${MID} — also first`)).toEqual({
+	// both skips justified by the owner's recorded words (normalised: case and spacing folded)
+	const said = [{ at: NOW, text: "the traces series gets first prio today" }];
+	expect(
+		priorityProblem(plans, [LOW], [], `Priority skip: ${HIGH} — owner: "traces series gets first"\nPriority skip: ${MID} — owner: "TRACES   SERIES gets first prio today"`, said, NOW),
+	).toEqual({
 		skips: [
-			{ plan: HIGH, why: "first" },
-			{ plan: MID, why: "also first" },
+			{ plan: HIGH, why: `owner: "traces series gets first"` },
+			{ plan: MID, why: `owner: "TRACES   SERIES gets first prio today"` },
 		],
 	});
 	// no job info: never refuse
@@ -242,15 +247,35 @@ test("a higher plan that is WAITING, awaiting merge, fully ticked or staffed doe
 	resetHigh();
 });
 
-test("a Priority skip line with a reason lets the spawn through and is logged", () => {
+test("a Priority skip with words the owner said lets the spawn through and is logged with the quote", () => {
 	resetHigh();
 	refresh(LOW);
-	const why = "owner ranked the traces series first, this fills the free slot";
-	const d = checkSpawn(spawnEv(`Work ${LOW} on P1\nPriority skip: ${HIGH} — ${why}\nPriority skip: ${MID} — behind HIGH\n`, []), cfg);
+	writeFileSync(join(STATE, "owner-messages.jsonl"), `${JSON.stringify({ at: NOW, text: "the traces series gets first prio today" })}\n`);
+	const why = `owner: "traces series gets first"`;
+	const d = checkSpawn(spawnEv(`Work ${LOW} on P1\nPriority skip: ${HIGH} — ${why}\nPriority skip: ${MID} — owner: "gets first prio today"\n`, []), cfg);
 	expect(d).toMatchObject({ allow: true });
 	const lines = guardLog().join("\n");
 	expect(lines).toContain(`PRIORITY skip ${HIGH}: ${why}`);
-	expect(lines).toContain(`PRIORITY skip ${MID}: behind HIGH`);
+	expect(lines).toContain(`PRIORITY skip ${MID}: owner: "gets first prio today"`);
+});
+
+test("a plain-reason skip is refused while the higher plan is idle; so is a quote nobody said and one older than 24 h", () => {
+	resetHigh();
+	refresh(LOW);
+	const refusal = `higher plan ${HIGH} (rank 1) is idle; a skip needs the owner's words (Priority skip: ${HIGH} — owner: "<quote>") or a "Waits on: ${HIGH}" line in that plan`;
+	// the acceptance case: "— busy" carries no owner's words
+	const d = checkSpawn(spawnEv(`Work ${LOW} on P1\nPriority skip: ${HIGH} — busy\n`, []), cfg);
+	expect(d.allow).toBe(false);
+	expect(d.reason).toContain(refusal);
+	const plans = activePlans();
+	// an owner-form quote nobody recorded says
+	expect(priorityProblem(plans, [LOW], [], `Priority skip: ${HIGH} — owner: "words that nobody ever recorded"`, [], NOW)?.problem).toBe(refusal);
+	// a recorded quote older than 24 h
+	const old = [{ at: NOW - 86401, text: "the traces series gets first prio today" }];
+	expect(priorityProblem(plans, [LOW], [], `Priority skip: ${HIGH} — owner: "traces series gets first"`, old, NOW)?.problem).toBe(refusal);
+	// a shorter-than-4-word quote never matches, however recent
+	const short = [{ at: NOW, text: "the traces series gets first prio today" }];
+	expect(priorityProblem(plans, [LOW], [], `Priority skip: ${HIGH} — owner: "gets first prio"`, short, NOW)?.problem).toBe(refusal);
 });
 
 test("a skip line without a reason is refused", () => {
@@ -260,6 +285,63 @@ test("a skip line without a reason is refused", () => {
 		const d = checkSpawn(spawnEv(`Work ${LOW} on P1\n${line}\n`, []), cfg);
 		expect(d.allow).toBe(false);
 	}
+});
+
+test("a higher plan with Waits on: an open indexed plan does not block; once that plan is closed it blocks again", () => {
+	writeFileSync(STAFFING, JSON.stringify({ [MID]: ["w-mid"] }));
+	const jobs = ["w-mid"];
+	// without a waits line HIGH blocks
+	resetHigh();
+	refresh(LOW);
+	expect(checkSpawn(spawnEv(`Work ${LOW} on P1`, jobs), cfg).allow).toBe(false);
+	// `Waits on: <open indexed plan>` (plain and bullet form) frees the slot with no skip line
+	for (const extra of [`\n\nWaits on: ${MID}\n`, `\n\n- Waits on: ${MID}\n`]) {
+		resetHigh(extra);
+		refresh(LOW);
+		expect(checkSpawn(spawnEv(`Work ${LOW} on P1`, jobs), cfg)).toMatchObject({ allow: true });
+	}
+	// MID closed (removed from the index): HIGH waits on nothing that is indexed and blocks again
+	resetHigh(`\n\nWaits on: ${MID}\n`);
+	writeFileSync(join(AGENT, "INDEX.md"), `${HIGH}\n${LOW}\n`);
+	refresh(LOW);
+	const d = checkSpawn(spawnEv(`Work ${LOW} on P1`, jobs), cfg);
+	expect(d.allow).toBe(false);
+	expect(d.reason).toContain(`higher plan ${HIGH} (rank 1) is idle`);
+	// a waits path that is merely open on disk but absent from the index never counts
+	resetHigh(`\n\nWaits on: ${join(TOY, "docs/plans/20261020_0199_ghost.md")}\n`);
+	writeFileSync(join(TOY, "docs/plans/20261020_0199_ghost.md"), planText());
+	writeFileSync(join(AGENT, "INDEX.md"), `${HIGH}\n${MID}\n${LOW}\n`);
+	refresh(LOW);
+	expect(checkSpawn(spawnEv(`Work ${LOW} on P1`, jobs), cfg).allow).toBe(false);
+	resetHigh();
+	writeFileSync(join(TOY, "docs/plans/20261020_0199_ghost.md"), "");
+});
+
+test("a subagent edit that adds a Waits on: line to a plan is restored", () => {
+	const before = readFileSync(HIGH, "utf8");
+	const after = before.replace("- Started.", `- Started.\n\nWaits on: ${MID}`);
+	const d = checkPlanEdit({ path: HIGH, before, after, agent: "sub" }, cfg);
+	expect(d.allow).toBe(false);
+	expect(d.restore).toEqual({ path: HIGH, text: before });
+});
+
+test("owner messages are recorded, bounded, and matched as recent normalized quotes", () => {
+	const event = (inject: string): InjectEvent => ({ agent: "main", inject });
+	const file = join(STATE, "owner-messages.jsonl");
+	rmSync(file, { force: true });
+	checkInject(event("The owner wants priority for the traces series"), cfg);
+	checkInject(event("main-guard: continuation"), cfg);
+	checkInject(event("<system-notice> harness notice"), cfg);
+	let messages = readFileSync(file, "utf8").trim().split("\n").map(line => JSON.parse(line));
+	expect(messages).toHaveLength(1);
+	expect(messages[0].text).toContain("traces series");
+	for (let i = 0; i < 50; i++) checkInject(event(`owner message ${i}`), cfg);
+	messages = readFileSync(file, "utf8").trim().split("\n").map(line => JSON.parse(line));
+	expect(messages).toHaveLength(50);
+	expect(messages[0].text).toBe("owner message 0");
+	expect(ownerSaid("PRIORITY   for the traces series", [{ at: NOW, text: "The owner wants priority for the traces series" }], NOW)).toBe(true);
+	expect(ownerSaid("one two three", [{ at: NOW, text: "one two three" }], NOW)).toBe(false);
+	expect(ownerSaid("four words minimum", [{ at: NOW - 86401, text: "four words minimum" }], NOW)).toBe(false);
 });
 
 test("without job info the gate never refuses and logs PRIORITY unknown jobs", () => {

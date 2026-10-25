@@ -4,6 +4,10 @@
 - Session timestamps were read 1 h early in summer time.
 
 
+## Unreleased
+### Changed
+- A `Priority skip:` line no longer works with any reason: the only accepted form is `Priority skip: <plan> — owner: "<words>"`, and the quoted words (at least four, case- and spacing-normalised) must appear in an owner message recorded in the last 24 h — every Main prompt that is not a guard continuation or a harness notice is now appended to `<queue_state>/owner-messages.jsonl` (newest 50 kept). A higher plan that carries a `Waits on: <plan>` line for a plan still open in the index is not idle, so it does not block a lower spawn and needs no skip line; `Waits on:` lines are Main-only (plan-guard restores subagent edits that add or remove one). The skip log line keeps the owner quote.
+
 ## 0.2.15
 ### Added
 - Provider-honesty rules (plan 20261024_0302): `model-swap` (announced model vs the model/provider assistant messages show, fallback resolutions included), `odd-response-id` (a present responseId vs `traces.provider.id_patterns`; a missing id is not checked), `unoffered-tool` (calls nothing in the allow-list, the request's own tool list or a result other than an unknown-tool refusal backs — a guard-refused call of a real tool is not flagged), `phantom-output` (billed output tokens for a message that wrote nothing; aborted or errored streams are not judged) and `cost-mismatch` (`model_usage` cost beyond ±20% of `traces.provider.prices`, $ per million tokens, either direction). `neurastream metrics report` ends with a weekly `Provider honesty over N runs: …` line. The `traces.provider` maps are open: an empty object in the template accepts your keys, and an assistant message with no content now parses as an empty-text event so phantom output is visible.
