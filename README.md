@@ -96,7 +96,7 @@ A plan parked for the owner has one line: `WAITING on owner: <what>`. That line 
 
 ## Queue priority
 
-`INDEX.md` order is priority: the top line is rank 1. The queue summary lists plans in that order (`N. <file> [flags] <goal>`). Before a spawn, the guard checks every plan above each plan the brief names: a higher plan that is idle (open, no `WAITING on owner:`, not awaiting merge, still has an unticked phase) and not staffed by a running job must be named in a `Priority skip: <plan> — <why>` line, or the spawn is refused. Staffing is `<queue_state>/staffing.json` (each plan's newest spawn's task names) matched against omp's running job labels. The owner reorders the queue by dragging cards on the phone page.
+`INDEX.md` order is priority: the top line is rank 1. The queue summary lists plans in that order (`N. <file> [flags] <goal>`). Before a spawn, the guard checks every plan above each plan the brief names. A higher plan that is idle — open, no `WAITING on owner:`, not awaiting merge, still has an unticked phase, and not itself waiting on another open indexed plan via a `Waits on: <plan>` line — and not staffed by a running job blocks the spawn unless the brief quotes the owner: `Priority skip: <plan> — owner: "<his words>"`, at least four words that appear in an owner message of the last 24 h (`<queue_state>/owner-messages.jsonl`, recorded from Main's prompts); any other skip line is refused. `Waits on:` lines are Main-only, like `WAITING on owner:`. Staffing is `<queue_state>/staffing.json` (each plan's newest spawn's task names) matched against omp's running job labels. The owner reorders the queue by dragging cards on the phone page.
 
 ## Owner page (`neurastream ui`)
 

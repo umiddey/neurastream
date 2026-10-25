@@ -917,7 +917,7 @@ export function checkPlanEdit(e: PlanEditEvent, cfg: Config): Decision {
 		log(cfg.paths.plan_guard_log, `RESTORE ${e.path}`);
 		return {
 			allow: false,
-			reason: `plan-guard: you changed ${e.path} outside your progress entries (only "## Progress" entries are yours; the "Status:", "WAITING on owner:", "Cancelled by owner:" and "False positive:" lines are Main's, it marks a plan complete after reviewing your work). The file was restored.`,
+			reason: `plan-guard: you changed ${e.path} outside your progress entries (only "## Progress" entries are yours; the "Status:", "WAITING on owner:", "Waits on:", "Cancelled by owner:" and "False positive:" lines are Main's, it marks a plan complete after reviewing your work). The file was restored.`,
 			restore: { path: e.path, text: e.before },
 		};
 	}
