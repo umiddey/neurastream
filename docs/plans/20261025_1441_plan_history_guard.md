@@ -1,7 +1,7 @@
 # Plan history guard: Main reads the plans behind the code (plantrail) before planning; closed plans list the code they changed
 Worktree: /home/ukd/Work/neurastream-plan-history
 Branch: feat/plan-history
-Waits on: /home/ukd/projects/plantrail/docs/plans/20261025_1440_plantrail_v1.md
+Waits on: /home/ukd/projects/doctrail/docs/plans/20261025_1440_doctrail_v1.md
 
 ## Goal
 - INCIDENT I-20261025-153 (owner correction, 2026-10-25 ~14:20): "You've got to tell me why the design was changed, was there a reason behind that. And also, why did you miss this while you were planning?" Main had planned CP host monitoring from code and rules only and missed the 2026-08-09 design decision (infra plan Phase 2, commit 9d8fc7b4: each app's own Prometheus watches its host). The reason was in an old plan and a commit message; nothing made Main read them.
@@ -40,3 +40,4 @@ Waits on: /home/ukd/projects/plantrail/docs/plans/20261025_1440_plantrail_v1.md
 ## Progress
 Status: open
 - 2026-10-25 ~14:50 Main: plan written for INCIDENT I-20261025-153 and the owner's plan↔code idea; worktree from origin/main 685ac36; blocker clean. Waits on plantrail v1 (its binary must exist first). Findings: none
+- 2026-10-25 14:30 Main: the owner renamed the tool away from "plantrail" (working name doctrail; final name still being chosen). Repo moved to /home/ukd/projects/doctrail, plan file renamed; the `plantrail` command names in this plan change with the final name. Findings: none

@@ -5,6 +5,7 @@ Branch: feat/ui-redesign
 ## Goal
 - Owner (2026-10-25 ~00:50), after opening the page: "this is the most unintuitive and disgusting ass ux ui i have ever seen". Then: "get inspiration from the internet for the best way to build the ui for this because it needs to be able to explain the issues and visually be good and contain shit properly".
 - Owner (2026-10-25 ~01:15): "your UI changes also for neurastream should allow me to drag and drop queue position in index and it should automatically be reflecting for you... can you do this? if yes add it to the ui plan". Main: yes → P4. INDEX.md order is the priority (index_priority plan); Main reads INDEX.md at every prompt, so a reorder is live at Main's next turn, and the page also tells Main through the owner inbox.
+- Owner (2026-10-25 ~14:22): an answered question still shows its Yes/No buttons until Main clears the plan's WAITING line, so he "still has the option to answer again". Wanted: "at least have a marker that says okay, you clicked it", as a status. The Needs-you card must read the owner inbox (owner-inbox.jsonl, the same file the answer POST appends to) and, when that plan already has an answer, show "You answered 'yes' · 14:19 — Main is on it" instead of the buttons (keep a small "change answer" link).
 - Done when:
   - the page answers "what needs me, and why" in under 5 seconds on a phone;
   - every ask explains itself in plain words;
