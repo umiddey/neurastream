@@ -5,6 +5,7 @@ Branch: fix/provider-state
 ## Goal
 - INCIDENT I-20261025-164 (owner correction, 2026-10-25): "you made the same mistake … you thought 18:56 GLM comes back when it was Chinese time and we built something on top of that". Main misread a zai 429 ("reset at 2026-10-25 18:56:22", Asia/Shanghai = 11:56 CET), wrote "glm rate limited until 18:56" into notes and a handoff, and skipped GLM all day.
 - When done: a provider's out-until time is recorded by code from the 429 text (converted with `quota.reset_tz`), never typed by Main; `agent-ledger --cap` and `main-start` print live `providers:` status; the spawn gate enforces the owner's pick order GLM → deepseek → Haiku.
+- INCIDENT I-20261025-217 (owner idea, 2026-10-25 ~23:55): "since we are in OMP and we can connect to multiple providers and access multiple models. Check if there is something, a plug …" — pick each subagent's model from live provider availability plus the owner's preference order. Main found no ready plugin; omp gives `omp models`, `retry.fallbackChains` and the `before_subagent_spawn` hook (returns `model: string[]`, first used, rest = fallback chain). Main recommends building it here (this plan already owns live provider state and the pick order), host-neutral: the router logic in src/core, the hook wiring in src/adapters/omp. No phases for it until the owner agrees on the design.
 - Read /home/ukd/projects/opus-implementer-method.md first.
 
 ## Forbidden
