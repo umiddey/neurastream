@@ -76,6 +76,9 @@ bun test
 Green is both exiting 0.
 
 ## Scoring details
+### Trace efficiency
+
+`neurastream traces efficiency --since 7d` reports wasted tool calls from recent traces; pass a run id to inspect one run, or add `--json` for machine-readable per-run records (including step indexes and matched rules). Waste rules cover repeated reads and failed commands, failed edits, repeated guard blocks and idle polling. The agent-score board adds `Calls/acc` and `Waste` columns; `score.waste_weight` (default `0`) scales ranking by the wasted-call fraction while leaving the default ranking unchanged.
 
 `agent-score accept` records accepted work by commit; `agent-score validate <Agent> --plan <plan.md> --phase <P> --evidence <report.md> --section "<heading prefix>"` records a validation phase (checks/tests ran, report section written, no commits) with proof Main cannot fake by typing: the plan line must be ticked `- [x]`, the cited section body must name a heavy-run label run by that agent (from `paths.heavy_log`), and the phase must not be scored already. The ranking board counts it in `Accepted (diag/val)` as `N (d/v)`.
 
