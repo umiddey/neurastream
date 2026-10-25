@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.13
 ### Changed
 - The owner page is rebuilt for one-handed phone use (design: `docs/owner-ui-design.md`): a sticky status strip with the amber needs-you count and working/CI/disk signals that turn red only when something is wrong; each open `WAITING on owner:` plan is a card with its `#` title, the ask in plain words, the goal folded into a Background block and named actions ("Yes, go ahead", "No", "Reply…") whose answer lands as a one-time receipt ("Sent to Main · 08:12"); running/waiting agents as rows; queue (one flat ranked list, see Added), merges/CI, incidents, agent scores (a real table) and machine health as closed details blocks with count chips; and a sticky bottom bar for the guard unlock that explains itself, with the exact config line, when `guards.chat_unlock` is off. The meta refresh is gone: an inline script reloads every 20 s only while no field has focus or text and keeps `<details>` open state in `sessionStorage`; every GET sends a per-response `Content-Security-Policy` with the inline script's nonce. Unlock/lock refused because `chat_unlock` is off now redirect to the page (receipt + bar explanation) instead of a bare 409. Page data (typed rows per source) is separate from rendering, so `bun scripts/ui-preview.ts <out.html>` renders a fixture preview without a server.
 
