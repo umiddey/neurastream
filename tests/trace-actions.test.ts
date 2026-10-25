@@ -522,13 +522,13 @@ describe("unreported-finding: claimedNone replaces the final-text check (P6)", (
 });
 
 describe("live wiring: a sub's Progress edit runs D6+D7 over its own session (P6)", () => {
-	// Sandbox like guards-omp.test.ts: a toy plan in an owned repo ("pm" — basename of its git
-	// root), listed in the queue INDEX, plus a fake subagent session file under the sessions
+	// Sandbox like guards-omp.test.ts: a toy plan in an owned repo whose checkout is named like the
+	// real PM one ("pm-mr196", owned entry "pm"), listed in the queue INDEX, plus a fake subagent session file under the sessions
 	// root. The adapter child gets a ctx whose sessionManager hands out that file, the way the
 	// harness hands a sub its own session.
 	const P6 = mkdtempSync(join(tmpdir(), "ns-actions-p6-"));
 	const P6AGENT = join(P6, ".omp/agent");
-	const P6REPO = join(P6, "Work/pm");
+	const P6REPO = join(P6, "Work/pm-mr196");
 	const P6PLAN = join(P6REPO, "docs/plans/20261025_p6wire.md");
 	const P6SUB = join(P6AGENT, "sessions/p6-proj/s1/P6WireGlm.jsonl");
 
@@ -605,11 +605,12 @@ traces:
 		writeFileSync(join(P6AGENT, "blockers", b), text);
 		chmodSync(join(P6AGENT, "blockers", b), 0o755);
 	}
-	// The sub's own trace: a cross-product read (gateforge's installed core) plus a secret read
-	// — the D7 red flag and a D6 high in one file.
+	// The sub's own trace: a read of its own repo (never a finding), a cross-product read
+	// (gateforge's installed core) plus a secret read — the D7 red flag and a D6 high in one file.
 	writeFileSync(
 		P6SUB,
-		`{"type":"message","timestamp":"2026-10-25T12:00:01.000Z","message":{"role":"assistant","model":"m1","provider":"p1","content":[{"type":"toolCall","id":"c1","name":"read","arguments":{"path":"${P6REPO}/node_modules/@gate-forge/core/dist/mapping/resolve.js","i":"Reading the resolve mapping"}}]}}\n` +
+		`{"type":"message","timestamp":"2026-10-25T12:00:00.000Z","message":{"role":"assistant","model":"m1","provider":"p1","content":[{"type":"toolCall","id":"c0","name":"read","arguments":{"path":"${P6REPO}/backend/app.py","i":"Reading its own repo"}}]}}\n` +
+			`{"type":"message","timestamp":"2026-10-25T12:00:01.000Z","message":{"role":"assistant","model":"m1","provider":"p1","content":[{"type":"toolCall","id":"c1","name":"read","arguments":{"path":"${P6REPO}/node_modules/@gate-forge/core/dist/mapping/resolve.js","i":"Reading the resolve mapping"}}]}}\n` +
 			`{"type":"message","timestamp":"2026-10-25T12:00:02.000Z","message":{"role":"assistant","model":"m1","provider":"p1","content":[{"type":"toolCall","id":"c2","name":"bash","arguments":{"command":"cat ~/.ssh/id_ed25519"}}]}}\n`,
 	);
 

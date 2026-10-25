@@ -26,7 +26,7 @@ import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_P
 import { notifyProviders, postReply } from "../../core/notify.ts";
 import { inboxPath } from "../../core/owner-ui.ts";
 import { realTailscale } from "../../core/tailscale.ts";
-import { actionsRules, suspiciousActions, unreportedFindings } from "../../core/trace-actions.ts";
+import { actionsRules, ownedRepoOf, suspiciousActions, unreportedFindings } from "../../core/trace-actions.ts";
 import { applyQueueEnv } from "../../core/queue/env.ts";
 import { mainStartText, runDailyCheck } from "../../core/main-start.ts";
 import { readBlocks } from "../../core/metrics.ts";
@@ -170,8 +170,11 @@ function subActionDetectors(cfg: Config, ctx: unknown, planFile: string, before:
 		const rules = actionsRules(cfg);
 		const input: DetectorInput = { actions: suspiciousActions(events, rules) };
 		if (/^none\.?$/i.test(findingsValue(entries[0]!) ?? "")) {
+			// The plan's repo spelled like its owned_repos entry: a checkout named "pm-mr196" is "pm",
+			// so the run's reads of its own repo never count as another product's.
+			const repoDir = q.planRepo(planFile);
 			input.unreported = unreportedFindings(events, rules, {
-				repo: basename(q.planRepo(planFile)),
+				repo: ownedRepoOf(`${repoDir}/`, rules.owned_repos) ?? basename(repoDir),
 				plan: planFile,
 				claimedNone: true,
 			});
