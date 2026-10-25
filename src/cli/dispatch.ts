@@ -1,3 +1,4 @@
+import { pagesDoctor } from "../core/pages-doctor.ts";
 import { ConfigError, configFile, loadConfig, type Config } from "../core/config.ts";
 import { postReply } from "../core/notify.ts";
 import { applyQueueEnv } from "../core/queue/env.ts";
@@ -10,6 +11,7 @@ import { runMetrics } from "./metrics.ts";
 import { runIncident } from "./incident.ts";
 import { runTraces } from "./traces.ts";
 import { runUi } from "./ui.ts";
+import { runPages } from "./pages.ts";
 import { runUninstall } from "../core/uninstall.ts";
 import { queueMigrate } from "../core/queue-migrate.ts";
 import { allowedAgents, subagentsPath } from "../core/queue/lib.ts";
@@ -80,6 +82,7 @@ export function helpText(): string {
 		"                                one go: writes ui.enabled/owner_login (and port) into the config,",
 		"                                installs and restarts the neurastream-ui user unit, prints the phone",
 		"                                link; `neurastream ui off` stops and disables it, sets enabled: false",
+		"  neurastream pages on|off|serve|publish|list  host static files over the tailnet",
 		"  neurastream agents list | allow <slug>... | deny <slug>...",
 		"                                the subagent allow-list (## Allowed in notes/subagents.md)",
 		"",
@@ -102,6 +105,7 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 	if (cmd === "incident") return runIncident(args);
 	if (cmd === "traces") return runTraces(args);
 	if (cmd === "ui") return runUi(args);
+	if (cmd === "pages") return runPages(args);
 	if (cmd === "adapter") return runAdapterInstall(args);
 	if (cmd === "config") {
 		try {
@@ -113,7 +117,10 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 			return 1;
 		}
 	}
-	if (cmd === "doctor") return runDoctor();
+	if (cmd === "doctor") {
+		for (const warning of pagesDoctor()) console.warn(`warning: ${warning}`);
+		return runDoctor();
+	}
 	if (cmd === "notify") return runNotify(args);
 	if (cmd === "uninstall") return runUninstall(args);
 	if (cmd === "queue" && args[0] === "migrate") {
