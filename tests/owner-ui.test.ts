@@ -18,7 +18,7 @@ import { appendMetric } from "../src/core/metrics.ts";
 import { checkTool } from "../src/core/guards.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { createOmpAdapter, ownerInboxCursorPath, ownerInboxMessage, type ExtensionHost } from "../src/adapters/omp/index.ts";
-import { inboxPath, agentRows, buildPageData, ciRows, dropSlot, incidentRows, machineRow, nowStats, questionRows, queueRows, scoresData, startOwnerUi, type OwnerUiOptions, type OwnerUiServer } from "../src/core/owner-ui.ts";
+import { inboxPath, agentRows, buildPageData, ciRows, dropSlot, edgeScrollStep, incidentRows, machineRow, nowStats, questionRows, queueRows, scoresData, startOwnerUi, type OwnerUiOptions, type OwnerUiServer } from "../src/core/owner-ui.ts";
 import { runUi } from "../src/cli/ui.ts";
 import { parsePlan, stateDirPath, unlockPath } from "../src/core/queue/lib.ts";
 import { parseWhoisLogin, type Tailscale } from "../src/core/tailscale.ts";
@@ -40,7 +40,7 @@ const TOY = join(TMP, "toy");
 const PLAN_W = join(TOY, "docs/plans/20261019_wait.md");
 const PLAN_D = join(TOY, "docs/plans/20261019_done.md");
 
-const PLAN_TEXT = (status: string, waiting: boolean) => `# Toy plan
+const PLAN_TEXT = (status: string, waiting: boolean, waitsOn?: string) => `# Toy plan
 
 Worktree: -
 Branch: feat/toy
@@ -62,7 +62,7 @@ Branch: feat/toy
 
 ## Progress
 Status: ${status}
-${waiting ? `\nWAITING on owner: ${QUESTION}\n` : ""}
+${waiting ? `\nWAITING on owner: ${QUESTION}\n` : ""}${waitsOn ? `\nWaits on: ${waitsOn}\n` : ""}
 - Started the toy work.
 `;
 
@@ -1265,6 +1265,50 @@ test("a /reorder order that is not exactly the index's plans gets 400 and leaves
 	expect(inboxRecords()).toEqual([]);
 });
 
+// --- P5: a drag may not put a plan above the open plan it waits on (I-20261025-208) ---
+
+// A carries "Waits on: B", so the index order B, C, A is legal and any order with A above B is not.
+function waitsIndex(): string {
+	writeFileSync(PLAN_A, PLAN_TEXT("open", false, PLAN_B).replace("# Toy plan", "# Alpha"));
+	writeFileSync(PLAN_B, PLAN_TEXT("open", false));
+	writeFileSync(PLAN_C, PLAN_TEXT("open", false));
+	const index = join(TMP, "reorder-index-waits.md");
+	writeFileSync(index, [PLAN_B, PLAN_C, PLAN_A, ""].join("\n"));
+	return index;
+}
+
+test("POST /reorder refuses a drag that puts a plan above the open plan it waits on: 409, index bytes and inbox untouched", async () => {
+	const index = waitsIndex();
+	const svc = ui({ cfg: { ...CFG, paths: { ...CFG.paths, queue_index: index } } });
+	const original = readFileSync(index, "utf8");
+	const res = await post(svc, "/reorder", {
+		order: [PLAN_A, PLAN_B, PLAN_C].join("\n"),
+		before: [PLAN_B, PLAN_C, PLAN_A].join("\n"),
+		moved: PLAN_A,
+	});
+	expect(res.status).toBe(409);
+	expect(await res.text()).toContain(
+		'blocked: #1 Alpha waits on #2 Toy plan; it cannot sit above it — move #2 up first or remove the "Waits on" line',
+	);
+	expect(readFileSync(index, "utf8")).toBe(original);
+	expect(inboxRecords()).toEqual([]);
+});
+
+test("POST /reorder still allows a legal drag when plans carry Waits on lines", async () => {
+	const index = waitsIndex();
+	const svc = ui({ cfg: { ...CFG, paths: { ...CFG.paths, queue_index: index } } });
+	const res = await post(svc, "/reorder", {
+		order: [PLAN_C, PLAN_B, PLAN_A].join("\n"),
+		before: [PLAN_B, PLAN_C, PLAN_A].join("\n"),
+		moved: PLAN_C,
+	});
+	expect(res.status).toBe(303);
+	expect(readFileSync(index, "utf8")).toBe([PLAN_C, PLAN_B, PLAN_A, ""].join("\n"));
+	const recs = inboxRecords();
+	expect(recs.length).toBe(1);
+	expect(recs[0]).toMatchObject({ kind: "reorder", plan: PLAN_C, from: 2, to: 1, login: OWNER });
+});
+
 test("a stale before order gets 409 and leaves the file unchanged", async () => {
 	const index = reorderIndex();
 	const svc = ui({ cfg: { ...CFG, paths: { ...CFG.paths, queue_index: index } } });
@@ -1365,6 +1409,27 @@ test("dropSlot: a drag from #1 toward #2 lands in slot 2, not second-to-last (P1
 	// the page script inlines this exact function, so what the test runs is what the page runs
 	const svc = ui();
 	expect(await (await get(svc)).text()).toContain("var dropSlot=");
+});
+
+// --- P5b: a drag held at the screen edge autoscrolls the page ---
+
+test("edgeScrollStep: 0 mid-screen, positive in the bottom band growing to the 24 px cap, negative in the top band (P5b)", async () => {
+	// middle of the screen and just outside either band: no scroll
+	expect(edgeScrollStep(400, 800)).toBe(0);
+	expect(edgeScrollStep(72, 800)).toBe(0);
+	expect(edgeScrollStep(727, 800)).toBe(0);
+	// bottom band: positive, larger nearer the edge, never above the cap
+	expect(edgeScrollStep(740, 800)).toBeGreaterThan(0);
+	expect(edgeScrollStep(795, 800)).toBeGreaterThan(edgeScrollStep(740, 800));
+	expect(edgeScrollStep(800, 800)).toBe(24);
+	expect(edgeScrollStep(900, 800)).toBe(24); // a pointer past the edge stays capped
+	// top band: negative, larger in magnitude nearer the edge
+	expect(edgeScrollStep(60, 800)).toBeLessThan(0);
+	expect(edgeScrollStep(10, 800)).toBeLessThan(edgeScrollStep(60, 800));
+	expect(edgeScrollStep(-100, 800)).toBe(-24);
+	// the page script inlines this exact function, so what the test runs is what the page runs
+	const svc = ui();
+	expect(await (await get(svc)).text()).toContain("var edgeScrollStep=");
 });
 
 test("the reorder receipt says the rank is among open plans (P10)", async () => {

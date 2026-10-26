@@ -2,6 +2,14 @@
 ## 0.2.32
 ### Added
 - Host-neutral core: `src/core` and `src/cli` name no harness. The CLI reaches the harness only through the new registry `src/adapters/index.ts` (`HarnessAdapter`, `getAdapter(cfg)` on the new config key `harness`, default `omp`; an unknown name throws `unknown harness "<x>"; known: omp`). The harness-neutral shapes the registry shares (`TraceRun`, `DumpRef`, `RelatedTrace`, `TaskResult`, `LaunchOptions`) live in `src/core/adapter.ts`; `tests/host-neutral.test.ts` holds the line (no harness names in `src/core`, one adapter door in `src/cli`). `docs/adapter.md` gained "Adding a feature" and "Adding a harness".
+## 0.2.31
+### Added
+- MR sweep (I-20261026-12): `main-start` prints a reconciliation of open forge MRs (glab/gh) against open plans of every repo in the index; `queue-check` exits 1 when a reachable forge lists an open MR no open plan mentions (`!N`/`#N` token or source branch, and `MR !N: ignored <reason>` in a plan marks it tracked). A missing CLI, auth failure, unknown host or absent origin skips that repo and never fails the sweep — no hard dependency on any forge CLI.
+## 0.2.30
+### Changed
+- Plan read check (I-20261025-208): a logged read counts in any checkout — a plan may cite a file Main read at the same repo-relative path in the other root (plan worktree ↔ main checkout); a cited file Main did read but that is missing from `## Code read by Main` is added to the list when the edit is allowed (`plan-guard: added <n> file(s) …`) instead of refused; reading a plan warns `plan-guard: before you edit this plan, re-read: …` when a listed entry would fail, so Main re-reads before drafting instead of losing a written edit at save time. The refusal for a file Main never read is unchanged.
+- Queue dependency order (I-20261025-208): `queue-check` fails while an open plan sits above the open plan its `Waits on:` line names, the queue summary flags such a plan with `waits on #N`, and the phone page refuses a drag that would create that order (`blocked: #N <plan> waits on #M …`) with the index file and the reorder inbox untouched.
+- Owner page: a drag held near the screen edge autoscrolls the page (pure `edgeScrollStep`: 72 px bands, growing toward the edge, capped at 24 px/frame), so the end of a queue taller than the screen is reachable while dragging.
 
 ## 0.2.29
 ### Changed

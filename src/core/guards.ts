@@ -35,6 +35,18 @@ import type { Plan } from "./queue/lib.ts";
 import { nowSec } from "./clock.ts";
 const ALLOW: Decision = { allow: true, reason: "" };
 
+/**
+ * The plan-edit decision: a Decision plus the allow-with-amendment fields of the plan-read guard
+ * (I-20261025-208). On allow, `rewrite` names the file the caller writes back (the auto-listed
+ * read section) and `note` is the receipt for the tool result; both travel through the guard
+ * CLI's JSON output. They live here, not on the shared Decision, so every other check keeps the
+ * plain shape.
+ */
+export interface PlanEditDecision extends Decision {
+	rewrite?: { path: string; text: string };
+	note?: string;
+}
+
 function deny(reason: string): Decision {
 	return { allow: false, reason };
 }
@@ -861,6 +873,36 @@ export function recordMainResult(tool: string, input: Record<string, unknown>, c
 }
 
 /**
+ * The pre-draft warning (I-20261025-208): when Main reads a plan file (the read tool, or a result
+ * whose first `path:line:` hit is the plan), the tool result gains one note naming the plan's
+ * listed files that would fail the read check right now — before Main drafts an edit the guard
+ * would refuse and throw away. Silence when every listed file is fresh in some checkout.
+ */
+export function planReadNote(tool: string, input: Record<string, unknown>, cwd: string, text: string, cfg: Config): string | undefined {
+	let planPath = "";
+	if (tool === "read" && typeof input.path === "string") planPath = path.resolve(cwd, q.expandHome(input.path));
+	else {
+		const first = [...text.matchAll(GREP_LINE)][0];
+		if (first) {
+			const base = typeof input.cwd === "string" ? path.resolve(cwd, q.expandHome(input.cwd)) : cwd;
+			planPath = path.resolve(q.shellCwd(String(input.command ?? input.code ?? ""), base), first[1] ?? "");
+		}
+	}
+	if (!planPath || !MAIN_PLAN_FILE.test(planPath)) return undefined;
+	let plan: string;
+	try {
+		plan = readFileSync(planPath, "utf8");
+	} catch {
+		return undefined;
+	}
+	const stale = planReadProblems(plan, planPath, cfg)
+		.filter(p => p.includes(" was not read by Main within "))
+		.map(p => p.slice(0, p.indexOf(" was not read by Main within ")));
+	if (!stale.length) return undefined;
+	return `plan-guard: before you edit this plan, re-read: ${stale.join(", ")}`;
+}
+
+/**
  * spawn: the allow-list, task-only and open-plan gates for one implementer launch. Covers both
  * original paths (the extension spawn event and a `task` tool call); the brief names the plan.
  */
@@ -965,7 +1007,7 @@ function mainOnlyLines(text: string): string {
  * `restore` hands back the untouched text for the caller to write (the original restored the
  * file itself before reporting).
  */
-export function checkPlanEdit(e: PlanEditEvent, cfg: Config): Decision {
+export function checkPlanEdit(e: PlanEditEvent, cfg: Config): PlanEditDecision {
 	if (e.agent === "main") return checkMainPlan(e, cfg);
 	if (q.outsideProgress(e.after) !== q.outsideProgress(e.before) || mainOnlyLines(e.after) !== mainOnlyLines(e.before)) {
 		log(cfg.paths.plan_guard_log, `RESTORE ${e.path}`);
@@ -1043,13 +1085,27 @@ export function findingsValue(block: string): string | null {
 
 // Main's plan text outside "## Progress" must rest on files Main read itself (planReadProblems).
 // An empty `before` means the plan file did not exist yet; a refusal then deletes it.
-function checkMainPlan(e: PlanEditEvent, cfg: Config): Decision {
+function checkMainPlan(e: PlanEditEvent, cfg: Config): PlanEditDecision {
 	if (q.outsideProgress(e.after) === q.outsideProgress(e.before)) return ALLOW;
+	// A cited file Main did read lands in the list instead of the refusal (I-20261025-208): fix the
+	// text first, then judge the fixed text like any other edit.
+	const fix = autoListReads(e.after, e.path, cfg);
+	const fixed = fix ? fix.text : e.after;
 	// Refuse only what this edit adds: a problem the plan already had is not Main's doing now.
 	// The missing-section problem is always refused: a plan with no read list has no evidence behind its text.
 	const known = new Set(e.before ? planReadProblems(e.before, e.path, cfg) : []);
-	const problems = planReadProblems(e.after, e.path, cfg).filter(p => p === NO_SECTION || !known.has(p));
-	if (!problems.length) return ALLOW;
+	const problems = planReadProblems(fixed, e.path, cfg).filter(p => p === NO_SECTION || !known.has(p));
+	if (!problems.length) {
+		if (!fix) return ALLOW;
+		const list = fix.paths.join(", ");
+		log(cfg.paths.plan_guard_log, `AUTO-LIST ${e.path}: ${list}`);
+		return {
+			allow: true,
+			reason: "",
+			rewrite: { path: e.path, text: fix.text },
+			note: `plan-guard: added ${fix.paths.length} file(s) to "## Code read by Main": ${list}`,
+		};
+	}
 	log(cfg.paths.plan_guard_log, `REFUSE-READ ${e.path}: ${problems.join("; ")}`);
 	return {
 		allow: false,
@@ -1066,8 +1122,7 @@ const NO_SECTION = `no "## Code read by Main" section lists a file (list each fi
 
 /** Read evidence behind a plan edit: section present, each listed path read within the window, no unlisted cited path. */
 function planReadProblems(text: string, planPath: string, cfg: Config): string[] {
-	const section = READ_SECTION.exec(text)?.[1] ?? "";
-	const listed = [...section.matchAll(LISTED_PATH)].map(m => (m[1] ?? "").replace(/:[\d,+\- ]+$/, ""));
+	const listed = [...(READ_SECTION.exec(text)?.[1] ?? "").matchAll(LISTED_PATH)].map(m => (m[1] ?? "").replace(/:[\d,+\- ]+$/, ""));
 	if (!listed.length) return [NO_SECTION];
 	const reads = readMainReads();
 	const maxMs = cfg.guards.plan_read_max_hours * 3_600_000;
@@ -1077,11 +1132,11 @@ function planReadProblems(text: string, planPath: string, cfg: Config): string[]
 		const abs = planFile(p, planPath, text);
 		named.add(abs);
 		if (!isFile(abs)) problems.push(`${p} does not exist`);
-		else if (!(Date.parse(reads[abs] ?? "") >= Date.now() - maxMs)) problems.push(`${p} was not read by Main within ${cfg.guards.plan_read_max_hours} h`);
+		else if (!readWithin(abs, planPath, text, reads, maxMs)) problems.push(`${p} was not read by Main within ${cfg.guards.plan_read_max_hours} h`);
 	}
 	for (const [, cited = ""] of q.outsideProgress(text).matchAll(CITED_PATH)) {
 		const abs = planFile(cited, planPath, text);
-		if (abs.includes("/docs/plans/") || named.has(abs) || !isFile(abs)) continue;
+		if (abs.includes("/docs/plans/") || namedOrTwin(named, abs, planPath, text) || !isFile(abs)) continue;
 		problems.push(`${cited} is cited but not listed under "## Code read by Main"`);
 	}
 	return problems;
@@ -1091,11 +1146,87 @@ function planReadProblems(text: string, planPath: string, cfg: Config): string[]
 function planFile(p: string, planPath: string, text: string): string {
 	const home = q.expandHome(p);
 	if (path.isAbsolute(home)) return home;
+	const roots = planRoots(planPath, text);
+	const root = roots.find(r => isFile(path.join(r, home))) ?? roots[roots.length - 1]!;
+	return path.join(root, home);
+}
+
+/** The roots a plan-relative path resolves against: the plan's Worktree (when set), then its repo (dirname³ of the plan file). */
+function planRoots(planPath: string, text: string): string[] {
 	const wt = /^Worktree:\s*(\S+)/m.exec(text)?.[1];
 	const repo = path.dirname(path.dirname(path.dirname(planPath)));
-	const roots = wt && wt !== "-" ? [wt, repo] : [repo];
-	const root = roots.find(r => isFile(path.join(r, home))) ?? repo;
-	return path.join(root, home);
+	return wt && wt !== "-" ? [wt, repo] : [repo];
+}
+
+/** The same repo-relative file under the plan's other root (Worktree ↔ main checkout), or null when `abs` sits under neither. */
+function twinFile(abs: string, planPath: string, text: string): string | null {
+	const roots = planRoots(planPath, text);
+	for (const root of roots) {
+		const prefixed = root.endsWith("/") ? root : `${root}/`;
+		if (!abs.startsWith(prefixed)) continue;
+		for (const other of roots) {
+			if (other === root) continue;
+			return `${other.endsWith("/") ? other : `${other}/`}${abs.slice(prefixed.length)}`;
+		}
+	}
+	return null;
+}
+
+/** Main read this file within the window — at the resolved path or at its twin under the plan's other root (I-20261025-208 evidence: the same file read in the main checkout must cover its Worktree copy). */
+function readWithin(abs: string, planPath: string, text: string, reads: Record<string, string>, maxMs: number): boolean {
+	const cutoff = Date.now() - maxMs;
+	const fresh = (f: string) => Date.parse(reads[f] ?? "") >= cutoff;
+	if (fresh(abs)) return true;
+	const twin = twinFile(abs, planPath, text);
+	return twin !== null && fresh(twin);
+}
+
+/** The resolved path, or its twin under the plan's other root, is already in the set (cited-vs-listed matches files, not spellings). */
+function namedOrTwin(named: Set<string>, abs: string, planPath: string, text: string): boolean {
+	if (named.has(abs)) return true;
+	const twin = twinFile(abs, planPath, text);
+	return twin !== null && named.has(twin);
+}
+
+/**
+ * Cited paths (outside Progress) Main read within the window but the list omits: returns the plan
+ * text with one `- \`<path as cited>\`` line appended to "## Code read by Main" (the section is
+ * created before "## Progress" when missing), or null when nothing qualifies. Never-read citations
+ * stay out: they are refused like today.
+ */
+function autoListReads(text: string, planPath: string, cfg: Config): { text: string; paths: string[] } | null {
+	const reads = readMainReads();
+	const maxMs = cfg.guards.plan_read_max_hours * 3_600_000;
+	const covered = new Set<string>();
+	for (const p of [...(READ_SECTION.exec(text)?.[1] ?? "").matchAll(LISTED_PATH)].map(m => (m[1] ?? "").replace(/:[\d,+\- ]+$/, "")))
+		covered.add(planFile(p, planPath, text));
+	const added: string[] = [];
+	const seen = new Set<string>();
+	for (const [, cited = ""] of q.outsideProgress(text).matchAll(CITED_PATH)) {
+		const abs = planFile(cited, planPath, text);
+		if (abs.includes("/docs/plans/") || seen.has(cited) || !isFile(abs)) continue;
+		if (namedOrTwin(covered, abs, planPath, text)) continue;
+		if (!readWithin(abs, planPath, text, reads, maxMs)) continue;
+		seen.add(cited);
+		covered.add(abs);
+		added.push(cited);
+	}
+	if (!added.length) return null;
+	const lines = added.map(p => `- \`${p}\``);
+	const m = READ_SECTION.exec(text);
+	let out: string;
+	if (m && m[1] !== undefined) {
+		// Append after the section's last entry, ahead of the blank lines before the next heading.
+		const bodyStart = m.index + m[0].length - m[1].length;
+		const at = bodyStart + m[1].replace(/\s+$/, "").length;
+		out = `${text.slice(0, at)}\n${lines.join("\n")}${text.slice(at)}`;
+	} else {
+		// No section yet: create it right before "## Progress" (or at the end when that is missing too).
+		const at = text.search(/^## Progress\b/m);
+		const block = `## Code read by Main\n${lines.join("\n")}\n\n`;
+		out = at === -1 ? `${text}${block}` : `${text.slice(0, at)}${block}${text.slice(at)}`;
+	}
+	return { text: out, paths: added };
 }
 
 function isFile(file: string): boolean {

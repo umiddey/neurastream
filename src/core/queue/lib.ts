@@ -807,6 +807,28 @@ export function awaitingMerge(p: Plan): boolean {
 	return p.status === "complete" && /^queue-close: AWAITING merge/.test(lastCloseResult(p.file) ?? "");
 }
 
+/**
+ * I-20261025-208: index order is priority, so an open plan must never sit above an open plan of
+ * this list it waits on. A "Waits on" target that is not an open plan of the list (complete,
+ * cancelled, gone from the index) imposes no order. Pure: queueProblems, queueSummary and the
+ * page's /reorder refusal all read it.
+ */
+export function dependencyOrderProblems(plans: Plan[]): string[] {
+	const rank = new Map(plans.map((p, i) => [p.file, i] as const));
+	const open = new Map(plans.filter(p => p.status === "open").map(p => [p.file, p] as const));
+	const problems: string[] = [];
+	plans.forEach((p, i) => {
+		if (p.status !== "open") return;
+		for (const f of p.waitsOn) {
+			const j = rank.get(f);
+			const target = open.get(f);
+			if (j === undefined || j <= i || !target) continue;
+			problems.push(`#${i + 1} ${p.title} waits on #${j + 1} ${target.title}; it cannot sit above it — move #${j + 1} up first or remove the "Waits on" line`);
+		}
+	});
+	return problems;
+}
+
 export interface QueueProblem {
 	where: string;
 	problem: string;
@@ -815,8 +837,9 @@ export interface QueueProblem {
 export function queueProblems(index = INDEX, blockersDir = BLOCKERS_DIR): QueueProblem[] {
 	const probs: QueueProblem[] = [];
 	if (!existsSync(index)) probs.push({ where: index, problem: "main index missing: create it (empty = no open work)" });
+	const plans = readPlans(readIndex(index), blockersDir);
 	const byWorktree = new Map<string, Plan[]>();
-	for (const p of readPlans(readIndex(index), blockersDir)) {
+	for (const p of plans) {
 		for (const e of p.errors) probs.push({ where: p.file, problem: e });
 		if ((p.status === "complete" || p.status === "cancelled") && !awaitingMerge(p)) {
 			const last = lastCloseResult(p.file);
@@ -833,6 +856,11 @@ export function queueProblems(index = INDEX, blockersDir = BLOCKERS_DIR): QueueP
 	for (const [wt, ps] of byWorktree)
 		if (ps.length > 1)
 			probs.push({ where: wt, problem: `${ps.length} open plans name this worktree (${ps.map(p => p.file).join(", ")}); one plan = one worktree` });
+	// I-20261025-208: one problem per misranked plan, so queue-check exits 1 and the summary lists it.
+	for (const m of dependencyOrderProblems(plans)) {
+		const i = Number(/^#(\d+) /.exec(m)?.[1] ?? 0);
+		probs.push({ where: plans[i - 1]?.file ?? index, problem: m });
+	}
 	return probs;
 }
 
@@ -840,12 +868,21 @@ export function queueSummary(index = INDEX): string {
 	// Index order IS priority (20261025_0215_index_priority): the list is flat and ranked,
 	// rank 1 = the index's top line; repos only surface through each plan's own path.
 	const plans = activePlans(index);
+	const rank = new Map(plans.map((p, i) => [p.file, i + 1] as const));
 	const repos = [...new Set(plans.map(p => p.repo))];
 	const lines = [`Queue (${index}): ${plans.length ? `${plans.length} plan(s) in ${repos.length} repo(s)` : "empty, no open work"}`];
 	plans.forEach((p, i) => {
 		const status = awaitingMerge(p) ? "complete, awaiting merge" : (p.status ?? "INVALID");
 		const hold = p.waiting ? `WAITING on owner: ${(p.waitingLine ?? "").slice(0, 80)}` : "";
-		const flags = [status, hold, p.priorityId ?? ""].filter(Boolean).join(", ");
+		// I-20261025-208: an open plan waiting on an open plan of the queue shows the target's rank.
+		const waits: string[] = [];
+		if (p.status === "open")
+			for (const f of p.waitsOn) {
+				const at = rank.get(f);
+				if (at === undefined || plans[at - 1]!.status !== "open") continue;
+				waits.push(`waits on #${at}`);
+			}
+		const flags = [status, hold, ...waits, p.priorityId ?? ""].filter(Boolean).join(", ");
 		const goal = items(sections(p.text).get("goal") ?? "")[0]?.slice(0, 100) ?? "";
 		lines.push(`  ${i + 1}. ${p.file} [${flags}] ${goal}`);
 	});

@@ -1,0 +1,49 @@
+# Knowledge base tab: repo → topic HTML explainers on the phone page
+Worktree: /home/ukd/Work/neurastream-knowledge
+Branch: feat/knowledge-base
+Waits on: 20261025_0100_owner_ui_redesign
+
+## Goal
+- Owner (2026-10-26 ~09:00): "a section for checking html knowledge content like the architecture diagram created earlier. Content should be segmented based on repo -> topic like breadcrumb knowledge-base/aetherios-property-management/operating-cost-architecture-diagram".
+- His calls: the files live **in each repo** (`docs/knowledge/<topic>.html`), the section is **for him alone** (single-user login stays), and the design must work for **someone else who starts using neurastream tomorrow** — no path, name or repo list hardcoded to this machine.
+- Existing HTML explainers are scattered (`~/Work/neurastream-architecture.html`, `~/Work/gateforge-architecture.html`); this gives them one home per repo, versioned with the code they explain.
+
+## Background
+- **Convention, not registration**: any git repository directly under a configured root that contains `docs/knowledge/*.html` (self-contained pages) is listed. Drop a file in → it appears. No repo registers anything.
+- **Repo identity**: `git remote get-url origin` basename minus `.git`; a repo without a remote uses the checkout dir name. Directories that are themselves worktrees (`.git` is a file) are skipped, so one repo appears once no matter how many worktrees it has.
+- **Topic**: file stem is the id; display title = the page's `<title>` (fallback: stem); updated = last commit date touching the file (fallback: mtime).
+- **Read-only**: the page never writes, uploads, deletes or renames a topic. Topics change only through git.
+- **Serving + auth**: topic pages go out through the existing pages server behind the same single-user login. No new auth, no multi-user, no sharing links.
+- **Config** (templates/config.yml, src/core/config.ts, docs/config.md): `knowledge: { roots: ["$HOME/projects", "$HOME/Work"], max_age_s: 300 }` — `roots` scanned for repos, manifest rebuilt when older than `max_age_s` so a `git pull` shows up on the next reload, no restart. Nothing in src/ or templates/ may hardcode `/home/ukd`.
+
+## Forbidden
+- Read /home/ukd/projects/opus-implementer-method.md first.
+- Call budget: stop and report within ~100 calls. One dated bullet under `## Progress` after the `Status:` line, ending with `Findings:`.
+- Read-only tab: no upload, write, delete or rename route for topics; no multi-user auth, no share links; the login stays exactly the pages server's single-user login.
+- No central folder: topics come only from docs/knowledge/ of repos under the configured roots; never scan any other directory.
+- Nothing in src/ or templates/ hardcodes /home/ukd — the config default carries the $HOME placeholder.
+- No new npm dependencies; no page script beyond the existing fetch-swap logic.
+- Work only in /home/ukd/Work/neurastream-knowledge on feat/knowledge-base. Never push, tag, publish or install (Main does). Commit files by name; never `git add -A`/`.`; never `--no-verify`.
+- Every test run via `/home/ukd/Work/heavy-run.sh <agent> "<label>" -- nice -n 19 timeout 600 bun test …`, tool timeout 0. First run `bun install --frozen-lockfile` if node_modules is missing.
+
+## Blockers
+- blockers/knowledge-scope.sh — runs at every commit: refuses harness names in src/core/knowledge.ts, any hardcoded /home/ukd in src/ or templates/, any POST or write/delete route for topics in owner-ui.ts, and any scan outside docs/knowledge.
+
+## Phases
+- [ ] P1 Manifest, core-only and host-neutral. New `src/core/knowledge.ts`: pure `scanKnowledge(roots: string[], now: number): KnowledgeEntry[]` (entry = `{repo, topic, title, updated}`, rules above; unreadable dirs are skipped, never fatal) plus `knowledgeManifest(cfg)` that reads/writes `knowledge.json` in the state dir with the age check. Tests with a fixture tree under tmp: repo with 2 topics + `<title>` parse; repo with no docs/knowledge → absent; worktree dir → skipped; repo with remote vs without → name rule; stale manifest → rebuilt, fresh → reused. — difficulty: 2 — verify: `cd /home/ukd/Work/neurastream-knowledge && /home/ukd/Work/heavy-run.sh agent "knowledge p1" -- sh -c 'bun run typecheck && bun test tests/knowledge.test.ts'`
+- [ ] P2 Phone tab. In `src/core/owner-ui.ts`: a "Knowledge" pill (tabs at :561), `/?tab=knowledge` = repo cards (name, topic count, newest update); `/?tab=knowledge&repo=<repo>` = topic cards (title, updated) with the tappable breadcrumb `knowledge-base / <repo> / <topic>` where each earlier segment is a link back; topic tap serves the file bytes through the pages server (`text/html`, same login) into the tab's fetch swap. Unknown repo/topic → 404 card; empty manifest → an empty state that states the convention ("any repo under the configured roots: put a page in `docs/knowledge/`"). No new script beyond the page's existing swap logic. Tests: render repo list, topic list, breadcrumb links, 404 card, empty state; a GET of a topic route returns the fixture file's bytes with `text/html`. — difficulty: 3 — verify: `cd /home/ukd/Work/neurastream-knowledge && /home/ukd/Work/heavy-run.sh agent "knowledge p2" -- sh -c 'bun run typecheck && bun test tests/owner-ui.test.ts'`
+- [ ] P3 Config + docs. `knowledge` block in src/core/config.ts (validated), templates/config.yml, docs/config.md; README paragraph (convention, breadcrumb, read-only); CHANGELOG `## Unreleased` → Added. — difficulty: 1 — verify: `cd /home/ukd/Work/neurastream-knowledge && bun test tests/config.test.ts && grep -q knowledge README.md`
+- [ ] P4 Full suite + scope: full `bun test` + typecheck via heavy-run; knowledge-scope.sh clean. — difficulty: 1 — verify: `cd /home/ukd/Work/neurastream-knowledge && /home/ukd/Work/heavy-run.sh agent "knowledge full" -- sh -c 'bun run typecheck && bun test'`
+- [ ] P5 Main: merge, release by tag, install after the owner's unlock, `neurastream doctor` exit 0. Live check: Main moves the real explainer from /home/ukd/Work/neurastream-architecture.html into the neurastream repo as a knowledge topic, then a browser check at 390×844: breadcrumb knowledge-base / neurastream / the topic, page opens, back segments work. — difficulty: 1 — verify: `git -C /home/ukd/projects/neurastream merge-base --is-ancestor feat/knowledge-base origin/main && neurastream doctor`
+## Done check
+`git -C /home/ukd/projects/neurastream merge-base --is-ancestor feat/knowledge-base origin/main && neurastream doctor`
+
+## Code read by Main
+- `/home/ukd/projects/neurastream/src/core/owner-ui.ts` (tabs :561, fetch swap :736, pages server glue in pages.ts :8-55)
+- `/home/ukd/projects/neurastream/src/core/pages.ts` (PagesOptions/startPagesServer :8-13)
+- `/home/ukd/projects/neurastream/src/core/config.ts` (machine block shape :167-178)
+- `/home/ukd/projects/neurastream/templates/config.yml`
+
+## Progress
+Status: open
+- 2026-10-26 09:30 Main: plan written after the owner's answers (in repo, him alone, generic-user design). Waits on the owner-UI redesign plan because both touch src/core/owner-ui.ts. Findings: none
