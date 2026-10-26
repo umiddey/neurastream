@@ -4,7 +4,7 @@
 // `ui on --login <email> [--port N]` / `ui off` set up and undo that whole setup in one command
 // (the core lives in src/core/ui-setup.ts); plain `neurastream ui` keeps serving as today.
 
-import { defaultRunSource } from "../adapters/omp/sessions.ts";
+import { getAdapter } from "../adapters/index.ts";
 import { ConfigError, loadConfig, type Config } from "../core/config.ts";
 import { startOwnerUi, type OwnerUiOptions, type OwnerUiServer } from "../core/owner-ui.ts";
 import { applyQueueEnv } from "../core/queue/env.ts";
@@ -84,7 +84,7 @@ export async function runUi(args: string[] = [], deps: UiDeps = {}): Promise<num
 		console.error("neurastream ui: ui.owner_login is empty — set the tailscale login that may open the page");
 		return 1;
 	}
-	(deps.start ?? startOwnerUi)({ cfg, tailscale: realTailscale, source: defaultRunSource(cfg) });
+	(deps.start ?? startOwnerUi)({ cfg, tailscale: realTailscale, source: getAdapter(cfg).runSource(cfg) });
 	// src/cli/main.ts exits with the code this returns, which would kill the server: serving
 	// never resolves, and the process runs until systemd or a signal stops it.
 	return new Promise<number>(() => {});

@@ -4,17 +4,24 @@
 // flags (carriedArgs) and the handoff as its message. Plain `omp` never gets the flag, so it never relaunches.
 
 import { spawn } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import type { LaunchOptions } from "../../core/adapter.ts";
 import type { Config } from "../../core/config.ts";
 import { mainStartText } from "../../core/main-start.ts";
 import { applyQueueEnv } from "../../core/queue/env.ts";
 import * as q from "../../core/queue/lib.ts";
 import { buildHandoff, holdsBlock, MAX_NOTE_AGE_MS, OWNER_AWAY, relaunchPath } from "../../core/rollover.ts";
 import { PROXY_BIN, proxyOnPath } from "../../core/secret-redact.ts";
-import { adapterLog } from "./index.ts";
 import { PACKAGE_ROOT, packageJsonPath, packageVersion } from "./package-root.ts";
 import { defaultCompletedResults, defaultRunSource } from "./sessions.ts";
+
+/** One line in the guard log: the adapter's own trace of what it did (relaunches, detectors). */
+export function adapterLog(cfg: Config, line: string): void {
+	try {
+		appendFileSync(cfg.paths.guard_log, `${new Date().toISOString()} ${line}\n`);
+	} catch {}
+}
 
 /** The harness the launcher runs. Tests pass another path through LaunchOptions. */
 export const OMP_BIN = "omp";
@@ -109,12 +116,6 @@ function hasPositional(args: string[]): boolean {
 		if (eq === -1 && takesValue(flag, args[i + 1])) i++;
 	}
 	return false;
-}
-
-export interface LaunchOptions {
-	harness?: string;
-	/** The main-start text generator for the handoff (default: src/core/main-start.ts). Tests inject a failing one. */
-	mainStart?: typeof mainStartText;
 }
 
 interface RelaunchRequest {

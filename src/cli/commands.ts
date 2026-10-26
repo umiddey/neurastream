@@ -18,9 +18,7 @@ import { wipBackup } from "../core/wip-backup.ts";
 import { wipCheck } from "../core/wip-check.ts";
 import { wipSnapshot } from "../core/wip-snapshot.ts";
 import { runtime } from "./runtime.ts";
-import { runMainLauncher } from "../adapters/omp/launch.ts";
-import { defaultCompletedResults, defaultRunSource } from "../adapters/omp/sessions.ts";
-import { ompScoreTraces } from "../adapters/omp/traces.ts";
+import { getAdapter } from "../adapters/index.ts";
 
 export const PORTED = [
 	"agent-score",
@@ -45,14 +43,15 @@ export const PORTED = [
 ] as const;
 
 export async function runMain(args: string[]): Promise<number> {
-	return runMainLauncher(args, runtime().cfg);
+	const cfg = runtime().cfg;
+	return getAdapter(cfg).launchMain(args, cfg);
 }
 
 export async function runPorted(cmd: string, args: string[]): Promise<number> {
 	const rt = runtime();
 	switch (cmd) {
 		case "agent-score":
-			return agentScore(args, rt.cfg, rt.source, ompScoreTraces(rt.cfg));
+			return agentScore(args, rt.cfg, rt.source, getAdapter(rt.cfg).scoreTraces(rt.cfg));
 		case "agent-ledger":
 			return agentLedger(args, rt.cfg, rt.source);
 		case "brief-lint":
@@ -75,8 +74,10 @@ export async function runPorted(cmd: string, args: string[]): Promise<number> {
 			return queueClose(args, rt.cfg);
 		case "queue-cancel":
 			return queueCancel(args, rt.cfg);
-		case "main-start":
-			return mainStart(args, rt.cfg, { source: defaultRunSource(rt.cfg), results: defaultCompletedResults(rt.cfg) });
+		case "main-start": {
+			const a = getAdapter(rt.cfg);
+			return mainStart(args, rt.cfg, { source: a.runSource(rt.cfg), results: a.completedResults(rt.cfg) });
+		}
 		case "machine-guard":
 			return machineGuard(args, rt.cfg);
 		case "quota-reset":

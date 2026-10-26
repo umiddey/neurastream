@@ -3,7 +3,7 @@
 // adapters only through the registry in src/adapters/index.ts. A core change a new harness needs
 // means the interface is wrong (docs/adapter.md), and this file is where that stays true.
 
-import { expect, test, todo } from "bun:test";
+import { expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
@@ -62,5 +62,13 @@ test("src/core names no harness", () => {
 	expect(bad).toEqual([]);
 });
 
-// P1 (c): once the registry (src/adapters/index.ts) exists, the CLI has no other door to it.
-test.todo("src/cli imports adapters only via src/adapters/index.ts");
+// P1 (c): the CLI has exactly one door to the adapters — the registry.
+test("src/cli imports adapters only via src/adapters/index.ts", () => {
+	const bad: string[] = [];
+	for (const file of tsFiles(CLI)) {
+		for (const { spec, line } of specs(readFileSync(file, "utf8"))) {
+			if (spec.includes("adapters") && spec !== "../adapters/index.ts") bad.push(`${file}:${line} imports ${spec}`);
+		}
+	}
+	expect(bad).toEqual([]);
+});

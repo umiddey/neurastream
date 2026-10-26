@@ -8,7 +8,7 @@
 import { closeSync, openSync, readFileSync, readSync, readdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Config } from "../../core/config.ts";
-import type { TraceEvent, TraceSource, TraceUsage } from "../../core/adapter.ts";
+import type { DumpRef, RelatedTrace, TraceEvent, TraceRun, TraceSource, TraceUsage } from "../../core/adapter.ts";
 import type { DumpParts, DumpTokens } from "../../core/trace-bloat.ts";
 import type { SpawnBrief } from "../../core/trace-briefs.ts";
 import { asObj, jsonlAt, parseTs, runIdOf } from "./sessions.ts";
@@ -135,7 +135,7 @@ export function parseTraceFile(file: string, runId: string): TraceEvent[] {
 }
 
 /** Every run id with a trace under the root, each mapped to its newest file. */
-export function ompTraceRuns(root: string): { runId: string; file: string; mtimeSec: number }[] {
+export function ompTraceRuns(root: string): TraceRun[] {
 	const newest: Record<string, { file: string; mtimeSec: number }> = {};
 	for (const file of [...jsonlAt(root, 1), ...jsonlAt(root, 2)]) {
 		let mt: number;
@@ -208,14 +208,14 @@ export function ompDumpDir(home: string): string {
  * Every request dump under the harness log dir, oldest first. Dumps are named
  * `<epoch ms of the failed request>-<request id>.json`; anything else in the dir is not a dump.
  */
-export function ompDumps(home: string): { file: string; ms: number }[] {
+export function ompDumps(home: string): DumpRef[] {
 	let names: string[];
 	try {
 		names = readdirSync(ompDumpDir(home));
 	} catch {
 		return [];
 	}
-	const out: { file: string; ms: number }[] = [];
+	const out: DumpRef[] = [];
 	for (const name of names) {
 		const m = /^(\d+)-[A-Za-z0-9]+\.json$/.exec(name);
 		if (m) out.push({ file: join(ompDumpDir(home), name), ms: Number(m[1]) });
@@ -316,13 +316,6 @@ export function ompTraceSource(root: string): TraceSource {
 /** TraceSource for agent-score, over the config's sessions root (the traces CLI's root rule). */
 export function ompScoreTraces(cfg: Config): TraceSource {
 	return ompTraceSource(cfg.adapter?.sessions || join(cfg.paths.home, ".omp", "agent", "sessions"));
-}
-
-export interface RelatedTrace {
-	/** The subagent run's trace run id — the agent name. */
-	name: string;
-	mtimeSec: number;
-	events: TraceEvent[];
 }
 
 /**

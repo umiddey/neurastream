@@ -11,8 +11,7 @@ import type { RunSource } from "../core/adapter.ts";
 import { buildReport, type BloatSummary, type ProviderSummary } from "../core/report.ts";
 import { providerFindings } from "../core/trace-provider.ts";
 import { bloatRules } from "../core/trace-bloat.ts";
-import { defaultRunSource } from "../adapters/omp/sessions.ts";
-import { ompDumps, ompTraceRuns, ompTraceSource } from "../adapters/omp/traces.ts";
+import { getAdapter } from "../adapters/index.ts";
 import { assignDumps, bloatReport } from "./traces.ts";
 
 export const METRICS_USAGE = [
@@ -97,12 +96,13 @@ export function recordRule(cfg: Config, text: string, decision: "approved" | "re
  *  rules of src/core/trace-provider.ts under the config's provider rules and price table. */
 function providerSummary(cfg: Config, now: number, days: number): ProviderSummary {
 	const root = cfg.adapter?.sessions || join(cfg.paths.home, ".omp", "agent", "sessions");
+	const a = getAdapter(cfg);
 	const cutoff = now - days * 86400;
-	const src = ompTraceSource(root);
+	const src = a.traceSource(root);
 	const rules = cfg.traces.provider;
 	const byKind: Record<string, number> = {};
 	let runs = 0;
-	for (const r of ompTraceRuns(root)) {
+	for (const r of a.traceRuns(root)) {
 		if (r.mtimeSec < cutoff) continue;
 		runs++;
 		for (const f of providerFindings(src.events(r.runId), rules, rules.prices)) byKind[f.kind] = (byKind[f.kind] ?? 0) + 1;
@@ -115,20 +115,21 @@ function providerSummary(cfg: Config, now: number, days: number): ProviderSummar
  *  rejected call flags only through its dump). */
 function bloatSummary(cfg: Config, now: number, days: number): BloatSummary {
 	const root = cfg.adapter?.sessions || join(cfg.paths.home, ".omp", "agent", "sessions");
+	const a = getAdapter(cfg);
 	const cutoff = now - days * 86400;
-	const src = ompTraceSource(root);
+	const src = a.traceSource(root);
 	const rules = bloatRules(cfg);
-	const dumps = ompDumps(cfg.paths.home);
+	const dumps = a.dumps(cfg.paths.home);
 	let runs = 0;
 	let flagged = 0;
 	let largest: BloatSummary["largest"] = null;
-	const allRuns = ompTraceRuns(root);
-	const { owners, events: assignmentEvents } = assignDumps(allRuns, src, dumps);
+	const allRuns = a.traceRuns(root);
+	const { owners, events: assignmentEvents } = assignDumps(allRuns, src, dumps, a);
 	for (const r of allRuns) {
 		if (r.mtimeSec < cutoff) continue;
 		runs++;
 		const owned = dumps.filter((dump) => owners.get(dump.file) === r.runId);
-		const rep = bloatReport(src, r.runId, rules, cfg.traces.bloat.tool_group, owned, r.mtimeSec, assignmentEvents.get(r.runId));
+		const rep = bloatReport(src, r.runId, rules, cfg.traces.bloat.tool_group, owned, r.mtimeSec, a, assignmentEvents.get(r.runId));
 		if (rep.findings.length === 0) continue;
 		flagged++;
 		const firstCall = Math.max(rep.firstPrompt ?? 0, rep.dumpPrompt?.tokens ?? 0);
@@ -163,7 +164,7 @@ export async function runMetrics(args: string[]): Promise<number> {
 	const [sub = "", ...rest] = args;
 	const now = nowSec();
 	if (sub === "ci") return recordCi(cfg, rest[0] ?? "", rest[1] ?? "", now);
-	if (sub === "report") return reportCmd(cfg, defaultRunSource(cfg), rest, now);
+	if (sub === "report") return reportCmd(cfg, getAdapter(cfg).runSource(cfg), rest, now);
 	if (sub === "false-alarm") return recordFalseAlarm(cfg, rest[0] ?? "", flagValue(rest, "--why") ?? "", now);
 	if (sub === "rule") {
 		const approved = rest.includes("--approved");

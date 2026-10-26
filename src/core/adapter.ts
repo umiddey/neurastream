@@ -1,5 +1,7 @@
 // Guard decisions and run data. No harness names. See docs/adapter.md.
 
+import type { mainStartText } from "./main-start.ts";
+
 export type RunStatus = "running" | "waiting" | "done" | "died";
 
 export interface RunMessage {
@@ -137,3 +139,40 @@ export interface StopEvent {
 
 export const GUARD_EVENTS = ["pre-tool", "inject", "spawn", "plan-edit", "stop"] as const;
 export type GuardEvent = (typeof GUARD_EVENTS)[number];
+
+// Shapes the registry (src/adapters/index.ts) and the CLI share. No harness names — only
+// src/adapters may name one.
+
+/** Every run id with a trace under a sessions root, each mapped to its newest file. */
+export interface TraceRun {
+	runId: string;
+	file: string;
+	mtimeSec: number;
+}
+
+/** One failed-request dump file: its path plus the epoch-ms stamp in its name. */
+export interface DumpRef {
+	file: string;
+	ms: number;
+}
+
+/** One subagent run's trace under one main run's session dir. */
+export interface RelatedTrace {
+	/** The subagent run's trace run id — the agent name. */
+	name: string;
+	mtimeSec: number;
+	events: TraceEvent[];
+}
+
+/** One finished subagent task-result announced in the newest main session file. */
+export interface TaskResult {
+	agent: string;
+	ts: number;
+}
+
+/** Options for launching the harness binary; tests inject another path and a failing generator. */
+export interface LaunchOptions {
+	harness?: string;
+	/** The main-start text generator for the handoff (default: src/core/main-start.ts). Tests inject a failing one. */
+	mainStart?: typeof mainStartText;
+}
