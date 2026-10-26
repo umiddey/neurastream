@@ -1,6 +1,6 @@
 import { loadConfig, type Config } from "../core/config.ts";
 import type { RunSource } from "../core/adapter.ts";
-import { defaultRunSource } from "../adapters/omp/sessions.ts";
+import { getAdapter } from "../adapters/index.ts";
 
 export interface Runtime {
 	cfg: Config;
@@ -9,5 +9,5 @@ export interface Runtime {
 
 export function runtime(): Runtime {
 	const cfg = loadConfig();
-	return { cfg, source: defaultRunSource(cfg) };
+	return { cfg, source: getAdapter(cfg).runSource(cfg) };
 }

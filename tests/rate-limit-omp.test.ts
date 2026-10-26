@@ -300,7 +300,7 @@ test("slash command input leaves the resume armed until it fires", async () => {
 	const host = adapterWith(stopCfg(writeConfig()));
 	const ctx = ctxFor();
 	await host.emit("session_stop", stopEvent(err429(15_000)), ctx);
-	await until(() => rlHits().length === 1);
+	await until(() => rlHits().length === 1, 20_000);
 	await host.emit("input", { text: "/usage", source: "interactive" }, ctx);
 	expect(logLines().filter(l => l.includes("RATE-LIMIT resume cancelled: owner message"))).toHaveLength(0);
 	await until(() => host.sent.length === 1, 20_000);

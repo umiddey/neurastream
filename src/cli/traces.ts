@@ -14,7 +14,8 @@
 
 import { join } from "node:path";
 import { nowSec } from "../core/clock.ts";
-import type { TraceEvent, TraceSource } from "../core/adapter.ts";
+import type { DumpRef, TraceEvent, TraceSource } from "../core/adapter.ts";
+import { getAdapter, type HarnessAdapter } from "../adapters/index.ts";
 import { ConfigError, loadConfig, type Config } from "../core/config.ts";
 import { claimUnbacked } from "../core/incident-detectors.ts";
 import { claimsFromEvents, type RelatedRun } from "../core/trace-claims.ts";
@@ -22,7 +23,6 @@ import { actionsRules, suspiciousActions, type ActionsRules, type SuspiciousActi
 import { bloatBreakdown, bloatFindings, bloatRules, callSizes, dumpFinding, type BloatBreakdown, type BloatRules } from "../core/trace-bloat.ts";
 import { efficiencyRules, runEfficiency, RULE_ORDER, type EfficiencyRules, type WasteRule } from "../core/trace-efficiency.ts";
 import { pyPercent0 } from "../core/pyfmt.ts";
-import { dumpModel, dumpParts, dumpPromptTokens, ompDumps, ompTraceRuns, ompTraceSource, ompTraceStart, spawnBriefsIn, subagentTraces } from "../adapters/omp/traces.ts";
 import { briefReport, briefRows, type SideStat } from "../core/trace-briefs.ts";
 import { readEvents } from "../core/agent-score.ts";
 
@@ -111,16 +111,16 @@ export interface DumpAssignmentRun { runId: string; file: string; mtimeSec: numb
 export interface DumpAssignment { owners: Map<string, string>; unmatched: { file: string; ms: number }[]; events: Map<string, TraceEvent[]> }
 
 /** Assign each dump once, parsing only traces whose session start and mtime contain it. */
-export function assignDumps(runs: DumpAssignmentRun[], src: TraceSource, dumps: { file: string; ms: number }[]): DumpAssignment {
+export function assignDumps(runs: DumpAssignmentRun[], src: TraceSource, dumps: DumpRef[], a: Pick<HarnessAdapter, "dumpModel" | "traceStart"> = getAdapter()): DumpAssignment {
 	const owners = new Map<string, string>();
-	const unmatched: { file: string; ms: number }[] = [];
+	const unmatched: DumpRef[] = [];
 	const cached = new Map<string, ReturnType<TraceSource["events"]>>();
 	for (const dump of dumps) {
-		const model = dumpModel(dump.file);
+		const model = a.dumpModel(dump.file);
 		const eligible: { ts: number; runId: string }[] = [];
 		for (const run of runs) {
 			if (dump.ms > Math.round(run.mtimeSec * 1000)) continue;
-			const start = ompTraceStart(run.file);
+			const start = a.traceStart(run.file);
 			if (start !== null && dump.ms < start * 1000) continue;
 			let events = cached.get(run.runId);
 			if (!events) {
@@ -144,7 +144,7 @@ export function assignDumps(runs: DumpAssignmentRun[], src: TraceSource, dumps: 
 	return { owners, unmatched, events: cached };
 }
 
-export function bloatReport(src: TraceSource, runId: string, rules: BloatRules, groupRegex: string, dumps: { file: string; ms: number }[], mtimeSec: number, parsedEvents?: TraceEvent[]): RunBloatReport {
+export function bloatReport(src: TraceSource, runId: string, rules: BloatRules, groupRegex: string, dumps: DumpRef[], mtimeSec: number, a: Pick<HarnessAdapter, "dumpParts" | "dumpPromptTokens"> = getAdapter(), parsedEvents?: TraceEvent[]): RunBloatReport {
 	const events = parsedEvents ?? src.events(runId);
 	const sizes = callSizes(events, rules.aggregate_apis);
 	const findings = bloatFindings(events, rules);
@@ -161,8 +161,8 @@ export function bloatReport(src: TraceSource, runId: string, rules: BloatRules, 
 	if (first !== undefined) {
 		const dump = dumps.find((d) => d.ms >= first * 1000 && d.ms <= Math.round(mtimeSec * 1000));
 		if (dump) {
-			breakdown = bloatBreakdown(dumpParts(dump.file), groupRegex);
-			const stated = dumpPromptTokens(dump.file);
+			breakdown = bloatBreakdown(a.dumpParts(dump.file), groupRegex);
+			const stated = a.dumpPromptTokens(dump.file);
 			if (stated) {
 				dumpPrompt = { tokens: stated.tokens, ...(stated.limit !== undefined ? { limit: stated.limit } : {}) };
 				if (findings.length === 0) {
@@ -208,10 +208,11 @@ function briefsCommand(cfg: Config, root: string, rest: string[]): number {
 		}
 	}
 	const cutoff = nowSec() - windowSec;
-	const briefs = ompTraceRuns(root)
+	const a = getAdapter(cfg);
+	const briefs = a.traceRuns(root)
 		.filter((r) => r.mtimeSec >= cutoff)
-		.flatMap((r) => spawnBriefsIn(r.file, r.runId));
-	const rows = briefRows(briefs, ompTraceSource(root), readEvents(cfg), { brief: cfg.traces.briefs, efficiency: efficiencyRules(cfg) });
+		.flatMap((r) => a.spawnBriefsIn(r.file, r.runId));
+	const rows = briefRows(briefs, a.traceSource(root), readEvents(cfg), { brief: cfg.traces.briefs, efficiency: efficiencyRules(cfg) });
 	const summary = briefReport(rows, { min_n: cfg.traces.briefs.min_n, char_buckets: cfg.traces.briefs.char_buckets });
 	if (json) {
 		console.log(JSON.stringify(report ? summary : rows, null, 2));
@@ -279,15 +280,16 @@ export async function runTraces(args: string[], opts: { home?: string } = {}): P
 		console.error(TRACES_USAGE);
 		return 2;
 	}
-	const runs = ompTraceRuns(root);
-	const src = ompTraceSource(root);
+	const a = getAdapter(cfg);
+	const runs = a.traceRuns(root);
+	const src = a.traceSource(root);
 	const rules: ActionsRules | EfficiencyRules | BloatRules | null = sub === "actions" ? actionsRules(cfg) : sub === "efficiency" ? efficiencyRules(cfg) : sub === "bloat" ? bloatRules(cfg) : null;
 	// A Main run's report cites its subagents' results: their traces under the Main session dir
 	// back the pure result-line claims (P5). No time filter — the text match is the guard, and
 	// a sub's file keeps being written while its Main run lives, inside whatever window.
 	const relatedOf = (id: string): RelatedRun[] =>
-		sub === "claims" ? subagentTraces(root, id).map(({ name, events }) => ({ name, events })) : [];
-	const dumps = sub === "bloat" ? ompDumps(cfg.paths.home) : [];
+		sub === "claims" ? a.subagentTraces(root, id).map(({ name, events }) => ({ name, events })) : [];
+	const dumps = sub === "bloat" ? a.dumps(cfg.paths.home) : [];
 	const assignment = sub === "bloat" ? assignDumps(runs, src, dumps) : { owners: new Map<string, string>(), unmatched: [] as { file: string; ms: number }[], events: new Map<string, TraceEvent[]>() };
 	const dumpOwners = assignment.owners;
 	const unmatchedDumps = assignment.unmatched;
@@ -298,7 +300,7 @@ export async function runTraces(args: string[], opts: { home?: string } = {}): P
 		if (sub === "claims") return claimsReport(src, id, relatedOf(id));
 		if (sub === "actions") return actionsReport(src, id, rules as ActionsRules);
 		if (sub === "efficiency") return efficiencyReport(src, id, rules as EfficiencyRules);
-		return bloatReport(src, id, rules as BloatRules, cfg.traces.bloat.tool_group, assignedDumps(id), mtimeOf(id), assignment.events.get(id));
+		return bloatReport(src, id, rules as BloatRules, cfg.traces.bloat.tool_group, assignedDumps(id), mtimeOf(id), a, assignment.events.get(id));
 	};
 	if (windowSec !== undefined) {
 		const cutoff = nowSec() - windowSec;

@@ -35,6 +35,7 @@ import { mainStartText, runDailyCheck } from "../../core/main-start.ts";
 import { readBlocks } from "../../core/metrics.ts";
 import { buildHandoff, holdsBlock, notePath, noteRequest, OWNER_AWAY, ownerText, relaunchPath, rolloverState, spawnRefusal, type RolloverState } from "../../core/rollover.ts";
 import { defaultCompletedResults, defaultRunSource, runIdOf } from "./sessions.ts";
+import { adapterLog } from "./launch.ts";
 import { parseTraceFile } from "./traces.ts";
 import { packageJsonPath, packageVersion } from "./package-root.ts";
 import * as q from "../../core/queue/lib.ts";
@@ -130,11 +131,7 @@ const PUSH_MERGE = /\bgit\b[^\n;|&]*\bpush\b|\b(glab\s+mr|gh\s+pr)\s+merge\b/;
 
 // The installed package and its version: see ./package-root.ts.
 
-export function adapterLog(cfg: Config, line: string): void {
-	try {
-		appendFileSync(cfg.paths.guard_log, `${new Date().toISOString()} ${line}\n`);
-	} catch {}
-}
+export { adapterLog };
 
 /**
  * Real-time incident detectors (plan 20261022_2330 P3) at Main's prompt and after each Main bash

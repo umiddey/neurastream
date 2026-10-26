@@ -4,8 +4,7 @@ import { ConfigError, configFile, loadConfig, type Config } from "../core/config
 import { postReply } from "../core/notify.ts";
 import { loadKnownSecrets, redactSecrets, redactSummary } from "../core/secret-redact.ts";
 import { applyQueueEnv } from "../core/queue/env.ts";
-import { runAdapterInstall } from "../adapters/omp/install.ts";
-import { runDoctor } from "../adapters/omp/doctor.ts";
+import { getAdapter } from "../adapters/index.ts";
 import { GUARD_USAGE, runGuard } from "./guard.ts";
 import { runInit } from "./init.ts";
 import { PORTED, runMain, runPorted } from "./commands.ts";
@@ -110,7 +109,7 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 	if (cmd === "traces") return runTraces(args);
 	if (cmd === "ui") return runUi(args);
 	if (cmd === "pages") return runPages(args);
-	if (cmd === "adapter") return runAdapterInstall(args);
+	if (cmd === "adapter") return getAdapter().install(args);
 	if (cmd === "config") {
 		try {
 			const cfg = loadConfig();
@@ -123,7 +122,7 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 	}
 	if (cmd === "doctor") {
 		for (const warning of pagesDoctor()) console.warn(`warning: ${warning}`);
-		return runDoctor();
+		return getAdapter().doctor();
 	}
 	if (cmd === "notify") return runNotify(args);
 	if (cmd === "redact") return runRedact(args);

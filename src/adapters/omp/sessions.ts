@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { Config } from "../../core/config.ts";
-import type { MainSession, Run, RunMessage, RunSource, RunStatus } from "../../core/adapter.ts";
+import type { MainSession, Run, RunMessage, RunSource, RunStatus, TaskResult } from "../../core/adapter.ts";
 import { nowSec } from "../../core/clock.ts";
 import { readBudgets } from "../../core/guards.ts";
 import { pyDumps } from "../../core/pyjson.ts";
@@ -312,8 +312,8 @@ export function defaultRunSource(cfg: Config): RunSource {
  * wait were invisible here, so D1 never saw them). A line without a readable timestamp is
  * skipped — without one the contradiction grace cannot be aged.
  */
-export function completedResults(text: string): { agent: string; ts: number }[] {
-	const out: { agent: string; ts: number }[] = [];
+export function completedResults(text: string): TaskResult[] {
+	const out: TaskResult[] = [];
 	for (const line of text.split("\n")) {
 		const isAsync = line.includes('"async-result"');
 		const isWait = line.includes('"toolName":"wait"');
@@ -349,7 +349,7 @@ export function completedResults(text: string): { agent: string; ts: number }[] 
 }
 
 /** `completedResults` of the newest Main session file (the one `mainSession()` picks). */
-export function defaultCompletedResults(cfg: Config): { agent: string; ts: number }[] {
+export function defaultCompletedResults(cfg: Config): TaskResult[] {
 	try {
 		const s = defaultRunSource(cfg).mainSession();
 		return s ? completedResults(readFileSync(s.file, "utf8")) : [];

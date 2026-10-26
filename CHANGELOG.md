@@ -1,4 +1,7 @@
 # Changelog
+## 0.2.32
+### Added
+- Host-neutral core: `src/core` and `src/cli` name no harness. The CLI reaches the harness only through the new registry `src/adapters/index.ts` (`HarnessAdapter`, `getAdapter(cfg)` on the new config key `harness`, default `omp`; an unknown name throws `unknown harness "<x>"; known: omp`). The harness-neutral shapes the registry shares (`TraceRun`, `DumpRef`, `RelatedTrace`, `TaskResult`, `LaunchOptions`) live in `src/core/adapter.ts`; `tests/host-neutral.test.ts` holds the line (no harness names in `src/core`, one adapter door in `src/cli`). `docs/adapter.md` gained "Adding a feature" and "Adding a harness".
 ## 0.2.31
 ### Added
 - MR sweep (I-20261026-12): `main-start` prints a reconciliation of open forge MRs (glab/gh) against open plans of every repo in the index; `queue-check` exits 1 when a reachable forge lists an open MR no open plan mentions (`!N`/`#N` token or source branch, and `MR !N: ignored <reason>` in a plan marks it tracked). A missing CLI, auth failure, unknown host or absent origin skips that repo and never fails the sweep — no hard dependency on any forge CLI.

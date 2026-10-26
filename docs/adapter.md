@@ -169,6 +169,23 @@ Agent pins ship as templates. Adapter install copies `templates/agents/*.md` (no
 
 Spawn names are the pin `name` field. Core checks the name against `## Allowed` in `paths.subagents`. It does not know which names exist.
 
+## Adding a feature
+
+Core logic and its types live in `src/core` and name no harness — `tests/host-neutral.test.ts` and the substring scan in `tests/config.test.ts` hold that line. Whatever the feature must learn from the harness (sessions, traces, dumps, launch, install, doctor) goes through a `HarnessAdapter` member, and the CLI picks the adapter with `getAdapter(cfg)` on the config key `harness` — never an import from `src/adapters/omp/`.
+
+- A hook-only harness needs no adapter code for guard decisions: it calls `neurastream guard <event> --json`, so a feature built on the guard functions works there unchanged.
+- A feature that needs a harness capability no member covers adds one optional `HarnessAdapter` member (`member?`), and its doc comment states what happens when an adapter leaves it absent — normally the feature skips its harness-side part (empty list, `null`) and the core result still stands. A member a real second adapter cannot fill is an interface bug: make it optional with a documented absent behaviour, or fix the interface.
+
+## Adding a harness
+
+One folder under `src/adapters/`, one registry entry, zero core changes:
+
+1. `src/adapters/<name>/` implements `HarnessAdapter` (the readers, `launchMain`, `install`, `doctor`). Only this folder may name the harness.
+2. One entry in `ADAPTERS` in `src/adapters/index.ts`.
+3. Nothing under `src/core` or `src/cli` changes: the CLI reaches the harness only through the registry, and `tests/host-neutral.test.ts` holds both rules.
+
+The user picks it with `harness: <name>` in the config (default `omp`; an unknown name throws `unknown harness "<x>"; known: …`). What the new adapter must supply is the table below; a hook-only harness starts with `neurastream guard <event> --json` and, if it has no session files, a `RunSource` whose `listRuns` returns `[]` and whose `mainSession` returns `null`.
+
 ## What a later adapter must supply
 
 | Need | If the harness has it | If it does not |

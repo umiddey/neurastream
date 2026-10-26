@@ -1,6 +1,6 @@
 import { readdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { defaultRunSource } from "../adapters/omp/sessions.ts";
+import { getAdapter } from "../adapters/index.ts";
 import { loadConfig } from "../core/config.ts";
 import { readExpiry, sweepPages } from "../core/pages-expiry.ts";
 import { startPagesServer } from "../core/pages.ts";
@@ -19,7 +19,7 @@ export async function runPages(args: string[] = [], deps: PagesDeps = {}): Promi
   if (args[0] === "serve" && args.length === 1) {
    if (!cfg.pages.enabled) throw new Error("pages.enabled is false");
    sweepPages(cfg.pages.dir, cfg.pages.keep_days, clock());
-   startPagesServer({ cfg, tailscale: deps.tailscale ?? realTailscale, source: defaultRunSource(cfg) });
+   startPagesServer({ cfg, tailscale: deps.tailscale ?? realTailscale, source: getAdapter(cfg).runSource(cfg) });
    setInterval(() => { try { sweepPages(cfg.pages.dir, cfg.pages.keep_days, clock()); } catch (e) { console.error(e instanceof Error ? e.message : String(e)); } }, HOUR_MS);
    return new Promise<number>(() => {});
   }

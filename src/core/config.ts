@@ -17,6 +17,8 @@ export class ConfigError extends Error {
 }
 
 export interface Config {
+	/** Which adapter (src/adapters/index.ts) serves runs, traces, launch, install and doctor. The template ships the only one; a second harness adds its name here (docs/adapter.md). */
+	harness: string;
 	paths: {
 		home: string;
 		work_roots: string[];
@@ -387,6 +389,7 @@ function applyEnv(cfg: Record<string, unknown>, env: NodeJS.ProcessEnv): void {
 }
 
 function check(cfg: Config): void {
+	if (typeof cfg.harness !== "string" || cfg.harness === "") throw new ConfigError("harness must be a non-empty string");
 	try {
 		const pattern = cfg.quota.reset_pattern;
 		new RegExp(pattern);

@@ -36,6 +36,8 @@ paths:
   alert_state: "~/.cache/resource-alerts"
   snapshot_lock: "~/.cache/tmp-snapshot.lock"
 
+harness: omp                                # which adapter (docs/adapter.md) serves runs, traces, launch, install and doctor
+
 score:
   default_repo: ""                 # set your own scoring repo; empty = accept/check require --repo
   default_branch: ""               # no default: pass --branch
