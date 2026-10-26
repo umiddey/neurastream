@@ -149,12 +149,15 @@ function takeItems(parsed: Record<string, unknown>[], numberKey: "iid" | "number
 		const n = asNumber(item[numberKey] ?? item.number);
 		if (n === null || seen.has(n)) continue;
 		const state = typeof item.state === "string" ? item.state : "";
-		if (state && state !== "opened" && state !== "open") continue;
+		// The list command already asks for open MRs. Skip only an explicit closed/merged row,
+		// so an unexpected state label cannot hide an open MR.
+		if (state === "closed" || state === "merged") continue;
 		seen.add(n);
 		let branch = "";
 		for (const key of branchKeys) {
-			if (typeof item[key] === "string") {
-				branch = item[key];
+			const value = item[key];
+			if (typeof value === "string") {
+				branch = value;
 				break;
 			}
 		}
