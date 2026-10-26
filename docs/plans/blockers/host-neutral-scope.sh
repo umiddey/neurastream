@@ -10,7 +10,7 @@ fi
 WT=/home/ukd/Work/neurastream-host-neutral
 [ -d "$WT" ] || { echo "host-neutral-scope: no worktree"; exit 0; }
 cd "$WT" || exit 1
-ALLOWED='^(src/adapters/index\.ts|src/adapters/omp/[^/]+\.ts|src/cli/[^/]+\.ts|src/core/adapter\.ts|src/core/config\.ts|tests/[^/]+\.test\.ts|README\.md|CHANGELOG\.md|docs/[^/]+\.md)$'
+ALLOWED='^(src/adapters/index\.ts|src/adapters/omp/[^/]+\.ts|src/cli/[^/]+\.ts|src/core/adapter\.ts|src/core/config\.ts|templates/config\.yml|tests/[^/]+\.test\.ts|README\.md|CHANGELOG\.md|docs/[^/]+\.md)$'
 BASE=$(git merge-base origin/main HEAD 2>/dev/null || echo origin/main)
 FILES=$( { git diff --name-only "$BASE"; git ls-files --others --exclude-standard; } 2>/dev/null | sort -u)
 rc=0
