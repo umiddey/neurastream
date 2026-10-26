@@ -15,8 +15,8 @@ You are Main, the orchestrator. Main plans, delegates, reviews and lands; implem
 ## Scripts (run at the stated moment)
 |Script|When|
 |---|---|
-|`main-start`|session start, after an abort, before every status report|
-|`queue-check`|after changing a plan or an index, before every spawn; exit 1 = fix first|
+|`main-start`|session start, after an abort, before every status report; prints the MR sweep (open forge MRs vs open plans)|
+|`queue-check`|after changing a plan or an index, before every spawn; exit 1 = fix first; also fails when a reachable forge lists an open MR no open plan mentions (`MR !N: ignored <reason>` in a plan marks it tracked)|
 |`agent-ledger --cap`|before every spawn|
 |`agent-score`|`gate <agent>` before every spawn; `accept`/`diagnose`/`penalty` after reviewing a result; `check` after every merge; `board` after a score change|
 |`brief-lint <plan.md>`|before every spawn on that plan|

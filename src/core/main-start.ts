@@ -12,6 +12,7 @@ import { log as logGuard } from "./guards.ts";
 import { dailyChecks, readBlocks, readMetricEvents, worseThanMean } from "./metrics.ts";
 import { buildReport } from "./report.ts";
 import { loadavgLine } from "./host.ts";
+import { mrSweep } from "./mr-sweep.ts";
 
 function bin(name: string, cfg: Config): string {
 	return join(cfg.paths.home, ".local/bin", name);
@@ -134,7 +135,7 @@ export async function mainStartText(args: string[], cfg: Config, opts: { inherit
 	out.push(health.stdout + health.stderr);
 	say("");
 	say("=== queue");
-	const check = await run(bin("queue-check", cfg), [], { stdin: childStdin, stderr: childStderr });
+	const check = await run(bin("queue-check", cfg), ["--no-mr-sweep"], { stdin: childStdin, stderr: childStderr });
 	out.push(check.stdout + check.stderr);
 	say("");
 	say("=== heavy-run lock");
@@ -151,6 +152,15 @@ export async function mainStartText(args: string[], cfg: Config, opts: { inherit
 	const text = `${doctor.stdout}${doctor.stderr}`;
 	out.push(text.endsWith("\n") || text === "" ? text : `${text}\n`);
 	if (doctor.error) say(doctor.error.message);
+	try {
+		const sweep = mrSweep({ index: cfg.paths.queue_index });
+		if (sweep.lines.length) {
+			say("=== mr-sweep");
+			for (const line of sweep.lines) say(line);
+		}
+	} catch {
+		say("mr-sweep: skipped (forge unreachable)");
+	}
 	return out.join("");
 }
 
