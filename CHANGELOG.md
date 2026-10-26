@@ -1,4 +1,7 @@
 # Changelog
+## 0.2.31
+### Added
+- MR sweep (I-20261026-12): `main-start` prints a reconciliation of open forge MRs (glab/gh) against open plans of every repo in the index; `queue-check` exits 1 when a reachable forge lists an open MR no open plan mentions (`!N`/`#N` token or source branch, and `MR !N: ignored <reason>` in a plan marks it tracked). A missing CLI, auth failure, unknown host or absent origin skips that repo and never fails the sweep — no hard dependency on any forge CLI.
 ## 0.2.30
 ### Changed
 - Plan read check (I-20261025-208): a logged read counts in any checkout — a plan may cite a file Main read at the same repo-relative path in the other root (plan worktree ↔ main checkout); a cited file Main did read but that is missing from `## Code read by Main` is added to the list when the edit is allowed (`plan-guard: added <n> file(s) …`) instead of refused; reading a plan warns `plan-guard: before you edit this plan, re-read: …` when a listed entry would fail, so Main re-reads before drafting instead of losing a written edit at save time. The refusal for a file Main never read is unchanged.
