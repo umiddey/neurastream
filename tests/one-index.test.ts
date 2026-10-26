@@ -151,3 +151,69 @@ test("isOrchestrationPath: the main index and its listed plans are orchestration
 		delete process.env.QUEUE_INDEX;
 	}
 });
+
+// P4 (I-20261025-208): the index may not rank a plan above an open plan it waits on.
+function waitingPlan(title: string, waitsOn?: string): string {
+	return `# ${title}
+
+Worktree: -
+Branch: -
+
+## Goal
+- dependency order
+
+## Forbidden
+- none
+
+## Blockers
+- no-push
+
+## Phases
+- [ ] P1 step — difficulty: 1 — verify: \`true\`
+
+## Done check
+\`true\`
+
+## Code read by Main
+- \`src/core/queue/lib.ts\`
+
+## Progress
+Status: open
+${waitsOn ? `- Waits on: ${waitsOn}\n` : ""}`;
+}
+
+test("dependency order: a plan above the open plan it waits on is one problem naming both ranks", () => {
+	const b = plan("20261025_2336_b.md", waitingPlan("Plan B"));
+	const a = plan("20261025_2335_a.md", waitingPlan("Plan A", b));
+	setIndex(a, b);
+	const probs = queueProblems(MAIN, BLOCKERS).filter(q => q.problem.includes("waits on"));
+	expect(probs).toHaveLength(1);
+	expect(probs[0]!.where).toBe(a);
+	expect(probs[0]!.problem).toContain("#1 Plan A waits on #2 Plan B");
+	expect(probs[0]!.problem).toContain('move #2 up first or remove the "Waits on" line');
+});
+
+test("dependency order: the waits-on plan sitting below its target is no problem", () => {
+	const b = plan("20261025_2337_b.md", waitingPlan("Plan B"));
+	const a = plan("20261025_2338_a.md", waitingPlan("Plan A", b));
+	setIndex(b, a);
+	expect(queueProblems(MAIN, BLOCKERS).filter(q => q.problem.includes("waits on"))).toEqual([]);
+});
+
+test("dependency order: a waits-on target missing from the index is no problem", () => {
+	const ghost = plan("20261025_2339_ghost.md", waitingPlan("Plan Ghost"));
+	const a = plan("20261025_2340_a.md", waitingPlan("Plan A", ghost));
+	setIndex(a);
+	expect(queueProblems(MAIN, BLOCKERS).filter(q => q.problem.includes("waits on"))).toEqual([]);
+});
+
+test("queueSummary flags an open plan waiting on an open plan with waits on #N, in any order", () => {
+	const b = plan("20261025_2341_b.md", waitingPlan("Plan B"));
+	const a = plan("20261025_2342_a.md", waitingPlan("Plan A", b));
+	setIndex(a, b);
+	const s = queueSummary(MAIN);
+	expect(s).toContain(`  1. ${a} [open, waits on #2]`);
+	expect(s).toContain(`  2. ${b} [open]`);
+	setIndex(b, a);
+	expect(queueSummary(MAIN)).toContain(`  2. ${a} [open, waits on #1]`);
+});
