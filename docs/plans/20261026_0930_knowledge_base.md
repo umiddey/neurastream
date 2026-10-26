@@ -27,7 +27,7 @@ Waits on: 20261025_0100_owner_ui_redesign
 - Every test run via `/home/ukd/Work/heavy-run.sh <agent> "<label>" -- nice -n 19 timeout 600 bun test …`, tool timeout 0. First run `bun install --frozen-lockfile` if node_modules is missing.
 
 ## Blockers
-- docs/plans/blockers/knowledge-scope.sh — runs at every commit: refuses harness names in src/core/knowledge.ts, any hardcoded /home/ukd in src/ or templates/, any POST or write/delete route for topics in owner-ui.ts, and any scan outside docs/knowledge.
+- blockers/knowledge-scope.sh — runs at every commit: refuses harness names in src/core/knowledge.ts, any hardcoded /home/ukd in src/ or templates/, any POST or write/delete route for topics in owner-ui.ts, and any scan outside docs/knowledge.
 
 ## Phases
 - [ ] P1 Manifest, core-only and host-neutral. New `src/core/knowledge.ts`: pure `scanKnowledge(roots: string[], now: number): KnowledgeEntry[]` (entry = `{repo, topic, title, updated}`, rules above; unreadable dirs are skipped, never fatal) plus `knowledgeManifest(cfg)` that reads/writes `knowledge.json` in the state dir with the age check. Tests with a fixture tree under tmp: repo with 2 topics + `<title>` parse; repo with no docs/knowledge → absent; worktree dir → skipped; repo with remote vs without → name rule; stale manifest → rebuilt, fresh → reused. — difficulty: 2 — verify: `cd /home/ukd/Work/neurastream-knowledge && /home/ukd/Work/heavy-run.sh agent "knowledge p1" -- sh -c 'bun run typecheck && bun test tests/knowledge.test.ts'`
