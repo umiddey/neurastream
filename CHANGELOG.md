@@ -1,5 +1,5 @@
 # Changelog
-## 0.2.30
+## 0.2.32
 ### Added
 - Host-neutral core: `src/core` and `src/cli` name no harness. The CLI reaches the harness only through the new registry `src/adapters/index.ts` (`HarnessAdapter`, `getAdapter(cfg)` on the new config key `harness`, default `omp`; an unknown name throws `unknown harness "<x>"; known: omp`). The harness-neutral shapes the registry shares (`TraceRun`, `DumpRef`, `RelatedTrace`, `TaskResult`, `LaunchOptions`) live in `src/core/adapter.ts`; `tests/host-neutral.test.ts` holds the line (no harness names in `src/core`, one adapter door in `src/cli`). `docs/adapter.md` gained "Adding a feature" and "Adding a harness".
 
