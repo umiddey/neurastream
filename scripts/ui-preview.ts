@@ -1,9 +1,11 @@
 // Renders the owner page to a file with the real renderer and no server, from a fixture state
-// (plan 20261025_0100_owner_ui_redesign P8): every tab has data — 2 asks (one already answered),
-// 12 queued plans across 3 repos, 3 agents incl. 1 died, a scores table, an incident, low disk,
-// and spend across the last 10 hours. `--tab <now|queue|agents|spend>` picks the tab (default
-// now). The output is meant for screenshots and review; it is not a test and touches nothing
-// outside <out.html>.
+// (plan 20261025_0100_owner_ui_redesign P19): every tab has data — 2 asks (one already answered,
+// each with Do / Stuck until then / Why you), 12 queued plans across 3 repos each with its own
+// file, a Summary line, and a status chip covering every queue state, 3 agents incl. 1 that died
+// before its first reply (model from the spawning agent's frontmatter, never "?"), a scores table,
+// an incident, low disk, and spend across the last 10 hours. `--tab <now|queue|agents|spend>`
+// picks the tab (default now). The output is meant for screenshots and review; it is not a test
+// and touches nothing outside <out.html>.
 // Usage: bun scripts/ui-preview.ts <out.html> [--tab <name>]
 
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -64,32 +66,126 @@ const questions: QuestionRow[] = [
 
 const agents: AgentRow[] = [
 	{ id: "main-7f3a2c", model: "glm-5.3-flash", detail: "Reviewing the PM red-list diff", minutes: 34, status: "running" },
-	{ id: "pr01-keys-12a", model: "grok-4-fast", detail: "Batch probe crashed on the webhook fixtures", minutes: 51, status: "died" },
+	// Died before its first reply: the transcript has no provider/model line, so P17 reads the
+	// parent task's agent frontmatter (NsUnlockNoticeSol → sol → openai-codex/gpt-6.1-sol) and
+	// the page prints the short name. Never "?".
+	{ id: "NsUnlockNoticeSol", model: "gpt-6.1-sol", detail: "DIED: never replied", minutes: 51, status: "died" },
 	{ id: "scores-sweep", model: "deepseek-v3", detail: "WAITING on owner answer", minutes: 3, status: "waiting" },
 ];
 
+// Each card has its own file (a shared fixture.md made a reorder check unable to tell cards
+// apart). Summaries are the plan's `Summary:` line. States cover every chip queueState emits:
+// waits you, waits on <plan>, not started · 0/N, phase K of N, all N done · checking.
 const queue: QueueRow[] = [
-	["alpha", "Gateforge 0.16 release checklist", false],
-	["alpha", "Adapter contract: second harness without core changes", false],
-	["alpha", "Golden tests for the guard CLI JSON surface", false],
-	["alpha", "Digest-pin the trusted policy files (deferred W4)", false],
-	["beta", "PM batch: split the two capped scopes", true],
-	["beta", "Batch report: probe-log pairing per key", false],
-	["beta", "Night budget ledger for the experiment", false],
-	["beta", "Webhook retry policy for notify failures", false],
-	["gamma", "Queue reorder inbox message polish", false],
-	["gamma", "INDEX.md atomic writer hardening", false],
-	["gamma", "Owner page screenshot review at 390×844", false],
-	["gamma", "Trim progress entries older than 7 days", false],
-].map(([repo, title, waiting]) => ({
-	repo: repo as string,
-	file: `/srv/code/${repo}/docs/plans/fixture.md`,
-	title: title as string,
-	status: "open",
-	waiting: waiting as boolean,
-	summary: title as string,
-	state: waiting ? "waits you" : "not started · 0/1",
-}));
+	{
+		repo: "alpha",
+		file: "/srv/code/alpha/docs/plans/20261025_0115_release_gate.md",
+		title: "Gateforge 0.16 release checklist",
+		status: "open",
+		waiting: true,
+		summary: "Ship the 0.16 gate so an unresolved wrapper call fails the release instead of vanishing into a warning the red-list run never sees.",
+		state: "waits you",
+	},
+	{
+		repo: "alpha",
+		file: "/srv/code/alpha/docs/plans/20261024_0900_adapter_contract.md",
+		title: "Adapter contract: second harness without core changes",
+		status: "open",
+		waiting: false,
+		summary: "A second harness plugs in behind the registry without a core edit.",
+		state: "not started · 0/4",
+	},
+	{
+		repo: "alpha",
+		file: "/srv/code/alpha/docs/plans/20261023_1400_golden_guard_cli.md",
+		title: "Golden tests for the guard CLI JSON surface",
+		status: "open",
+		waiting: false,
+		summary: "Pin the guard CLI JSON so a field rename fails the golden before it ships.",
+		state: "phase 2 of 5",
+	},
+	{
+		repo: "alpha",
+		file: "/srv/code/alpha/docs/plans/20261022_1800_digest_pin_w4.md",
+		title: "Digest-pin the trusted policy files (deferred W4)",
+		status: "open",
+		waiting: false,
+		summary: "Trusted policy files get a digest pin once the deferred W4 trust change is ready to land.",
+		state: "all 3 done · checking",
+	},
+	{
+		repo: "beta",
+		file: "/srv/code/beta/docs/plans/20261024_1900_pm_batch.md",
+		title: "PM batch: split the two capped scopes",
+		status: "open",
+		waiting: false,
+		summary: "Split the two batch scopes that died at the call cap so the night run finishes both probes.",
+		state: "waits on Gateforge 0.16 release checklist",
+	},
+	{
+		repo: "beta",
+		file: "/srv/code/beta/docs/plans/20261024_1600_probe_log_pairing.md",
+		title: "Batch report: probe-log pairing per key",
+		status: "open",
+		waiting: false,
+		summary: "Each red-list key in the batch report pairs with the probe log that produced it.",
+		state: "not started · 0/1",
+	},
+	{
+		repo: "beta",
+		file: "/srv/code/beta/docs/plans/20261023_2200_night_budget.md",
+		title: "Night budget ledger for the experiment",
+		status: "open",
+		waiting: false,
+		summary: "The night experiment gets a ledger of what each run spent, so a blown budget is visible before morning.",
+		state: "phase 3 of 5",
+	},
+	{
+		repo: "beta",
+		file: "/srv/code/beta/docs/plans/20261022_1100_webhook_retry.md",
+		title: "Webhook retry policy for notify failures",
+		status: "open",
+		waiting: false,
+		summary: "A failed notify webhook retries once after the requested delay instead of dropping the owner's ping.",
+		state: "all 5 done · checking",
+	},
+	{
+		repo: "gamma",
+		file: "/srv/code/gamma/docs/plans/20261025_1200_reorder_inbox.md",
+		title: "Queue reorder inbox message polish",
+		status: "open",
+		waiting: true,
+		summary: "The reorder message Main reads names the plan and the new rank in one plain sentence.",
+		state: "waits you",
+	},
+	{
+		repo: "gamma",
+		file: "/srv/code/gamma/docs/plans/20261024_0800_index_writer.md",
+		title: "INDEX.md atomic writer hardening",
+		status: "open",
+		waiting: false,
+		summary: "INDEX.md is rewritten through a temp file and a rename, so a crash mid-write cannot tear the queue in half.",
+		state: "waits on PM batch: split the two capped scopes",
+	},
+	{
+		repo: "gamma",
+		file: "/srv/code/gamma/docs/plans/20261023_1000_screenshot_review.md",
+		title: "Owner page screenshot review at 390×844",
+		status: "open",
+		waiting: false,
+		summary: "Every phone tab is checked at 390 by 844 against the approved mockup before the release tag.",
+		state: "phase 1 of 2",
+	},
+	{
+		repo: "gamma",
+		file: "/srv/code/gamma/docs/plans/20261021_0700_trim_progress.md",
+		title: "Trim progress entries older than 7 days",
+		status: "open",
+		waiting: false,
+		summary: "Progress entries past the keep count move to the plan archive so the live file stays short enough to read.",
+		state: "not started · 0/6",
+	},
+];
 
 // Spend and runs across the last 10 hours; the 14 older buckets stay empty. The totals add up:
 // $39.50 over 45 runs, split Main $27.30 / agents $12.20, and byModel carries the same sums.

@@ -1,4 +1,12 @@
 # Changelog
+## Unreleased
+### Added
+- Owner page queue cards show a two-line summary from the plan header `Summary:` (one or two plain sentences under Branch; if that line is missing, the first Goal bullet) and a status chip: waits you, waits on a plan, not started, phase K of N, or all N done. `queue-check` does not require the header, so old plans still pass (I-20261025-200).
+- Needs-me cards say why they need the owner. The hold line is `WAITING on owner: <what to do> — blocked: <what stays stuck until then> — why you: <why Main cannot do it>`, and the card shows Do, Stuck until then (including plans the answer unblocks), and Why you. Yes/No appear only when the ask is a question; a task ask gets Done.
+### Fixed
+- A sub-run that died before its first reply no longer shows "?" as its model. When the transcript has no provider and model, the model is the spawning agent's `model:` frontmatter; still unknown is `unknown`, never "?". A sub-run with no assistant message whose transcript is older than `ledger.idle_show_min` is `DIED: never replied` (I-20261025-200).
+- `agent-score accept`, `diagnose`, `validate` and `penalty` refuse a name that matches no run in the score window (`refused: no run named "<name>" — use the task name, not the worker type`) and store that run's model on the event, so the board no longer depends on the transcript still being in the window (I-20261025-200).
+
 ## 0.2.32
 ### Added
 - Host-neutral core: `src/core` and `src/cli` name no harness. The CLI reaches the harness only through the new registry `src/adapters/index.ts` (`HarnessAdapter`, `getAdapter(cfg)` on the new config key `harness`, default `omp`; an unknown name throws `unknown harness "<x>"; known: omp`). The harness-neutral shapes the registry shares (`TraceRun`, `DumpRef`, `RelatedTrace`, `TaskResult`, `LaunchOptions`) live in `src/core/adapter.ts`; `tests/host-neutral.test.ts` holds the line (no harness names in `src/core`, one adapter door in `src/cli`). `docs/adapter.md` gained "Adding a feature" and "Adding a harness".
