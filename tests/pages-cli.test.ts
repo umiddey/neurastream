@@ -29,6 +29,30 @@ async function logged(run: () => Promise<number>): Promise<{ code: number; lines
  try { return { code: await run(), lines }; }
  finally { console.log = orig; }
 }
+// Regression (2026-10-27): `publish --force <file>` read `--force` as the file (ENOENT copyfile
+// '--force') because args[1] was pinned as the file and only args.slice(2) was scanned for flags.
+test("publish parses --force/--keep and the name in any position", async () => {
+	const home = mkdtempSync(join(tmpdir(), "pages-cli-flags-"));
+	const src = join(home, "source.html");
+	writeFileSync(src, "one");
+	const clock = () => new Date("2026-10-27T12:00:00.000Z");
+	// --force before the file: the file must not be read as "--force"
+	const first = await logged(() => runPages(["publish", "--force", src], { home, tailscale, clock }));
+	expect(first.code).toBe(0);
+	expect(first.lines[0]).toBe("http://machine.example:7788/source.html");
+	// trailing flag still replaces an existing page
+	writeFileSync(src, "two");
+	expect(await runPages(["publish", src, "--force"], { home, tailscale, clock })).toBe(0);
+	expect(readFileSync(join(loadConfig({ home, env: {} }).pages.dir, "source.html"), "utf8")).toBe("two");
+	// flags and the optional name mixed in any order
+	const named = await logged(() => runPages(["publish", "--keep", src, "diagram"], { home, tailscale, clock }));
+	expect(named.code).toBe(0);
+	expect(named.lines[1]).toBe("kept");
+	expect(readFileSync(join(loadConfig({ home, env: {} }).pages.dir, "diagram.html"), "utf8")).toBe("two");
+	// more than file + name is still a usage error
+	expect(await runPages(["publish", src, "a", "b"], { home, tailscale, clock })).toBe(2);
+	expect(existsSync(join(loadConfig({ home, env: {} }).pages.dir, "a.html"))).toBe(false);
+});
 test("publish without keep lists an expiry date, and --keep on a republish flips it to kept", async () => {
  const home = mkdtempSync(join(tmpdir(), "pages-cli-keep-"));
  const src = join(home, "source.html");

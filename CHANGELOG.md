@@ -1,4 +1,8 @@
 # Changelog
+## 0.2.36
+### Fixed
+- The phone page's JavaScript works again. Since the drag-autoscroll change the whole inline page script was one stray brace away from a SyntaxError, so nothing the script wires up ran: tapping "change answer" on an answered card did nothing, drag reorder and the ↑/↓ buttons were dead, tab pills and every POST fell back to full page loads, and the auto refresh never started.
+- `neurastream pages publish` parses `--force`/`--keep` and the optional name in any position: `publish [--force] [--keep] <file> [<name>]`. `publish --force <file>` used to read `--force` as the file name and died with ENOENT copyfile '--force'.
 ## 0.2.35
 ### Fixed
 - `wip-snapshot` and `wip-backup` work again when a linked git worktree sits directly in a work root. Such a worktree reports an absolute git common dir, and gluing it onto the worktree path gave a folder that does not exist (`/Work/x-wt/home/…/.git`), so the whole run died with ENOENT. Live, every hourly snapshot and every nightly backup failed from 2026-10-21.

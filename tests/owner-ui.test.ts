@@ -1557,6 +1557,20 @@ test("the page CSP allows fetch to itself only, and the script fetch-swaps main 
 	expect(body).toContain('"accept":"application/json"');
 });
 
+// Regression (2026-10-27, P21): the drag-autoscroll commit added the qlist pointerdown handler
+// with one closing brace too many, so the WHOLE inline page script failed to parse — no binding
+// ran at all, and the answered card's "change answer" button (type=button, wired only by the
+// script) did nothing. What the page runs is what this test parses.
+test("the rendered inline page script parses as JavaScript (P21)", async () => {
+	const svc = ui();
+	const body = await (await get(svc)).text();
+	const scripts = [...body.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)].map(m => m[1]!);
+	expect(scripts.length).toBeGreaterThan(0);
+	for (const script of scripts) expect(() => new Function(script)).not.toThrow();
+	// the toggle binding the "change answer" button depends on is in what parses
+	expect(scripts.some(s => s.includes('querySelectorAll(".replybtn")'))).toBe(true);
+});
+
 // --- P13: the Tell Main message box ---
 
 test("the Now tab has the Tell Main card above Today; the receipt says Sent to Main (P13)", async () => {
