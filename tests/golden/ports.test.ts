@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -8,7 +8,9 @@ import { spawnSync } from "node:child_process";
 const REPO = dirname(dirname(dirname(import.meta.path)));
 // The golden oracle scripts: the frozen snapshot of the live originals (never the live machine).
 const LIVE = join(REPO, "tests/fixtures/originals/bin");
-const ROOT = "/tmp/neurastream-home-golden";
+// macOS /tmp is a symlink to /private/tmp and git prints resolved paths; resolve ROOT so the
+// oracle and the port both see one home prefix.
+const ROOT = join(realpathSync("/tmp"), "neurastream-home-golden");
 
 // The oracles are frozen pre-scrub scripts: they hardcode the old ~/Work layout and the
 // original backup remote. This sandbox config pins the same values so the port's effective
