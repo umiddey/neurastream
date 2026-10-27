@@ -74,7 +74,7 @@ test("changed skill + yes: the shipped files replace the older copy", () => {
 	});
 	expect(asked.length).toBe(1);
 	expect(asked[0]).toContain("architecture-drilldown"); // the CHANGELOG bullet that names it
-	expect(asked[0]).toContain("Unreleased:"); // with the section it sits under
+	expect(asked[0]).toMatch(/^ {2}(Unreleased|\d+\.\d+\.\d+): /m); // with the section it sits under
 	expect(asked[0]).toContain("update this skill? [y/N]");
 	expect(asked[0]).toContain("- older copy"); // the short diff
 	expect(result.skillsPlaced.length).toBe(1);
