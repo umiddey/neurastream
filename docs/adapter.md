@@ -162,7 +162,7 @@ No core change. The adapter is a hook table plus a `RunSource` if that harness h
 Only this folder may name the harness. It does three things:
 
 1. Session reader implementing `RunSource` (the jsonl rules above).
-2. An extension module (`package.json` key `omp.extensions` → `["./src/adapters/omp/index.ts"]`) that subscribes to `session_start`, `before_agent_start`, `before_subagent_spawn`, `tool_call`, `tool_result`, and `session_stop`, and calls the core functions. Return values map to the harness shapes `{ block, reason }`, `{ additionalContext }`, `{ message }`, and `{ decision: "block", reason }`.
+2. An extension module (`package.json` key `omp.extensions` → `["./src/adapters/omp/index.ts"]`) that subscribes to `session_start`, `before_agent_start`, `before_subagent_spawn`, `tool_call`, `tool_result`, and `session_stop`, and calls the core functions. Return values map to the harness shapes `{ block, reason }`, `{ additionalContext }`, `{ message }`, and `{ decision: "block", reason }`. `before_agent_start` is where an agent's context is filled: Main's queue summary (`checkInject`), a subagent's first turn (its plan's repo rules plus the owner's burden rule, both from `src/core/repo-rules.ts`), and the rules of a repo Main has just worked in — each handed over once per session and file version, never on every prompt.
 3. A pane-state reporter owned by the pane host; this package does not ship it. It talks to a socket. Core does not. Adapter install links the extension entry under the sandbox HOME and does not edit the live agent directory.
 
 Agent pins ship as templates. Adapter install copies `templates/agents/*.md` (no `.bak*`) into `adapter.pins` only when that file is absent.
@@ -193,7 +193,8 @@ The user picks it with `harness: <name>` in the config (default `omp`; an unknow
 | runs with model, calls, dollars, status | `RunSource.listRuns` | return `[]` |
 | main context size | `RunSource.mainSession` | return null |
 | pre-tool | call `checkTool` or the CLI | |
-| prompt-inject | call `checkInject` or the CLI | |
+| prompt-inject | call `checkInject` or the CLI, then append `repoRules` text for a repo this session has just worked in when `rulesChanged` says it is new (src/core/repo-rules.ts) | skip: no repo rules are injected, the queue summary still is |
+| subagent rules | on the subagent's first turn, find the plan its brief names in the index, then inject `repoRules` + `burdenRule` once per session | skip: subagents start without the repo's AGENTS.md |
 | spawn check | call `checkSpawn` or the CLI | |
 | plan-edit restriction | call `checkPlanEdit` or the CLI, and apply `restore` if the harness will not | |
 | stop | call `checkStop` or the CLI | |
