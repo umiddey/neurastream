@@ -33,6 +33,7 @@ PRIORITY-ID: <optional, e.g. PR01>
 Status: open
 <!-- The implementer may only append dated entries here: what was done, what was verified (command +
      result), commits, what is next. It never changes the Status line or adds "WAITING on owner".
+     A hold is one line: `WAITING on owner: <what to do> — blocked: <what stays stuck until then> — why you: <why Main cannot do it>` (blocked and why you may be omitted).
      Every new entry ends with a Findings line: "Findings: none", or one item per finding (bug,
      workaround, improvement — any repo) with file:line evidence, items separated by ";". Plan-guard
      restores an entry without it, and each item becomes an incident Main must plan or dismiss.

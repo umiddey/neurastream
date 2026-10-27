@@ -28,6 +28,11 @@ const questions: QuestionRow[] = [
 		repo: "alpha",
 		waitingLine:
 			"I need a decision: should the gate hard-fail HTTP calls that go through an undeclared wrapper (like an authFetch we cannot trace), or keep warning for one more release? The PM red-list run is blocked behind this answer, and three plans queue behind that run.",
+		waitingAsk:
+			"I need a decision: should the gate hard-fail HTTP calls that go through an undeclared wrapper (like an authFetch we cannot trace), or keep warning for one more release?",
+		waitingBlocked: "The PM red-list run is blocked behind this answer, and three plans queue behind that run.",
+		waitingWhy: "Main cannot decide the release policy.",
+		unblocks: [],
 		goal: [
 			"Catch wrapper-wrapped HTTP calls that today escape the gate",
 			"Fail loudly instead of reporting HTTP_CALL_UNRESOLVED into a void",
@@ -43,6 +48,10 @@ const questions: QuestionRow[] = [
 		repo: "beta",
 		waitingLine:
 			"Two batch agents hit their 100-call cap mid-investigation and handed back half-done. Say whether I should raise the cap to 150, or split their scopes into smaller slices — the queue is holding 6 plans behind them and the night budget is burning.",
+		waitingAsk: "Say whether I should raise the cap to 150, or split their scopes into smaller slices?",
+		waitingBlocked: "The queue is holding 6 plans behind them and the night budget is burning.",
+		waitingWhy: "Main cannot raise the cap or rescope the batch without you.",
+		unblocks: ["PM batch: split the two capped scopes"],
 		goal: [
 			"Stop losing subagent work at the cap boundary",
 			"Keep the 90-call warning as the early signal",

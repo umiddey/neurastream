@@ -97,6 +97,14 @@ export interface QuestionRow {
 	title: string;
 	repo: string;
 	waitingLine: string;
+	/** What to do, from the WAITING line. */
+	waitingAsk: string;
+	/** What stays stuck until then, or null. */
+	waitingBlocked: string | null;
+	/** Why Main cannot do it, or null. */
+	waitingWhy: string | null;
+	/** Titles of other open plans whose Waits on names this plan. */
+	unblocks: string[];
 	goal: string[];
 	waitingMin: number;
 	/** The last answer this plan already got (from the owner inbox), so the card can say so. */
@@ -172,7 +180,8 @@ export interface MachineRow {
 
 export function questionRows(cfg: Config): QuestionRow[] {
 	const now = Date.now();
-	return activePlans(cfg.paths.queue_index)
+	const plans = activePlans(cfg.paths.queue_index);
+	return plans
 		.filter(p => p.waiting && p.status === "open" && p.waitingLine)
 		.map(p => {
 			let waitingMin = 0;
@@ -184,6 +193,10 @@ export function questionRows(cfg: Config): QuestionRow[] {
 				title: p.title,
 				repo: basename(p.repo),
 				waitingLine: p.waitingLine ?? "",
+				waitingAsk: p.waitingAsk ?? p.waitingLine ?? "",
+				waitingBlocked: p.waitingBlocked,
+				waitingWhy: p.waitingWhy,
+				unblocks: plans.filter(o => o.status === "open" && o.file !== p.file && o.waitsOn.includes(p.file)).map(o => o.title),
 				goal: p.goal,
 				waitingMin,
 				answered: lastAnswerFor(p.file),
@@ -460,8 +473,16 @@ ${sent}
 
 function needCard(row: QuestionRow, i: number, tab: string): string {
 	const goals = row.goal.map(g => `<li>${esc(g)}</li>`).join("");
-	const wait = row.waitingMin < 60 ? `waiting ${row.waitingMin} min` : `waiting ${Math.max(1, Math.round(row.waitingMin / 60))} h`;
 	const bg = row.goal.length ? `<details class="bg" id="bg-${i}"><summary>Background</summary><ul>${goals}</ul></details>` : "";
+	const ask = row.waitingAsk || row.waitingLine;
+	const parts: string[] = [];
+	if (ask) parts.push(`<p class="q"><b>Do</b> ${esc(ask)}</p>`);
+	if (row.waitingBlocked || row.unblocks.length) {
+		const extra = row.unblocks.length ? `also unblocks: ${row.unblocks.join(", ")}` : "";
+		const stuck = [row.waitingBlocked, extra].filter(Boolean).join(" ");
+		parts.push(`<p class="q"><b>Stuck until then</b> ${esc(stuck)}</p>`);
+	}
+	if (row.waitingWhy) parts.push(`<p class="q"><b>Why you</b> ${esc(row.waitingWhy)}</p>`);
 	let said = "";
 	if (row.answered) {
 		const text = row.answered.answer;
@@ -470,17 +491,23 @@ function needCard(row: QuestionRow, i: number, tab: string): string {
 		said = `<p class="answered">You ${verb} "${esc(quote)}" · ${esc(strftime(row.answered.at, "%H:%M"))} — Main is on it</p>
 <button type="button" class="replybtn link">change answer</button>`;
 	}
+	const question = ask.endsWith("?");
 	const acts = row.answered
 		? said
-		: `<div class="acts">
+		: question
+			? `<div class="acts">
 <button class="btn pri" type="submit" name="answer" value="yes">Yes</button>
 <button class="btn" type="submit" name="answer" value="no">No</button>
 <button type="button" class="btn replybtn">Reply…</button>
+</div>`
+			: `<div class="acts">
+<button class="btn pri" type="submit" name="answer" value="done">Done ✓</button>
+<button type="button" class="btn replybtn">Reply…</button>
 </div>`;
 	return `<article class="ask">
-<p class="eyebrow">${esc(row.repo)} · ${esc(wait)}</p>
+<p class="eyebrow">${esc(row.repo)}</p>
 <b>${esc(row.title)}</b>
-<p class="q">${esc(row.waitingLine)}</p>
+${parts.join("\n")}
 ${bg}
 <form method="post" action="/answer">
 <input type="hidden" name="plan" value="${esc(row.plan)}">

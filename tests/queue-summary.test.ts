@@ -43,7 +43,14 @@ test("parsePlan returns the WAITING on owner line text, or null without one", ()
 	const a = parsePlan(REPO, "a.md", PLAN_A);
 	expect(a.waiting).toBe(true);
 	expect(a.waitingLine).toBe(HOLD);
-	expect(parsePlan(REPO, "b.md", PLAN_B).waitingLine).toBeNull();
+	expect(a.waitingAsk).toBe(HOLD);
+	expect(a.waitingBlocked).toBeNull();
+	expect(a.waitingWhy).toBeNull();
+	const three = "ship the patch — blocked: the release stays dark — why you: Main cannot tag";
+	const parsed = parsePlan(REPO, "c.md", `## Progress\nStatus: open\nWAITING on owner: ${three}\n`);
+	expect(parsed.waitingAsk).toBe("ship the patch");
+	expect(parsed.waitingBlocked).toBe("the release stays dark");
+	expect(parsed.waitingWhy).toBe("Main cannot tag");
 });
 
 test("queueSummary shows the owner hold text cut to 80 characters, not just the flag", () => {
