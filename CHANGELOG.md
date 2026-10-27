@@ -1,6 +1,9 @@
 # Changelog
-## Unreleased
+## 0.2.37
+### Fixed
+- A `False positive: <ban-id> — why` line clears its ban again: the name was captured as `ban` only, so a matching plan stayed refused by queue-check.
 ### Added
+- Finished-plans list (plan 20261027_1714): `queue-close` writes a short entry (date, repo, title, summary, last result, archived plan path) at the top of FINISHED.md beside the index; `queue-finished --backfill` adds every archived complete plan once, and `queue-finished <words>` searches the list.
 - Provider state from live data (plan 20261025_1700 P1, I-20261025-164): out-until times are recorded, never remembered. `quota-reset --provider <name>` stores the reset time it parses from the 429 text (zone from `quota.reset_tz`), the omp adapter records a task result quoting a `reset at …` line for the pinned provider, and a rate limit without a parseable time records now plus its wait — all as `{provider, until, at, source}` lines in `<paths.queue_state>/provider-out.jsonl`, newest record per provider wins.
 - The providers line (P2): `agent-ledger --cap` and `main-start` print the live state, e.g. `providers: zai free · openrouter out until 18:40`, and the notes request tells Main never to state provider state from memory — read the line.
 - The owner's pick order is enforced (P3): config `ledger.prefer` names agents in order (first = preferred, empty = off). The spawn gates refuse a lower pick while a higher one's provider is free unless the brief carries `Pick note: <why>`, and refuse a brief that claims a provider the recorded state shows free is rate-limited; `agent-score gate` ranks inside the order and never recommends a later paid agent while an earlier one is free (`gate: glm is first in prefer and free → use it`). With `ledger.prefer` empty nothing changes.
