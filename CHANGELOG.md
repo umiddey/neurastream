@@ -1,5 +1,5 @@
 # Changelog
-## Unreleased
+## 0.2.36
 ### Fixed
 - The phone page's JavaScript works again. Since the drag-autoscroll change the whole inline page script was one stray brace away from a SyntaxError, so nothing the script wires up ran: tapping "change answer" on an answered card did nothing, drag reorder and the ↑/↓ buttons were dead, tab pills and every POST fell back to full page loads, and the auto refresh never started.
 - `neurastream pages publish` parses `--force`/`--keep` and the optional name in any position: `publish [--force] [--keep] <file> [<name>]`. `publish --force <file>` used to read `--force` as the file name and died with ENOENT copyfile '--force'.
