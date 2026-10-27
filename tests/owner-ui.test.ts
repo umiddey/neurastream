@@ -1825,7 +1825,7 @@ const KCFG: Config = {
 test("knowledge tab: repo cards count the topics and name the newest update, and only repos with docs/knowledge appear", async () => {
 	const svc = ui({ cfg: KCFG });
 	const body = await (await get(svc, "/?tab=knowledge")).text();
-	expect(body).toContain('<a href="/?tab=knowledge" class="on">Knowledge</a>');
+	expect(body).toContain('<a href="/?tab=knowledge" class="on">Base</a>');
 	expect(body).toContain('href="/?tab=knowledge&repo=demo-app"');
 	expect(body).toContain("2 topics · ");
 	expect(body).not.toContain("no-docs");

@@ -4,6 +4,7 @@ import { getAdapter } from "../adapters/index.ts";
 import { loadConfig } from "../core/config.ts";
 import { readExpiry, sweepPages } from "../core/pages-expiry.ts";
 import { startPagesServer } from "../core/pages.ts";
+import { pageNotesGate } from "../core/page-notes.ts";
 import { pagesOff, pagesOn, publishPage, type Runner } from "../core/pages-setup.ts";
 import { realTailscale, type Tailscale } from "../core/tailscale.ts";
 
@@ -34,7 +35,7 @@ export async function runPages(args: string[] = [], deps: PagesDeps = {}): Promi
    if (!file || rest.length > 2) return 2;
    const now = clock();
    sweepPages(cfg.pages.dir, cfg.pages.keep_days, now);
-   const n = publishPage(file, name, force, cfg.pages.dir, keep, cfg.pages.keep_days, now);
+   const n = publishPage(file, name, force, cfg.pages.dir, keep, cfg.pages.keep_days, now, pageNotesGate(cfg));
    const host = (deps.tailscale ?? realTailscale).dnsName() ?? "tailnet";
    console.log(`http://${host}:${cfg.pages.port}/${encodeURIComponent(n)}`);
    const expires = readExpiry(cfg.pages.dir)[n]?.expires;

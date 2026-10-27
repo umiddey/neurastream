@@ -31,7 +31,7 @@ const MESSAGE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 export const OWNER_MESSAGE_KEEP_SEC = 43200;
 const REFRESH_SEC = 20;
 /** The page's tabs, in pill order; anything else in `?tab=` renders Now. */
-const TABS: [string, string][] = [["now", "Now"], ["queue", "Queue"], ["agents", "Agents"], ["spend", "Spend"], ["knowledge", "Knowledge"]];
+const TABS: [string, string][] = [["now", "Now"], ["queue", "Queue"], ["agents", "Agents"], ["spend", "Spend"], ["knowledge", "Base"]];
 const TAB_IDS = TABS.map(([id]) => id);
 // Tailscale hands out addresses from 100.64.0.0/10 (CGNAT) and its own ULA /48 for IPv6.
 const TAILNET6 = /^fd7a:115c:a1e0:/i;
@@ -894,7 +894,7 @@ function knowledgeHtml(entries: KnowledgeEntry[], repo: string, topic: string): 
 			? ""
 			: `<p class="sub"><a href="/?tab=knowledge">knowledge-base</a> / ${topic === "" ? esc(repo) : `<a href="${repoHref}">${esc(repo)}</a>`}${topic === "" ? "" : ` / ${esc(topic)}`}</p>`;
 	if (entries.length === 0) {
-		return `<h1>Knowledge</h1><div class="card"><p class="empty">No topics yet. Any repo under the configured roots counts: put a page in <span class="mono">docs/knowledge/</span> and it shows up here on the next reload.</p></div>`;
+		return `<h1>Base</h1><div class="card"><p class="empty">No topics yet. Any repo under the configured roots counts: put a page in <span class="mono">docs/knowledge/</span> and it shows up here on the next reload.</p></div>`;
 	}
 	if (repo === "") {
 		const repos = new Map<string, KnowledgeEntry[]>();
@@ -906,7 +906,7 @@ function knowledgeHtml(entries: KnowledgeEntry[], repo: string, topic: string): 
 				return `<div class="mrow"><a href="/?tab=knowledge&repo=${urlValue(name)}">${esc(name)}</a><span class="mono">${list.length} topic${list.length === 1 ? "" : "s"} · ${newest}</span></div>`;
 			})
 			.join("");
-		return `<h1>Knowledge</h1><p class="sub">One card per repo with pages in <span class="mono">docs/knowledge/</span> — tap a repo for its topics.</p><div class="card">${rows}</div>`;
+		return `<h1>Base</h1><p class="sub">One card per repo with pages in <span class="mono">docs/knowledge/</span> — tap a repo for its topics.</p><div class="card">${rows}</div>`;
 	}
 	const topics = entries.filter(e => e.repo === repo);
 	if (topics.length === 0) return `${crumb}<div class="card"><p class="empty">No repo named "${esc(repo)}" has a page under the configured roots.</p></div>`;
@@ -979,7 +979,7 @@ ${merges}
 ${machine}
 </div>`
 					: tab === "knowledge"
-						? `${data.knowledge === null ? na("Knowledge") : knowledgeHtml(data.knowledge, params.get("repo") ?? "", params.get("topic") ?? "")}`
+						? `${data.knowledge === null ? na("Base") : knowledgeHtml(data.knowledge, params.get("repo") ?? "", params.get("topic") ?? "")}`
 						: `<h1>Spend</h1>
 <p class="sub">List price over the last 24 hours.</p>
 <div class="card">

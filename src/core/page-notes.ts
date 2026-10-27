@@ -3,8 +3,10 @@
 // leave a note about that quote. "Submit all" posts them to the pages server, which appends one
 // owner-inbox row per note — the file Main already delivers as a user message. The page never
 // changes itself: notes are outbound only, and nothing on it is editable.
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import type { Config } from "./config.ts";
+import { expandHome } from "./queue/lib.ts";
 
 /** Marks the injected block, so a second publish (or a page that already carries one) stays single. */
 export const NOTES_MARK = "data-ns-page-notes";
@@ -75,56 +77,194 @@ const SCRIPT = `<script ${NOTES_MARK}>(function(){
  });
 })();</script>`;
 
-/** The artifact with the notes block injected once, before `</body>` when there is one. */
-export function injectPageNotes(html: string): string {
-	if (html.includes(NOTES_MARK)) return html;
-	const block = `${STYLE}\n${PANEL}\n${SCRIPT}`;
+/** One closed note with the answer Main gave it: shown on the page next to the quote (P8). */
+export interface AnsweredNote {
+	id: string;
+	quote: string;
+	note: string;
+	answer: string;
+}
+
+const ANSWERED_RE = /<section id="ns-answered"[\s\S]*?<\/section>\n?/i;
+
+function esc(text: string): string {
+	return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
+}
+
+function answeredBlock(notes: AnsweredNote[]): string {
+	if (notes.length === 0) return "";
+	const rows = notes
+		.map(n => `<div class="ns-row"><p class="ns-quote">${esc(n.id)} \u00b7 \u201c${esc(n.quote)}\u201d</p><p class="ns-note">${esc(n.note)}</p><p class="ns-answer"><strong>Answer:</strong> ${esc(n.answer)}</p></div>`)
+		.join("");
+	return `<section id="ns-answered" ${NOTES_MARK}><h2>Answered notes</h2>${rows}</section>`;
+}
+
+/** Append the block before `</body>` when there is one; an unchanged block leaves the html alone. */
+function withTail(html: string, block: string): string {
+	if (block === "") return html;
 	const at = html.toLowerCase().lastIndexOf("</body>");
-	if (at < 0) return `${html}\n${block}\n`;
-	return `${html.slice(0, at)}${block}\n${html.slice(at)}`;
+	return at < 0 ? `${html}\n${block}\n` : `${html.slice(0, at)}${block}\n${html.slice(at)}`;
+}
+
+/**
+ * The artifact with the notes block injected once, before `</body>` when there is one. A page that
+ * already carries it keeps its style, panel and script and only refreshes the answered list.
+ */
+export function injectPageNotes(html: string, answered: AnsweredNote[] = []): string {
+	const block = answeredBlock(answered);
+	if (html.includes(NOTES_MARK)) {
+		const at = ANSWERED_RE.exec(html);
+		if (at === null) return withTail(html, block);
+		return `${html.slice(0, at.index)}${block === "" ? "" : `${block}\n`}${html.slice(at.index + at[0].length)}`;
+	}
+	return withTail(html, `${STYLE}\n${PANEL}\n${block}\n${SCRIPT}`);
 }
 
 function str(value: unknown, max: number): string {
 	return typeof value === "string" ? value.trim().slice(0, max) : "";
 }
 
-/** How many notes the inbox already holds for this page, so the next ids continue the count. */
-function notesOnPage(inbox: string, page: string): number {
+function asRecord(value: unknown): Record<string, unknown> | null {
+	return value !== null && typeof value === "object" && !Array.isArray(value) ? Object.fromEntries(Object.entries(value)) : null;
+}
+
+function readRows(file: string): Record<string, unknown>[] {
 	let text = "";
 	try {
-		text = readFileSync(inbox, "utf8");
+		text = readFileSync(file, "utf8");
 	} catch {
-		return 0;
+		return [];
 	}
-	let n = 0;
+	const out: Record<string, unknown>[] = [];
 	for (const line of text.split("\n")) {
 		if (!line.trim()) continue;
-		try {
-			const rec = JSON.parse(line) as Record<string, unknown>;
-			if (rec.kind === "page-note" && rec.page === page) n++;
-		} catch {}
+		const row = asRecord(JSON.parse(line) as unknown);
+		if (row !== null) out.push(row);
 	}
-	return n;
+	return out;
+}
+
+/** A page name as one safe file name: `/why.html` and `why.html` are the same page. */
+function pageSlug(page: string): string {
+	const clean = page.replace(/^\/+/, "").replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+	return clean === "" ? "index" : clean;
+}
+
+function notesDir(cfg: Config): string {
+	return join(expandHome(cfg.paths.queue_state), "page-notes");
+}
+
+export function notesStorePath(cfg: Config, page: string): string {
+	return join(notesDir(cfg), `${pageSlug(page)}.jsonl`);
+}
+
+export function notesAnswersPath(cfg: Config, page: string): string {
+	return join(notesDir(cfg), `${pageSlug(page)}.answers.json`);
+}
+
+export interface PageNote {
+	id: string;
+	quote: string;
+	note: string;
+	url: string;
+	ts: number;
+}
+
+export function readNotes(cfg: Config, page: string): PageNote[] {
+	return readRows(notesStorePath(cfg, page)).flatMap(rec => {
+		const id = str(rec.id, 40);
+		if (id === "") return [];
+		return [{ id, quote: str(rec.quote, 2000), note: str(rec.note, 4000), url: str(rec.url, 1000), ts: typeof rec.ts === "number" ? rec.ts : 0 }];
+	});
+}
+
+/** Main's answer file for the page: one entry per note id. Ids without an entry are open. */
+export function readAnswers(cfg: Config, page: string): Record<string, string> {
+	let parsed: Record<string, unknown> | null = null;
+	try {
+		parsed = asRecord(JSON.parse(readFileSync(notesAnswersPath(cfg, page), "utf8")) as unknown);
+	} catch {
+		return {};
+	}
+	const out: Record<string, string> = {};
+	if (parsed === null) return out;
+	for (const [id, answer] of Object.entries(parsed)) {
+		const text = str(answer, 4000);
+		if (text !== "") out[id] = text;
+	}
+	return out;
+}
+
+/** The note ids with no answer yet — what `neurastream notes check` exits 1 on. */
+export function openNoteIds(cfg: Config, page: string): string[] {
+	const answers = readAnswers(cfg, page);
+	return readNotes(cfg, page)
+		.map(n => n.id)
+		.filter(id => answers[id] === undefined);
+}
+
+/** The page's notes with the answer beside each, in note order, for the published page. */
+export function answeredNotes(cfg: Config, page: string): AnsweredNote[] {
+	const answers = readAnswers(cfg, page);
+	return readNotes(cfg, page).flatMap(n => {
+		const answer = answers[n.id];
+		return answer === undefined ? [] : [{ id: n.id, quote: n.quote, note: n.note, answer }];
+	});
+}
+
+/** Publishing closes the old notes: they are archived and the answer file is spent. */
+export function settleNotes(cfg: Config, page: string, now = Math.floor(Date.now() / 1000)): void {
+	const store = notesStorePath(cfg, page);
+	if (existsSync(store)) renameSync(store, join(notesDir(cfg), `${pageSlug(page)}.${now}.answered.jsonl`));
+	try {
+		unlinkSync(notesAnswersPath(cfg, page));
+	} catch {}
+}
+
+/** What `pages publish` needs from the notes: what is open, what to show, and what to close. */
+export interface NotesGate {
+	open(page: string): string[];
+	answered(page: string): AnsweredNote[];
+	settle(page: string): void;
+}
+
+export function pageNotesGate(cfg: Config): NotesGate {
+	return { open: page => openNoteIds(cfg, page), answered: page => answeredNotes(cfg, page), settle: page => settleNotes(cfg, page) };
+}
+
+/** The next id for this page; the counter survives the archive, so an id is never reused. */
+function nextNoteId(cfg: Config, page: string): number {
+	let n = 0;
+	try {
+		const parsed = Number(readFileSync(join(notesDir(cfg), `${pageSlug(page)}.count`), "utf8").trim());
+		if (Number.isInteger(parsed) && parsed >= 0) n = parsed;
+	} catch {}
+	return n + 1;
 }
 
 /**
  * One inbox row per submitted note (`kind: "page-note"`, stable id n1, n2, … per page) and the
- * number stored; null when the submit carries no note text at all.
+ * number stored; null when the submit carries no note text at all. The same rows go to the page's
+ * store, which `notes check` and the publish gate read.
  */
-export function appendPageNotes(body: unknown, inbox: string, login: string, now = Math.floor(Date.now() / 1000)): number | null {
-	const rec = (typeof body === "object" && body !== null ? body : {}) as Record<string, unknown>;
-	const page = str(rec.page, 500);
+export function appendPageNotes(body: unknown, cfg: Config, login: string, now = Math.floor(Date.now() / 1000)): number | null {
+	const rec = asRecord(body) ?? {};
+	const page = str(rec.page, 500) === "" ? "/" : str(rec.page, 500);
 	const url = str(rec.url, 1000);
 	const rows: { quote: string; note: string }[] = [];
 	for (const item of Array.isArray(rec.notes) ? rec.notes : []) {
-		const one = (typeof item === "object" && item !== null ? item : {}) as Record<string, unknown>;
+		const one = asRecord(item) ?? {};
 		const note = str(one.note, 4000);
 		if (note) rows.push({ quote: str(one.quote, 2000), note });
 	}
 	if (rows.length === 0) return null;
-	let id = notesOnPage(inbox, page);
-	mkdirSync(dirname(inbox), { recursive: true });
-	const lines = rows.map(row => JSON.stringify({ ts: now, kind: "page-note", id: `n${++id}`, page, url, quote: row.quote, note: row.note, login }));
-	appendFileSync(inbox, `${lines.join("\n")}\n`);
+	let id = nextNoteId(cfg, page);
+	const stored = rows.map(row => ({ ts: now, id: `n${id++}`, page, url, quote: row.quote, note: row.note, login }));
+	const inbox = join(expandHome(cfg.paths.queue_state), "owner-inbox.jsonl");
+	const store = notesStorePath(cfg, page);
+	mkdirSync(dirname(store), { recursive: true });
+	appendFileSync(store, `${stored.map(r => JSON.stringify(r)).join("\n")}\n`);
+	writeFileSync(join(notesDir(cfg), `${pageSlug(page)}.count`), `${id - 1}\n`);
+	appendFileSync(inbox, `${stored.map(r => JSON.stringify({ ...r, kind: "page-note" })).join("\n")}\n`);
 	return rows.length;
 }

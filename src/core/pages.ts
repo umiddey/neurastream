@@ -1,7 +1,7 @@
 import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { basename, extname, resolve } from "node:path";
 import type { Config } from "./config.ts";
-import { inboxPath, isLoopback, isTailnet, type UiHttpServer } from "./owner-ui.ts";
+import { isLoopback, isTailnet, type UiHttpServer } from "./owner-ui.ts";
 import { appendPageNotes } from "./page-notes.ts";
 import type { RunSource } from "./adapter.ts";
 import type { Tailscale } from "./tailscale.ts";
@@ -29,7 +29,7 @@ export function startPagesServer(opts: PagesOptions): PagesServer {
    if (url.pathname !== "/_notes") return plain("method not allowed", 405);
    if (req.headers.get("origin") !== `http://${req.headers.get("host")}`) return plain("forbidden: origin is not this page", 403);
    let body: unknown; try { body = await req.json(); } catch { return plain("bad request: not JSON", 400); }
-   const stored = appendPageNotes(body, inboxPath(), login ?? "loopback");
+   const stored = appendPageNotes(body, opts.cfg, login ?? "loopback");
    return stored === null ? plain("no notes to submit", 400) : Response.json({ stored });
   }
   let name = decodeURI(url.pathname.slice(1));

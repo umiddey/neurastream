@@ -51,12 +51,14 @@ test("publish: every HTML artifact carries the block; a republish of the same so
 test("inbox: ids run n1, n2, … per page and an empty submit stores nothing", () => {
 	const dir = mkdtempSync(join(tmpdir(), "page-notes-inbox-"));
 	const inbox = join(dir, "owner-inbox.jsonl");
-	expect(appendPageNotes({ page: "/a.html", notes: [] }, inbox, "owner@example.test")).toBeNull();
-	expect(appendPageNotes({ page: "/a.html", notes: [{ quote: "q", note: "   " }] }, inbox, "owner@example.test")).toBeNull();
+	const cfg = loadConfig({ file: join(dir, "missing.yml"), home: dir, env: {} });
+	cfg.paths.queue_state = dir;
+	expect(appendPageNotes({ page: "/a.html", notes: [] }, cfg, "owner@example.test")).toBeNull();
+	expect(appendPageNotes({ page: "/a.html", notes: [{ quote: "q", note: "   " }] }, cfg, "owner@example.test")).toBeNull();
 	expect(existsSync(inbox)).toBe(false);
-	expect(appendPageNotes({ page: "/a.html", url: "http://x/a.html", notes: [{ quote: "too slow", note: "fix the timing" }] }, inbox, "owner@example.test", 1_700_000_000)).toBe(1);
-	expect(appendPageNotes({ page: "/a.html", notes: [{ quote: "b", note: "second" }] }, inbox, "owner@example.test", 1_700_000_060)).toBe(1);
-	expect(appendPageNotes({ page: "/b.html", notes: [{ quote: "c", note: "other page" }] }, inbox, "owner@example.test", 1_700_000_120)).toBe(1);
+	expect(appendPageNotes({ page: "/a.html", url: "http://x/a.html", notes: [{ quote: "too slow", note: "fix the timing" }] }, cfg, "owner@example.test", 1_700_000_000)).toBe(1);
+	expect(appendPageNotes({ page: "/a.html", notes: [{ quote: "b", note: "second" }] }, cfg, "owner@example.test", 1_700_000_060)).toBe(1);
+	expect(appendPageNotes({ page: "/b.html", notes: [{ quote: "c", note: "other page" }] }, cfg, "owner@example.test", 1_700_000_120)).toBe(1);
 	const rows = readFileSync(inbox, "utf8").trim().split("\n").map(l => JSON.parse(l) as Record<string, unknown>);
 	expect(rows.map(r => r.id)).toEqual(["n1", "n2", "n1"]);
 	expect(rows[0]).toMatchObject({ kind: "page-note", page: "/a.html", quote: "too slow", note: "fix the timing", url: "http://x/a.html", login: "owner@example.test" });
@@ -68,6 +70,7 @@ test("pages server: POST /_notes stores quote, note and url; empty submit and a 
 	process.env.QUEUE_STATE = state;
 	writeFileSync(join(root, "why.html"), injectPageNotes("<html><body><p>diagram</p></body></html>"));
 	const cfg = loadConfig({ file: join(root, "missing.yml"), home: root, env: {} });
+	cfg.paths.queue_state = state;
 	cfg.pages.enabled = true;
 	cfg.pages.dir = root;
 	cfg.pages.port = 0;
