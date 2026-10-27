@@ -1,5 +1,5 @@
 import { accessSync, constants, existsSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, resolve } from "node:path";
 import type { Config } from "./config.ts";
 import { nowSec, strftime } from "./clock.ts";
 import { printText } from "./help.ts";
@@ -40,7 +40,7 @@ export function wipBackup(args: string[], cfg: Config): number {
 
 	for (const repo of repos(cfg.paths.work_roots)) {
 		const commonRaw = gitRaw(repo, ["rev-parse", "--git-common-dir"]).stdout || ".";
-		const common = realpathSync(join(repo, commonRaw));
+		const common = realpathSync(resolve(repo, commonRaw));
 		if (seen.has(common)) continue;
 		seen.add(common);
 		const du = cmd(["du", "-sm", common]);

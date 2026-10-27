@@ -1,6 +1,7 @@
 # Knowledge base tab: repo → topic HTML explainers on the phone page
 Worktree: /home/ukd/Work/neurastream-knowledge
 Branch: feat/knowledge-base
+Summary: A Knowledge tab on your phone page: repo → topic explainers like the architecture diagram.
 Waits on: 20261025_0100_owner_ui_redesign
 
 ## Goal

@@ -1,6 +1,7 @@
 # Pressure alerts: the PC tells Main when it is choking and when it has room again
 Worktree: /home/ukd/Work/neurastream-pressure
 Branch: feat/pressure-alerts
+Summary: The PC tells me when CPU or memory is about to choke, and when there's room again, so I start fewer or more agents.
 
 ## Goal
 - Owner (2026-10-26 ~00:50): "if … a PC like mine suddenly the CPU usage or memory usage … is in the zone where it might start hanging, it gives the agent … some message … when it goes down you know that there is more resources and you can add more". Main found no tool that tells an agent (earlyoom / systemd-oomd / nohang kill processes; agent-usage-manager is a dashboard for humans). Owner picked option (a), 2026-10-26 ~00:55: "it should only tell you and you should then do the rest".

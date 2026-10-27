@@ -1,6 +1,7 @@
 # Results: $ per finished feature and before/after per release, on the phone page
 Worktree: /home/ukd/Work/neurastream-results
 Branch: feat/results
+Summary: Your phone page shows what each finished feature cost and whether each release made things faster or slower.
 
 ## Goal
 - Owner (2026-10-25 ~21:35): "these are the type of things that I want to calculate … maybe this can go to the UI … we want to be able to track it … when we release a feature, whether it becomes more efficient, less efficient, takes more space, less space, gets more work done". Then (~21:45): "the x-axis can be the time or it can be the feature itself … the y-axis can be the metric … and it can be for multiple"; built into neurastream, not a separate tool (Main's recommendation, owner asked "which is better").

@@ -1,6 +1,6 @@
 import { copyFileSync, existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { Config } from "./config.ts";
 import { nowSec, strftime } from "./clock.ts";
 import { printText } from "./help.ts";
@@ -39,7 +39,7 @@ export function wipSnapshot(args: string[], cfg: Config): number {
 	const worktrees: string[] = [];
 	for (const repo of repos(cfg.paths.work_roots)) {
 		const commonRaw = gitRaw(repo, ["rev-parse", "--git-common-dir"]).stdout || ".";
-		const common = realpathSync(join(repo, commonRaw));
+		const common = realpathSync(resolve(repo, commonRaw));
 		if (seen.has(common)) continue;
 		seen.add(common);
 		const out = gitRaw(repo, ["worktree", "list", "--porcelain"]).stdout;
