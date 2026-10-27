@@ -19,7 +19,9 @@ import { execFileSync, spawn } from "node:child_process";
 import { appendFileSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { Decision } from "../../core/adapter.ts";
+import { AGENTS_TEMPLATE } from "../../core/agents-md.ts";
 import { chatGo, chatTier, type Tier } from "../../core/autonomy.ts";
+import { burdenRule, repoRules, rulesChanged } from "../../core/repo-rules.ts";
 import { loadConfig, type Config } from "../../core/config.ts";
 import { nowSec, strftime } from "../../core/clock.ts";
 import { runDetectors, runDetectorsGated, type DetectorInput } from "../../core/incident-detectors.ts";
@@ -726,19 +728,39 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		inboxTimer = it;
 	});
 
+	// What a subagent is still missing (plan 20261027_1530 P2): the rules of the repo its plan is
+	// worked in, then the owner's burden rule — each once per session, and again only after the
+	// file changes (rulesChanged holds the hash). Empty when there is nothing new to say.
+	const unhanded = (session: string, plan: string | null): string => {
+		const parts: string[] = [];
+		const rules = plan ? repoRules(cfg, plan) : null;
+		if (rules && rulesChanged(cfg, session, rules.path, rules.text)) parts.push(`Repo rules (${rules.path}):\n${rules.text}`);
+		const rule = burdenRule();
+		if (rule && rulesChanged(cfg, session, AGENTS_TEMPLATE, rule)) parts.push(rule);
+		return parts.join("\n\n");
+	};
+
 	pi.on("before_agent_start", (event, ctx) => {
-		if (asCtx(ctx).kind !== "main") return;
+		const c = asCtx(ctx);
+		const prompt = asString(asRecord(event).prompt);
+		if (c.kind !== "main") {
+			if (c.kind !== "sub") return undefined;
+			// A subagent's first turn is the only one carrying its brief, and the plan the brief
+			// names is the repo whose rules it needs — the same index match the plan gate makes.
+			const plans = q.readIndex();
+			const content = unhanded(asString(c.id) || "sub", plans.find(file => prompt.includes(file)) ?? null);
+			return content ? { message: { customType: "main-guard.rules", content, display: false } } : undefined;
+		}
 		if (rateTimer !== null) {
 			clearRateTimer();
 			adapterLog(cfg, "RATE-LIMIT resume cancelled: owner message");
 		}
-		const d = checkInject({ inject: asString(asRecord(event).prompt), agent: "main" }, cfg);
+		const d = checkInject({ inject: prompt, agent: "main" }, cfg);
 		callsSinceStop = d.state?.callsSinceStop ?? callsSinceStop;
 		idleStops = d.state?.idleStops ?? idleStops;
 		const notice = rolloverNotice(ctx);
 		// A turn the harness starts from the guard's own stop continuation is not an owner
 		// message: D4 (owner-correction) only sees real prompts; D1/D3 run either way.
-		const prompt = asString(asRecord(event).prompt);
 		// Machine prompts (guard continuation, rollover note request, handoff note) are not owner messages.
 		mainDetectors(cfg, { prompt: ownerText(prompt) });
 		return {
