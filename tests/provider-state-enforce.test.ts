@@ -40,7 +40,7 @@ function sandbox(prefer: boolean): Config {
 	const home = join(TMP, `home-${prefer ? "prefer" : "plain"}`);
 	const agentDir = join(home, ".omp/agent");
 	const state = join(home, ".local/state/queue");
-	for (const d of [join(home, ".config/neurastream"), join(agentDir, "agents"), agentDir, state]) mkdirSync(d, { recursive: true });
+	for (const d of [join(home, ".config/neurastream"), join(agentDir, "agents"), join(agentDir, "notes"), state]) mkdirSync(d, { recursive: true });
 	writeFileSync(join(agentDir, "notes/subagents.md"), "## Allowed\n\n- `glm`\n- `deepseek`\n- `haiku`\n- `toy-worker`\n");
 	writeFileSync(join(agentDir, "INDEX.md"), "");
 	for (const [name, model] of PINS) writeFileSync(join(agentDir, "agents", `${name}.md`), `---\nname: ${name}\nmodel: ${model}\n---\n\nBody.\n`);
