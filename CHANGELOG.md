@@ -1,4 +1,7 @@
 # Changelog
+## 0.2.35
+### Fixed
+- `wip-snapshot` and `wip-backup` work again when a linked git worktree sits directly in a work root. Such a worktree reports an absolute git common dir, and gluing it onto the worktree path gave a folder that does not exist (`/Work/x-wt/home/…/.git`), so the whole run died with ENOENT. Live, every hourly snapshot and every nightly backup failed from 2026-10-21.
 ## 0.2.34
 ### Fixed
 - The phone page sends a text-only message again. A form sent without a chosen file still carries one empty, nameless file part; it was refused as "attachments must be PNG, JPEG, GIF or WEBP". Empty nameless parts are now skipped.

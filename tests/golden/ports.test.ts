@@ -429,6 +429,37 @@ test("wip-backup matches the original", () => {
 	);
 });
 
+// A linked worktree directly inside a work root reports an ABSOLUTE --git-common-dir; joining
+// it onto the worktree path made a path that does not exist, and the whole run died with ENOENT
+// (live: every hourly wip-snapshot and nightly wip-backup failed from 2026-10-21).
+test("wip-snapshot and wip-backup handle a linked worktree inside the work root", () => {
+	const home = homeFor("snap-wt");
+	const env = envFor(home, {
+		NEURASTREAM_NOW: "1760000000",
+		GATE_RC: "0",
+		GIT_AUTHOR_NAME: "t",
+		GIT_AUTHOR_EMAIL: "t@example.com",
+		GIT_COMMITTER_NAME: "t",
+		GIT_COMMITTER_EMAIL: "t@example.com",
+	});
+	stub(home, "wip-check", "#!/bin/sh\necho ok\n");
+	stub(home, "git-secret-gate", "#!/bin/sh\nexit 0\n");
+	const repo = join(home, "Work/demo");
+	initRepo(repo, env);
+	const wt = join(home, "Work/demo-wt");
+	spawnSync("git", ["worktree", "add", "-q", "-b", "wt", wt], { cwd: repo, env });
+	writeFileSync(join(wt, "a.txt"), "changed in the worktree\n");
+	const snap = runPort("wip-snapshot", ["--quiet"], env, home);
+	expect(snap.stderr).not.toContain("ENOENT");
+	expect(snap.code).toBe(0);
+	const refs = spawnSync("git", ["-C", repo, "for-each-ref", "--format=%(refname)", "refs/wip"], { encoding: "utf8" }).stdout;
+	expect(refs).toContain("refs/wip/Work_demo-wt/");
+	const backup = runPort("wip-backup", ["--dry-run"], env, home);
+	expect(backup.stderr).not.toContain("ENOENT");
+	expect(backup.code).toBe(0);
+	expect(backup.stdout).toContain("refs/heads/wip/Work_demo-wt");
+});
+
 test("main-health matches the original", () => {
 	const home = homeFor("health");
 	const env = envFor(home, { NEURASTREAM_NOW: "1760000000" });
