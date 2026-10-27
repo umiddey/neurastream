@@ -9,7 +9,7 @@
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Config } from "./config.ts";
-import { nowSec } from "./clock.ts";
+import { nowSec, strftime } from "./clock.ts";
 import { parseWhen, wallToEpoch } from "./reset-time.ts";
 
 /** One recorded out-until: `until`/`at` are epoch seconds. */
@@ -85,6 +85,18 @@ export function providerStatus(cfg: Config, now: number = nowSec()): ProviderOut
 		if (!seen.includes(r.provider)) seen.push(r.provider);
 	}
 	return seen.map(provider => ({ provider, until: outUntil(cfg, provider, now) }));
+}
+
+/**
+ * The one `providers:` line for Main's decision points (agent-ledger --cap, main-start): each
+ * recorded provider `free` or `out until <local HH:MM>`, configured order first. Null when
+ * nothing is recorded — an empty line would invite guessing, the incident's exact mistake.
+ */
+export function providersLine(cfg: Config, now: number = nowSec()): string | null {
+	const status = providerStatus(cfg, now);
+	if (status.length === 0) return null;
+	const parts = status.map(s => (s.until === null ? `${s.provider} free` : `${s.provider} out until ${strftime(s.until, "%H:%M")}`));
+	return `providers: ${parts.join(" · ")}`;
 }
 
 /** The provider half of a `provider/model` pin, or null when the model names no provider. */
