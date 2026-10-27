@@ -153,6 +153,8 @@ export interface Config {
 	ui: { enabled: boolean; port: number; owner_login: string };
 	/** Static pages hosted over the tailnet. */
 	pages: { enabled: boolean; port: number; dir: string; keep_days: number };
+	/** Repo-local HTML explainers under docs/knowledge/ (owner page Knowledge tab). */
+	knowledge: { roots: string[]; max_age_s: number };
 	rollover: { enabled: boolean; max_session_mb: number; exit_grace_s: number };
 	metrics: { report_days: number; correction_patterns: string[]; ci_pipelines_cmd: string };
 	/** Incident detectors (src/core/incident-detectors.ts): when a sighting becomes an incident. */
@@ -449,6 +451,11 @@ function check(cfg: Config): void {
 	if (!Number.isInteger(cfg.pages.port) || cfg.pages.port < 1 || cfg.pages.port > 65535) throw new ConfigError("pages.port must be an integer between 1 and 65535");
 	if (typeof cfg.pages.dir !== "string" || cfg.pages.dir.length === 0) throw new ConfigError("pages.dir must be a non-empty path");
 	if (!Number.isInteger(cfg.pages.keep_days) || cfg.pages.keep_days < 1) throw new ConfigError("pages.keep_days must be an integer >= 1");
+	if (!Array.isArray(cfg.knowledge.roots) || cfg.knowledge.roots.length === 0) throw new ConfigError("knowledge.roots must be a non-empty list of paths");
+	for (const r of cfg.knowledge.roots) {
+		if (typeof r !== "string" || r.length === 0) throw new ConfigError("knowledge.roots entries must be non-empty paths");
+	}
+	if (!Number.isInteger(cfg.knowledge.max_age_s) || cfg.knowledge.max_age_s < 1) throw new ConfigError("knowledge.max_age_s must be an integer >= 1");
 	for (const p of cfg.metrics.correction_patterns) {
 		try {
 			new RegExp(p, "i");

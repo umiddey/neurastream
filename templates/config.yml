@@ -149,6 +149,9 @@ pages:
   port: 7788
   dir: "~/.local/share/neurastream/pages"
   keep_days: 15        # delete a published page this many days later; publish --keep is permanent
+knowledge:
+  roots: ["$HOME/projects", "$HOME/Work"]
+  max_age_s: 300
 rollover:
   enabled: true
   max_session_mb: 5
@@ -236,8 +239,8 @@ traces:
     prices: {}
     allow_tools: []
   allowed_hosts:        # hosts a network command may touch without a finding
-    - localhost
-    - 127.0.0.1
+    - [REDACTED:known-value]
+    - [REDACTED:known-value]
     - "::1"
   bloat:
     # Prompt-size rules (src/core/trace-bloat.ts). first_call_max: the largest first-call
@@ -281,3 +284,5 @@ traces:
     plan_pattern: 'docs/plans/\S+\.md'
     char_buckets: [1500, 4000]   # brief length edges: <1500, 1500-3999, >=4000
     min_n: 5             # the report shows a mean only with at least this many rows on that side
+
+secret-redact: hid 2 value(s) (known-value)
