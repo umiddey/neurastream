@@ -246,6 +246,12 @@ omp retries a 429 itself while the provider's wait fits its `retry.maxDelayMs` (
 
 Before Main reads a message, reset timestamps matching `quota.reset_pattern` are annotated with their local time, for example `reset at 2026-10-25 18:56:22 (= 2026-10-25 11:56:22 CET local)`. Set `quota.reset_tz` to the provider's time zone; an explicit zone or UTC offset in the message takes precedence.
 
+## Provider state and pick order
+
+Who is rate-limited comes from recorded live data, not from memory (I-20261025-164). An out-until time is recorded — `quota-reset --provider <name> "<429 text>"` stores the time it parses (zone from `quota.reset_tz`), the adapter records a task result quoting a `reset at …` line for the pinned provider, and a rate limit without a parseable time records now plus its wait — as `{provider, until, at, source}` lines in `<paths.queue_state>/provider-out.jsonl`; the newest record per provider wins. `agent-ledger --cap` and `main-start` print the live line, for example `providers: zai free · openrouter out until 18:40`; never state which providers or agents are limited — read that line.
+
+The owner's pick order is enforced, not prose: config `ledger.prefer` names agents in order (first = preferred, empty = off). While a higher pick's provider is free, the spawn gates refuse a lower pick unless the brief carries `Pick note: <why>`, and a brief that claims a provider the recorded state shows free is rate-limited is refused outright. `agent-score gate` ranks inside the order: with an earlier pick free it names that one (`gate: glm is first in prefer and free → use it`) instead of recommending a later paid agent by score; with `ledger.prefer` empty the old score-only verdicts stand.
+
 ## Suspicious actions (`neurastream traces actions`)
 
 `neurastream traces actions <runId|--since 24h> [--json]` lists the suspicious tool actions a run's trace shows: reads of secret paths (`traces.actions.secret_globs`), network commands (`net_tools`) to unknown hosts, pipes into a shell (`shell_patterns`), and writes outside `write_roots` (empty = `paths.work_roots`; both empty = off) or on `deny_globs`. The high ones also open realtime suspicious-action incidents.

@@ -6,9 +6,9 @@
 // one is free. Owner 2026-10-27: "you are using paid haiku over free glm … this is the 5th time".
 
 import { afterAll, expect, spyOn, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { Run, RunSource } from "../src/core/adapter.ts";
 import { agentScore } from "../src/core/agent-score.ts";
 import { nowSec } from "../src/core/clock.ts";
@@ -42,7 +42,22 @@ function sandbox(prefer: boolean): Config {
 	const state = join(home, ".local/state/queue");
 	for (const d of [join(home, ".config/neurastream"), join(agentDir, "agents"), join(agentDir, "notes"), state]) mkdirSync(d, { recursive: true });
 	writeFileSync(join(agentDir, "notes/subagents.md"), "## Allowed\n\n- `glm`\n- `deepseek`\n- `haiku`\n- `toy-worker`\n");
-	writeFileSync(join(agentDir, "INDEX.md"), "");
+	writeFileSync(join(agentDir, "CANCELLED.md"), "");
+	// The spawn gates run the plan gate before the prefer gates, so every denial brief names this
+	// indexed open plan (20261020 stamp: grandfathered out of the "Code read by Main" template check).
+	const plan = join(home, "projects/toy/docs/plans/20261020_0100_toy.md");
+	mkdirSync(dirname(plan), { recursive: true });
+	writeFileSync(
+		plan,
+		"# Toy plan\n\nWorktree: -\nBranch: feat/toy\n\n## Goal\n- Pick-order toy.\n\n## Forbidden\n- Never skip tests.\n\n## Blockers\n- no-push\n\n## Phases\n- [ ] P1 do the thing — verify: `true`\n\n## Done check\n`true`\n\n## Progress\nStatus: open\n",
+	);
+	writeFileSync(join(agentDir, "INDEX.md"), `${plan}\n`);
+	// The blocker script's relative import must survive the copy (tests-only rewrite, as in guards-priority.test.ts).
+	const noPush = join(agentDir, "blockers/no-push");
+	mkdirSync(join(agentDir, "blockers"), { recursive: true });
+	const repo = join(import.meta.dir, "..");
+	writeFileSync(noPush, readFileSync(join(repo, "blockers/no-push"), "utf8").replace("../src/core/blockers.ts", join(repo, "src/core/blockers.ts")));
+	chmodSync(noPush, 0o755);
 	for (const [name, model] of PINS) writeFileSync(join(agentDir, "agents", `${name}.md`), `---\nname: ${name}\nmodel: ${model}\n---\n\nBody.\n`);
 	writeFileSync(
 		join(home, ".config/neurastream/config.yml"),
@@ -60,7 +75,9 @@ function sandbox(prefer: boolean): Config {
   plan_guard_log: "${join(home, "plan-guard.log")}"
 adapter:
   name: omp
+  sessions: "${join(home, ".omp/agent/sessions")}"
   pins: "${join(agentDir, "agents")}"
+  extensions: "${join(home, ".omp/agent/extensions")}"
 ${prefer ? 'ledger:\n  prefer:\n    - glm\n    - deepseek\n    - haiku\n' : ""}`,
 	);
 	return loadConfig({ home, env: {} });
@@ -69,6 +86,8 @@ ${prefer ? 'ledger:\n  prefer:\n    - glm\n    - deepseek\n    - haiku\n' : ""}`
 const cfg = sandbox(true);
 const cfgPlain = sandbox(false);
 applyQueueEnv(cfg);
+// The plan both sandboxes index; denial and Pick-note briefs must name it (the plan gate runs first).
+const PLAN = join(TMP, "home-prefer/projects/toy/docs/plans/20261020_0100_toy.md");
 
 // --- the spawn gates (pure rules, exported for both call sites) ---
 
@@ -108,7 +127,7 @@ test("the live task-tool path refuses a haiku batch while glm is free, and allow
 	const budgets: Record<string, number | null> = {};
 	const staffing: Record<string, string[]> = {};
 	const denied = spawnProblem(
-		{ tasks: [{ name: "w", agent: "haiku", task: "x", context: "" }], context: "" },
+		{ tasks: [{ name: "w", agent: "haiku", task: `Work ${PLAN} on P1.`, context: "" }], context: "" },
 		cfg,
 		files,
 		budgets,
@@ -117,7 +136,7 @@ test("the live task-tool path refuses a haiku batch while glm is free, and allow
 	);
 	expect(denied).toContain("glm is ahead of haiku in ledger.prefer and free");
 	const allowed = spawnProblem(
-		{ tasks: [{ name: "w", agent: "haiku", task: "x", context: "Pick note: glm holds the only terms slot." }], context: "" },
+		{ tasks: [{ name: "w", agent: "haiku", task: `Work ${PLAN} on P1.\nPick note: glm holds the only terms slot.`, context: "" }], context: "" },
 		cfg,
 		files,
 		budgets,
@@ -128,13 +147,16 @@ test("the live task-tool path refuses a haiku batch while glm is free, and allow
 });
 
 test("checkSpawn denies the haiku spawn without a Pick note and allows it with one (the owner's 5th-time case)", () => {
-	const d = checkSpawn({ agent: "haiku", invocationKind: "task", brief: "Work the queue.", runningJobs: [] }, cfg);
+	const d = checkSpawn({ agent: "haiku", invocationKind: "task", brief: `Work ${PLAN} on P1.`, runningJobs: [] }, cfg);
 	expect(d.allow).toBe(false);
 	expect(d.reason).toContain("glm is ahead of haiku in ledger.prefer and free");
-	const ok = checkSpawn({ agent: "haiku", invocationKind: "task", brief: "Work the queue.\nPick note: glm is out of slots.", runningJobs: [] }, cfg);
+	const ok = checkSpawn({ agent: "haiku", invocationKind: "task", brief: `Work ${PLAN} on P1.\nPick note: glm is out of slots.`, runningJobs: [] }, cfg);
 	expect(ok.allow).toBe(true);
+	// The ok spawn recorded on the plan, so the next agent needs a fresh "## Progress" entry first —
+	// exactly what the plan gate demands between runs.
+	appendFileSync(PLAN, "\n- 2026-10-27 ProviderStateP3cGlm: pick-order gate verified.\n");
 	// Empty prefer = no change from the old gate.
-	expect(checkSpawn({ agent: "haiku", invocationKind: "task", brief: "Work the queue.", runningJobs: [] }, cfgPlain).allow).toBe(true);
+	expect(checkSpawn({ agent: "haiku", invocationKind: "task", brief: `Work ${PLAN} on P1.`, runningJobs: [] }, cfgPlain).allow).toBe(true);
 });
 
 // --- agent-score gate ranks inside prefer ---
@@ -173,8 +195,11 @@ const source: RunSource = {
 };
 
 function accept(agent: string): void {
-	mkdirSync(cfg.paths.score_state, { recursive: true });
-	appendFileSync(join(cfg.paths.score_state, "events.jsonl"), `${JSON.stringify({ type: "accept", agent, weight: 2, ts: NOW })}\n`);
+	// Both sandboxes: the cfg gate calls rank via prefer, the cfgPlain calls via these rows.
+	for (const c of [cfg, cfgPlain]) {
+		mkdirSync(c.paths.score_state, { recursive: true });
+		appendFileSync(join(c.paths.score_state, "events.jsonl"), `${JSON.stringify({ type: "accept", agent, weight: 2, ts: NOW })}\n`);
+	}
 }
 
 function gate(args: string[], config: Config): string {
@@ -201,8 +226,10 @@ test("gate: haiku has the higher score but glm is first in prefer and free, so t
 });
 
 test("gate names the highest free prefer agent, blesses haiku once glm and deepseek are out, keeps score verdicts when prefer is empty", () => {
-	// glm out, deepseek free: the later paid agent is never recommended.
+	// glm out; deepseek free again (an earlier test recorded it out — newest record wins): the
+	// later paid agent is never recommended.
 	recordOut(cfg, "zai", nowSec() + 3600, "rate-limit");
+	recordOut(cfg, "deepseek", nowSec() - 60, "quota-reset");
 	expect(gate(["haiku"], cfg)).toContain("gate: deepseek is higher in prefer and free → use it");
 	// deepseek out too: haiku is the first free prefer agent.
 	recordOut(cfg, "deepseek", nowSec() + 3600, "rate-limit");
