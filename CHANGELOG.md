@@ -1,5 +1,7 @@
 # Changelog
 ## Unreleased
+### Fixed
+- `wip-snapshot` names its `refs/wip/<key>/` refs from the resolved home path, so a home behind a symlink (macOS `/tmp` → `/private/tmp`) no longer leaks `_private` into the key; this was the red macOS CI on main since 0.2.37.
 ### Added
 - Knowledge tab on the owner page (plan 20261026_0930_knowledge_base): `/?tab=knowledge` lists every git repo directly under `knowledge.roots` that has a `docs/knowledge/*.html`, `/?tab=knowledge&repo=<repo>` lists its topics, and `GET /knowledge/<repo>/<topic>` serves the page through the pages server behind the same login — breadcrumb `knowledge-base / <repo> / <topic>`, read-only, nothing registered. Repo naming, `<title>` parsing and the `knowledge.json` cache (`knowledge.max_age_s`) live in `src/core/knowledge.ts`; the config key and the shipped template gained the block (`docs/config.md`, README).
 - Shipped skills are updated by question, never by overwrite (P7): `neurastream adapter install omp` records a sha256 per shipped file in `~/.agents/skills/.neurastream-install.json`, and on update prints the CHANGELOG lines that name the skill (today `architecture-drilldown`) plus a short diff, then asks `update this skill? [y/N]`. A no, a file the owner edited (said before the question) or a run without a terminal leaves the skill byte-identical, and a release that still changes it asks again — no second local skill file.

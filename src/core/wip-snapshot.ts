@@ -34,7 +34,9 @@ export function wipSnapshot(args: string[], cfg: Config): number {
 	const maxMb = cfg.wip.snapshot_max_mb;
 	const secret = secretRx(cfg.wip.secret_file);
 	const stamp = strftime(nowSec(), "%Y%m%d-%H%M");
-	const homePrefix = cfg.paths.home.endsWith("/") ? cfg.paths.home : `${cfg.paths.home}/`;
+	// git prints worktree paths resolved (macOS: /var → /private/var), so the home prefix must be resolved too.
+	const home = existsSync(cfg.paths.home) ? realpathSync(cfg.paths.home) : cfg.paths.home;
+	const homePrefix = home.endsWith("/") ? home : `${home}/`;
 	const seen = new Set<string>();
 	const worktrees: string[] = [];
 	for (const repo of repos(cfg.paths.work_roots)) {
