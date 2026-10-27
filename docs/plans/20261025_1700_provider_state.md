@@ -1,6 +1,7 @@
 # Provider state: who is rate-limited comes from live data, and the owner's pick order is enforced
 Worktree: /home/ukd/Work/neurastream-provider-state
 Branch: fix/provider-state
+Summary: Which AI provider is rate-limited comes from live data, not my guess, and your pick order of agents is enforced.
 
 ## Goal
 - INCIDENT I-20261025-164 (owner correction, 2026-10-25): "you made the same mistake … you thought 18:56 GLM comes back when it was Chinese time and we built something on top of that". Main misread a zai 429 ("reset at 2026-10-25 18:56:22", Asia/Shanghai = 11:56 CET), wrote "glm rate limited until 18:56" into notes and a handoff, and skipped GLM all day.

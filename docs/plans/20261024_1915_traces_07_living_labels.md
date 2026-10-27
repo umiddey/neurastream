@@ -1,6 +1,7 @@
 # Traces 7: living labels (good/bad work, traced back from later bug fixes)
 Worktree: /home/ukd/Work/neurastream-traces-labels
 Branch: feat/traces-labels
+Summary: Mark each piece of agent work good or bad from what happened later (bug fixes, reverts), so agent scores come from results.
 
 ## Goal
 - Owner (2026-10-24 ~19:10, after seeing the architecture diagram): "Looks great, super. Plan it." Label every piece of agent work (episode = spawn brief + agent run + its commits + plan phase) as good / bad / unknown from results, never from an LLM opinion.

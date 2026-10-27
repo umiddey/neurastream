@@ -1,6 +1,7 @@
 # Plan history guard: Main reads the plans behind the code (plantrail) before planning; closed plans list the code they changed
 Worktree: /home/ukd/Work/neurastream-plan-history
 Branch: feat/plan-history
+Summary: Before I plan, I must read the old plans behind the code I'm about to change, so I know why it was built that way.
 Waits on: /home/ukd/projects/doctrail/docs/plans/20261025_1440_doctrail_v1.md
 
 ## Goal
