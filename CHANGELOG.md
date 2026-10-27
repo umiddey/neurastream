@@ -1,4 +1,7 @@
 # Changelog
+## 0.2.34
+### Fixed
+- The phone page sends a text-only message again. A form sent without a chosen file still carries one empty, nameless file part; it was refused as "attachments must be PNG, JPEG, GIF or WEBP". Empty nameless parts are now skipped.
 ## 0.2.33
 ### Added
 - Owner page queue cards show a two-line summary from the plan header `Summary:` (one or two plain sentences under Branch; if that line is missing, the first Goal bullet) and a status chip: waits you, waits on a plan, not started, phase K of N, or all N done. `queue-check` does not require the header, so old plans still pass (I-20261025-200).

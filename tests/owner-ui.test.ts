@@ -1589,6 +1589,14 @@ test("POST /message stores a text-only note and appends one inbox line carrying 
 	expect(typeof meta.ts).toBe("number");
 });
 
+test("POST /message with text and the empty file part a browser sends when no file is chosen stores the text (P13)", async () => {
+	const svc = ui();
+	const res = await postMessage(svc, { text: "text only" }, [{ field: "images", filename: "", bytes: new Uint8Array() }]);
+	expect(res.status).toBe(303);
+	const id = String(inboxRecords()[0]!.id);
+	expect(JSON.parse(readFileSync(join(messagesDir(), id, "message.json"), "utf8"))).toMatchObject({ text: "text only", images: [] });
+});
+
 test("POST /message stores a PNG named .bin by its detected type, bytes intact (P13)", async () => {
 	const svc = ui();
 	const res = await postMessage(svc, { text: "screenshot" }, [{ field: "images", filename: "shot.bin", bytes: PNG_BYTES }]);
