@@ -308,12 +308,14 @@ test("GET / renders the mockup Now tab: top bar, Today tiles, the ask card and t
 	expect(body).toContain("$0.20");
 	expect(body).toContain("Main $0.00 · agents $0.20");
 	expect(body).toContain("1 running · 0 died");
-	// ask card: title from the plan's # heading, repo label eyebrow, the ask, the goal
+	// ask card: title, repo eyebrow (age dropped — P18b), Do line, goal under Background, Done for a task ask
 	expect(body).toContain("Toy plan");
-	expect(body).toContain("toy · waiting");
-	expect(body).toContain(QUESTION);
+	expect(body).toContain('<p class="eyebrow">toy</p>');
+	expect(body).not.toContain("toy · waiting");
+	expect(body).toContain(`<b>Do</b> ${QUESTION}`);
 	expect(body).toContain("Owner page toy.");
-	expect(body).toContain('class="btn pri"');
+	expect(body).toContain('name="answer" value="done">Done ✓');
+	expect(body).not.toContain('value="yes"');
 	// queue preview row with the plain-language chip; a one-plan queue has no "Show all"
 	expect(body).toContain(`data-plan="${PLAN_W}"`);
 	expect(body).toContain("waits you");
@@ -322,6 +324,43 @@ test("GET / renders the mockup Now tab: top bar, Today tiles, the ask card and t
 	expect(body).toContain("<details");
 	expect(body).not.toContain("<pre>");
 	expect(body).not.toContain("http-equiv");
+});
+
+test("need card: three-part line shows Do, Stuck until then and Why you; a question shows Yes/No; a waiter is named", async () => {
+	const other = join(TOY, "docs/plans/20261019_blocked.md");
+	const three = "ship the patch — blocked: the release stays dark — why you: Main cannot tag";
+	try {
+		writeFileSync(
+			PLAN_W,
+			PLAN_TEXT("open", false).replace("## Progress\nStatus: open\n", `## Progress\nStatus: open\nWAITING on owner: ${three}\n`),
+		);
+		writeFileSync(other, PLAN_TEXT("open", false, PLAN_W).replace("# Toy plan", "# Blocked sibling"));
+		writeFileSync(INDEX, `${PLAN_W}\n${other}\n${PLAN_D}\n`);
+		const body = await (await get(ui())).text();
+		expect(body).toContain("<b>Do</b> ship the patch");
+		expect(body).toContain("<b>Stuck until then</b> the release stays dark also unblocks: Blocked sibling");
+		expect(body).toContain("<b>Why you</b> Main cannot tag");
+		expect(body).toContain('name="answer" value="done">Done ✓');
+		expect(body).not.toContain('value="yes"');
+		expect(body).not.toContain("toy · waiting");
+
+		writeFileSync(
+			PLAN_W,
+			PLAN_TEXT("open", false).replace("## Progress\nStatus: open\n", "## Progress\nStatus: open\nWAITING on owner: ship it?\n"),
+		);
+		writeFileSync(INDEX, `${PLAN_W}\n${PLAN_D}\n`);
+		const q = await (await get(ui())).text();
+		expect(q).toContain("<b>Do</b> ship it?");
+		expect(q).toContain('value="yes"');
+		expect(q).toContain('value="no"');
+		expect(q).not.toContain("<b>Stuck until then</b>");
+		expect(q).not.toContain("<b>Why you</b>");
+		expect(q).not.toContain('value="done"');
+	} finally {
+		writeFileSync(PLAN_W, PLAN_TEXT("open", true));
+		writeFileSync(INDEX, `${PLAN_W}\n${PLAN_D}\n`);
+		rmSync(other, { force: true });
+	}
 });
 
 test("the machine's own tailnet address gets 403", async () => {
@@ -1025,7 +1064,7 @@ test("parsePlan takes the title from the first # heading (else the basename) and
 test("questionRows: title, repo label, waiting line, goal and minutes waiting from the file mtime", () => {
 	const rows = questionRows(CFG);
 	expect(rows.length).toBe(1);
-	expect(rows[0]).toMatchObject({ plan: PLAN_W, title: "Toy plan", repo: "toy", waitingLine: QUESTION, goal: ["Owner page toy."] });
+	expect(rows[0]).toMatchObject({ plan: PLAN_W, title: "Toy plan", repo: "toy", waitingLine: QUESTION, waitingAsk: QUESTION, waitingBlocked: null, waitingWhy: null, unblocks: [], goal: ["Owner page toy."] });
 	expect(rows[0]!.waitingMin).toBeGreaterThanOrEqual(0);
 });
 
@@ -1042,7 +1081,7 @@ test("agentRows: short model after the last /, detail and minutes since startedA
 });
 
 test("queueRows: open plans only, with repo label, title, status and waiting", () => {
-	expect(queueRows(CFG)).toEqual([{ repo: "toy", file: PLAN_W, title: "Toy plan", status: "open", waiting: true }]);
+	expect(queueRows(CFG)).toEqual([{ repo: "toy", file: PLAN_W, title: "Toy plan", status: "open", waiting: true, summary: "Owner page toy.", state: "waits you" }]);
 });
 
 test("ciRows: newest first, mr as text, tries as number", () => {

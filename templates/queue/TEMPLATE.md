@@ -1,6 +1,7 @@
 # <short title>
 Worktree: <work root>/<repo>-<topic> (configure paths.work_roots, e.g. {{HOME}}/work)
 Branch: <type>/<topic>
+Summary: <one or two plain sentences: what this plan gives the owner>
 PRIORITY-ID: <optional, e.g. PR01>
 <!-- One plan = one worktree: this file lives in the main checkout (<main checkout>/docs/plans/), never
      inside its worktree, and the main index (paths.queue_index) lists its absolute path, one line per plan. -->
@@ -32,6 +33,7 @@ PRIORITY-ID: <optional, e.g. PR01>
 Status: open
 <!-- The implementer may only append dated entries here: what was done, what was verified (command +
      result), commits, what is next. It never changes the Status line or adds "WAITING on owner".
+     A hold is one line: `WAITING on owner: <what to do> — blocked: <what stays stuck until then> — why you: <why Main cannot do it>` (blocked and why you may be omitted).
      Every new entry ends with a Findings line: "Findings: none", or one item per finding (bug,
      workaround, improvement — any repo) with file:line evidence, items separated by ";". Plan-guard
      restores an entry without it, and each item becomes an incident Main must plan or dismiss.

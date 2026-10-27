@@ -496,7 +496,8 @@ describe("agent-score records waste on scored events", () => {
 	test("accept with no trace writes the event without any waste keys", () => {
 		const h = mkdtempSync(join(tmpdir(), "ns-eff-score-"));
 		P2ROOTS.push(h);
-		mkdirSync(join(h, ".omp/agent/sessions"), { recursive: true });
+		mkdirSync(join(h, ".omp/agent/sessions/proj"), { recursive: true });
+		writeFileSync(join(h, ".omp/agent/sessions/proj/NoTraceWorker.jsonl"), `${JSON.stringify({ message: { role: "user", content: "go" } })}\n`);
 		const plan = join(h, "plan.md");
 		writeFileSync(plan, "- [ ] P1 waste counters difficulty: 2\n");
 		const repo = join(h, "repo");

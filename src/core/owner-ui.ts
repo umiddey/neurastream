@@ -97,6 +97,14 @@ export interface QuestionRow {
 	title: string;
 	repo: string;
 	waitingLine: string;
+	/** What to do, from the WAITING line. */
+	waitingAsk: string;
+	/** What stays stuck until then, or null. */
+	waitingBlocked: string | null;
+	/** Why Main cannot do it, or null. */
+	waitingWhy: string | null;
+	/** Titles of other open plans whose Waits on names this plan. */
+	unblocks: string[];
 	goal: string[];
 	waitingMin: number;
 	/** The last answer this plan already got (from the owner inbox), so the card can say so. */
@@ -136,6 +144,10 @@ export interface QueueRow {
 	title: string;
 	status: string;
 	waiting: boolean;
+	/** `Summary:` header, else the first Goal bullet with a leading Owner/INCIDENT prefix cut off. */
+	summary: string | null;
+	/** Chip text: waits you, waits on a plan, not started, phase K of N, or all N done. */
+	state: string;
 }
 
 export interface CiRow {
@@ -168,7 +180,8 @@ export interface MachineRow {
 
 export function questionRows(cfg: Config): QuestionRow[] {
 	const now = Date.now();
-	return activePlans(cfg.paths.queue_index)
+	const plans = activePlans(cfg.paths.queue_index);
+	return plans
 		.filter(p => p.waiting && p.status === "open" && p.waitingLine)
 		.map(p => {
 			let waitingMin = 0;
@@ -180,6 +193,10 @@ export function questionRows(cfg: Config): QuestionRow[] {
 				title: p.title,
 				repo: basename(p.repo),
 				waitingLine: p.waitingLine ?? "",
+				waitingAsk: p.waitingAsk ?? p.waitingLine ?? "",
+				waitingBlocked: p.waitingBlocked,
+				waitingWhy: p.waitingWhy,
+				unblocks: plans.filter(o => o.status === "open" && o.file !== p.file && o.waitsOn.includes(p.file)).map(o => o.title),
 				goal: p.goal,
 				waitingMin,
 				answered: lastAnswerFor(p.file),
@@ -201,10 +218,40 @@ export function agentRows(cfg: Config, source: RunSource): AgentRow[] {
 		}));
 }
 
+/** Cut a leading `Owner (…):` or `INCIDENT <id>` prefix off a Goal bullet used as the card line. */
+function goalSummary(line: string): string {
+	let s = line.trim();
+	for (;;) {
+		const next = s.replace(/^Owner\s*\([^)]*\):\s*/, "").replace(/^INCIDENT\s+\S+\.?\s*/, "").trim();
+		if (next === s) return s;
+		s = next;
+	}
+}
+
+function queueState(p: Plan, plans: Plan[]): string {
+	if (p.waiting) return "waits you";
+	const target = p.waitsOn[0];
+	if (target) {
+		const title = plans.find(w => w.file === target)?.title ?? target.split("/").pop()?.replace(/\.md$/, "") ?? target;
+		return `waits on ${title}`;
+	}
+	const { done, total } = p.phases;
+	if (done === total && total > 0) return `all ${total} done · checking`;
+	if (!p.started) return `not started · 0/${total}`;
+	return `phase ${Math.min(done + 1, total)} of ${total}`;
+}
+
 export function queueRows(cfg: Config): QueueRow[] {
-	return activePlans(cfg.paths.queue_index)
-		.filter(p => p.status === "open")
-		.map(p => ({ repo: basename(p.repo), file: p.file, title: p.title, status: p.status ?? "?", waiting: p.waiting }));
+	const plans = activePlans(cfg.paths.queue_index).filter(p => p.status === "open");
+	return plans.map(p => ({
+		repo: basename(p.repo),
+		file: p.file,
+		title: p.title,
+		status: p.status ?? "?",
+		waiting: p.waiting,
+		summary: p.summary ?? (goalSummary(p.goal[0] ?? "") || null),
+		state: queueState(p, plans),
+	}));
 }
 
 export function ciRows(cfg: Config): CiRow[] {
@@ -426,8 +473,16 @@ ${sent}
 
 function needCard(row: QuestionRow, i: number, tab: string): string {
 	const goals = row.goal.map(g => `<li>${esc(g)}</li>`).join("");
-	const wait = row.waitingMin < 60 ? `waiting ${row.waitingMin} min` : `waiting ${Math.max(1, Math.round(row.waitingMin / 60))} h`;
 	const bg = row.goal.length ? `<details class="bg" id="bg-${i}"><summary>Background</summary><ul>${goals}</ul></details>` : "";
+	const ask = row.waitingAsk || row.waitingLine;
+	const parts: string[] = [];
+	if (ask) parts.push(`<p class="q"><b>Do</b> ${esc(ask)}</p>`);
+	if (row.waitingBlocked || row.unblocks.length) {
+		const extra = row.unblocks.length ? `also unblocks: ${row.unblocks.join(", ")}` : "";
+		const stuck = [row.waitingBlocked, extra].filter(Boolean).join(" ");
+		parts.push(`<p class="q"><b>Stuck until then</b> ${esc(stuck)}</p>`);
+	}
+	if (row.waitingWhy) parts.push(`<p class="q"><b>Why you</b> ${esc(row.waitingWhy)}</p>`);
 	let said = "";
 	if (row.answered) {
 		const text = row.answered.answer;
@@ -436,17 +491,23 @@ function needCard(row: QuestionRow, i: number, tab: string): string {
 		said = `<p class="answered">You ${verb} "${esc(quote)}" · ${esc(strftime(row.answered.at, "%H:%M"))} — Main is on it</p>
 <button type="button" class="replybtn link">change answer</button>`;
 	}
+	const question = ask.endsWith("?");
 	const acts = row.answered
 		? said
-		: `<div class="acts">
+		: question
+			? `<div class="acts">
 <button class="btn pri" type="submit" name="answer" value="yes">Yes</button>
 <button class="btn" type="submit" name="answer" value="no">No</button>
 <button type="button" class="btn replybtn">Reply…</button>
+</div>`
+			: `<div class="acts">
+<button class="btn pri" type="submit" name="answer" value="done">Done ✓</button>
+<button type="button" class="btn replybtn">Reply…</button>
 </div>`;
 	return `<article class="ask">
-<p class="eyebrow">${esc(row.repo)} · ${esc(wait)}</p>
+<p class="eyebrow">${esc(row.repo)}</p>
 <b>${esc(row.title)}</b>
-<p class="q">${esc(row.waitingLine)}</p>
+${parts.join("\n")}
 ${bg}
 <form method="post" action="/answer">
 <input type="hidden" name="plan" value="${esc(row.plan)}">
@@ -472,8 +533,8 @@ function queueHtml(rows: QueueRow[], tab: string): string {
 			(r, i) => `<li class="qcard" data-plan="${esc(r.file)}">
 <span class="qhandle" title="Drag to reorder" aria-label="Drag ${esc(r.title)}">≡</span>
 <span class="qrank">${i + 1}</span>
-<span class="qtitle">${esc(r.title)}</span>
-${r.waiting ? `<span class="chip c-wait">waits you</span>` : `<span class="chip c-ready">ready</span>`}
+<span class="qtitle">${esc(r.title)}${r.summary ? `<span class="qsum">${esc(r.summary)}</span>` : ""}</span>
+<span class="chip ${r.state.startsWith("waits") ? "c-wait" : "c-ready"}">${esc(r.state)}</span>
 <span class="qbtns"><button type="button" class="qmove" data-move="top">↑ top</button><button type="button" class="qmove" data-move="up">↑</button><button type="button" class="qmove" data-move="down">↓</button></span>
 </li>`,
 		)
@@ -954,6 +1015,7 @@ details.bg ul{margin:4px 0 8px;padding-left:20px;color:var(--mut);font-size:13px
 .qhandle{color:var(--mut);font-size:18px;touch-action:none;padding:2px 2px;user-select:none;flex:none}
 .qrank{color:var(--mut);width:18px;font-size:13px;text-align:right;font-variant-numeric:tabular-nums;flex:none}
 .qtitle{flex:1 1 12em;min-width:0}
+.qsum{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;color:var(--mut);font-size:13px;font-weight:400}
 .chip{font-size:11px;padding:2px 8px;border-radius:999px;white-space:nowrap;flex:none}
 .c-wait{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}
 .c-run{background:color-mix(in srgb,var(--teal) 18%,transparent);color:var(--teal)}

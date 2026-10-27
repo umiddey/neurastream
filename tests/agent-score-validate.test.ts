@@ -57,6 +57,16 @@ function writeHeavyLog(h: string, lines: string[]): void {
 	writeFileSync(join(h, ".local/state/neurastream/heavy-run.log"), `${lines.join("\n")}\n`);
 }
 
+/** A sub-run named WorkerV so validate can record (a worker type with no run is refused). */
+function plantWorker(h: string): void {
+	const dir = join(h, ".omp/agent/sessions/proj");
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(
+		join(dir, "WorkerV.jsonl"),
+		`${JSON.stringify({ message: { role: "assistant", provider: "zai", model: "glm", usage: { totalTokens: 1, cacheRead: 0, cost: { total: 0.01 } }, stopReason: "end_turn", content: [{ type: "text", text: "done" }] } })}\n`,
+	);
+}
+
 const HEAVY = [
 	"2026-10-20 18:59:00 START WorkerV | " + LABEL,
 	`2026-10-20 19:00:00 END   WorkerV | ${LABEL} | exit 0`,
@@ -126,6 +136,7 @@ test("validate refuses a section that cites no heavy-run label of that agent", (
 
 test("validate records the phase weight and the cited labels", () => {
 	const h = home();
+	plantWorker(h);
 	const plan = writePlan(h);
 	writeHeavyLog(h, HEAVY);
 	const ev = writeEvidence(h, "report.md", `ran "${LABEL}" under heavy-run; exit 0, all green\n`);
@@ -151,6 +162,7 @@ test("validate records the phase weight and the cited labels", () => {
 test("validate --weight overrides the plan difficulty and --rework is recorded", () => {
 	const h = home();
 	const plan = writePlan(h);
+	plantWorker(h);
 	writeHeavyLog(h, HEAVY);
 	const ev = writeEvidence(h, "report.md", `ran ${LABEL}\n`);
 	const r = run(h, ["validate", "WorkerV", "--plan", plan, "--phase", "P1", "--evidence", ev, "--section", "## CP", "--weight", "8", "--rework"]);
@@ -164,6 +176,7 @@ test("validate --weight overrides the plan difficulty and --rework is recorded",
 test("validate refuses an already scored agent+plan+phase (validate and accept)", () => {
 	const h = home();
 	const plan = writePlan(h);
+	plantWorker(h);
 	writeHeavyLog(h, HEAVY);
 	const ev = writeEvidence(h, "report.md", `ran ${LABEL}\n`);
 	const args = ["validate", "WorkerV", "--plan", plan, "--phase", "P1", "--evidence", ev, "--section", "## CP"];
