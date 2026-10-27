@@ -1,5 +1,5 @@
 # Changelog
-## Unreleased
+## 0.2.33
 ### Added
 - Owner page queue cards show a two-line summary from the plan header `Summary:` (one or two plain sentences under Branch; if that line is missing, the first Goal bullet) and a status chip: waits you, waits on a plan, not started, phase K of N, or all N done. `queue-check` does not require the header, so old plans still pass (I-20261025-200).
 - Needs-me cards say why they need the owner. The hold line is `WAITING on owner: <what to do> — blocked: <what stays stuck until then> — why you: <why Main cannot do it>`, and the card shows Do, Stuck until then (including plans the answer unblocks), and Why you. Yes/No appear only when the ask is a question; a task ask gets Done.
