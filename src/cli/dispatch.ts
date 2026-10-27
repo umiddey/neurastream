@@ -30,6 +30,7 @@ const BINS = [
 	"queue-check",
 	"queue-trim",
 	"queue-close",
+	"queue-finished",
 	"queue-cancel",
 	"main-start",
 	"machine-guard",

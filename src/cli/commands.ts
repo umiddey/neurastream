@@ -12,6 +12,7 @@ import { queueCancel } from "../core/queue-cancel.ts";
 import { queueCheck } from "../core/queue-check.ts";
 import { queueTrim } from "../core/queue-trim.ts";
 import { queueClose } from "../core/queue-close.ts";
+import { queueFinished } from "../core/queue-finished.ts";
 import { resourceAlerts } from "../core/resource-alerts.ts";
 import { tmpSnapshot } from "../core/tmp-snapshot.ts";
 import { wipBackup } from "../core/wip-backup.ts";
@@ -32,6 +33,7 @@ export const PORTED = [
 	"queue-check",
 	"queue-trim",
 	"queue-close",
+	"queue-finished",
 	"queue-cancel",
 	"main-start",
 	"machine-guard",
@@ -72,6 +74,8 @@ export async function runPorted(cmd: string, args: string[]): Promise<number> {
 			return queueTrim(args, rt.cfg);
 		case "queue-close":
 			return queueClose(args, rt.cfg);
+		case "queue-finished":
+			return queueFinished(args, rt.cfg);
 		case "queue-cancel":
 			return queueCancel(args, rt.cfg);
 		case "main-start": {
