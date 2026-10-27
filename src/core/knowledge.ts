@@ -19,6 +19,36 @@ interface ManifestFile {
 
 const KNOWLEDGE_DIR = join("docs", "knowledge");
 
+/** Text order for the lists: code-unit order, so the same list on every machine. */
+export function byText(a: string, b: string): number {
+	return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/** One URL path segment or query value: every byte outside the unreserved set becomes %XX. */
+export function urlValue(s: string): string {
+	let out = "";
+	for (const byte of new TextEncoder().encode(s)) {
+		const ch = String.fromCharCode(byte);
+		out += /[A-Za-z0-9\-._~]/.test(ch) ? ch : `%${byte.toString(16).toUpperCase().padStart(2, "0")}`;
+	}
+	return out;
+}
+
+/** Inverse of urlValue: %XX byte runs come back as UTF-8 text. */
+export function urlField(s: string): string {
+	const bytes: number[] = [];
+	for (let i = 0; i < s.length; i++) {
+		const hex = s.slice(i + 1, i + 3);
+		if (s[i] === "%" && /^[0-9A-Fa-f]{2}$/.test(hex)) {
+			bytes.push(parseInt(hex, 16));
+			i += 2;
+		} else {
+			bytes.push(...new TextEncoder().encode(s[i]!));
+		}
+	}
+	return new TextDecoder().decode(new Uint8Array(bytes));
+}
+
 function repoKey(repoPath: string): string {
 	const remote = gitRaw(repoPath, ["remote", "get-url", "origin"]).stdout.trim();
 	if (remote) {
@@ -75,7 +105,7 @@ function scanRepo(repoPath: string, now: number): KnowledgeEntry[] {
 			updated: topicUpdated(repoPath, join(KNOWLEDGE_DIR, ent.name), abs, now),
 		});
 	}
-	out.sort((a, b) => a.repo.localeCompare(b.repo) || a.topic.localeCompare(b.topic));
+	out.sort((a, b) => byText(a.repo, b.repo) || byText(a.topic, b.topic));
 	return out;
 }
 
@@ -107,7 +137,7 @@ export function scanKnowledge(roots: string[], now: number): KnowledgeEntry[] {
 			}
 		}
 	}
-	entries.sort((a, b) => a.repo.localeCompare(b.repo) || a.topic.localeCompare(b.topic));
+	entries.sort((a, b) => byText(a.repo, b.repo) || byText(a.topic, b.topic));
 	return entries;
 }
 

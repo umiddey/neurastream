@@ -1,9 +1,12 @@
 # Changelog
 ## Unreleased
 ### Added
+- Knowledge tab on the owner page (plan 20261026_0930_knowledge_base): `/?tab=knowledge` lists every git repo directly under `knowledge.roots` that has a `docs/knowledge/*.html`, `/?tab=knowledge&repo=<repo>` lists its topics, and `GET /knowledge/<repo>/<topic>` serves the page through the pages server behind the same login — breadcrumb `knowledge-base / <repo> / <topic>`, read-only, nothing registered. Repo naming, `<title>` parsing and the `knowledge.json` cache (`knowledge.max_age_s`) live in `src/core/knowledge.ts`; the config key and the shipped template gained the block (`docs/config.md`, README).
 - Provider state from live data (plan 20261025_1700 P1, I-20261025-164): out-until times are recorded, never remembered. `quota-reset --provider <name>` stores the reset time it parses from the 429 text (zone from `quota.reset_tz`), the omp adapter records a task result quoting a `reset at …` line for the pinned provider, and a rate limit without a parseable time records now plus its wait — all as `{provider, until, at, source}` lines in `<paths.queue_state>/provider-out.jsonl`, newest record per provider wins.
 - The providers line (P2): `agent-ledger --cap` and `main-start` print the live state, e.g. `providers: zai free · openrouter out until 18:40`, and the notes request tells Main never to state provider state from memory — read the line.
 - The owner's pick order is enforced (P3): config `ledger.prefer` names agents in order (first = preferred, empty = off). The spawn gates refuse a lower pick while a higher one's provider is free unless the brief carries `Pick note: <why>`, and refuse a brief that claims a provider the recorded state shows free is rate-limited; `agent-score gate` ranks inside the order and never recommends a later paid agent while an earlier one is free (`gate: glm is first in prefer and free → use it`). With `ledger.prefer` empty nothing changes.
+### Fixed
+- `blockers/knowledge-scope.sh` counts only `readdirSync` calls, so the named import of it is no longer a false "directory scan outside the configured roots".
 ## 0.2.36
 ### Fixed
 - The phone page's JavaScript works again. Since the drag-autoscroll change the whole inline page script was one stray brace away from a SyntaxError, so nothing the script wires up ran: tapping "change answer" on an answered card did nothing, drag reorder and the ↑/↓ buttons were dead, tab pills and every POST fell back to full page loads, and the auto refresh never started.

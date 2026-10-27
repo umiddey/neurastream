@@ -77,6 +77,23 @@ describe("loadConfig", () => {
 	test("bad YAML is rejected", () => {
 		expect(() => loadConfig({ file: withFile(":\n  - ["), home, env: {} })).toThrow(/YAML did not parse/);
 	});
+
+	test("knowledge defaults carry the roots template and expand $HOME", () => {
+		const cfg = loadConfig({ file: "/tmp/neurastream-home-config/missing.yml", home, env: {} });
+		expect(cfg.knowledge.roots).toEqual([`${home}/projects`, `${home}/Work`]);
+		expect(cfg.knowledge.max_age_s).toBe(300);
+		const own = loadConfig({ file: withFile('knowledge:\n  roots: ["~/pages"]\n'), home, env: {} });
+		expect(own.knowledge.roots).toEqual([`${home}/pages`]);
+		expect(own.knowledge.max_age_s).toBe(300);
+	});
+
+	test("knowledge rejects empty roots and a bad max_age_s", () => {
+		expect(() => loadConfig({ file: withFile("knowledge:\n  roots: []\n"), home, env: {} })).toThrow(/knowledge.roots/);
+		expect(() => loadConfig({ file: withFile("knowledge:\n  max_age_s: 0\n"), home, env: {} })).toThrow(
+			/knowledge.max_age_s/,
+		);
+		expect(() => loadConfig({ file: withFile("knowledge:\n  max_age_s: many\n"), home, env: {} })).toThrow(/must be a number/);
+	});
 });
 
 describe("adapter", () => {

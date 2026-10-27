@@ -17,7 +17,7 @@ import type { Config } from "./config.ts";
 import { nowSec, strftime } from "./clock.ts";
 import { cpuCount } from "./host.ts";
 import { openIncidents } from "./incidents.ts";
-import { knowledgeManifest, readKnowledgeTopicFile, type KnowledgeEntry } from "./knowledge.ts";
+import { byText, knowledgeManifest, readKnowledgeTopicFile, urlField, urlValue, type KnowledgeEntry } from "./knowledge.ts";
 import { log } from "./guards.ts";
 import { readMetricEvents } from "./metrics.ts";
 import { activePlans, chatUnlock, dependencyOrderProblems, expandHome, stateDirPath, unlockPath, type Plan } from "./queue/lib.ts";
@@ -888,7 +888,7 @@ bindPage();
  * bytes come from /knowledge/<repo>/<topic> and there is no route that writes one.
  */
 function knowledgeHtml(entries: KnowledgeEntry[], repo: string, topic: string): string {
-	const repoHref = `/?tab=knowledge&repo=${encodeURIComponent(repo)}`;
+	const repoHref = `/?tab=knowledge&repo=${urlValue(repo)}`;
 	const crumb =
 		repo === ""
 			? ""
@@ -900,10 +900,10 @@ function knowledgeHtml(entries: KnowledgeEntry[], repo: string, topic: string): 
 		const repos = new Map<string, KnowledgeEntry[]>();
 		for (const e of entries) repos.set(e.repo, [...(repos.get(e.repo) ?? []), e]);
 		const rows = [...repos.entries()]
-			.sort((a, b) => a[0].localeCompare(b[0]))
+			.sort((a, b) => byText(a[0], b[0]))
 			.map(([name, list]) => {
 				const newest = list.map(e => e.updated).sort().at(-1)!.slice(0, 10);
-				return `<div class="mrow"><a href="/?tab=knowledge&repo=${encodeURIComponent(name)}">${esc(name)}</a><span class="mono">${list.length} topic${list.length === 1 ? "" : "s"} · ${newest}</span></div>`;
+				return `<div class="mrow"><a href="/?tab=knowledge&repo=${urlValue(name)}">${esc(name)}</a><span class="mono">${list.length} topic${list.length === 1 ? "" : "s"} · ${newest}</span></div>`;
 			})
 			.join("");
 		return `<h1>Knowledge</h1><p class="sub">One card per repo with pages in <span class="mono">docs/knowledge/</span> — tap a repo for its topics.</p><div class="card">${rows}</div>`;
@@ -912,13 +912,13 @@ function knowledgeHtml(entries: KnowledgeEntry[], repo: string, topic: string): 
 	if (topics.length === 0) return `${crumb}<div class="card"><p class="empty">No repo named "${esc(repo)}" has a page under the configured roots.</p></div>`;
 	if (topic === "") {
 		const rows = topics
-			.map(e => `<div class="mrow"><a href="${repoHref}&topic=${encodeURIComponent(e.topic)}">${esc(e.title)}</a><span class="mono">${e.updated.slice(0, 10)}</span></div>`)
+			.map(e => `<div class="mrow"><a href="${repoHref}&topic=${urlValue(e.topic)}">${esc(e.title)}</a><span class="mono">${e.updated.slice(0, 10)}</span></div>`)
 			.join("");
 		return `${crumb}<div class="card">${rows}</div>`;
 	}
 	const hit = topics.find(e => e.topic === topic);
 	if (hit === undefined) return `${crumb}<div class="card"><p class="empty">No topic "${esc(topic)}" in ${esc(repo)}.</p></div>`;
-	return `${crumb}<h1>${esc(hit.title)}</h1><div class="card"><iframe class="knowframe" title="${esc(hit.title)}" src="/knowledge/${encodeURIComponent(repo)}/${encodeURIComponent(topic)}"></iframe></div>`;
+	return `${crumb}<h1>${esc(hit.title)}</h1><div class="card"><iframe class="knowframe" title="${esc(hit.title)}" src="/knowledge/${urlValue(repo)}/${urlValue(topic)}"></iframe></div>`;
 }
 
 /** The whole page as one HTML string. Exported for scripts/ui-preview.ts (no server). */
@@ -1450,7 +1450,7 @@ export function startOwnerUi(opts: OwnerUiOptions): OwnerUiServer {
 							const bytes =
 								topicPath === null
 									? null
-									: readKnowledgeTopicFile(cfg, decodeURIComponent(topicPath[1]!), decodeURIComponent(topicPath[2]!));
+									: readKnowledgeTopicFile(cfg, urlField(topicPath[1]!), urlField(topicPath[2]!));
 							res = bytes === null ? textRes("not found", 404) : new Response(bytes, { headers: { "content-type": "text/html; charset=utf-8" } });
 							code = res.status;
 						} else if (req.method === "GET" && url.pathname.startsWith("/message-image/")) {
