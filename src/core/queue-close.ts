@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import type { Config } from "./config.ts";
 import { applyQueueEnv } from "./queue/env.ts";
-import { activePlans, cancelledFile, cancelledLine, closeLog, INDEX, readIndex, sha, STATE_DIR } from "./queue/lib.ts";
+import { activePlans, cancelledFile, cancelledLine, closeLog, finishedEntry, finishedPath, INDEX, prependFinished, readIndex, sha, STATE_DIR } from "./queue/lib.ts";
 import { fixedIncident } from "./incidents.ts";
 
 export function queueClose(args: string[], cfg: Config): number {
@@ -276,6 +276,11 @@ export function queueClose(args: string[], cfg: Config): number {
 	} else {
 		renameSync(file, dest);
 		console.log(`queue-close: plan moved to ${dest}`);
+	}
+	if (!cancelling) {
+		const listed = finishedPath();
+		const added = prependFinished(finishedEntry(plan, dest, today));
+		console.log(added ? `queue-close: recorded in ${listed}` : `queue-close: already in ${listed}`);
 	}
 
 	// One index: the closed plan's line leaves the main index; there is no repo INDEX.md.
