@@ -633,12 +633,33 @@ function landingCommand(input: Record<string, unknown>): boolean {
 	});
 }
 
+// The read tool's stand-in for a value it hid. A file may hold one only where it is produced
+// (secret-redact.ts) or exercised (its tests).
+const PLACEHOLDER = "[REDACTED:";
+const PLACEHOLDER_FILES = [/\/src\/core\/secret-redact\.ts$/, /\/tests\/secret-redact[^/]*\.test\.ts$/];
+/** What a write/edit/ast_edit call would add: every text argument but the targets and the replaced text. */
+function addedText(input: Record<string, unknown>): string {
+	const skip = ["path", "file", "cwd", "old_string", "old", "oldText", "i"];
+	return Object.entries(input)
+		.filter(([key, value]) => typeof value === "string" && !skip.includes(key))
+		.map(([, value]) => value as string)
+		.join("\n");
+}
+
 // Subagent half of a tool call (the original plan-guard checkCall without the main return).
 // `cap` is the sub's hard call cap: its recorded per-spawn budget, else the global sub_max_calls.
 function subRules(e: ToolEvent, input: Record<string, unknown>, paths: string[], writes: string[], cfg: Config, cap: number): string | null {
 	// Closing and cancelling are Main's decisions: a shell that runs the tool is refused; one that only names its path is not.
 	if (cfg.guards.shell_tools.includes(e.tool) && runsCloser(input))
 		return 'queue-close and queue-cancel are Main\'s; report in your plan\'s "## Progress" instead.';
+	// The read tool prints a placeholder for a value it hid, never the value (I-20261027-158,
+	// I-20261027-160: one copy silently broke the shipped config template). Writing that text back
+	// is refused; the file that produces one and the tests that exercise it are the exceptions.
+	if ((e.tool === "write" || e.tool === "edit" || e.tool === "ast_edit") && addedText(input).includes(PLACEHOLDER)) {
+		const keeper = writes.length > 0 && writes.every(p => PLACEHOLDER_FILES.some(rx => rx.test(p)));
+		if (!keeper)
+			return "this is the read tool's redaction placeholder, not the real value; re-read the file raw or keep the original line";
+	}
 	const plans = q.activePlans();
 	if (e.calls >= cap) {
 		// Plan edit targets come from writeTargets (write and structured/hashline edit)
