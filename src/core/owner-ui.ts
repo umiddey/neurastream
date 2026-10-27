@@ -1138,7 +1138,10 @@ async function handleMessage(req: Request, login: string, wantsJson: boolean): P
 	for (const [key, value] of form.entries()) {
 		if (key === "text" && typeof value === "string") text = value.trim();
 		// A form sent with no file chosen still carries one empty, nameless file part (Bun parses it as a nameless Blob).
-		else if (key === "images" && typeof value !== "string" && (value.size > 0 || Boolean(value.name))) files.push(value);
+		else if (key === "images" && (value as unknown) instanceof Blob) {
+			const part = value as unknown as File;
+			if (part.size > 0 || Boolean(part.name)) files.push(part);
+		}
 	}
 	const fail = (error: string): Response => (wantsJson ? jsonFail(error, 400) : textRes(error, 400));
 	if (!text && !files.length) return fail("write a text or attach an image");
