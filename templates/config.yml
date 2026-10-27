@@ -149,6 +149,9 @@ pages:
   port: 7788
   dir: "~/.local/share/neurastream/pages"
   keep_days: 15        # delete a published page this many days later; publish --keep is permanent
+knowledge:               # repo-local HTML explainers (docs/knowledge/<topic>.html) on the phone page's Knowledge tab
+  roots: ["$HOME/projects", "$HOME/Work"]   # scanned for git repos; $HOME expands to the config's home
+  max_age_s: 300       # rebuild the topic list when older, so a git pull shows up on the next reload
 rollover:
   enabled: true
   max_session_mb: 5

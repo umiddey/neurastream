@@ -426,6 +426,31 @@ console.log(JSON.stringify(mod.checkCall("write", { path: ${JSON.stringify(targe
 	expect(closer.d.reason).toBe(`plan-guard: queue-close and queue-cancel are Main's; report in your plan's "## Progress" instead.`);
 });
 
+// I-20261027-158/160: an agent copied the read tool's stand-in for a hidden value into
+// templates/config.yml and the shipped template stopped loading. The text is built here rather
+// than written out, so this test file itself stays writable under the rule it tests.
+test("redaction placeholder: copying the read tool's stand-in into a file is refused; its producer and tests may hold one", () => {
+	fresh();
+	const mark = "[" + "REDACTED:" + "known-value]";
+	const shipped = join(TOY, "templates/config.yml");
+	const refusal = "plan-guard: this is the read tool's redaction placeholder, not the real value; re-read the file raw or keep the original line";
+	const edit = guardCli("pre-tool", toolEvent("edit", { path: shipped, old_string: "a: 1", new_string: `a: ${mark}` }, "sub"));
+	expect(edit.code).toBe(2);
+	expect(edit.d.allow).toBe(false);
+	expect(edit.d.reason).toBe(refusal);
+	for (const call of [
+		toolEvent("write", { path: shipped, content: `a: ${mark}\n` }, "sub"),
+		toolEvent("ast_edit", { path: shipped, instructions: `set a to ${mark}` }, "sub"),
+	]) {
+		expect(guardCli("pre-tool", call).d.reason).toBe(refusal);
+	}
+	// Removing one (the replaced text only) is the fix, not a copy.
+	expect(guardCli("pre-tool", toolEvent("edit", { path: shipped, old_string: mark, new_string: "a: 1" }, "sub")).code).toBe(0);
+	expect(guardCli("pre-tool", toolEvent("edit", { path: join(TOY, "src/core/secret-redact.ts"), old_string: "x", new_string: mark }, "sub")).code).toBe(0);
+	expect(guardCli("pre-tool", toolEvent("write", { path: join(TOY, "tests/secret-redact-proxy.test.ts"), content: mark }, "sub")).code).toBe(0);
+	expect(guardCli("pre-tool", toolEvent("write", { path: join(TOY, "tests/guards.test.ts"), content: mark }, "sub")).code).toBe(2);
+});
+
 test("subagent shell: a commit that names a queue-close path is allowed; a shell that runs the tool is refused", () => {
 	fresh();
 	expect(guardCli("pre-tool", toolEvent("bash", { command: "git commit -m x -- src/core/queue-close.ts" }, "sub")).code).toBe(0);

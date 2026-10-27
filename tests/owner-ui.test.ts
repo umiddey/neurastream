@@ -1803,3 +1803,81 @@ test("the Now tab cuts the queue preview at 8 rows with Show all N; the Queue ta
 	expect([...full.matchAll(/data-plan="([^"]+)"/g)]).toHaveLength(11);
 	expect(full).not.toContain("Show all");
 });
+
+// --- Knowledge tab (plan 20261026_0930_knowledge_base P2): repo → topic pages from docs/knowledge/ ---
+
+const KROOT = join(TMP, "knowledge-roots");
+const KARCH = join(KROOT, "demo-app", "docs/knowledge/arch.html");
+const KARCH_HTML = "<!doctype html><title>Demo architecture</title><p>the diagram</p>";
+mkdirSync(join(KROOT, "demo-app/.git"), { recursive: true }); // gitTop looks for the dir only: the repo label is the dir name
+mkdirSync(join(KROOT, "demo-app", "docs", "knowledge"), { recursive: true });
+mkdirSync(join(KROOT, "no-docs/.git"), { recursive: true });
+writeFileSync(KARCH, KARCH_HTML);
+writeFileSync(join(KROOT, "demo-app", "docs/knowledge/cost.html"), "<p>no title here</p>");
+mkdirSync(join(TMP, "knowledge-state"), { recursive: true });
+mkdirSync(join(TMP, "knowledge-state-empty"), { recursive: true });
+const KCFG: Config = {
+	...CFG,
+	knowledge: { roots: [KROOT], max_age_s: 300 },
+	paths: { ...CFG.paths, queue_state: join(TMP, "knowledge-state") },
+};
+
+test("knowledge tab: repo cards count the topics and name the newest update, and only repos with docs/knowledge appear", async () => {
+	const svc = ui({ cfg: KCFG });
+	const body = await (await get(svc, "/?tab=knowledge")).text();
+	expect(body).toContain('<a href="/?tab=knowledge" class="on">Base</a>');
+	expect(body).toContain('href="/?tab=knowledge&repo=demo-app"');
+	expect(body).toContain("2 topics · ");
+	expect(body).not.toContain("no-docs");
+});
+
+test("knowledge tab: a repo's topic cards carry the page title, the date, and the breadcrumb back to every repo", async () => {
+	const svc = ui({ cfg: KCFG });
+	const body = await (await get(svc, "/?tab=knowledge&repo=demo-app")).text();
+	expect(body).toContain('<a href="/?tab=knowledge">knowledge-base</a> / demo-app</p>');
+	expect(body).toContain("Demo architecture");
+	expect(body).toContain(">cost</a>"); // no <title> in the page → the file stem
+	expect(body).toContain('href="/?tab=knowledge&repo=demo-app&topic=arch"');
+	expect(body).toMatch(/<span class="mono">\d{4}-\d{2}-\d{2}<\/span>/);
+});
+
+test("knowledge tab: the topic view frames the file with every earlier breadcrumb segment linking back", async () => {
+	const svc = ui({ cfg: KCFG });
+	const page = await get(svc, "/?tab=knowledge&repo=demo-app&topic=arch");
+	const html = await page.text();
+	expect(html).toContain('<a href="/?tab=knowledge">knowledge-base</a> / <a href="/?tab=knowledge&repo=demo-app">demo-app</a> / arch</p>');
+	expect(html).toContain('<iframe class="knowframe" title="Demo architecture" src="/knowledge/demo-app/arch">');
+	expect(page.headers.get("content-security-policy")).toContain("frame-src 'self'");
+});
+
+test("knowledge: the topic route returns the file's own bytes as text/html", async () => {
+	const svc = ui({ cfg: KCFG });
+	const res = await get(svc, "/knowledge/demo-app/arch");
+	expect(res.status).toBe(200);
+	expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
+	expect(await res.text()).toBe(KARCH_HTML);
+	expect(await (await get(svc, "/knowledge/demo-app/nope")).text()).toBe("not found\n");
+	expect((await get(svc, "/knowledge/demo-app/nope")).status).toBe(404);
+	expect((await get(svc, "/knowledge/..%2Fx/arch")).status).toBe(404);
+	// Read-only: no POST route ever writes or renames a topic.
+	expect((await post(svc, "/knowledge/demo-app/arch", { topic: "renamed" })).status).toBe(404);
+});
+
+test("knowledge: an unknown repo or topic is a card with the breadcrumb back", async () => {
+	const svc = ui({ cfg: KCFG });
+	expect(await (await get(svc, "/?tab=knowledge&repo=nope")).text()).toContain('No repo named "nope" has a page under the configured roots.');
+	expect(await (await get(svc, "/?tab=knowledge&repo=demo-app&topic=nope")).text()).toContain('No topic "nope" in demo-app.');
+	expect(await (await get(svc, "/?tab=knowledge&repo=demo-app&topic=nope")).text()).toContain(
+		'<a href="/?tab=knowledge&repo=demo-app">demo-app</a>',
+	);
+});
+
+test("knowledge: an empty manifest states the convention", async () => {
+	const svc = ui({
+		cfg: { ...KCFG, knowledge: { roots: [join(TMP, "no-such-root")], max_age_s: 300 }, paths: { ...KCFG.paths, queue_state: join(TMP, "knowledge-state-empty") } },
+	});
+	const body = await (await get(svc, "/?tab=knowledge")).text();
+	expect(body).toContain("No topics yet");
+	expect(body).toContain("docs/knowledge/");
+	expect(body).toContain("configured roots");
+});

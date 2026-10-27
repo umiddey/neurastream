@@ -12,6 +12,8 @@ import { runMetrics } from "./metrics.ts";
 import { runIncident } from "./incident.ts";
 import { runTraces } from "./traces.ts";
 import { runUi } from "./ui.ts";
+import { runDiagram } from "./diagram.ts";
+import { runNotes } from "./notes.ts";
 import { runPages } from "./pages.ts";
 import { runUninstall } from "../core/uninstall.ts";
 import { queueMigrate } from "../core/queue-migrate.ts";
@@ -87,6 +89,9 @@ export function helpText(): string {
 		"                                installs and restarts the neurastream-ui user unit, prints the phone",
 		"                                link; `neurastream ui off` stops and disables it, sets enabled: false",
 		"  neurastream pages on|off|serve|publish|list  host static files over the tailnet",
+		"                                publish --plan <plan.md> adds the Approve bar that records the plan's approval",
+		"  neurastream notes check <page>               list the notes without an answer, exit 1 while any is open",
+		"  neurastream diagram check <html> <plan.md>   every phase and path of the plan is in a box, 2+ kids per drilldown",
 		"  neurastream agents list | allow <slug>... | deny <slug>...",
 		"                                the subagent allow-list (## Allowed in notes/subagents.md)",
 		"",
@@ -110,6 +115,8 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 	if (cmd === "traces") return runTraces(args);
 	if (cmd === "ui") return runUi(args);
 	if (cmd === "pages") return runPages(args);
+	if (cmd === "notes") return runNotes(args);
+	if (cmd === "diagram") return runDiagram(args);
 	if (cmd === "adapter") return getAdapter().install(args);
 	if (cmd === "config") {
 		try {

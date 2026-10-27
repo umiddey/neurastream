@@ -182,6 +182,11 @@ pages:
   port: 7788
   dir: "~/.local/share/neurastream/pages"
   keep_days: 15            # delete a published page this many days later; `pages publish --keep` keeps it
+
+knowledge:                 # repo-local HTML explainers (docs/knowledge/<topic>.html) on the phone page's Knowledge tab
+  roots: ["$HOME/projects", "$HOME/Work"]   # scanned for git repos; $HOME expands to the config's home
+  max_age_s: 300           # rebuild the topic list when older, so a git pull shows up on the next reload
+
 machine:
   load_over_cores: 4
   load_max: 0                       # 0 = nproc + load_over_cores; env LOAD_MAX sets an absolute cap
@@ -326,6 +331,7 @@ The loader rejects:
 - `metrics.report_days` below 1, or a `metrics.correction_patterns` entry that does not compile as a case-insensitive regex
 - `ui.port` outside 1..65535
 - `pages.keep_days` below 1, or not an integer
+- `knowledge.roots` that is not a non-empty list of non-empty paths, or `knowledge.max_age_s` below 1 or not an integer
 - a `brief.repo_rules` entry whose `match`, `require`, `first` or `unless` does not compile as a case-insensitive regex, or whose `message` is empty
 - `secrets.proxy` that is not `none` or `secretgate`, a `secrets.known_value_files` entry that is not a non-empty path, or a `secrets.extra_patterns` entry without a non-empty `type` and a `regex` that compiles
 - YAML that does not parse

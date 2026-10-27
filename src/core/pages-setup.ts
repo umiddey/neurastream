@@ -4,6 +4,9 @@ import { homedir } from "node:os";
 import { dirname, join, basename, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { configFile, loadConfig } from "./config.ts";
+import { injectPageNotes, type NotesGate } from "./page-notes.ts";
+import { recordPagePlan } from "./plan-approval.ts";
+import { checkDiagram } from "./diagram-check.ts";
 import { recordPublish } from "./pages-expiry.ts";
 import { realTailscale, type Tailscale } from "./tailscale.ts";
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -46,9 +49,38 @@ export function pagesOff(opts: Setup = {}): number {
  const cfg=loadConfig({home}); writeFileSync(file,editBlock(old,{enabled:false,port:cfg.pages.port,dir:cfg.pages.dir}));
  const r=runner(["--user","stop","neurastream-pages"]); if(r.status!==0){console.error(r.stderr);return 1;} return 0;
 }
-export function publishPage(file: string, name: string | undefined, force: boolean, dir: string, keep = false, keepDays = 15, now = new Date()): string {
+/** Everything a publish carries besides the file: expiry, the notes gate and, on a plan page, the plan. */
+export interface PublishOptions {
+	keep?: boolean;
+	keepDays?: number;
+	now?: Date;
+	notes?: NotesGate;
+	/** The plan this page approves (P9). A page without one is a built thing: notes only, no Approve bar. */
+	plan?: string;
+}
+
+export function publishPage(file: string, name: string | undefined, force: boolean, dir: string, opts: PublishOptions = {}): string {
+ const keep = opts.keep ?? false, keepDays = opts.keepDays ?? 15, now = opts.now ?? new Date(), notes = opts.notes;
  const source=basename(file), base=(name ?? source.slice(0,source.length-extname(source).length)).toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"");
  const targetName=base+extname(source).toLowerCase(), target=join(dir,targetName); mkdirSync(dir,{recursive:true});
- if(existsSync(target)){const a=readFileSync(file),b=readFileSync(target); if(a.equals(b)){recordPublish(dir,targetName,keep,keepDays,now);return targetName;} if(!force) throw new Error(`pages: ${targetName} exists with different content (use --force)`);}
- copyFileSync(file,target); recordPublish(dir,targetName,keep,keepDays,now); return targetName;
+ // A page with a note still unanswered is not published (plan 20261026 P8): the owner's note id must
+ // get an answer before the page moves on. Publishing then shows each answer by its note and closes it.
+ const open = notes?.open(targetName) ?? [];
+ // A plan page is only approvable when its diagram covers the plan (plan 20261026 P10), so the check
+ // runs here, at publish, and its findings travel with the page.
+ let diagram: { missing: string[]; thin: string[] } | null = null;
+ if (opts.plan !== undefined) {
+  if (extname(source).toLowerCase() !== ".html") throw new Error(`pages: --plan needs an HTML artifact, not ${source}`);
+  diagram = checkDiagram(readFileSync(file, "utf8"), readFileSync(opts.plan, "utf8"));
+ }
+ const approve = opts.plan === undefined || diagram === null ? undefined : { page: targetName, open, problems: [...diagram.missing, ...diagram.thin] };
+ if(open.length>0) throw new Error(`pages: ${targetName} has ${open.length} open note(s) (${open.join(", ")}); answer each one before publishing (see \`neurastream notes check ${targetName}\`)`);
+ // An HTML artifact carries the notes block from publish on (plan 20261026 P6): one style, one panel,
+ // one script, injected once — a page that already carries it, or a second publish, stays single.
+ const raw = readFileSync(file);
+ const content = extname(source).toLowerCase() === ".html" ? Buffer.from(injectPageNotes(raw.toString("utf8"), notes?.answered(targetName) ?? [], approve), "utf8") : raw;
+ if(existsSync(target)){const b=readFileSync(target); if(content.equals(b)){recordPublish(dir,targetName,keep,keepDays,now);notes?.settle(targetName);return targetName;} if(!force) throw new Error(`pages: ${targetName} exists with different content (use --force)`);}
+ writeFileSync(target, content); recordPublish(dir,targetName,keep,keepDays,now);
+ if(opts.plan !== undefined && diagram !== null) recordPagePlan(dir, targetName, { plan: opts.plan, missing: diagram.missing, thin: diagram.thin });
+ notes?.settle(targetName); return targetName;
 }
