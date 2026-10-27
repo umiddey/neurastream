@@ -17,6 +17,7 @@ import type { Config } from "./config.ts";
 import { nowSec, strftime } from "./clock.ts";
 import { cpuCount } from "./host.ts";
 import { openIncidents } from "./incidents.ts";
+import { knowledgeManifest, readKnowledgeTopicFile, type KnowledgeEntry } from "./knowledge.ts";
 import { log } from "./guards.ts";
 import { readMetricEvents } from "./metrics.ts";
 import { activePlans, chatUnlock, dependencyOrderProblems, expandHome, stateDirPath, unlockPath, type Plan } from "./queue/lib.ts";
@@ -29,6 +30,9 @@ const MESSAGE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 /** How long the page keeps an owner message: 12 h, then the sweep removes it (owner, 2026-10-25 19:10). */
 export const OWNER_MESSAGE_KEEP_SEC = 43200;
 const REFRESH_SEC = 20;
+/** The page's tabs, in pill order; anything else in `?tab=` renders Now. */
+const TABS: [string, string][] = [["now", "Now"], ["queue", "Queue"], ["agents", "Agents"], ["spend", "Spend"], ["knowledge", "Knowledge"]];
+const TAB_IDS = TABS.map(([id]) => id);
 // Tailscale hands out addresses from 100.64.0.0/10 (CGNAT) and its own ULA /48 for IPv6.
 const TAILNET6 = /^fd7a:115c:a1e0:/i;
 
@@ -619,8 +623,7 @@ function tilesHtml(data: PageData): string {
 
 /** The sticky mockup top bar: logo, pill tabs, and the lock pill that posts the unlock/lock and tier forms. */
 function topBarHtml(tab: string, lockMinutesLeft: number | null, cfg: Config): string {
-	const tabs: [string, string][] = [["now", "Now"], ["queue", "Queue"], ["agents", "Agents"], ["spend", "Spend"]];
-	const pills = tabs.map(([id, label]) => `<a href="/?tab=${id}"${tab === id ? ` class="on"` : ""}>${label}</a>`).join("");
+	const pills = TABS.map(([id, label]) => `<a href="/?tab=${id}"${tab === id ? ` class="on"` : ""}>${label}</a>`).join("");
 	const lockLabel = lockMinutesLeft === null ? "🔒 Off" : `🔓 ${lockMinutesLeft} min`;
 	const tabField = `<input type="hidden" name="tab" value="${esc(tab)}">`;
 	const unlockForm = (minutes: number) =>
@@ -715,6 +718,8 @@ export interface PageData {
 	incidents: IncidentRow[] | null;
 	scores: ScoresData | null;
 	machine: MachineRow | null;
+	/** Repo-local HTML explainers from the knowledge manifest; null when unreadable. */
+	knowledge: KnowledgeEntry[] | null;
 	/** The 24 h tile numbers; null when the run source is unreadable. */
 	stats: NowStats | null;
 	/** The owner's messages newer than the keep window, newest first; null when unreadable. */
@@ -751,6 +756,7 @@ export function buildPageData(cfg: Config, source: RunSource): PageData {
 		incidents: safe(() => incidentRows(cfg)),
 		scores: safe(() => scoresData(cfg)),
 		machine: safe(() => machineRow(cfg)),
+		knowledge: safe(() => knowledgeManifest(cfg)),
 		stats: safe(() => nowStats(cfg, source, nowSec())),
 		messages: safe(() => recentOwnerMessages(nowSec())),
 		lockMinutesLeft: lockMinutesLeft(cfg),
@@ -875,11 +881,51 @@ bindDetails(document);
 bindPage();
 })();`;
 
+/**
+ * The Knowledge tab: repo cards, one repo's topic cards, or one topic in a frame. The breadcrumb's
+ * earlier segments link back — knowledge-base → every repo, `<repo>` → its topics. Topics are
+ * read-only files at docs/knowledge/<topic>.html in a repo under the configured roots; the page
+ * bytes come from /knowledge/<repo>/<topic> and there is no route that writes one.
+ */
+function knowledgeHtml(entries: KnowledgeEntry[], repo: string, topic: string): string {
+	const repoHref = `/?tab=knowledge&repo=${encodeURIComponent(repo)}`;
+	const crumb =
+		repo === ""
+			? ""
+			: `<p class="sub"><a href="/?tab=knowledge">knowledge-base</a> / ${topic === "" ? esc(repo) : `<a href="${repoHref}">${esc(repo)}</a>`}${topic === "" ? "" : ` / ${esc(topic)}`}</p>`;
+	if (entries.length === 0) {
+		return `<h1>Knowledge</h1><div class="card"><p class="empty">No topics yet. Any repo under the configured roots counts: put a page in <span class="mono">docs/knowledge/</span> and it shows up here on the next reload.</p></div>`;
+	}
+	if (repo === "") {
+		const repos = new Map<string, KnowledgeEntry[]>();
+		for (const e of entries) repos.set(e.repo, [...(repos.get(e.repo) ?? []), e]);
+		const rows = [...repos.entries()]
+			.sort((a, b) => a[0].localeCompare(b[0]))
+			.map(([name, list]) => {
+				const newest = list.map(e => e.updated).sort().at(-1)!.slice(0, 10);
+				return `<div class="mrow"><a href="/?tab=knowledge&repo=${encodeURIComponent(name)}">${esc(name)}</a><span class="mono">${list.length} topic${list.length === 1 ? "" : "s"} · ${newest}</span></div>`;
+			})
+			.join("");
+		return `<h1>Knowledge</h1><p class="sub">One card per repo with pages in <span class="mono">docs/knowledge/</span> — tap a repo for its topics.</p><div class="card">${rows}</div>`;
+	}
+	const topics = entries.filter(e => e.repo === repo);
+	if (topics.length === 0) return `${crumb}<div class="card"><p class="empty">No repo named "${esc(repo)}" has a page under the configured roots.</p></div>`;
+	if (topic === "") {
+		const rows = topics
+			.map(e => `<div class="mrow"><a href="${repoHref}&topic=${encodeURIComponent(e.topic)}">${esc(e.title)}</a><span class="mono">${e.updated.slice(0, 10)}</span></div>`)
+			.join("");
+		return `${crumb}<div class="card">${rows}</div>`;
+	}
+	const hit = topics.find(e => e.topic === topic);
+	if (hit === undefined) return `${crumb}<div class="card"><p class="empty">No topic "${esc(topic)}" in ${esc(repo)}.</p></div>`;
+	return `${crumb}<h1>${esc(hit.title)}</h1><div class="card"><iframe class="knowframe" title="${esc(hit.title)}" src="/knowledge/${encodeURIComponent(repo)}/${encodeURIComponent(topic)}"></iframe></div>`;
+}
+
 /** The whole page as one HTML string. Exported for scripts/ui-preview.ts (no server). */
 export function renderPage(cfg: Config, data: PageData, params: URLSearchParams, nonce: string): string {
 	const req = params.get("tab") ?? "";
 	// Server-rendered tabs: the pill links carry ?tab=; anything unknown renders Now.
-	const tab = req === "queue" || req === "agents" || req === "spend" ? req : "now";
+	const tab = TAB_IDS.includes(req) ? req : "now";
 	const needsBody =
 		data.questions === null
 			? na("Waiting on you")
@@ -932,7 +978,9 @@ ${merges}
 <div class="card">
 ${machine}
 </div>`
-					: `<h1>Spend</h1>
+					: tab === "knowledge"
+						? `${data.knowledge === null ? na("Knowledge") : knowledgeHtml(data.knowledge, params.get("repo") ?? "", params.get("topic") ?? "")}`
+						: `<h1>Spend</h1>
 <p class="sub">List price over the last 24 hours.</p>
 <div class="card">
 ${spendTileHtml(data)}
@@ -1043,6 +1091,7 @@ tr:last-child td{border-bottom:none}
 .mrow:last-child{border-bottom:none}
 .bad{color:var(--red);font-weight:600}
 .empty{color:var(--mut);padding:14px 16px;margin:0}
+.knowframe{display:block;width:100%;height:calc(100vh - 220px);min-height:360px;border:0;background:#fff}
 .na{color:var(--mut);font-style:italic;padding:14px 16px;margin:0}
 </style>
 </head>
@@ -1080,7 +1129,7 @@ function redirect(target: string): Response {
 
 /** The POST reply target: the tab the owner was on (a hidden `tab` field; unknown = now, the default), then the receipt. */
 function sentTo(tab: string, sent: string): string {
-	const t = tab === "queue" || tab === "agents" || tab === "spend" ? tab : "now";
+	const t = TAB_IDS.includes(tab) ? tab : "now";
 	return t === "now" ? `/?${sent}` : `/?tab=${t}&${sent}`;
 }
 
@@ -1091,7 +1140,7 @@ function pageRes(cfg: Config, source: RunSource, params: URLSearchParams): Respo
 		status: 200,
 		headers: {
 			"content-type": "text/html; charset=utf-8",
-			"content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src 'self' data:; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`,
+			"content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src 'self' data:; connect-src 'self'; frame-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`,
 		},
 	});
 }
@@ -1395,6 +1444,15 @@ export function startOwnerUi(opts: OwnerUiOptions): OwnerUiServer {
 							sweepOwnerMessages(nowSec());
 							res = pageRes(cfg, source, url.searchParams);
 							code = 200;
+						} else if (req.method === "GET" && url.pathname.startsWith("/knowledge/")) {
+							// The Knowledge tab's frame: the topic's own file bytes, GET only, no write path.
+							const topicPath = /^\/knowledge\/([^/]+)\/([^/]+)$/.exec(url.pathname);
+							const bytes =
+								topicPath === null
+									? null
+									: readKnowledgeTopicFile(cfg, decodeURIComponent(topicPath[1]!), decodeURIComponent(topicPath[2]!));
+							res = bytes === null ? textRes("not found", 404) : new Response(bytes, { headers: { "content-type": "text/html; charset=utf-8" } });
+							code = res.status;
 						} else if (req.method === "GET" && url.pathname.startsWith("/message-image/")) {
 							const mim = /^\/message-image\/([^/]+)\/([^/]+)$/.exec(url.pathname);
 							res = mim ? handleMessageImage(mim[1]!, mim[2]!) : textRes("not found", 404);

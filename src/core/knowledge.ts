@@ -181,3 +181,14 @@ export function resolveKnowledgeTopic(cfg: Config, repo: string, topic: string):
 	}
 	return null;
 }
+
+/** Read topic bytes for serving; null when missing. */
+export function readKnowledgeTopicFile(cfg: Config, repo: string, topic: string): Buffer<ArrayBuffer> | null {
+	const path = resolveKnowledgeTopic(cfg, repo, topic);
+	if (!path) return null;
+	try {
+		return readFileSync(path);
+	} catch {
+		return null;
+	}
+}
