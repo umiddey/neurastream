@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { Config } from "../../core/config.ts";
 import type { MainSession, Run, RunMessage, RunSource, RunStatus, TaskResult } from "../../core/adapter.ts";
 import { nowSec } from "../../core/clock.ts";
@@ -68,7 +68,54 @@ export function runIdOf(file: string): string {
 	return /^\d{4}/.test(stem) ? `MAIN ${stem.slice(11, 19)}` : stem;
 }
 
-function build(file: string, cfg: Config, mtime: number): Run | null {
+function agentsDirOf(root: string, cfg: Config): string {
+	return cfg.adapter?.pins || join(dirname(root), "agents");
+}
+
+function frontmatterModel(agent: string, dir: string): string | null {
+	let text: string;
+	try {
+		text = readFileSync(join(dir, `${agent}.md`), "utf8");
+	} catch {
+		return null;
+	}
+	const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
+	const m = /^model:\s*(\S+)/m.exec(fm?.[1] ?? "");
+	return m?.[1] ?? null;
+}
+
+function spawnedAgent(parentFile: string, stem: string): string | null {
+	let text: string;
+	try {
+		text = readFileSync(parentFile, "utf8");
+	} catch {
+		return null;
+	}
+	for (const line of text.split("\n")) {
+		if (!line.includes(stem)) continue;
+		let d: Record<string, unknown> | null;
+		try {
+			d = asObj(JSON.parse(line) as unknown);
+		} catch {
+			continue;
+		}
+		if (!d) continue;
+		const msg = asObj(d.message) ?? d;
+		const content = Array.isArray(msg.content) ? msg.content : [];
+		for (const part of content) {
+			const call = asObj(part);
+			if (!call || call.name !== "task") continue;
+			const args = asObj(call.arguments);
+			const tasks = args && Array.isArray(args.tasks) ? args.tasks : [];
+			for (const item of tasks) {
+				const task = asObj(item);
+				if (task && task.name === stem && typeof task.agent === "string" && task.agent) return task.agent;
+			}
+		}
+	}
+	return null;
+}
+function build(file: string, cfg: Config, mtime: number, agentsDir: string): Run | null {
 	let text: string;
 	try {
 		text = readFileSync(file, "utf8");
@@ -78,8 +125,11 @@ function build(file: string, cfg: Config, mtime: number): Run | null {
 	const stem = basename(file).slice(0, -6);
 	const isMain = /^\d{4}/.test(stem);
 	const id = runIdOf(file);
-	let model = "?";
-	let scoreModel = "?";
+	let model = "unknown";
+	let scoreModel = "unknown";
+	let sawProviderModel = false;
+	let sawAssistant = false;
+	let parentSession = "";
 	let calls = 0;
 	let tokens = 0;
 	let cache = 0;
@@ -122,7 +172,9 @@ function build(file: string, cfg: Config, mtime: number): Run | null {
 			waiting = data.toolName === "wait" ? `WAITING: ${String(data.intent ?? "").slice(0, 40)}` : "";
 		}
 		const m = asObj(d.message) ?? d;
+		if (d.type === "session" && typeof d.parentSession === "string") parentSession = d.parentSession;
 		if (m.role === "assistant") {
+			sawAssistant = true;
 			exited = false;
 			yielded = false;
 			const content = Array.isArray(m.content) ? m.content : [];
@@ -136,6 +188,7 @@ function build(file: string, cfg: Config, mtime: number): Run | null {
 		if (m.model && m.provider) {
 			model = `${m.provider}/${m.model}`;
 			scoreModel = model;
+			sawProviderModel = true;
 		} else if (typeof m.model === "string" && m.model.includes("/")) {
 			model = m.model;
 		}
@@ -173,14 +226,27 @@ function build(file: string, cfg: Config, mtime: number): Run | null {
 		}
 	}
 
+	if (!sawProviderModel && model === "unknown" && !isMain && parentSession) {
+		const fromFile = frontmatterModel(spawnedAgent(parentSession, stem) ?? "", agentsDir);
+		if (fromFile) {
+			model = fromFile;
+			scoreModel = fromFile;
+		}
+	}
+
 	const done = yielded || final;
+	const idle = Math.floor((nowSec() - mtime) / 60);
 	let state: string;
 	if (!id.startsWith("MAIN") && (yielded || final)) state = "done";
 	else if (!exited && !err) {
-		const idle = Math.floor((nowSec() - mtime) / 60);
 		state = (waiting || "RUNNING") + (idle >= cfg.ledger.idle_show_min ? ` (idle ${idle}m)` : "");
 	} else if (id.startsWith("MAIN")) state = "done";
 	else state = `DIED: ${err || "exited without a result"}`;
+	let neverReplied = false;
+	if (!isMain && !sawAssistant && state.startsWith("RUNNING") && idle >= cfg.ledger.idle_show_min) {
+		state = "DIED: never replied";
+		neverReplied = true;
+	}
 	if ((state.startsWith("RUNNING") || state.startsWith("WAITING")) && !id.startsWith("MAIN")) {
 		const cap = readBudgets(cfg.paths.queue_state)[id] ?? cfg.guards.sub_max_calls;
 		if (calls > cap) state += ` OVER-BUDGET(${calls}>${cap} calls)`;
@@ -209,8 +275,8 @@ function build(file: string, cfg: Config, mtime: number): Run | null {
 		scoreModel,
 		scoreCost,
 		scoreHours: ((last ?? 0) - (first ?? 0)) / 3600,
-		scoreRunning: !exited && !scoreErr && !done,
-		scoreSurvived: done && !scoreErr,
+		scoreRunning: neverReplied ? false : !exited && !scoreErr && !done,
+		scoreSurvived: neverReplied ? false : done && !scoreErr,
 		scoreEnd: scoreErr || (done ? "done" : "no final message"),
 	};
 	return run;
@@ -271,7 +337,7 @@ export function ompRunSource(root: string, cfg: Config): RunSource {
 					continue;
 				}
 				if (mtime < since) continue;
-				const run = build(file, cfg, mtime);
+				const run = build(file, cfg, mtime, agentsDirOf(root, cfg));
 				if (run) runs.push(run);
 			}
 			return runs;
