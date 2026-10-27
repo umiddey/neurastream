@@ -7,7 +7,7 @@
 
 import { afterAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createOmpAdapter, type ExtensionHost } from "../src/adapters/omp/index.ts";
@@ -47,8 +47,25 @@ Branch: feat/toy
 ## Goal
 - Toy.
 
+## Forbidden
+- Never skip tests.
+
+## Blockers
+- ok
+
+## Phases
+- [ ] P1 do the thing — verify: \`test -f README.md\`
+
+## Done check
+\`test -f README.md\`
+
+## Code read by Main
+- src/a.ts
+
 ## Progress
 Status: open
+
+- 2026-10-27 10:00 Main: started.
 `;
 
 /** A fresh sandbox: an empty queue, one open plan in a real git repo, and that repo's rules. */
@@ -57,11 +74,15 @@ function fresh(rules = "# repo rules\n\n- No push.\n"): void {
 	rmSync(join(HOME, ".config"), { recursive: true, force: true });
 	rmSync(STATE, { recursive: true, force: true });
 	mkdirSync(join(REPO, "docs/plans"), { recursive: true });
-	mkdirSync(join(HOME, ".config/neurastream"), { recursive: true });
+	mkdirSync(join(HOME, ".config/neurastream/blockers"), { recursive: true });
 	writeFileSync(PLAN, PLAN_TEXT);
 	writeFileSync(INDEX, `${PLAN}\n`);
 	if (rules !== "") writeFileSync(AGENTS, rules);
 	writeFileSync(SESSION_FILE, "");
+	// The plan's one blocker: an executable that refuses nothing.
+	const blocker = join(HOME, ".config/neurastream/blockers/ok");
+	writeFileSync(blocker, "#!/bin/sh\nexit 0\n");
+	chmodSync(blocker, 0o755);
 	const r = spawnSync("git", ["init", "-q"], { cwd: REPO });
 	if (r.status !== 0) throw new Error(`git init failed: ${r.stderr}`);
 }
@@ -149,4 +170,26 @@ test("Main: the queue inject is unchanged while no repo is touched", async () =>
 	expect(msg.customType).toBe("main-guard.queue");
 	expect(msg.content).toContain("INDEX.md");
 	expect(msg.content).not.toContain("Repo rules (");
+});
+
+// --- P3: Main ---
+
+test("Main: first touch of a repo hands its rules over once, and again only after the file changes", async () => {
+	fresh();
+	const { emit } = adapter();
+	const read = (id: string) => ({ toolName: "read", input: { path: join(REPO, "src/a.ts") }, toolCallId: id });
+	expect(await emit("tool_call", read("t1"), mainCtx())).toEqual([]);
+	const first = messageOf((await emit("before_agent_start", { prompt: "hi" }, mainCtx()))[0]);
+	expect(first.customType).toBe("main-guard.queue");
+	expect(first.content).toContain(`Repo rules (${AGENTS}):\n# repo rules\n\n- No push.\n`);
+	// The same repo again, unchanged: the session already has the text.
+	await emit("tool_call", read("t2"), mainCtx());
+	expect(messageOf((await emit("before_agent_start", { prompt: "hi" }, mainCtx()))[0]).content).not.toContain("Repo rules (");
+	// The file changes: the next touch hands the new text over once.
+	writeFileSync(AGENTS, "# repo rules\n\n- No push.\n- Run the lane.\n");
+	await emit("tool_call", read("t3"), mainCtx());
+	const changed = messageOf((await emit("before_agent_start", { prompt: "hi" }, mainCtx()))[0]);
+	expect(changed.content).toContain("- Run the lane.");
+	await emit("tool_call", read("t4"), mainCtx());
+	expect(messageOf((await emit("before_agent_start", { prompt: "hi" }, mainCtx()))[0]).content).not.toContain("Repo rules (");
 });
