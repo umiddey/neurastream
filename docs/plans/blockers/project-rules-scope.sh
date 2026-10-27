@@ -8,7 +8,7 @@ fi
 WT=/home/ukd/Work/neurastream-project-rules
 [ -d "$WT" ] || { echo "project-rules-scope: no worktree"; exit 0; }
 cd "$WT" || exit 1
-ALLOWED='^(src/core/(repo-rules|config)\.ts|src/adapters/omp/[^/]+\.ts|templates/(config\.yml|AGENTS\.md)|tests/[^/]+\.test\.ts|README\.md|CHANGELOG\.md|docs/adapter\.md)$'
+ALLOWED='^(src/core/(repo-rules|config|blockers)\.ts|src/adapters/omp/[^/]+\.ts|templates/(config\.yml|AGENTS\.md)|tests/[^/]+\.test\.ts|README\.md|CHANGELOG\.md|docs/adapter\.md)$'
 BASE=$(git merge-base origin/main HEAD 2>/dev/null || echo origin/main)
 FILES=$( { git diff --name-only "$BASE"; git ls-files --others --exclude-standard; } 2>/dev/null | sort -u)
 rc=0
