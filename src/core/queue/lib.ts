@@ -839,7 +839,7 @@ export function cancelledMatches(plan: Plan): CancelledEntry[] {
 	const name = path.basename(plan.file);
 	return [...readCancelled(plan.repo), ...readGlobalCancelled()].filter(c => {
 		const cleared = plan.text.split("\n").some(l => {
-			const m = l.match(/^\s*(?:[-*]\s+)?False positive:\s*`?(\S+?)`?\s*[—:–-]+\s*(.+)$/);
+			const m = l.match(/^\s*(?:[-*]\s+)?False positive:\s*`?([^\s`]+)`?\s+[—:–-]+\s*(.+)$/);
 			return m && m[1] === c.name && (m[2] ?? "").trim().length >= 15;
 		});
 		if (cleared || c.name === name) return false;
