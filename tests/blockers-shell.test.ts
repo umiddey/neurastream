@@ -88,6 +88,23 @@ describe("no-push (plan P2): commands, not words", () => {
 	});
 });
 
+describe("no-push eval path (I-20261027-266): git's subcommand, not words in arguments", () => {
+	test("allows a git subcommand that is not push", () => {
+		expect(refused(noPush, call("eval", { code: "Bun.$`git stash push -m wip`" }), [])).toBe(false);
+		expect(refused(noPush, call("eval", { code: 'Bun.$`git log --grep push`' }), [])).toBe(false);
+	});
+
+	test("refuses the pushes and merges it refused before", () => {
+		expect(refused(noPush, call("eval", { code: "Bun.$`git push origin feat`" }), [])).toBe(true);
+		expect(refused(noPush, call("eval", { code: "Bun.$`git -C x push origin main`" }), [])).toBe(true);
+		expect(refused(noPush, call("eval", { code: "Bun.$`git -c user.name=x push`" }), [])).toBe(true);
+		expect(refused(noPush, call("eval", { code: "Bun.$`/usr/bin/git push`" }), [])).toBe(true);
+		expect(refused(noPush, call("eval", { code: "Bun.$`git --git-dir=/r/.git push`" }), [])).toBe(true);
+		expect(refused(noPush, call("eval", { code: "Bun.$`glab mr merge 3`" }), [])).toBe(true);
+		expect(refused(noPush, call("eval", { code: "Bun.$`gh pr merge 3`" }), [])).toBe(true);
+	});
+});
+
 describe("deny-command (plan P3): unquoted command words only", () => {
 	test("allows forbidden words inside quotes and heredoc bodies", () => {
 		expect(refused(denyCommand, bash('git commit -m "tag the release: git tag later"'), FORBIDDEN_COMMANDS)).toBe(false);

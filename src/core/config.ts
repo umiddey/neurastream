@@ -19,6 +19,11 @@ export class ConfigError extends Error {
 export interface Config {
 	/** Which adapter (src/adapters/index.ts) serves runs, traces, launch, install and doctor. The template ships the only one; a second harness adds its name here (docs/adapter.md). */
 	harness: string;
+	/** Live project rules (src/core/repo-rules.ts): a repo's own AGENTS.md, handed to the agent that works in it. */
+	rules: {
+		/** Largest rules text a hook injects; past it the text is cut and one line names the file. */
+		max_bytes: number;
+	};
 	paths: {
 		home: string;
 		work_roots: string[];

@@ -24,6 +24,12 @@ paths:
 # Which adapter (docs/adapter.md) serves runs, traces, launch, install and doctor.
 harness: omp
 
+# Live project rules (src/core/repo-rules.ts): the repo's own AGENTS.md, handed to the agent that
+# works in it — a subagent on its plan's repo, Main the first time a session touches the repo.
+# max_bytes caps the injected text; past it the text is cut and one line names the file to read.
+rules:
+  max_bytes: 24000
+
 score:
   default_repo: ""
   default_branch: ""   # no default: pass --branch (agent-score refuses to guess a branch)

@@ -1,5 +1,7 @@
 # Changelog
 ## Unreleased
+### Added
+- Project rules reach every agent (plan 20261027_1530). A subagent's first turn now carries `Repo rules (<path>):` plus the `AGENTS.md` of the repo its plan is worked in, then the owner's burden rule read from `templates/AGENTS.md` (no copy of that text in code — the template stays its one home; its managed block carries the owner's rule that code is a burden and must justify its keep); Main gets a repo's `AGENTS.md` the first time the session works in that repo (a task spawn on its plan, a read, a write, a shell `cd`) and again only when the file changes. The finder and the per-session hash cache are `src/core/repo-rules.ts`, the cache file is `<paths.queue_state>/repo-rules.json`; the hook wiring is the omp adapter's (`docs/adapter.md`). A plan's `Worktree:` `AGENTS.md` wins when it differs from its repo's, a repo without the file injects nothing, and text past the new config key `rules.max_bytes` (default 24000) is cut with one line naming the file to read. README "Project rules" says what is injected and when.
 ## 0.2.38
 ### Fixed
 - `wip-snapshot` names its `refs/wip/<key>/` refs from the resolved home path, so a home behind a symlink (macOS `/tmp` → `/private/tmp`) no longer leaks `_private` into the key; this was the red macOS CI on main since 0.2.37.

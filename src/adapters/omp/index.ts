@@ -17,9 +17,11 @@
 
 import { execFileSync, spawn } from "node:child_process";
 import { appendFileSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import type { Decision } from "../../core/adapter.ts";
+import { AGENTS_TEMPLATE } from "../../core/agents-md.ts";
 import { chatGo, chatTier, type Tier } from "../../core/autonomy.ts";
+import { burdenRule, repoRules, rulesChanged } from "../../core/repo-rules.ts";
 import { loadConfig, type Config } from "../../core/config.ts";
 import { nowSec, strftime } from "../../core/clock.ts";
 import { runDetectors, runDetectorsGated, type DetectorInput } from "../../core/incident-detectors.ts";
@@ -557,6 +559,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	let inboxTimer: unknown;
 	const calls = new Map<string, number>(); // subagent call budget, by agent id
 	const pending = new Map<string, Map<string, string>>(); // toolCallId -> plan snapshots
+	const pendingRules = new Set<string>(); // repos Main worked in, rules to hand over at the next prompt
 	// Chat notify (plans 20261024_2155, 20261025_0130): the text a hand-back already posted
 	// (attempted) — one post per distinct text, never a retry loop. The reply itself comes from
 	// the stop/agent_end event, never the session file (session_stop fires BEFORE agent_end, and
@@ -726,25 +729,76 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		inboxTimer = it;
 	});
 
+	// What a subagent is still missing (plan 20261027_1530 P2): the rules of the repo its plan is
+	// worked in, then the owner's burden rule — each once per session, and again only after the
+	// file changes (rulesChanged holds the hash). Empty when there is nothing new to say.
+	const unhanded = (session: string, plan: string | null): string => {
+		const parts: string[] = [];
+		const rules = plan ? repoRules(cfg, plan) : null;
+		if (rules && rulesChanged(cfg, session, rules.path, rules.text)) parts.push(`Repo rules (${rules.path}):\n${rules.text}`);
+		const rule = burdenRule();
+		if (rule && rulesChanged(cfg, session, AGENTS_TEMPLATE, rule)) parts.push(rule);
+		return parts.join("\n\n");
+	};
+
+	// The repos one Main call works in (plan 20261027_1530 P3): its cwd, the file it reads, what it
+	// writes (a shell `cd` included), and — for a task spawn — the repo of the plan each brief
+	// names. Rules ride on the next prompt, never on every one, so nothing is said before a repo
+	// is actually worked in.
+	const touchedRepos = (tool: string, input: Record<string, unknown>, cwd: string): string[] => {
+		const out = new Set<string>();
+		const add = (p: string): void => {
+			const repo = p ? q.repoRoot(p) : null;
+			if (repo) out.add(repo);
+		};
+		add(cwd);
+		if (cfg.guards.read_tools.includes(tool) && typeof input.path === "string") add(resolve(cwd, q.expandHome(input.path)));
+		for (const p of q.writeTargets(tool, input, cwd)) add(p);
+		if (tool === "task") {
+			const plans = q.readIndex();
+			for (const t of Array.isArray(input.tasks) ? input.tasks : []) {
+				const plan = plans.find(file => String(asRecord(t).task ?? "").includes(file));
+				if (plan) add(plan);
+			}
+		}
+		return [...out];
+	};
+
 	pi.on("before_agent_start", (event, ctx) => {
-		if (asCtx(ctx).kind !== "main") return;
+		const c = asCtx(ctx);
+		const prompt = asString(asRecord(event).prompt);
+		if (c.kind !== "main") {
+			if (c.kind !== "sub") return undefined;
+			// A subagent's first turn is the only one carrying its brief, and the plan the brief
+			// names is the repo whose rules it needs — the same index match the plan gate makes.
+			const plans = q.readIndex();
+			const content = unhanded(asString(c.id) || "sub", plans.find(file => prompt.includes(file)) ?? null);
+			return content ? { message: { customType: "main-guard.rules", content, display: false } } : undefined;
+		}
 		if (rateTimer !== null) {
 			clearRateTimer();
 			adapterLog(cfg, "RATE-LIMIT resume cancelled: owner message");
 		}
-		const d = checkInject({ inject: asString(asRecord(event).prompt), agent: "main" }, cfg);
+		const d = checkInject({ inject: prompt, agent: "main" }, cfg);
 		callsSinceStop = d.state?.callsSinceStop ?? callsSinceStop;
 		idleStops = d.state?.idleStops ?? idleStops;
 		const notice = rolloverNotice(ctx);
 		// A turn the harness starts from the guard's own stop continuation is not an owner
 		// message: D4 (owner-correction) only sees real prompts; D1/D3 run either way.
-		const prompt = asString(asRecord(event).prompt);
 		// Machine prompts (guard continuation, rollover note request, handoff note) are not owner messages.
 		mainDetectors(cfg, { prompt: ownerText(prompt) });
+		// The rules of a repo this session has just worked in (P3): one hand-over per repo per file
+		// version — rulesChanged holds the hash, and the set holds only what was touched.
+		const rules: string[] = [];
+		for (const repo of pendingRules) {
+			const r = repoRules(cfg, repo);
+			if (r && rulesChanged(cfg, asString(c.id) || "main", r.path, r.text)) rules.push(`Repo rules (${r.path}):\n${r.text}`);
+		}
+		pendingRules.clear();
 		return {
 			message: {
 				customType: "main-guard.queue",
-				content: [d.inject, notice].filter(Boolean).join("\n\n"),
+				content: [d.inject, notice, ...rules].filter(Boolean).join("\n\n"),
 				display: false,
 			},
 		};
@@ -804,6 +858,8 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 			return { block: true, reason: d.reason };
 		}
 		if (snap.size) pending.set(asString(e.toolCallId), snap);
+		// An allowed Main call inside a repo queues that repo's rules for the next prompt (P3).
+		if (!isSub) for (const repo of touchedRepos(tool, input, cwd)) pendingRules.add(repo);
 		// The originals return nothing on a clean call; only warn injects carry an object.
 		const out = toExtensionResult(d);
 		return Object.keys(out).length > 0 ? out : undefined;

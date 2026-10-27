@@ -372,6 +372,18 @@ Live copies are never hand-edited. `neurastream doctor` names each hand-edited i
 - Drift: `neurastream doctor` reports `stale:` when the text between the markers differs from the package's block, and `missing:` when the markers are absent. Edits outside the markers are never reported.
 - Edit limit: the project-file changes Main gets per window come from the config, not from the block text: `guards.main_edit_limit` per `guards.main_window_min` in tier `opinionated`, `autonomy.strict_edit_limit` in tier `strict`, no cap in tier `full`.
 
+## Project rules
+
+The repo an agent works in has its own `AGENTS.md` — test lanes, no-push, conventions. neurastream hands it over the way it hands Main the queue summary, always the live file and never a copy, so a rule added to a repo reaches the next agent that works in it:
+
+- **A subagent** gets, on its first turn, `Repo rules (<path>):` plus the `AGENTS.md` text of the repo its plan's index path lives in, then the owner's burden rule from `templates/AGENTS.md`. One hand-over per session: the same text is not repeated on the next turn.
+- **Main** gets a repo's `AGENTS.md` the first time the session works in that repo — a task spawn on that repo's plan, a read, a write, or a shell `cd` — and again only when the file changes. Rules never ride on every prompt, and an index repo the session never touches is never injected.
+- **Size cap**: `rules.max_bytes` (default 24000). A longer file is cut and one line says `…cut, read <path>`.
+- A repo with no `AGENTS.md` gets nothing: no error, no empty block.
+- A plan whose `Worktree:` line names a linked worktree with a different `AGENTS.md` gets that worktree's rules.
+
+The finder and the hash cache are host-neutral (`src/core/repo-rules.ts`); the cache is `<paths.queue_state>/repo-rules.json`. The adapter decides only when the text is injected (`docs/adapter.md`).
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
