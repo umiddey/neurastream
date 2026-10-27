@@ -2,6 +2,7 @@
 // at the first hyphen, so "ban-blocks-guard-noted-recorded-be9d" was read as "ban" and never cleared.
 // Whitespace is required before the separator; a different name does not clear this ban.
 
+import { afterAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
