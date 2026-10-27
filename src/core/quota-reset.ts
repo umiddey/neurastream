@@ -1,12 +1,14 @@
 import type { Config } from "./config.ts";
+import { recordOut } from "./provider-state.ts";
 import { localStamp, parseWhen, wallToEpoch } from "./reset-time.ts";
 
 const USAGE =
-	'usage: quota-reset "YYYY-MM-DD HH:MM[:SS]" [--tz <zone>] (reset time from your provider\'s rate-limit message)\n';
+	'usage: quota-reset "YYYY-MM-DD HH:MM[:SS]" [--tz <zone>] [--provider <name>] (reset time from your provider\'s rate-limit message; --provider records it)\n';
 
 
 export function quotaReset(args: string[], cfg: Config): number {
 	let zone = cfg.quota.reset_tz;
+	let provider: string | null = null;
 	const words: string[] = [];
 	for (let i = 0; i < args.length; i++) {
 		const arg = args[i] ?? "";
@@ -17,6 +19,14 @@ export function quotaReset(args: string[], cfg: Config): number {
 				return 2;
 			}
 			zone = value;
+			i++;
+		} else if (arg === "--provider") {
+			const value = args[i + 1];
+			if (value === undefined) {
+				process.stderr.write(USAGE);
+				return 2;
+			}
+			provider = value;
 			i++;
 		} else {
 			words.push(arg);
@@ -47,6 +57,14 @@ export function quotaReset(args: string[], cfg: Config): number {
 	} else {
 		const d = epoch - now;
 		console.log(`${label} reset (local): ${local} — in ${Math.floor(d / 3600)}h ${Math.floor((d % 3600) / 60)}m`);
+	}
+	if (provider !== null) {
+		if (!cfg.ledger.providers.includes(provider)) {
+			process.stderr.write(`quota-reset: unknown provider "${provider}" (ledger.providers: ${cfg.ledger.providers.join(", ")})\n`);
+			return 1;
+		}
+		recordOut(cfg, provider, epoch, "quota-reset");
+		console.log(`recorded: ${provider} out until ${local} (local) — agent-ledger --cap and the guards read it back`);
 	}
 	return 0;
 }

@@ -39,6 +39,7 @@ import { adapterLog } from "./launch.ts";
 import { parseTraceFile } from "./traces.ts";
 import { packageJsonPath, packageVersion } from "./package-root.ts";
 import * as q from "../../core/queue/lib.ts";
+import { pinModel, providerOfModel, recordOut, resetEpochFromText } from "../../core/provider-state.ts";
 import { annotateResetTimes } from "../../core/reset-time.ts";
 // Registers the plugin-command matcher into core's writeTargets (side effect).
 import "./package-ops.ts";
@@ -79,6 +80,9 @@ interface EventReply {
 	toolCalls: number;
 	/** The provider's error text on a turn that ended on one (`429 … retry-after-ms=…`); null otherwise. */
 	errorMessage: string | null;
+	/** The provider and model fields of the assistant message, when the event carries them; the provider-out recording keys on the provider. */
+	provider: string | null;
+	model: string | null;
 }
 
 function lastAssistantIn(messages: unknown): EventReply | null {
@@ -97,6 +101,8 @@ function lastAssistantIn(messages: unknown): EventReply | null {
 			stopReason: typeof m.stopReason === "string" ? m.stopReason : null,
 			toolCalls: content.filter(c => asRecord(c).type === "toolCall").length,
 			errorMessage: typeof m.errorMessage === "string" ? m.errorMessage : null,
+			provider: typeof m.provider === "string" ? m.provider : null,
+			model: typeof m.model === "string" ? m.model : null,
 		};
 	}
 	return null;
@@ -285,6 +291,42 @@ function redactToolResult(content: unknown[], cfg: Config): { content: unknown[]
 	});
 	if (!changed) return { content, note: "" };
 	return { content: out, note: redactSummary([...hits].map(([type, count]) => ({ type, count }))) };
+}
+
+// Provider out-until from live data (plan 20261025_1700 P1). Two automatic recordings, both
+// keyed on the provider half of an agent pin's `model:` frontmatter, both best effort and
+// logged once. The reset-time case trusts the provider's own words; the no-time case falls
+// back to the armed rate-limit wait, so a provider without a quoted reset time still lands in
+// the file the guards and the ledger read.
+const resetRule = (cfg: Config): { pattern: string; zone: string } => ({ pattern: cfg.quota.reset_pattern, zone: cfg.quota.reset_tz });
+
+/** Task result that quotes a reset time: record it for the sub's provider. A batch naming
+ *  several providers cannot attribute the time to one of them, so it records nothing. */
+function recordProviderOutFromTask(e: Record<string, unknown>, content: unknown[], cfg: Config): void {
+	if (asString(e.toolName) !== "task" || e.isError === true) return;
+	const text = content.map(p => asString(asRecord(p).text)).join("\n");
+	const epoch = resetEpochFromText(text, resetRule(cfg));
+	if (epoch === null) return;
+	const tasks = Array.isArray(asRecord(e.input).tasks) ? (asRecord(e.input).tasks as unknown[]) : [];
+	const providers = new Set<string>();
+	for (const t of tasks) {
+		const provider = providerOfModel(pinModel(cfg, asString(asRecord(t).agent)));
+		if (provider) providers.add(provider);
+	}
+	if (providers.size !== 1) return;
+	const provider = [...providers][0]!;
+	recordOut(cfg, provider, epoch, "task-result");
+	adapterLog(cfg, `PROVIDER-OUT recorded: ${provider} out until ${new Date(epoch * 1000).toISOString()} (task result)`);
+}
+
+/** Rate-limited turn end: record the reset time the error text names, else the armed wait. */
+function recordProviderOutFromRateLimit(reply: EventReply | null, untilMs: number, cfg: Config): void {
+	const provider = reply?.provider ?? providerOfModel(reply?.model ?? null);
+	if (!provider) return;
+	const named = reply ? resetEpochFromText(reply.errorMessage ?? "", resetRule(cfg)) : null;
+	const epoch = named ?? Math.floor(untilMs / 1000);
+	recordOut(cfg, provider, epoch, named !== null ? "rate-limit-reset" : "rate-limit");
+	adapterLog(cfg, `PROVIDER-OUT recorded: ${provider} out until ${new Date(epoch * 1000).toISOString()} (${named !== null ? "reset time in error text" : "rate limit, no reset time"})`);
 }
 
 // Session rollover helpers: the harness context read through runtime checks, and the file size and
@@ -775,6 +817,13 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		const redacted = redactToolResult(Array.isArray(e.content) ? e.content : [], cfg);
 		const content = redacted.content;
 		const notes: string[] = redacted.note ? [redacted.note] : [];
+		// Provider out-until from a task result that quotes a reset time (plan 20261025_1700 P1):
+		// recorded from the redacted text before anything else, never thrown.
+		try {
+			recordProviderOutFromTask(e, content, cfg);
+		} catch (err) {
+			adapterLog(cfg, `PROVIDER-OUT record failed: ${err instanceof Error ? err.message : String(err)}`);
+		}
 		if (snap) {
 			pending.delete(id);
 			for (const [file, before] of snap) {
@@ -850,6 +899,13 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		// and without touching the idle-stop counters: checkStop is not consulted.
 		const rl = rateLimitOf(reply);
 		if (rl) {
+			// Who is rate-limited is live data (plan 20261025_1700 P1): the error text's own reset
+			// time, else the armed wait. Best effort — a failed write never changes the stop.
+			try {
+				recordProviderOutFromRateLimit(reply, rl.untilMs, cfg);
+			} catch (err) {
+				adapterLog(cfg, `PROVIDER-OUT record failed: ${err instanceof Error ? err.message : String(err)}`);
+			}
 			onRateLimitedStop(rl.untilMs, rl.waitMs);
 			return undefined;
 		}

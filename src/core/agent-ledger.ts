@@ -5,6 +5,7 @@ import { nowSec, strftime } from "./clock.ts";
 import { exitText } from "./help.ts";
 import { formatG, pyFixed, pyFixedWidth } from "./pyfmt.ts";
 import { pyDictInt } from "./pyjson.ts";
+import { providersLine } from "./provider-state.ts";
 import { cmd } from "./proc.ts";
 
 function opt(args: string[], name: string): string | undefined {
@@ -66,6 +67,10 @@ export function agentLedger(args: string[], cfg: Config, source: RunSource): num
 	process.stdout.write(`TOTAL ${pyFixed(tt / 1e6, 1)} Mtok, $${pyFixed(tc, 2)} list: whole-run totals of sessions active in the last ${formatG(hours)}h\n`);
 
 	if (!args.includes("--cap")) return 0;
+	// Who is rate-limited comes from live data (plan 20261025_1700 P2), printed before every
+	// other cap line so the spawn decision reads the recorded state, never memory.
+	const providers = providersLine(cfg);
+	if (providers) process.stdout.write(`${providers}\n`);
 	// --incident <id>: the cap check runs while Main is spawning the fix for a recorded incident;
 	// then OVER-BUDGET lines must not fail the cap (a ledger bug cannot block its own fix).
 	// Provider slots and the priority check stay binding.
