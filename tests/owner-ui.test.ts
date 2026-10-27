@@ -1042,7 +1042,7 @@ test("agentRows: short model after the last /, detail and minutes since startedA
 });
 
 test("queueRows: open plans only, with repo label, title, status and waiting", () => {
-	expect(queueRows(CFG)).toEqual([{ repo: "toy", file: PLAN_W, title: "Toy plan", status: "open", waiting: true }]);
+	expect(queueRows(CFG)).toEqual([{ repo: "toy", file: PLAN_W, title: "Toy plan", status: "open", waiting: true, summary: "Owner page toy.", state: "waits you" }]);
 });
 
 test("ciRows: newest first, mr as text, tries as number", () => {

@@ -55,6 +55,12 @@ export interface Plan {
 	title: string;
 	/** Bullet lines under "## Goal", capped at 6. */
 	goal: string[];
+	/** Header line `Summary: <text>`, or null when the plan has none. */
+	summary: string | null;
+	/** Checkbox lines under `## Phases`: done is ticked `[x]`/`[X]`. */
+	phases: { done: number; total: number };
+	/** True when a phase is ticked, or `## Progress` has a real `- ` entry. */
+	started: boolean;
 	errors: string[];
 }
 
@@ -184,7 +190,7 @@ function headerField(text: string, name: string): string | null {
 }
 
 export function parsePlan(repo: string, file: string, text: string | null, blockersDir = blockersDirPath()): Plan {
-	const empty = { repo, file, text: "", status: null, blockers: [], doneCheck: null, worktree: null, branch: null, appliesTo: [], waiting: false, waitingLine: null, waitsOn: [], priorityId: null, title: path.basename(file), goal: [] };
+	const empty = { repo, file, text: "", status: null, blockers: [], doneCheck: null, worktree: null, branch: null, appliesTo: [], waiting: false, waitingLine: null, waitsOn: [], priorityId: null, title: path.basename(file), goal: [], summary: null, phases: { done: 0, total: 0 }, started: false };
 	if (text === null) return { ...empty, errors: ["plan file listed in the index does not exist"] };
 	const errors: string[] = [];
 	const secs = sections(text);
@@ -208,9 +214,11 @@ export function parsePlan(repo: string, file: string, text: string | null, block
 		if (!executable(script)) errors.push(`blocker "${ref}": ${script} missing or not executable`);
 		blockers.push({ script, args });
 	}
-	const phases = items(secs.get("phases") ?? "").filter(l => /^\[[ xX]\]/.test(l));
-	if (secs.has("phases") && !phases.length) errors.push('"## Phases" needs checkbox lines: "- [ ] P1 <what> — verify: `<command>`"');
-	for (const p of phases) if (!/verify:\s*`[^`]+`/.test(p)) errors.push(`phase without "verify: \`<command>\`": ${p.slice(0, 60)}`);
+	const phaseLines = items(secs.get("phases") ?? "").filter(l => /^\[[ xX]\]/.test(l));
+	if (secs.has("phases") && !phaseLines.length) errors.push('"## Phases" needs checkbox lines: "- [ ] P1 <what> — verify: `<command>`"');
+	for (const p of phaseLines) if (!/verify:\s*`[^`]+`/.test(p)) errors.push(`phase without "verify: \`<command>\`": ${p.slice(0, 60)}`);
+	const phases = { total: phaseLines.length, done: phaseLines.filter(l => /^\[[xX]\]/.test(l)).length };
+	const started = phases.done > 0 || progressBody(text).split("\n").some(l => /^- /.test(l) && !l.startsWith(POINTER_PREFIX) && !MAIN_ONLY_LINE.test(l));
 	const dc = (secs.get("done check") ?? "").match(/```[a-z]*\n([\s\S]*?)```|`([^`\n]+)`/);
 	const doneCheck = dc ? (dc[1] ?? dc[2] ?? "").trim() : null;
 	if (secs.has("done check") && !doneCheck) errors.push('"## Done check" needs one command in backticks (exit 0 = done)');
@@ -233,6 +241,9 @@ export function parsePlan(repo: string, file: string, text: string | null, block
 		priorityId: text.match(/^PRIORITY-ID:\s*`?([A-Z]{2}[0-9]{2})`?/m)?.[1] ?? null,
 		title: text.match(/^# (.+)$/m)?.[1]?.trim() || path.basename(file),
 		goal: items(secs.get("goal") ?? "").slice(0, 6),
+		summary: headerField(text, "Summary"),
+		phases,
+		started,
 		errors,
 	};
 }

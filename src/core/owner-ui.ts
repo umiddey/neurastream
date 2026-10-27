@@ -136,6 +136,10 @@ export interface QueueRow {
 	title: string;
 	status: string;
 	waiting: boolean;
+	/** `Summary:` header, else the first Goal bullet with a leading Owner/INCIDENT prefix cut off. */
+	summary: string | null;
+	/** Chip text: waits you, waits on a plan, not started, phase K of N, or all N done. */
+	state: string;
 }
 
 export interface CiRow {
@@ -201,10 +205,40 @@ export function agentRows(cfg: Config, source: RunSource): AgentRow[] {
 		}));
 }
 
+/** Cut a leading `Owner (…):` or `INCIDENT <id>` prefix off a Goal bullet used as the card line. */
+function goalSummary(line: string): string {
+	let s = line.trim();
+	for (;;) {
+		const next = s.replace(/^Owner\s*\([^)]*\):\s*/, "").replace(/^INCIDENT\s+\S+\.?\s*/, "").trim();
+		if (next === s) return s;
+		s = next;
+	}
+}
+
+function queueState(p: Plan, plans: Plan[]): string {
+	if (p.waiting) return "waits you";
+	const target = p.waitsOn[0];
+	if (target) {
+		const title = plans.find(w => w.file === target)?.title ?? target.split("/").pop()?.replace(/\.md$/, "") ?? target;
+		return `waits on ${title}`;
+	}
+	const { done, total } = p.phases;
+	if (done === total && total > 0) return `all ${total} done · checking`;
+	if (!p.started) return `not started · 0/${total}`;
+	return `phase ${Math.min(done + 1, total)} of ${total}`;
+}
+
 export function queueRows(cfg: Config): QueueRow[] {
-	return activePlans(cfg.paths.queue_index)
-		.filter(p => p.status === "open")
-		.map(p => ({ repo: basename(p.repo), file: p.file, title: p.title, status: p.status ?? "?", waiting: p.waiting }));
+	const plans = activePlans(cfg.paths.queue_index).filter(p => p.status === "open");
+	return plans.map(p => ({
+		repo: basename(p.repo),
+		file: p.file,
+		title: p.title,
+		status: p.status ?? "?",
+		waiting: p.waiting,
+		summary: p.summary ?? (goalSummary(p.goal[0] ?? "") || null),
+		state: queueState(p, plans),
+	}));
 }
 
 export function ciRows(cfg: Config): CiRow[] {
@@ -472,8 +506,8 @@ function queueHtml(rows: QueueRow[], tab: string): string {
 			(r, i) => `<li class="qcard" data-plan="${esc(r.file)}">
 <span class="qhandle" title="Drag to reorder" aria-label="Drag ${esc(r.title)}">≡</span>
 <span class="qrank">${i + 1}</span>
-<span class="qtitle">${esc(r.title)}</span>
-${r.waiting ? `<span class="chip c-wait">waits you</span>` : `<span class="chip c-ready">ready</span>`}
+<span class="qtitle">${esc(r.title)}${r.summary ? `<span class="qsum">${esc(r.summary)}</span>` : ""}</span>
+<span class="chip ${r.state.startsWith("waits") ? "c-wait" : "c-ready"}">${esc(r.state)}</span>
 <span class="qbtns"><button type="button" class="qmove" data-move="top">↑ top</button><button type="button" class="qmove" data-move="up">↑</button><button type="button" class="qmove" data-move="down">↓</button></span>
 </li>`,
 		)
@@ -954,6 +988,7 @@ details.bg ul{margin:4px 0 8px;padding-left:20px;color:var(--mut);font-size:13px
 .qhandle{color:var(--mut);font-size:18px;touch-action:none;padding:2px 2px;user-select:none;flex:none}
 .qrank{color:var(--mut);width:18px;font-size:13px;text-align:right;font-variant-numeric:tabular-nums;flex:none}
 .qtitle{flex:1 1 12em;min-width:0}
+.qsum{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;color:var(--mut);font-size:13px;font-weight:400}
 .chip{font-size:11px;padding:2px 8px;border-radius:999px;white-space:nowrap;flex:none}
 .c-wait{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}
 .c-run{background:color-mix(in srgb,var(--teal) 18%,transparent);color:var(--teal)}

@@ -78,6 +78,8 @@ const queue: QueueRow[] = [
 	title: title as string,
 	status: "open",
 	waiting: waiting as boolean,
+	summary: title as string,
+	state: waiting ? "waits you" : "not started · 0/1",
 }));
 
 // Spend and runs across the last 10 hours; the 14 older buckets stay empty. The totals add up:

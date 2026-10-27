@@ -1,6 +1,7 @@
 # <short title>
 Worktree: <work root>/<repo>-<topic> (configure paths.work_roots, e.g. {{HOME}}/work)
 Branch: <type>/<topic>
+Summary: <one or two plain sentences: what this plan gives the owner>
 PRIORITY-ID: <optional, e.g. PR01>
 <!-- One plan = one worktree: this file lives in the main checkout (<main checkout>/docs/plans/), never
      inside its worktree, and the main index (paths.queue_index) lists its absolute path, one line per plan. -->

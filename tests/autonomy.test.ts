@@ -253,6 +253,9 @@ function planAt(file: string, status: "open" | "complete" = "open"): Plan {
 		priorityId: null,
 		title: file,
 		goal: [],
+		summary: null,
+		phases: { done: 0, total: 1 },
+		started: false,
 		errors: [],
 	};
 }
