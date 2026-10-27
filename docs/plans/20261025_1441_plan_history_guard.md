@@ -2,7 +2,7 @@
 Worktree: /home/ukd/Work/neurastream-plan-history
 Branch: feat/plan-history
 Summary: Before I plan, I must read the old plans behind the code I'm about to change, so I know why it was built that way.
-Waits on: /home/ukd/projects/doctrail/docs/plans/20261025_1440_doctrail_v1.md
+Waits on: /home/ukd/projects/whytrail/docs/plans/20261025_1440_whytrail_v1.md
 
 ## Goal
 - INCIDENT I-20261025-153 (owner correction, 2026-10-25 ~14:20): "You've got to tell me why the design was changed, was there a reason behind that. And also, why did you miss this while you were planning?" Main had planned CP host monitoring from code and rules only and missed the 2026-08-09 design decision (infra plan Phase 2, commit 9d8fc7b4: each app's own Prometheus watches its host). The reason was in an old plan and a commit message; nothing made Main read them.
@@ -12,7 +12,7 @@ Waits on: /home/ukd/projects/doctrail/docs/plans/20261025_1440_doctrail_v1.md
 ## Forbidden
 - Read /home/ukd/projects/neurastream/AGENTS.md first.
 - Work only in /home/ukd/Work/neurastream-plan-history on feat/plan-history. Never push, merge, tag or publish (Main does; releases only by tag push under the owner's unlock). Commit files by name; never `git add -A`/`.`; never `--no-verify`.
-- No harness or provider names in src/core (the blocker checks added lines).
+- Host-neutral: logic and types in src/core name no harness; harness-specific reads/writes live under src/adapters/<harness>/ behind HarnessAdapter (docs/adapter.md). tests/host-neutral.test.ts must stay green. No provider names in src/core either (the blocker checks added lines).
 - Old plans are grandfathered by a stamp cutover, as `READ_CUTOVER` does today (/home/ukd/projects/neurastream/src/core/queue/lib.ts:31-33); never make an existing indexed plan fail queue-check.
 - neurastream calls the `plantrail` binary (no import, no copy of its code); when it is missing, guards print the install line instead of crashing.
 - Every test run via `/home/ukd/Work/heavy-run.sh <agent> "<label>" -- <cmd>` with tool timeout 0.
