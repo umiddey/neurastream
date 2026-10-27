@@ -45,6 +45,10 @@ ledger:
   idle_not_live_min: 60
   max_running_per_provider: 2
   max_slots: 2
+  # The owner's pick order (plan 20261025_1700 P3): agent names, first = preferred; empty = off.
+  # The spawn gates refuse a later agent while an earlier one is free and under its provider cap
+  # unless the brief carries "Pick note: <why>"; agent-score gate ranks inside this order.
+  prefer: []
   providers:
     - zai
     - openai-codex

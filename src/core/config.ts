@@ -60,6 +60,8 @@ export interface Config {
 		max_running_per_provider: number;
 		max_slots: number;
 		providers: string[];
+		/** Agent names in the owner's pick order, first = preferred; empty = off. */
+		prefer: string[];
 	};
 	brief: {
 		method_marker: string;
@@ -418,6 +420,8 @@ function check(cfg: Config): void {
 		throw new ConfigError("score.waste_weight must be between 0 and 1");
 	}
 	if (cfg.ledger.max_slots < 1) throw new ConfigError("ledger.max_slots must be >= 1");
+	if (!Array.isArray(cfg.ledger.prefer) || cfg.ledger.prefer.some(p => typeof p !== "string" || p === ""))
+		throw new ConfigError("ledger.prefer must be a list of agent names in pick order (may be empty)");
 	if (cfg.guards.sub_warn_calls > cfg.guards.sub_max_calls) {
 		throw new ConfigError("guards.sub_warn_calls must be <= guards.sub_max_calls");
 	}

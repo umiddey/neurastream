@@ -33,6 +33,7 @@ import * as q from "./queue/lib.ts";
 import type { Plan } from "./queue/lib.ts";
 
 import { nowSec } from "./clock.ts";
+import { outUntil, pinModel, providerOfModel, readOut } from "./provider-state.ts";
 const ALLOW: Decision = { allow: true, reason: "" };
 
 /**
@@ -455,6 +456,55 @@ function priorityGate(named: string[], runningJobs: string[] | undefined, brief:
 	return outcome?.problem ? `${label}: ${outcome.problem}` : null;
 }
 
+/**
+ * The owner's pick order (plan 20261025_1700 P3): refuse a later `ledger.prefer` agent while an
+ * earlier one is free and under its provider cap, unless the brief carries "Pick note: <why>".
+ * Free comes from the pin's provider and provider-out.jsonl (absence of a record is free);
+ * "under its cap" counts the caller's running jobs whose label embeds the higher agent's name —
+ * a caller without job info counts 0, erring toward the owner's order, which Pick note unlocks.
+ */
+export function preferProblem(agent: string, brief: string, runningJobs: readonly string[] | undefined, cfg: Config): string | null {
+	const prefer = cfg.ledger.prefer;
+	if (!prefer.length) return null;
+	const mine = prefer.indexOf(agent);
+	if (mine <= 0) return null; // the first pick, or an agent the order does not name
+	if (/\bPick note:/i.test(brief)) return null;
+	for (let j = 0; j < mine; j++) {
+		const higher = prefer[j]!;
+		const provider = providerOfModel(pinModel(cfg, higher));
+		if (provider === null || outUntil(cfg, provider) !== null) continue; // unknown or out
+		const running = (runningJobs ?? []).filter(l => l.toLowerCase().includes(higher.toLowerCase())).length;
+		if (running >= cfg.ledger.max_running_per_provider) continue; // the higher pick is at its provider cap
+		return `${higher} is ahead of ${agent} in ledger.prefer and free (under its provider cap) — spawn ${higher}, or add "Pick note: <why>" to the brief.`;
+	}
+	return null;
+}
+
+/**
+ * Who is rate-limited comes from live data (plan 20261025_1700 P1): refuse a brief that asserts a
+ * provider shown free by providerStatus is rate-limited — named directly or through a prefer
+ * agent's pin. providerStatus lists only providers with a record, so a never-recorded provider is
+ * not protected here; a past-tense mention does not match, because the claim must say "is …".
+ */
+export function providerClaimProblem(text: string, cfg: Config): string | null {
+	const recorded = new Set(readOut(cfg).map(r => r.provider));
+	const free = (provider: string | null): boolean => provider !== null && recorded.has(provider) && outUntil(cfg, provider) === null;
+	const names = new Map<string, string>();
+	for (const p of cfg.ledger.providers) if (free(p)) names.set(p, p);
+	for (const agent of cfg.ledger.prefer) {
+		const provider = providerOfModel(pinModel(cfg, agent));
+		if (free(provider) && !names.has(agent) && provider !== null) names.set(agent, provider);
+	}
+	if (!names.size || !/\bis\b/i.test(text)) return null;
+	const esc = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	const m = new RegExp(`\\b(${[...names.keys()].map(esc).join("|")})\\b[^.\\n]{0,80}?\\b(?:is|are)\\s+(?:still\\s+|now\\s+)?(?:rate[ -]?limited|rate limiting|throttled|out until|limited)`, "i").exec(text);
+	if (!m) return null;
+	const hit = [...names.entries()].find(([n]) => n.toLowerCase() === (m[1] ?? "").toLowerCase());
+	if (hit === undefined) return null;
+	const [name, provider] = hit;
+	return `${name === provider ? provider : `${name} (provider ${provider})`} is free per the recorded provider state — do not claim it is rate-limited; read the providers line from agent-ledger --cap.`;
+}
+
 /** Reason to refuse a `task` brief, or null; `files` receives the plans to record, `budgets` every named task's call budget (null = none), `staffing` each plan's named tasks of this call, `runningJobs` the caller's running job labels (undefined = no job info). */
 export function spawnProblem(
 	input: Record<string, unknown>,
@@ -489,6 +539,14 @@ export function spawnProblem(
 		files.push(...plans);
 	}
 	Object.assign(budgets, named);
+	// Who is limited and who goes first come from live data and ledger.prefer (plan 20261025_1700
+	// P3): the same rules checkSpawn applies to single-spawn events, per task.
+	const claim = providerClaimProblem(`${context}\n${tasks.map(t => String(t?.task ?? "")).join("\n")}`, cfg);
+	if (claim) return claim;
+	for (const t of tasks) {
+		const pick = preferProblem(String(t?.agent ?? "task"), `${context}\n${String(t?.task ?? "")}`, runningJobs, cfg);
+		if (pick) return `${String(t?.name ?? t?.agent ?? "task")}: ${pick}`;
+	}
 	// Priority gate (20261025_0215 P3): once per `task` call, over the plans this call names; the
 	// skip lines may sit in the shared context or any task text.
 	const gate = priorityGate(
@@ -929,6 +987,17 @@ export function checkSpawn(e: SpawnEvent, cfg: Config): Decision {
 	}
 	const inc = incidentSpawnProblem(`spawn ${e.agent}`, e.brief, named, cfg);
 	if (inc) return deny(`main-guard: ${inc}`);
+	// The owner's pick order and live provider state (plan 20261025_1700 P3), before the spawn records.
+	const claim = providerClaimProblem(e.brief, cfg);
+	if (claim) {
+		log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${claim}`);
+		return deny(`main-guard: ${e.agent}: ${claim}`);
+	}
+	const pick = preferProblem(e.agent, e.brief, e.runningJobs, cfg);
+	if (pick) {
+		log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${pick}`);
+		return deny(`main-guard: ${e.agent}: ${pick}`);
+	}
 	const staffing: Record<string, string[]> = {};
 	for (const f of named) staffing[f] = [e.agent];
 	recordSpawns(named, staffing);

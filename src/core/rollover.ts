@@ -119,6 +119,7 @@ export function noteRequest(path: string, auto = false, reason = ""): string {
 			: `${NOTE_REQUEST_PREFIX} this session has grown past rollover.max_session_mb.`,
 		`Write a handoff note to ${path} (overwrite it). Cover the work in progress and its state, the decisions made and why, the next step, and the files involved.`,
 		"Do not list holds or owner blockers in the note; they come from the plans' WAITING on owner lines.",
+		"Do not state which agents or providers are rate-limited or free; that comes from agent-ledger --cap.",
 		auto
 			? "As soon as this note is written and no own jobs run, this session restarts into a fresh one that starts from this note verbatim plus the generated main-start state."
 			: "When the owner's next message arrives, this session closes and a fresh one starts from that note verbatim plus the generated main-start state.",

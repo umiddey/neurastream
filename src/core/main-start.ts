@@ -12,6 +12,7 @@ import { log as logGuard } from "./guards.ts";
 import { dailyChecks, readBlocks, readMetricEvents, worseThanMean } from "./metrics.ts";
 import { buildReport } from "./report.ts";
 import { loadavgLine } from "./host.ts";
+import { providersLine } from "./provider-state.ts";
 import { mrSweep } from "./mr-sweep.ts";
 
 function bin(name: string, cfg: Config): string {
@@ -129,6 +130,10 @@ export async function mainStartText(args: string[], cfg: Config, opts: { inherit
 	for (const line of cap.stdout.split("\n")) {
 		if (/^(PRIORITY IDLE|FULL)/.test(line)) say(line);
 	}
+	// Who is rate-limited comes from live data (plan 20261025_1700 P2): printed from the running
+	// code, not the installed agent-ledger bin, so a stale install cannot hide the state.
+	const providers = providersLine(cfg);
+	if (providers) say(providers);
 	say("");
 	say("=== main thread");
 	const health = await run(bin("main-health", cfg), [], { stdin: childStdin, stderr: childStderr });

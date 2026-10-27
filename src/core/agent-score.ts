@@ -25,6 +25,8 @@ function needOpt(args: string[], name: string): string {
 	return args[i + 1]!;
 }
 
+import { outUntil, pinModel, providerOfModel } from "./provider-state.ts";
+
 function eventsPath(cfg: Config): string {
 	return join(cfg.paths.score_state, "events.jsonl");
 }
@@ -540,6 +542,41 @@ export function agentScore(args: string[], cfg: Config, source: RunSource, trace
 			const { rows, byAgent } = table(cfg.score.gate_days, cfg, source);
 			const target = byAgent.get(who)?.model ?? who;
 			const ranked = rows.filter(r => r.acc).map(r => r.model);
+			if (cfg.ledger.prefer.length) {
+				// The owner's pick order outranks the score (plan 20261025_1700 P3, owner 2026-10-27:
+				// paid haiku spawned over free glm five times). A higher prefer agent with a free
+				// provider — known from its pin, accepted work or not — is named instead of the
+				// target; a later paid agent is never recommended while an earlier one is free.
+				const prefer = cfg.ledger.prefer;
+				const lower = (s: string): string => s.toLowerCase();
+				const rankOf = (model: string): number => prefer.findIndex(p => lower(model).includes(lower(p)));
+				const targetRank = rankOf(target);
+				let blocked: string | null = null;
+				for (let j = 0; j < (targetRank === -1 ? prefer.length : targetRank); j++) {
+					const name = prefer[j]!;
+					const provider = providerOfModel(pinModel(cfg, name));
+					if (provider !== null && outUntil(cfg, provider) === null) {
+						blocked = j === 0
+							? `gate: ${name} is first in prefer and free → use it`
+							: `gate: ${name} is higher in prefer and free → use it (not ${target})`;
+						break;
+					}
+				}
+				if (blocked !== null) {
+					printText(blocked);
+				} else if (targetRank !== -1) {
+					const provider = providerOfModel(target);
+					printText(provider === null || outUntil(cfg, provider) === null
+						? `gate: ${target} is free and no higher prefer agent is free → use it`
+						: `gate: ${target} is out and no higher prefer agent is free`);
+				} else {
+					const mine = ranked.findIndex(m => m.includes(target));
+					if (mine < 0) printText(`gate: ${target} has no accepted work in ${cfg.score.gate_days} days (unrated)`);
+					else if (mine > 0) printText(`WARN gate: ${ranked[mine]} ranks #${mine + 1}; better-ranked: ${ranked.slice(0, mine).join(", ")}. Use one of those if available, or say why not.`);
+					else printText(`gate: ${ranked[mine]} ranks #1`);
+				}
+				return 0;
+			}
 			const mine = ranked.findIndex(m => m.includes(target));
 			if (mine < 0) printText(`gate: ${target} has no accepted work in ${cfg.score.gate_days} days (unrated)`);
 			else if (mine > 0) printText(`WARN gate: ${ranked[mine]} ranks #${mine + 1}; better-ranked: ${ranked.slice(0, mine).join(", ")}. Use one of those if available, or say why not.`);
