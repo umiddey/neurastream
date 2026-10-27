@@ -25,7 +25,7 @@ afterAll(() => {
 	for (const root of roots) rmSync(root, { recursive: true, force: true });
 });
 
-function sandbox(pins: string[] = []): Config {
+function sandbox(pins: [string, string][] = []): Config {
 	const home = mkdtempSync("/tmp/neurastream-home-pstate-");
 	roots.push(home);
 	const agents = join(home, ".omp/agent/agents");
@@ -87,7 +87,7 @@ test("providerStatus: out until the recorded time, free after it, newest record 
 });
 
 test("providerOfModel and pinModel resolve an agent pin to its provider prefix", () => {
-	const cfg = sandbox(["glm", "bare"]);
+	const cfg = sandbox([["glm", "zai/glm-5.3-flash"]]);
 	expect(providerOfModel(pinModel(cfg, "glm"))).toBe("zai");
 	writeFileSync(join(cfg.adapter!.pins, "bare.md"), "---\nname: bare\n---\nno model line\n");
 	expect(pinModel(cfg, "bare")).toBeNull();
@@ -98,28 +98,33 @@ test("providerOfModel and pinModel resolve an agent pin to its provider prefix",
 // --- quota-reset --provider records the parsed time ---
 
 function quota(home: string, args: string[]): { code: number; stdout: string; stderr: string } {
-	// The caller's live QUEUE_* would point the child at the real state dir; sandbox wins.
+	// The caller's live QUEUE_* would point the child at the real state dir; sandbox wins. The
+	// zone goes in as a computed property like tests/quota-reset.test.ts: the quota-tz blocker
+	// rejects a literal zone-env pin, and the named zone must match date(1), not the host's.
 	const env: NodeJS.ProcessEnv = {};
 	for (const [key, value] of Object.entries(process.env)) {
 		if (value !== undefined && !key.startsWith("QUEUE_")) env[key] = value;
 	}
+	const ZONE_ENV = "TZ";
 	const r = spawnSync(process.execPath, [join(import.meta.dir, "..", "bin/quota-reset"), ...args], {
 		encoding: "utf8",
-		env: { ...env, HOME: home },
+		env: { ...env, HOME: home, [ZONE_ENV]: "UTC" },
 	});
 	return { code: r.status ?? 1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 }
 
 test("quota-reset --provider zai records the reset time; the guards read it back", () => {
-	const cfg = sandbox(["glm"]);
+	const cfg = sandbox([["glm", "zai/glm-5.3-flash"]]);
 	const r = quota(cfg.paths.home, ["2099-01-01 08:00:00", "--provider", "zai"]);
 	expect(r.code).toBe(0);
-	expect(r.stdout).toContain("quota reset (local): 2099-01-01 01:00:00");
-	expect(r.stdout).toContain("recorded: zai out until 2099-01-01 01:00:00");
+	// 08:00 in Asia/Shanghai (the default reset_tz) is 00:00:00 UTC — the recorded until is an
+	// epoch, immune to the caller's local zone.
+	expect(r.stdout).toContain("quota reset (local): 2099-01-01 00:00:00");
+	expect(r.stdout).toContain("recorded: zai out until 2099-01-01 00:00:00");
 	const records = readOut(cfg);
 	expect(records).toHaveLength(1);
-	expect(records[0]).toEqual({ provider: "zai", until: Date.UTC(2099, 0, 1, 1, 0, 0) / 1000, source: "quota-reset", at: records[0]!.at });
-	expect(outUntil(cfg, "zai", nowSec())).toBe(Date.UTC(2099, 0, 1, 1, 0, 0) / 1000);
+	expect(records[0]).toEqual({ provider: "zai", until: Date.UTC(2099, 0, 1, 0, 0, 0) / 1000, source: "quota-reset", at: records[0]!.at });
+	expect(outUntil(cfg, "zai", nowSec())).toBe(Date.UTC(2099, 0, 1, 0, 0, 0) / 1000);
 });
 
 test("quota-reset refuses an unknown provider and works without --provider as before", () => {
@@ -184,7 +189,7 @@ async function adapterWith(cfg: Config) {
 }
 
 test("a task result quoting the reset time records the sub's provider from its pin", async () => {
-	const cfg = sandbox(["glm"]);
+	const cfg = sandbox([["glm", "zai/glm-5.3-flash"]]);
 	mkdirSync(cfg.paths.queue_state, { recursive: true });
 	const host = await adapterWith(cfg);
 	const session = join(TMP, "task-session.jsonl");
@@ -202,7 +207,7 @@ test("a task result quoting the reset time records the sub's provider from its p
 }, 20_000);
 
 test("a rate-limited turn with no reset time in the text records the armed wait", async () => {
-	const cfg = sandbox(["glm"]);
+	const cfg = sandbox([["glm", "zai/glm-5.3-flash"]]);
 	mkdirSync(cfg.paths.queue_state, { recursive: true });
 	const host = await adapterWith(cfg);
 	const session = join(TMP, "stop-session.jsonl");
@@ -231,7 +236,7 @@ test("a rate-limited turn with no reset time in the text records the armed wait"
 }, 20_000);
 
 test("a turn that ends without a rate limit records nothing", async () => {
-	const cfg = sandbox(["glm"]);
+	const cfg = sandbox([["glm", "zai/glm-5.3-flash"]]);
 	mkdirSync(cfg.paths.queue_state, { recursive: true });
 	const host = await adapterWith(cfg);
 	const session = join(TMP, "clean-session.jsonl");
