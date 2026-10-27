@@ -2,7 +2,7 @@
 Worktree: /home/ukd/Work/neurastream-knowledge
 Branch: feat/knowledge-base
 Summary: A Knowledge tab on your phone page: repo → topic explainers like the architecture diagram.
-Waits on: 20261025_0100_owner_ui_redesign
+Waits on: /home/ukd/projects/neurastream/docs/plans/20261025_0100_owner_ui_redesign.md
 
 ## Goal
 - Owner (2026-10-26 ~09:00): "a section for checking html knowledge content like the architecture diagram created earlier. Content should be segmented based on repo -> topic like breadcrumb knowledge-base/aetherios-property-management/operating-cost-architecture-diagram".
