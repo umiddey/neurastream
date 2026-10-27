@@ -12,7 +12,8 @@ fail() {
 grep -nEi '\b(omp|opencode|codex|claude|cursor|gemini|grok|glm|composer|hiko|muse)\b' src/core/knowledge.ts >/dev/null &&
 	fail "src/core/knowledge.ts names a harness"
 
-grep -rn "/home/ukd" src templates >/dev/null && fail "a hardcoded /home/ukd path in src/ or templates/"
+# Any absolute user-home root, whatever the user is called: the config's $HOME carries that.
+grep -rnE '/(home|Users)/[^/]+/' src templates >/dev/null && fail "a hardcoded user home path in src/ or templates/"
 
 # secret-redact.ts is the one file that produces the placeholder, so it is not a copy of one.
 grep -rnE --exclude=secret-redact.ts '\[(IP_ADDRESS|EMAIL|API_KEY)\]|\[REDACTED:known-value\]' src templates >/dev/null &&
