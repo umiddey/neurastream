@@ -617,12 +617,25 @@ export function denyText(env: BlockerEnv): void {
 	}
 }
 
+// Eval code's words: the same subcommand test as the bash path, so `git stash push` is not a push
+// (I-20261027-266). Global options before the subcommand (-C <dir>, -c k=v) are skipped as there.
+const CODE_WORDS = /[A-Za-z0-9_@%+=:.,/~-]+/g;
+
+function evalPushes(code: string): boolean {
+	const words = code.match(CODE_WORDS) ?? [];
+	return words.some((w, i) => {
+		if (w !== "git" && !w.endsWith("/git")) return false;
+		const args = words.slice(i + 1).map((text) => ({ text, raw: text, quoted: false }));
+		return gitSub(args)?.sub === "push";
+	});
+}
+
 /** no-push: subagents never push or merge (Main pushes and merges). Matched as commands, never as words inside arguments. */
 export function noPush(env: BlockerEnv): void {
 	if (!env.shell || env.call.agent === "main") return;
 	const hit =
 		env.call.tool === "eval"
-			? /\bgit\b[^;&|\n]*\bpush\b|\bglab\s+mr\s+merge\b|\bgh\s+pr\s+merge\b/.test(env.command)
+			? evalPushes(env.command) || /\bglab\s+mr\s+merge\b|\bgh\s+pr\s+merge\b/.test(env.command)
 			: executed(env.command).some(pushesOrMerges);
 	if (hit) block("subagents never push or merge; commit on the feature branch and report");
 }
