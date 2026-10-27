@@ -487,6 +487,17 @@ export function ownerInboxMessage(rec: Record<string, unknown>): string | ({ typ
 			}
 			return parts;
 		}
+		case "page-note": {
+			// One row per note the owner left on a published page (plan 20261026 P6).
+			const page = asString(rec.page);
+			const quote = asString(rec.quote);
+			const note = asString(rec.note);
+			if (!page || !note) return null;
+			const id = asString(rec.id);
+			const url = asString(rec.url);
+			const where = `Owner note on the page ${page}${id ? ` (${id})` : ""}${url ? ` — ${url}` : ""}: `;
+			return quote ? `${where}on "${quote}" → ${note}` : `${where}${note}`;
+		}
 		default:
 			return null;
 	}

@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join, basename, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { configFile, loadConfig } from "./config.ts";
+import { injectPageNotes } from "./page-notes.ts";
 import { recordPublish } from "./pages-expiry.ts";
 import { realTailscale, type Tailscale } from "./tailscale.ts";
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -49,6 +50,10 @@ export function pagesOff(opts: Setup = {}): number {
 export function publishPage(file: string, name: string | undefined, force: boolean, dir: string, keep = false, keepDays = 15, now = new Date()): string {
  const source=basename(file), base=(name ?? source.slice(0,source.length-extname(source).length)).toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"");
  const targetName=base+extname(source).toLowerCase(), target=join(dir,targetName); mkdirSync(dir,{recursive:true});
- if(existsSync(target)){const a=readFileSync(file),b=readFileSync(target); if(a.equals(b)){recordPublish(dir,targetName,keep,keepDays,now);return targetName;} if(!force) throw new Error(`pages: ${targetName} exists with different content (use --force)`);}
- copyFileSync(file,target); recordPublish(dir,targetName,keep,keepDays,now); return targetName;
+ // An HTML artifact carries the notes block from publish on (plan 20261026 P6): one style, one panel,
+ // one script, injected once — a page that already carries it, or a second publish, stays single.
+ const raw = readFileSync(file);
+ const content = extname(source).toLowerCase() === ".html" ? Buffer.from(injectPageNotes(raw.toString("utf8")), "utf8") : raw;
+ if(existsSync(target)){const b=readFileSync(target); if(content.equals(b)){recordPublish(dir,targetName,keep,keepDays,now);return targetName;} if(!force) throw new Error(`pages: ${targetName} exists with different content (use --force)`);}
+ writeFileSync(target, content); recordPublish(dir,targetName,keep,keepDays,now); return targetName;
 }

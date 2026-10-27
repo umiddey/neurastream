@@ -18,7 +18,7 @@ ui:
  expect(result).toBe(0);const edited=readFileSync(file,"utf8");expect(edited).toContain("# keep");expect(edited).toContain("owner_login: \"\"");expect(edited).toContain("port: 9000");expect(calls).toEqual([["--user","daemon-reload"],["--user","enable","--now","neurastream-pages"]]);
 });
 test("publish refuses collisions and permits forced replacement",()=>{
- const dir=mkdtempSync(join(tmpdir(),"pages-pub-")), src=join(dir,"source.html"), out=join(dir,"public");writeFileSync(src,"one");expect(publishPage(src,"My Diagram",false,out)).toBe("my-diagram.html");writeFileSync(src,"two");expect(()=>publishPage(src,"My Diagram",false,out)).toThrow("exists");expect(publishPage(src,"My Diagram",true,out)).toBe("my-diagram.html");expect(readFileSync(join(out,"my-diagram.html"),"utf8")).toBe("two");
+ const dir=mkdtempSync(join(tmpdir(),"pages-pub-")), src=join(dir,"source.html"), out=join(dir,"public");writeFileSync(src,"one");expect(publishPage(src,"My Diagram",false,out)).toBe("my-diagram.html");writeFileSync(src,"two");expect(()=>publishPage(src,"My Diagram",false,out)).toThrow("exists");expect(publishPage(src,"My Diagram",true,out)).toBe("my-diagram.html");const published=readFileSync(join(out,"my-diagram.html"),"utf8");expect(published.startsWith("two")).toBe(true);expect(published).toContain("data-ns-page-notes");
 });
 
 const tailscale = { ip4: () => "100.64.0.1", dnsName: () => "machine.example", whois: () => null, logins: () => [] as string[] };
@@ -43,12 +43,12 @@ test("publish parses --force/--keep and the name in any position", async () => {
 	// trailing flag still replaces an existing page
 	writeFileSync(src, "two");
 	expect(await runPages(["publish", src, "--force"], { home, tailscale, clock })).toBe(0);
-	expect(readFileSync(join(loadConfig({ home, env: {} }).pages.dir, "source.html"), "utf8")).toBe("two");
+	const shipped=readFileSync(join(loadConfig({ home, env: {} }).pages.dir, "source.html"), "utf8");expect(shipped.startsWith("two")).toBe(true);expect(shipped).toContain("data-ns-page-notes");
 	// flags and the optional name mixed in any order
 	const named = await logged(() => runPages(["publish", "--keep", src, "diagram"], { home, tailscale, clock }));
 	expect(named.code).toBe(0);
 	expect(named.lines[1]).toBe("kept");
-	expect(readFileSync(join(loadConfig({ home, env: {} }).pages.dir, "diagram.html"), "utf8")).toBe("two");
+	expect(readFileSync(join(loadConfig({ home, env: {} }).pages.dir, "diagram.html"), "utf8")).toContain("data-ns-page-notes");
 	// more than file + name is still a usage error
 	expect(await runPages(["publish", src, "a", "b"], { home, tailscale, clock })).toBe(2);
 	expect(existsSync(join(loadConfig({ home, env: {} }).pages.dir, "a.html"))).toBe(false);

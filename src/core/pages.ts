@@ -1,7 +1,8 @@
 import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { basename, extname, resolve } from "node:path";
 import type { Config } from "./config.ts";
-import { isLoopback, isTailnet, type UiHttpServer } from "./owner-ui.ts";
+import { inboxPath, isLoopback, isTailnet, type UiHttpServer } from "./owner-ui.ts";
+import { appendPageNotes } from "./page-notes.ts";
 import type { RunSource } from "./adapter.ts";
 import type { Tailscale } from "./tailscale.ts";
 
@@ -16,11 +17,22 @@ export function startPagesServer(opts: PagesOptions): PagesServer {
  const root = resolve(opts.root ?? opts.cfg.pages.dir);
  const peerOf = opts.peerOf ?? ((req: Request, server: UiHttpServer) => server.requestIP(req)?.address ?? "");
  const server = Bun.serve({ hostname, port: opts.port ?? opts.cfg.pages.port, async fetch(req, srv) {
-  if (req.method !== "GET" && req.method !== "HEAD") return plain("method not allowed", 405);
+  if (req.method !== "GET" && req.method !== "HEAD" && req.method !== "POST") return plain("method not allowed", 405);
   const peer = peerOf(req, srv);
   const login = isLoopback(peer) ? null : isTailnet(peer) ? opts.tailscale.whois(peer) : null;
   if (!isLoopback(peer) && (!login || login !== opts.cfg.ui.owner_login)) return plain("forbidden", 403);
-  const url = new URL(req.url); let name = decodeURI(url.pathname.slice(1));
+  const url = new URL(req.url);
+  // The one POST a page may make (plan 20261026 P6): the notes its script collected become owner-inbox
+  // rows Main delivers. Same origin only, so another site's tab cannot write to the inbox; nothing here
+  // touches the page file, and a submit with no note text is refused.
+  if (req.method === "POST") {
+   if (url.pathname !== "/_notes") return plain("method not allowed", 405);
+   if (req.headers.get("origin") !== `http://${req.headers.get("host")}`) return plain("forbidden: origin is not this page", 403);
+   let body: unknown; try { body = await req.json(); } catch { return plain("bad request: not JSON", 400); }
+   const stored = appendPageNotes(body, inboxPath(), login ?? "loopback");
+   return stored === null ? plain("no notes to submit", 400) : Response.json({ stored });
+  }
+  let name = decodeURI(url.pathname.slice(1));
   if (name.includes("/") || name.includes("\\") || name === ".." || name.startsWith(".")) return plain("not found", 404);
   if (!name) {
    const index = resolve(root, "index.html");
