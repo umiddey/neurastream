@@ -81,10 +81,10 @@ function backfill(cfg: Config): number {
 			return plan.status === "complete" ? plan : null;
 		})
 		.filter(p => p !== null)
-		.sort((a, b) => path.basename(b.file).localeCompare(path.basename(a.file)));
+		.sort((a, b) => (path.basename(a.file) < path.basename(b.file) ? -1 : 1));
 	let added = 0;
 	// Oldest first so each prepend leaves the newer entry on top.
-	for (const plan of plans.reverse()) {
+	for (const plan of plans) {
 		if (prependFinished(finishedEntry(plan, plan.file, stampDate(plan.file)))) added++;
 	}
 	console.log(`queue-finished: backfill added ${added} (${plans.length} complete archived)`);
