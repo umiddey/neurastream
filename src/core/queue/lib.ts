@@ -14,6 +14,10 @@ function agentDir(): string {
 export function indexPath(): string {
 	return process.env.QUEUE_INDEX ?? `${agentDir()}/INDEX.md`;
 }
+/** FINISHED.md sits beside the main index: one short entry per closed plan. */
+export function finishedPath(): string {
+	return path.join(path.dirname(indexPath()), "FINISHED.md");
+}
 export function blockersDirPath(): string {
 	return process.env.QUEUE_BLOCKERS ?? `${agentDir()}/blockers`;
 }
@@ -120,6 +124,14 @@ export function outsideProgress(text: string): string {
 
 export function progressBody(text: string): string {
 	return sections(text).get("progress") ?? "";
+}
+/** Last real Progress bullet, collapsed to one line. Main-only lines and the archive pointer are not entries. */
+export function lastProgressLine(text: string): string {
+	let last = "";
+	for (const line of progressBody(text).split("\n")) {
+		if (/^\s*-\s+/.test(line) && !line.startsWith(POINTER_PREFIX)) last = line.replace(/^\s*-\s+/, "");
+	}
+	return last.replace(/\s+/g, " ").trim();
 }
 
 export type ProgressTrim = { body: string; moved: string; count: number };
@@ -791,6 +803,35 @@ export function cancelledLine(file: string, text: string, date: string): string 
 	const owner = (progressBody(text).match(/^Cancelled by owner:\s*(.+?)\s*$/m)?.[1] ?? "").replace(/\|/g, "/");
 	return `- ${path.basename(file)} | ${date} | owner: ${owner} | words: ${planWords(text).join(" ")}`;
 }
+const FINISHED_HEADER = "# Finished plans (newest first; written by queue-close and queue-finished)\n";
+
+/** Heading plus at most 4 body lines: Summary, Result, Plan path. */
+export function finishedEntry(plan: Plan, archived: string, date: string): string {
+	const summary = (plan.summary ?? plan.goal[0] ?? "").replace(/\s+/g, " ").trim();
+	const result = lastProgressLine(plan.text);
+	const body = [`Summary: ${summary}`, `Result: ${result}`, `Plan: ${path.resolve(archived)}`];
+	return [`## ${date} · ${path.basename(plan.repo)} · ${plan.title}`, ...body].join("\n");
+}
+
+/** Inserts the entry above older ones. Returns false when that Plan path is already listed. */
+export function prependFinished(entry: string, file = finishedPath()): boolean {
+	const planLine = entry.split("\n").find(l => l.startsWith("Plan: "));
+	let current = "";
+	try {
+		current = readFileSync(file, "utf8");
+	} catch {}
+	if (planLine && current.split("\n").includes(planLine)) return false;
+	mkdirSync(path.dirname(file), { recursive: true });
+	const block = entry.endsWith("\n") ? entry : `${entry}\n`;
+	if (!current.trim()) {
+		writeFileSync(file, `${FINISHED_HEADER}\n${block}`);
+		return true;
+	}
+	const at = current.search(/^## /m);
+	const next = at < 0 ? `${current.replace(/\s*$/, "\n\n")}${block}` : `${current.slice(0, at)}${block}\n${current.slice(at)}`;
+	writeFileSync(file, next);
+	return true;
+}
 const slug = (name: string) => name.replace(/\.md$/, "").replace(/^\d{8}_\d{4}_/, "");
 export function cancelledMatches(plan: Plan): CancelledEntry[] {
 	if (plan.status !== "open") return [];
@@ -798,7 +839,7 @@ export function cancelledMatches(plan: Plan): CancelledEntry[] {
 	const name = path.basename(plan.file);
 	return [...readCancelled(plan.repo), ...readGlobalCancelled()].filter(c => {
 		const cleared = plan.text.split("\n").some(l => {
-			const m = l.match(/^\s*(?:[-*]\s+)?False positive:\s*`?(\S+?)`?\s*[—:–-]+\s*(.+)$/);
+			const m = l.match(/^\s*(?:[-*]\s+)?False positive:\s*`?([^\s`]+)`?\s+[—:–-]+\s*(.+)$/);
 			return m && m[1] === c.name && (m[2] ?? "").trim().length >= 15;
 		});
 		if (cleared || c.name === name) return false;
