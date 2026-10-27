@@ -3,7 +3,7 @@ import { basename, extname, resolve } from "node:path";
 import type { Config } from "./config.ts";
 import { isLoopback, isTailnet, type UiHttpServer } from "./owner-ui.ts";
 import { appendPageNotes, openNoteIds } from "./page-notes.ts";
-import { approvePlanFile, planForPage } from "./plan-approval.ts";
+import { approvePlanFile, planForPage, readPagePlan } from "./plan-approval.ts";
 import type { RunSource } from "./adapter.ts";
 import type { Tailscale } from "./tailscale.ts";
 
@@ -33,10 +33,13 @@ export function startPagesServer(opts: PagesOptions): PagesServer {
    if (url.pathname === "/_approve") {
     if (req.headers.get("origin") !== `http://${req.headers.get("host")}`) return plain("forbidden: origin is not this page", 403);
     const page = url.searchParams.get("page") ?? "";
-    const plan = page === "" ? null : planForPage(root, page);
-    if (plan === null) return plain("not found: no plan is published as this page", 404);
+    const record = page === "" ? null : readPagePlan(root, page);
+    if (record === null) return plain("not found: no plan is published as this page", 404);
     const open = openNoteIds(opts.cfg, page);
     if (open.length > 0) return Response.json({ error: `answer ${open.join(", ")} first` }, { status: 409 });
+    const unproven = [...record.missing, ...record.thin];
+    if (unproven.length > 0) return Response.json({ error: `the diagram is not complete (${unproven.slice(0, 3).join("; ")})` }, { status: 409 });
+    const plan = record.plan;
     if (!existsSync(plan)) return plain("not found: the plan file is gone", 404);
     return Response.json({ approved: approvePlanFile(plan, page) });
    }
@@ -49,8 +52,9 @@ export function startPagesServer(opts: PagesOptions): PagesServer {
   // What the Approve bar asks on load: the notes still open on this page. A page with no plan has none.
   if (url.pathname === "/_approve") {
    const page = url.searchParams.get("page") ?? "";
-   if (page === "" || planForPage(root, page) === null) return plain("not found: no plan is published as this page", 404);
-   return Response.json({ open: openNoteIds(opts.cfg, page) });
+   const record = page === "" ? null : readPagePlan(root, page);
+   if (record === null) return plain("not found: no plan is published as this page", 404);
+   return Response.json({ open: openNoteIds(opts.cfg, page), problems: [...record.missing, ...record.thin] });
   }
   let name = decodeURI(url.pathname.slice(1));
   if (name.includes("/") || name.includes("\\") || name === ".." || name.startsWith(".")) return plain("not found", 404);

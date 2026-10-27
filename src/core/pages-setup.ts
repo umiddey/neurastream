@@ -5,7 +5,8 @@ import { dirname, join, basename, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { configFile, loadConfig } from "./config.ts";
 import { injectPageNotes, type NotesGate } from "./page-notes.ts";
-import { recordPlanForPage } from "./plan-approval.ts";
+import { recordPagePlan } from "./plan-approval.ts";
+import { checkDiagram } from "./diagram-check.ts";
 import { recordPublish } from "./pages-expiry.ts";
 import { realTailscale, type Tailscale } from "./tailscale.ts";
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -65,7 +66,14 @@ export function publishPage(file: string, name: string | undefined, force: boole
  // A page with a note still unanswered is not published (plan 20261026 P8): the owner's note id must
  // get an answer before the page moves on. Publishing then shows each answer by its note and closes it.
  const open = notes?.open(targetName) ?? [];
- const approve = opts.plan === undefined ? undefined : { page: targetName, open };
+ // A plan page is only approvable when its diagram covers the plan (plan 20261026 P10), so the check
+ // runs here, at publish, and its findings travel with the page.
+ let diagram: { missing: string[]; thin: string[] } | null = null;
+ if (opts.plan !== undefined) {
+  if (extname(source).toLowerCase() !== ".html") throw new Error(`pages: --plan needs an HTML artifact, not ${source}`);
+  diagram = checkDiagram(readFileSync(file, "utf8"), readFileSync(opts.plan, "utf8"));
+ }
+ const approve = opts.plan === undefined || diagram === null ? undefined : { page: targetName, open, problems: [...diagram.missing, ...diagram.thin] };
  if(open.length>0) throw new Error(`pages: ${targetName} has ${open.length} open note(s) (${open.join(", ")}); answer each one before publishing (see \`neurastream notes check ${targetName}\`)`);
  // An HTML artifact carries the notes block from publish on (plan 20261026 P6): one style, one panel,
  // one script, injected once — a page that already carries it, or a second publish, stays single.
@@ -73,6 +81,6 @@ export function publishPage(file: string, name: string | undefined, force: boole
  const content = extname(source).toLowerCase() === ".html" ? Buffer.from(injectPageNotes(raw.toString("utf8"), notes?.answered(targetName) ?? [], approve), "utf8") : raw;
  if(existsSync(target)){const b=readFileSync(target); if(content.equals(b)){recordPublish(dir,targetName,keep,keepDays,now);notes?.settle(targetName);return targetName;} if(!force) throw new Error(`pages: ${targetName} exists with different content (use --force)`);}
  writeFileSync(target, content); recordPublish(dir,targetName,keep,keepDays,now);
- if(opts.plan !== undefined) recordPlanForPage(dir, targetName, opts.plan);
+ if(opts.plan !== undefined && diagram !== null) recordPagePlan(dir, targetName, { plan: opts.plan, missing: diagram.missing, thin: diagram.thin });
  notes?.settle(targetName); return targetName;
 }

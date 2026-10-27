@@ -9,22 +9,39 @@ import { join, resolve } from "node:path";
 const APPROVED = /^\s*(?:[-*]\s+)?Approved:.*$/im;
 const SELF = /^\s*(?:[-*]\s+)?Approval:\s*self\b[^\n]*owner:\s*["\u201c][^"\u201d\n]+["\u201d]/im;
 
-/** The plan file a page approves, or null when the page was published without `--plan`. */
-export function planForPage(dir: string, name: string): string | null {
+/** What publishing recorded for a page: the plan it approves and what its diagram check found. */
+export interface PagePlan {
+	plan: string;
+	missing: string[];
+	thin: string[];
+}
+
+/** The record a page was published with, or null when it was published without `--plan`. */
+export function readPagePlan(dir: string, name: string): PagePlan | null {
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(readFileSync(join(dir, ".meta", `${name}.json`), "utf8"));
 	} catch {
 		return null;
 	}
-	const plan = parsed !== null && typeof parsed === "object" && "plan" in parsed ? parsed.plan : null;
-	return typeof plan === "string" && plan !== "" ? plan : null;
+	if (parsed === null || typeof parsed !== "object" || !("plan" in parsed)) return null;
+	const plan = parsed.plan;
+	if (typeof plan !== "string" || plan === "") return null;
+	const list = (value: unknown): string[] => (Array.isArray(value) ? value.filter((one): one is string => typeof one === "string") : []);
+	const missing = "missing" in parsed ? parsed.missing : [];
+	const thin = "thin" in parsed ? parsed.thin : [];
+	return { plan, missing: list(missing), thin: list(thin) };
 }
 
-/** Remember the plan a page approves: one small JSON beside the pages, never served. */
-export function recordPlanForPage(dir: string, name: string, plan: string): void {
+/** The plan file a page approves, or null when the page was published without `--plan`. */
+export function planForPage(dir: string, name: string): string | null {
+	return readPagePlan(dir, name)?.plan ?? null;
+}
+
+/** Remember the plan a page approves and its diagram check: one small JSON beside the pages, never served. */
+export function recordPagePlan(dir: string, name: string, entry: PagePlan): void {
 	mkdirSync(join(dir, ".meta"), { recursive: true });
-	writeFileSync(join(dir, ".meta", `${name}.json`), JSON.stringify({ plan: resolve(plan) }));
+	writeFileSync(join(dir, ".meta", `${name}.json`), JSON.stringify({ plan: resolve(entry.plan), missing: entry.missing, thin: entry.thin }));
 }
 
 /** The page that approves this plan, or null when the plan has none in Base. */

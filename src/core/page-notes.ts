@@ -91,23 +91,31 @@ export interface AnsweredNote {
 const ANSWERED_RE = /<section id="ns-answered"[\s\S]*?<\/section>\n?/i;
 const APPROVE_RE = /<section id="ns-approve"[\s\S]*?<\/section>\n?/i;
 
-/** What the Approve bar needs: the page it approves and the notes still open on it (P9). */
+/** What the Approve bar needs: the page it approves, the notes still open on it and what the
+ * diagram check found (P9, P10). */
 export interface ApproveChrome {
 	page: string;
 	open: string[];
+	problems?: string[];
 }
 
 /** The Approve bar, on a page published from a plan: the notes panel beside it is the same page. */
 function approveBlock(chrome: ApproveChrome): string {
 	const page = esc(chrome.page);
-	const hint = chrome.open.length === 0 ? "Approve and go" : `Answer every note first (${esc(chrome.open.join(", "))})`;
-	const disabled = chrome.open.length === 0 ? "" : " disabled";
+	const problems = chrome.problems ?? [];
+	const hint =
+		chrome.open.length > 0
+			? `Answer every note first (${esc(chrome.open.join(", "))})`
+			: problems.length > 0
+				? `The diagram is not complete yet (${problems.length}): ${esc(problems.slice(0, 3).join("; "))}`
+				: "Approve and go";
+	const disabled = chrome.open.length === 0 && problems.length === 0 ? "" : " disabled";
 	return `<section id="ns-approve" ${NOTES_MARK} data-ns-plan="${page}">
  <button id="ns-approve-btn" type="button"${disabled}>Approve</button><span id="ns-approve-status" class="ns-status">${hint}</span>
  <script>(function(){var page="${page}",btn=document.getElementById("ns-approve-btn"),status=document.getElementById("ns-approve-status");
-  function set(open){btn.disabled=open.length>0;status.textContent=open.length>0?"Answer every note first ("+open.join(", ")+")":"Approve and go \u2014 the plan records it.";}
-  fetch("/_approve?page="+encodeURIComponent(page)).then(function(r){return r.json();}).then(function(d){set(d.open||[]);}).catch(function(){set(["?"]);});
-  btn.addEventListener("click",function(){btn.disabled=true;fetch("/_approve?page="+encodeURIComponent(page),{method:"POST",headers:{"content-type":"application/json"},body:"{}"}).then(function(r){return r.json().then(function(d){return {ok:r.ok,body:d};});}).then(function(res){status.textContent=res.ok?"Approved: "+res.body.approved:"Not approved: "+res.body.error;btn.disabled=!res.ok;}).catch(function(){status.textContent="Not approved: the pages server did not answer.";btn.disabled=false;});});
+  function set(open,problems){var bad=(problems||[]);btn.disabled=open.length>0||bad.length>0;status.textContent=open.length>0?"Answer every note first ("+open.join(", ")+")":bad.length>0?"The diagram is not complete yet ("+bad.length+"): "+bad.slice(0,3).join("; "):"Approve and go \u2014 the plan records it.";}
+  fetch("/_approve?page="+page).then(function(r){return r.json();}).then(function(d){set(d.open||[],d.problems);}).catch(function(){set(["?"],[]);});
+  btn.addEventListener("click",function(){btn.disabled=true;fetch("/_approve?page="+page,{method:"POST",headers:{"content-type":"application/json"},body:"{}"}).then(function(r){return r.json().then(function(d){return {ok:r.ok,body:d};});}).then(function(res){status.textContent=res.ok?"Approved: "+res.body.approved:"Not approved: "+res.body.error;btn.disabled=!res.ok;}).catch(function(){status.textContent="Not approved: the pages server did not answer.";btn.disabled=false;});});
  })();</script>
 </section>`;
 }

@@ -90,15 +90,16 @@ test("server: approve is refused while a note is open, then it records the line 
 	const { dir, cfg, pages } = setup();
 	const plan = join(dir, "20261027_toy.md");
 	writeFileSync(plan, "# Toy\n\n## Phases\n- [ ] P1 x\n");
+	// A diagram that covers the plan: its one phase in a box, the path its line names, 2+ kids per box.
 	const html = join(dir, "toy-architecture.html");
-	writeFileSync(html, "<html><body><p>diagram</p></body></html>");
+	writeFileSync(html, '<html><body><p>toy</p><script>const T={id:"root",nm:"toy",kids:[{id:"a",nm:"P1 do the thing",files:"src/a.ts",kids:[{id:"a1",nm:"x"},{id:"a2",nm:"y"}]},{id:"b",nm:"later",kids:[{id:"b1",nm:"z"},{id:"b2",nm:"w"}]}]};</script></body></html>');
 	expect(publishPage(html, "Toy", false, pages, { plan })).toBe("toy.html");
 	appendPageNotes({ page: "/toy.html", notes: [{ quote: "level 3", note: "label it" }] }, cfg, "owner-login");
 	const tailscale = { ip4: () => "", dnsName: () => null, whois: () => "owner@example.test", logins: () => [] };
 	const server = startPagesServer({ cfg, tailscale, source: { listRuns: () => [], mainSession: () => null }, hostname: LOOPBACK, port: 0, root: pages, peerOf: () => LOOPBACK });
 	servers.push(server);
 	const base = `http://${LOOPBACK}:${server.port}`;
-	expect(await (await fetch(`${base}/_approve?page=toy.html`)).json()).toEqual({ open: ["n1"] });
+	expect(await (await fetch(`${base}/_approve?page=toy.html`)).json()).toEqual({ open: ["n1"], problems: [] });
 	let res = await fetch(`${base}/_approve?page=toy.html`, { method: "POST", headers: { origin: base } });
 	expect(res.status).toBe(409);
 	expect(readFileSync(plan, "utf8")).not.toContain("Approved:");
@@ -107,7 +108,7 @@ test("server: approve is refused while a note is open, then it records the line 
 	expect(res.status).toBe(200);
 	expect((await res.json()).approved ?? "").toMatch(/^Approved: \d{4}-\d{2}-\d{2} \(toy.html\)$/);
 	expect(readFileSync(plan, "utf8")).toContain("Approved: ");
-	expect(await (await fetch(`${base}/_approve?page=toy.html`)).json()).toEqual({ open: [] });
+	expect(await (await fetch(`${base}/_approve?page=toy.html`)).json()).toEqual({ open: [], problems: [] });
 	// A page with no plan has no approve route, and a foreign origin cannot write one.
 	expect((await fetch(`${base}/_approve?page=nothing.html`)).status).toBe(404);
 });
