@@ -24,11 +24,17 @@ export async function runPages(args: string[] = [], deps: PagesDeps = {}): Promi
    return new Promise<number>(() => {});
   }
   if (args[0] === "publish" && args[1]) {
-   let force = false, keep = false, name: string | undefined;
-   for (const arg of args.slice(2)) { if (arg === "--force") force = true; else if (arg === "--keep") keep = true; else if (!name) name = arg; else return 2; }
+   let force = false, keep = false;
+   const rest: string[] = [];
+   for (const arg of args.slice(1)) { if (arg === "--force") force = true; else if (arg === "--keep") keep = true; else rest.push(arg); }
+   // file first, then the optional name; flags may sit anywhere (2026-10-27: `--force <file>` used
+   // to be read as file "--force" because only args.slice(2) was scanned)
+   const file = rest[0];
+   const name = rest[1];
+   if (!file || rest.length > 2) return 2;
    const now = clock();
    sweepPages(cfg.pages.dir, cfg.pages.keep_days, now);
-   const n = publishPage(args[1], name, force, cfg.pages.dir, keep, cfg.pages.keep_days, now);
+   const n = publishPage(file, name, force, cfg.pages.dir, keep, cfg.pages.keep_days, now);
    const host = (deps.tailscale ?? realTailscale).dnsName() ?? "tailnet";
    console.log(`http://${host}:${cfg.pages.port}/${encodeURIComponent(n)}`);
    const expires = readExpiry(cfg.pages.dir)[n]?.expires;
