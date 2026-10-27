@@ -215,6 +215,19 @@ function ocRuns(cfg: Config, cut: number): { agent: string; model: string; cost:
 	return out;
 }
 
+/** scoreModel of the named sub-run in the score window, else the external-run log's model, else null. */
+function namedRunModel(cfg: Config, source: RunSource, agent: string): string | null {
+	const cut = nowSec() - cfg.score.board_days * 86400;
+	const sub = source.listRuns(cut).find(r => r.kind === "sub" && r.id === agent);
+	if (sub) return sub.scoreModel;
+	const oc = ocRuns(cfg, cut).filter(r => r.agent === agent).at(-1);
+	return oc ? oc.model : null;
+}
+
+function unnamedRefusal(agent: string): number {
+	return exitText(`refused: no run named "${agent}" — use the task name (e.g. NsOneIndex3Glm), not the worker type`);
+}
+
 function steering(runs: Run[], names: string[]): Record<string, number> {
 	const ordered = names.slice().sort((a, b) => b.length - a.length);
 	const out: Record<string, number> = {};
@@ -419,10 +432,13 @@ export function agentScore(args: string[], cfg: Config, source: RunSource, trace
 			if (bad.length) return exitText(`refused: not on ${branch} yet (merge first): ${bad.join(" ")}`);
 			const { w, src } = weightFor(rest, plan, phase, cfg, null);
 			const units = Number(rest.includes("--units") ? needOpt(rest, "--units") : "1");
+			const model = namedRunModel(cfg, source, agent);
+			if (model === null) return unnamedRefusal(agent);
 			record({
 				type: "accept", agent, plan, phase, weight: w * units, unit_weight: w, units, weight_src: src,
 				repo, branch, commits, rework: rest.includes("--rework"), note: opt(rest, "--note") ?? "",
 				...wasteOf(traces, cfg, agent),
+				model,
 			}, cfg);
 			return 0;
 		}
@@ -435,9 +451,12 @@ export function agentScore(args: string[], cfg: Config, source: RunSource, trace
 			const ev = opt(rest, "--evidence");
 			if (!plan || !phase || !ev || !existsSync(ev)) return exitText("diagnose needs --plan, --phase and an existing --evidence file");
 			const weighted = rest.includes("--weight") ? weightFor(rest, plan, phase, cfg, cfg.score.diagnose_weight) : { w: cfg.score.diagnose_weight, src: "default" };
+			const model = namedRunModel(cfg, source, agent);
+			if (model === null) return unnamedRefusal(agent);
 			record({
 				type: "diagnose", agent, plan, phase, weight: weighted.w, weight_src: weighted.src, evidence: ev, note: opt(rest, "--note") ?? "",
 				...wasteOf(traces, cfg, agent),
+				model,
 			}, cfg);
 			return 0;
 		}
@@ -460,10 +479,13 @@ export function agentScore(args: string[], cfg: Config, source: RunSource, trace
 			if (labels.length === 0) return exitText(`refused: section cites no heavy-run label run by ${agent}`);
 			const scored = readEvents(cfg).some(e => (e.type === "accept" || e.type === "validate") && e.agent === agent && e.plan === plan && e.phase === phase);
 			if (scored) return exitText("refused: already scored");
+			const model = namedRunModel(cfg, source, agent);
+			if (model === null) return unnamedRefusal(agent);
 			record({
 				type: "validate", agent, plan, phase, weight: w, weight_src: src, evidence: ev, section,
 				labels, rework: rest.includes("--rework"), note: opt(rest, "--note") ?? "",
 				...wasteOf(traces, cfg, agent),
+				model,
 			}, cfg);
 			return 0;
 		}
@@ -475,7 +497,9 @@ export function agentScore(args: string[], cfg: Config, source: RunSource, trace
 			const note = opt(rest, "--note");
 			const kinds = Object.keys(cfg.score.penalties);
 			if (!kind || !kinds.includes(kind) || !note) return exitText(`penalty needs --kind ${kinds.join("|")} and --note`);
-			record({ type: "penalty", agent, kind, plan: opt(rest, "--plan") ?? "", note }, cfg);
+			const model = namedRunModel(cfg, source, agent);
+			if (model === null) return unnamedRefusal(agent);
+			record({ type: "penalty", agent, kind, plan: opt(rest, "--plan") ?? "", note, model }, cfg);
 			return 0;
 		}
 		if (cmd === "exempt") {

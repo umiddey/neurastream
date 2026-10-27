@@ -232,12 +232,18 @@ test("agent-ledger matches the original", () => {
 	writeSession(home, "proj/BudgetHog.jsonl", Array.from({ length: 101 }, () => usage("anthropic", "claude", 1000, 0, 1)).join("\n"), 1759999950);
 	writeSession(home, "proj/old/Ancient.jsonl", usage("zai", "old", 10, 0, 1), 1750000000);
 	// The port is ahead of the frozen oracle by the specced tok/call column (plan 20261024_0303:
-	// prefill tokens / calls, right-aligned width 8 between Mtok and cache%). Fold the port side
-	// back so every other number and line still compares exactly.
+	// prefill tokens / calls, right-aligned width 8 between Mtok and cache%). P17 also prints
+	// "unknown" where the frozen oracle still prints "?" (plan 20261025_0100: never "?"). Fold
+	// both back so every other number and line still compares exactly. The oracle is a frozen
+	// original, not a snapshot to regenerate.
 	const toOracle = (s: string): string =>
 		s
 			.split("\n")
-			.map((l) => l.replace(/^(.{28} .{38} .{5} .{7}) .{8} /, "$1 "))
+			.map((l) =>
+				l
+					.replace(/^(.{28} .{38} .{5} .{7}) .{8} /, "$1 ")
+					.replace(/^(.{29})unknown {31}/, `$1${"?".padEnd(38)}`),
+			)
 			.join("\n");
 	const matchPort = (args: string[]) => {
 		const port = runPort("agent-ledger", args, env);
@@ -293,6 +299,7 @@ test("agent-score matches the original", () => {
 		mkdirSync(join(home, ".omp/agent/notes"), { recursive: true });
 		writeSession(home, "proj/2026-10-18T00-00-00-000Z_main.jsonl", session, 1759999900);
 		writeSession(home, "proj/sub/WorkerA.jsonl", worker, 1759999950);
+		writeSession(home, "proj/sub/AgentX.jsonl", worker, 1759999950);
 	}
 	const repo = join(ROOT, "score-git");
 	initRepo(repo, pyEnv);
@@ -340,7 +347,9 @@ test("agent-score matches the original", () => {
 			.replace("|unreported-finding", "")
 			.replaceAll(" pts/h | Calls/acc | Waste |", " pts/h |")
 			.replace(/ \| (?:[\d.]+|-) \| (?:[\d.]+%|-) \|$/gm, " |")
-			.replace(/\|---\|---\|$/gm, "|");
+			.replace(/\|---\|---\|$/gm, "|")
+			// P18 stores the run's model on the event; the frozen oracle does not
+			.replace(/, "model": "[^"]*"/g, "");
 	for (const args of cases) {
 		const py = runPy(oracle, args, pyEnv, pyHome);
 		// The live help string hardcodes this machine. The package ships ~/Work/pm-counts and no owner date (P9 scrub).
@@ -349,7 +358,7 @@ test("agent-score matches the original", () => {
 		const port = runPort("agent-score", args, portEnv, portHome);
 		match({ ...py, stdout, stderr }, { code: port.code, stdout: toOracle(port.stdout), stderr: toOracle(port.stderr) });
 	}
-	expect(readFileSync(join(portHome, ".local/state/agent-score/events.jsonl"), "utf8")).toBe(
+	expect(readFileSync(join(portHome, ".local/state/agent-score/events.jsonl"), "utf8").replace(/, "model": "[^"]*"/g, "")).toBe(
 		readFileSync(join(pyHome, ".local/state/agent-score/events.jsonl"), "utf8"),
 	);
 	expect(toOracle(readFileSync(join(portHome, ".omp/agent/notes/subagent-ranking.md"), "utf8"))).toBe(
