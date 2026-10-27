@@ -87,6 +87,7 @@ export function helpText(): string {
 		"                                installs and restarts the neurastream-ui user unit, prints the phone",
 		"                                link; `neurastream ui off` stops and disables it, sets enabled: false",
 		"  neurastream pages on|off|serve|publish|list  host static files over the tailnet",
+		"                                publish --plan <plan.md> adds the Approve bar that records the plan's approval",
 		"  neurastream notes check <page>               list the notes without an answer, exit 1 while any is open",
 		"  neurastream agents list | allow <slug>... | deny <slug>...",
 		"                                the subagent allow-list (## Allowed in notes/subagents.md)",

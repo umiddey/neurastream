@@ -22,6 +22,9 @@ const STYLE = `<style ${NOTES_MARK}>
  #ns-notes button.ns-quiet{background:#fff2;color:#fff}
  #ns-notes .ns-status{opacity:.8}
  #ns-note-fab{position:fixed;z-index:2147483000;font:12px system-ui,sans-serif;border:0;border-radius:6px;padding:6px 10px;background:#3b82f6;color:#fff;display:none}
+ #ns-approve{position:fixed;inset-block-start:0;inset-inline-end:0;z-index:2147483000;display:flex;gap:8px;align-items:center;padding:8px 10px;font:13px/1.4 system-ui,sans-serif;background:#111c;color:#fff;backdrop-filter:blur(6px);border-end-start-radius:8px}
+ #ns-approve button{font:inherit;border:0;border-radius:6px;padding:6px 12px;background:#16a34a;color:#fff}
+ #ns-approve button[disabled]{background:#fff3;color:#fff9}
 </style>`;
 
 const PANEL = `<section id="ns-notes" ${NOTES_MARK} hidden>
@@ -86,6 +89,28 @@ export interface AnsweredNote {
 }
 
 const ANSWERED_RE = /<section id="ns-answered"[\s\S]*?<\/section>\n?/i;
+const APPROVE_RE = /<section id="ns-approve"[\s\S]*?<\/section>\n?/i;
+
+/** What the Approve bar needs: the page it approves and the notes still open on it (P9). */
+export interface ApproveChrome {
+	page: string;
+	open: string[];
+}
+
+/** The Approve bar, on a page published from a plan: the notes panel beside it is the same page. */
+function approveBlock(chrome: ApproveChrome): string {
+	const page = esc(chrome.page);
+	const hint = chrome.open.length === 0 ? "Approve and go" : `Answer every note first (${esc(chrome.open.join(", "))})`;
+	const disabled = chrome.open.length === 0 ? "" : " disabled";
+	return `<section id="ns-approve" ${NOTES_MARK} data-ns-plan="${page}">
+ <button id="ns-approve-btn" type="button"${disabled}>Approve</button><span id="ns-approve-status" class="ns-status">${hint}</span>
+ <script>(function(){var page="${page}",btn=document.getElementById("ns-approve-btn"),status=document.getElementById("ns-approve-status");
+  function set(open){btn.disabled=open.length>0;status.textContent=open.length>0?"Answer every note first ("+open.join(", ")+")":"Approve and go \u2014 the plan records it.";}
+  fetch("/_approve?page="+encodeURIComponent(page)).then(function(r){return r.json();}).then(function(d){set(d.open||[]);}).catch(function(){set(["?"]);});
+  btn.addEventListener("click",function(){btn.disabled=true;fetch("/_approve?page="+encodeURIComponent(page),{method:"POST",headers:{"content-type":"application/json"},body:"{}"}).then(function(r){return r.json().then(function(d){return {ok:r.ok,body:d};});}).then(function(res){status.textContent=res.ok?"Approved: "+res.body.approved:"Not approved: "+res.body.error;btn.disabled=!res.ok;}).catch(function(){status.textContent="Not approved: the pages server did not answer.";btn.disabled=false;});});
+ })();</script>
+</section>`;
+}
 
 function esc(text: string): string {
 	return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
@@ -106,18 +131,23 @@ function withTail(html: string, block: string): string {
 	return at < 0 ? `${html}\n${block}\n` : `${html.slice(0, at)}${block}\n${html.slice(at)}`;
 }
 
+/** Swap a block in place, append it before `</body>` when the page has none, drop it when empty. */
+function replaceOrAppend(html: string, re: RegExp, block: string): string {
+	const at = re.exec(html);
+	if (at === null) return block === "" ? html : withTail(html, block);
+	return `${html.slice(0, at.index)}${block === "" ? "" : `${block}\n`}${html.slice(at.index + at[0].length)}`;
+}
+
 /**
  * The artifact with the notes block injected once, before `</body>` when there is one. A page that
- * already carries it keeps its style, panel and script and only refreshes the answered list.
+ * already carries it keeps its style, panel and script and refreshes the answered list and, on a
+ * plan page, the Approve bar — a built-thing republish drops a bar that no longer belongs there.
  */
-export function injectPageNotes(html: string, answered: AnsweredNote[] = []): string {
-	const block = answeredBlock(answered);
-	if (html.includes(NOTES_MARK)) {
-		const at = ANSWERED_RE.exec(html);
-		if (at === null) return withTail(html, block);
-		return `${html.slice(0, at.index)}${block === "" ? "" : `${block}\n`}${html.slice(at.index + at[0].length)}`;
-	}
-	return withTail(html, `${STYLE}\n${PANEL}\n${block}\n${SCRIPT}`);
+export function injectPageNotes(html: string, answered: AnsweredNote[] = [], approve?: ApproveChrome): string {
+	const answers = answeredBlock(answered);
+	const bar = approve === undefined ? "" : approveBlock(approve);
+	if (html.includes(NOTES_MARK)) return replaceOrAppend(replaceOrAppend(html, APPROVE_RE, bar), ANSWERED_RE, answers);
+	return withTail(html, `${STYLE}\n${PANEL}\n${bar === "" ? "" : `${bar}\n`}${answers === "" ? "" : `${answers}\n`}${SCRIPT}`);
 }
 
 function str(value: unknown, max: number): string {

@@ -2,7 +2,8 @@ import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { basename, extname, resolve } from "node:path";
 import type { Config } from "./config.ts";
 import { isLoopback, isTailnet, type UiHttpServer } from "./owner-ui.ts";
-import { appendPageNotes } from "./page-notes.ts";
+import { appendPageNotes, openNoteIds } from "./page-notes.ts";
+import { approvePlanFile, planForPage } from "./plan-approval.ts";
 import type { RunSource } from "./adapter.ts";
 import type { Tailscale } from "./tailscale.ts";
 
@@ -26,11 +27,30 @@ export function startPagesServer(opts: PagesOptions): PagesServer {
   // rows Main delivers. Same origin only, so another site's tab cannot write to the inbox; nothing here
   // touches the page file, and a submit with no note text is refused.
   if (req.method === "POST") {
+   // Approve from the plan's own page (plan 20261026 P9): the click records `Approved: <date> (<page>)`
+   // in the plan recorded at publish. Only that plan, only from this page's origin, and never while a
+   // note on the page has no answer.
+   if (url.pathname === "/_approve") {
+    if (req.headers.get("origin") !== `http://${req.headers.get("host")}`) return plain("forbidden: origin is not this page", 403);
+    const page = url.searchParams.get("page") ?? "";
+    const plan = page === "" ? null : planForPage(root, page);
+    if (plan === null) return plain("not found: no plan is published as this page", 404);
+    const open = openNoteIds(opts.cfg, page);
+    if (open.length > 0) return Response.json({ error: `answer ${open.join(", ")} first` }, { status: 409 });
+    if (!existsSync(plan)) return plain("not found: the plan file is gone", 404);
+    return Response.json({ approved: approvePlanFile(plan, page) });
+   }
    if (url.pathname !== "/_notes") return plain("method not allowed", 405);
    if (req.headers.get("origin") !== `http://${req.headers.get("host")}`) return plain("forbidden: origin is not this page", 403);
    let body: unknown; try { body = await req.json(); } catch { return plain("bad request: not JSON", 400); }
    const stored = appendPageNotes(body, opts.cfg, login ?? "loopback");
    return stored === null ? plain("no notes to submit", 400) : Response.json({ stored });
+  }
+  // What the Approve bar asks on load: the notes still open on this page. A page with no plan has none.
+  if (url.pathname === "/_approve") {
+   const page = url.searchParams.get("page") ?? "";
+   if (page === "" || planForPage(root, page) === null) return plain("not found: no plan is published as this page", 404);
+   return Response.json({ open: openNoteIds(opts.cfg, page) });
   }
   let name = decodeURI(url.pathname.slice(1));
   if (name.includes("/") || name.includes("\\") || name === ".." || name.startsWith(".")) return plain("not found", 404);

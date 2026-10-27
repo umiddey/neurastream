@@ -26,6 +26,7 @@ import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from
 import path from "node:path";
 import type { Decision, InjectEvent, PlanEditEvent, SpawnEvent, StopEvent, ToolEvent } from "./adapter.ts";
 import { currentTier, takeGo, type Tier } from "./autonomy.ts";
+import { approvalProblem } from "./plan-approval.ts";
 import type { Config } from "./config.ts";
 import { addIncident, openIncidents, type IncidentView } from "./incidents.ts";
 import { notifyProtectedPaths, notifySecretReadHit } from "./notify.ts";
@@ -335,7 +336,7 @@ function unticked(p: Plan): string[] {
 }
 
 // Plans an implementer brief may run on; returns [reason, null] or [null, plan files].
-export function planGate(text: string, label: string): [string | null, string[]] {
+export function planGate(text: string, label: string, cfg?: Config): [string | null, string[]] {
 	const plans = q.activePlans();
 	const unclosed = plans.filter(p => (p.status === "complete" || p.status === "cancelled") && !q.awaitingMerge(p));
 	if (unclosed.length)
@@ -370,6 +371,10 @@ export function planGate(text: string, label: string): [string | null, string[]]
 				`${label}: plan ${p.file} has no new "## Progress" entry since the last agent ran on it. Write that run's progress (from its report) into the plan first.`,
 				[],
 			];
+		if (cfg) {
+			const approval = approvalProblem(p.text, p.file, cfg.pages.dir);
+			if (approval) return [approval, []];
+		}
 		const open = unticked(p);
 		if (!open.length) return [`${label}: plan ${p.file} has no unticked phase left.`, []];
 		if (!open.some(id => new RegExp(`\\b${id}\\b`).test(text)))
@@ -523,7 +528,7 @@ export function spawnProblem(
 		const agent = String(t?.agent ?? "task");
 		const label = String(t?.name ?? agent);
 		if (!allowed.has(agent)) return `${label}: agent "${agent}" is not in "## Allowed" of ${q.SUBAGENTS_MD} (no expensive or unpinned models).`;
-		const [why, plans] = planGate(`${context}\n${String(t?.task ?? "")}`, label);
+		const [why, plans] = planGate(`${context}\n${String(t?.task ?? "")}`, label, cfg);
 		if (why) return why;
 		// The task's own `Call budget:` line wins over the shared context's.
 		const budget = briefBudget(String(t?.task ?? "")) ?? shared;
@@ -807,7 +812,7 @@ function mainTool(e: ToolEvent, input: Record<string, unknown>, cfg: Config): De
 				log(cfg.paths.guard_log, `BLOCK bypass launch: cancel pending (${pending.words})`);
 				return deny(`main-guard: ${CANCEL_TODO} Flagged: "${pending.words}"`);
 			}
-			const [why, named] = planGate(command, entry);
+			const [why, named] = planGate(command, entry, cfg);
 			if (why) {
 				log(cfg.paths.guard_log, `BLOCK bypass launch: ${why}`);
 				return deny(`main-guard: ${why}`);
@@ -996,7 +1001,7 @@ export function checkSpawn(e: SpawnEvent, cfg: Config): Decision {
 		return deny(`main-guard: ${e.agent}: agent "${e.agent}" is not in "## Allowed" of ${q.SUBAGENTS_MD} (no expensive or unpinned models).`);
 	if (e.invocationKind !== "task")
 		return deny("main-guard: spawn implementers with the task tool (the plan gate checks its brief).");
-	const [why, named] = planGate(e.brief, e.agent);
+	const [why, named] = planGate(e.brief, e.agent, cfg);
 	if (why) {
 		log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${why}`);
 		return deny(`main-guard: ${why}`);

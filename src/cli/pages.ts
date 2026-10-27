@@ -25,9 +25,16 @@ export async function runPages(args: string[] = [], deps: PagesDeps = {}): Promi
    return new Promise<number>(() => {});
   }
   if (args[0] === "publish" && args[1]) {
-   let force = false, keep = false;
+   let force = false, keep = false, plan: string | undefined;
    const rest: string[] = [];
-   for (const arg of args.slice(1)) { if (arg === "--force") force = true; else if (arg === "--keep") keep = true; else rest.push(arg); }
+   for (let i = 1; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg === "--force") force = true;
+    else if (arg === "--keep") keep = true;
+    else if (arg === "--plan") plan = args[++i] ?? "";
+    else rest.push(arg);
+   }
+   if (plan === "") { console.error("pages publish: --plan needs the plan file"); return 2; }
    // file first, then the optional name; flags may sit anywhere (2026-10-27: `--force <file>` used
    // to be read as file "--force" because only args.slice(2) was scanned)
    const file = rest[0];
@@ -35,7 +42,7 @@ export async function runPages(args: string[] = [], deps: PagesDeps = {}): Promi
    if (!file || rest.length > 2) return 2;
    const now = clock();
    sweepPages(cfg.pages.dir, cfg.pages.keep_days, now);
-   const n = publishPage(file, name, force, cfg.pages.dir, keep, cfg.pages.keep_days, now, pageNotesGate(cfg));
+   const n = publishPage(file, name, force, cfg.pages.dir, { keep, keepDays: cfg.pages.keep_days, now, notes: pageNotesGate(cfg), plan });
    const host = (deps.tailscale ?? realTailscale).dnsName() ?? "tailnet";
    console.log(`http://${host}:${cfg.pages.port}/${encodeURIComponent(n)}`);
    const expires = readExpiry(cfg.pages.dir)[n]?.expires;

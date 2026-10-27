@@ -39,10 +39,10 @@ test("publish: refused while a note is open, then the answer is on the page and 
 	writeFileSync(src, "<html><body><p>why</p></body></html>");
 	appendPageNotes({ page: "/why.html", notes: [{ quote: "too slow", note: "timing?" }] }, cfg, "owner-login");
 	const out = join(dir, "public");
-	expect(() => publishPage(src, "Why", false, out, false, 15, new Date(), pageNotesGate(cfg))).toThrow(/open note/);
+	expect(() => publishPage(src, "Why", false, out, { now: new Date(), notes: pageNotesGate(cfg) })).toThrow(/open note/);
 	expect(existsSync(join(out, "why.html"))).toBe(false);
 	writeFileSync(notesAnswersPath(cfg, "why.html"), JSON.stringify({ n1: "raised the timeout" }));
-	expect(publishPage(src, "Why", false, out, false, 15, new Date(), pageNotesGate(cfg))).toBe("why.html");
+	expect(publishPage(src, "Why", false, out, { now: new Date(), notes: pageNotesGate(cfg) })).toBe("why.html");
 	const html = readFileSync(join(out, "why.html"), "utf8");
 	expect(html).toContain("timing?"); // the note it answers
 	expect(html).toContain("raised the timeout"); // the answer, beside it
@@ -55,6 +55,6 @@ test("publish: refused while a note is open, then the answer is on the page and 
 	expect(readNotes(cfg, "why.html").map(n => n.id)).toEqual(["n2"]);
 	// A page with no notes publishes through the same gate.
 	writeFileSync(join(dir, "plain.html"), "<html><body><p>plain</p></body></html>");
-	expect(publishPage(join(dir, "plain.html"), "Plain", false, out, false, 15, new Date(), pageNotesGate(cfg))).toBe("plain.html");
+	expect(publishPage(join(dir, "plain.html"), "Plain", false, out, { now: new Date(), notes: pageNotesGate(cfg) })).toBe("plain.html");
 	expect(readFileSync(join(out, "plain.html"), "utf8")).not.toContain('id="ns-answered"');
 });
