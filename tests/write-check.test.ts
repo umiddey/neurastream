@@ -14,6 +14,11 @@ test("the template's suppress regex needs a comment marker (I-20261028-113)", ()
 	expect(rx.test(`const s = "${"no"}${"qa"}"`)).toBe(false);
 });
 
+test("template linter patterns capture the finding message (I-20261028-150)", () => {
+	const { linters } = loadConfig({ file: "/tmp/neurastream-home-wc/missing.yml", home: "/tmp/neurastream-home-wc", env: {} }).write_check;
+	for (const l of linters) expect(l.pattern).toContain("(?<message>");
+});
+
 const FAKE = join(import.meta.dir, "fixtures/write-check/fake-linter.ts");
 const TAIL = "The file was restored to its state before this edit; fix it and edit again — do not add suppression comments.";
 
@@ -23,7 +28,7 @@ function wc(over: Partial<WriteCheckConfig> = {}): WriteCheckConfig {
 		applies_to: "all",
 		timeout_ms: 5000,
 		suppress: "noqa|@ts-ignore|eslint-disable",
-		linters: [{ ext: [".ts"], argv: [process.execPath, FAKE, "{file}"], pattern: "^.+?:\\d+:\\d+: (?<rule>\\S+) " }],
+		linters: [{ ext: [".ts"], argv: [process.execPath, FAKE, "{file}"], pattern: "^.+?:\\d+:\\d+: (?<rule>\\S+) (?<message>.+)$" }],
 		...over,
 	};
 }
@@ -46,6 +51,32 @@ describe("checkWrite", () => {
 
 	test("allows an edit that keeps the finding count", () => {
 		expect(run("x // lint:E101\n", "y // lint:E101\n")).toEqual({ allow: true });
+	});
+
+	test("allows an edit that only shifts old warnings and adds none (I-20261028-150)", () => {
+		const before = "const a = 1 // lint:E101: first debt\nconst b = 2 // lint:E101: second debt\n";
+		const after = `// a new comment above\n${before}`;
+		expect(run(before, after)).toEqual({ allow: true });
+	});
+
+	test("names only the new finding when the rule already had debt (I-20261028-150)", () => {
+		const r = run(
+			"const a = 1 // lint:E101: old debt\n",
+			"const a = 1 // lint:E101: old debt\nconst b = 2 // lint:E101: new debt\n",
+		);
+		expect(r.allow).toBe(false);
+		if (r.allow) return;
+		expect(r.reason).toContain("new debt");
+		expect(r.reason).not.toContain("old debt");
+	});
+
+	test("a pattern without a message group keeps counting per rule", () => {
+		const r = run("x\n", "a // lint:E101\nb // lint:E101\n", {
+			linters: [{ ext: [".ts"], argv: [process.execPath, FAKE, "{file}"], pattern: "^.+?:\\d+:\\d+: (?<rule>\\S+) " }],
+		});
+		expect(r.allow).toBe(false);
+		if (r.allow) return;
+		expect(r.reason).toContain("E101 (+2)");
 	});
 
 	test("refuses a new suppression comment", () => {
