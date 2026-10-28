@@ -544,10 +544,14 @@ export function spawnProblem(
 }
 
 function runBlockers(plan: Plan, hit: string[], e: ToolEvent, cfg: Config): string | null {
+	// A caller staffed on a different plan (staffing.json holds the task names, keyed by agentId)
+	// only grazes this plan (I-20261028-111): its path blockers must judge the covered paths,
+	// not every path the command names.
+	const foreign = Object.entries(readStaffing()).some(([f, names]) => f !== plan.file && names.includes(e.agentId));
 	for (const b of plan.blockers) {
 		try {
 			execFileSync(b.script, b.args, {
-				input: JSON.stringify({ tool: e.tool, input: e.input, cwd: e.cwd, agent: e.agent, repo: plan.repo, plan: plan.file, paths: hit }),
+				input: JSON.stringify({ tool: e.tool, input: e.input, cwd: e.cwd, agent: e.agent, repo: plan.repo, plan: plan.file, paths: hit, ...(foreign ? { foreign: true } : {}) }),
 				encoding: "utf8",
 				timeout: cfg.guards.blocker_timeout_ms,
 				stdio: ["pipe", "pipe", "pipe"],

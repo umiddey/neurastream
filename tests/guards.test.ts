@@ -4,11 +4,12 @@
 // from /tmp/neurastream-originals under their own env overrides (tests-only, as they document);
 // the port runs through `neurastream guard <event> --json`.
 
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { helpText } from "../src/cli/dispatch.ts";
+import type { ToolEvent } from "../src/core/adapter.ts";
 import { CANCEL_TODO } from "../src/core/guards.ts";
 import { touchedPaths } from "../src/core/queue/lib.ts";
 
@@ -575,5 +576,34 @@ test("main reads: an allowed call logs its existing files; entries older than 7 
 	const reads = JSON.parse(readFileSync(join(STATE, "main-reads.json"), "utf8")) as Record<string, string>;
 	expect(Object.keys(reads)).toEqual([join(TOY, "src/a.ts")]);
 	expect(Number.isNaN(Date.parse(reads[join(TOY, "src/a.ts")] ?? ""))).toBe(false);
+});
+
+describe("foreign deny-path (20261028_1228 P6, I-20261028-111)", () => {
+	// The incident's shape: the plan covers the repo (its base path is in call.paths), but the
+	// command also names a path outside it that matches the plan's deny-path glob. The adapter
+	// sends agent "sub" and the task name as agentId, which is what staffing.json holds.
+	const STAGED = join(HOME, ".local/bin/staged-heavy-run");
+	const CMD = `ln -s ${join(TOY, "node_modules")} node_modules && cp ${join(TOY, "src/a.ts")} ${STAGED}`;
+	const PLAN_WITH_BIN = TOY_PLAN.replace("- deny-path secret/**", `- deny-path secret/** ${join(HOME, ".local/bin")}/**`);
+
+	function sub(): ToolEvent {
+		return { tool: "bash", input: { command: CMD }, cwd: TOY, agent: "sub", agentId: "toy-worker", calls: 0, paths: [], writes: [], command: CMD };
+	}
+
+	test("an agent staffed on another plan may run a command whose other targets this plan does not cover", () => {
+		fresh();
+		writeFileSync(PLAN, PLAN_WITH_BIN);
+		writeFileSync(join(STATE, "staffing.json"), JSON.stringify({ [join(TOY, "docs/plans/20261019_other.md")]: ["toy-worker"] }));
+		expect(guardCli("pre-tool", sub()).code).toBe(0);
+	});
+
+	test("the plan's own agent is still refused by the same command", () => {
+		fresh();
+		writeFileSync(PLAN, PLAN_WITH_BIN);
+		writeFileSync(join(STATE, "staffing.json"), JSON.stringify({ [PLAN]: ["toy-worker"] }));
+		const d = guardCli("pre-tool", sub());
+		expect(d.code).toBe(2);
+		expect(d.d.reason).toContain(`deny-path ${join(HOME, ".local/bin")}/**`);
+	});
 });
 

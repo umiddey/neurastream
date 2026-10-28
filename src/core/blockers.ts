@@ -5,7 +5,9 @@
 // Contract (called by the guard for every subagent call that touches an open plan's repo,
 // worktrees or "## Applies to" paths):
 //   argv      the arguments written after the blocker name in the plan's "## Blockers" line
-//   stdin     JSON {tool, input, cwd, agent: "main"|"sub", repo, plan, paths: [absolute paths]}
+//   stdin     JSON {tool, input, cwd, agent: "main"|"sub", repo, plan, paths: [absolute paths],
+//             foreign?: true} — foreign: the caller is staffed on a different plan, so judge
+//             only the paths listed (deny-path prunes the rest)
 //   exit 0    allow;  exit 2 + one line on stderr = refuse the call with that reason.
 
 import { readFileSync, statSync } from "node:fs";
@@ -21,6 +23,8 @@ export interface BlockerCall {
 	repo: string;
 	plan: string;
 	paths: string[];
+	/** True when the caller is staffed on a different plan (runBlockers sets it): judge only paths. */
+	foreign?: boolean;
 }
 
 export interface BlockerEnv {
@@ -599,6 +603,9 @@ export function denyPath(env: BlockerEnv): void {
 		if (CODE_MUTATING.test(env.command) || CODE_WRITE.test(env.command))
 			targets = [...(env.call.paths ?? []), ...evalPaths(env)];
 	} else if (env.shell) targets = shellTargets(env);
+	// A foreign plan's globs never reach past the paths that made its blockers run
+	// (I-20261028-111): the command may also name paths this plan does not cover.
+	if (env.call.foreign) targets = targets.filter((p) => env.call.paths.includes(p));
 	for (const p of targets) {
 		for (const g of env.args) {
 			if (matchesPath(p, g, env.call)) block(`${p} is forbidden by the plan (deny-path ${g})`);

@@ -212,3 +212,10 @@ describe("deny-path interpreter writes (I-20261024-24): code an interpreter runs
 		expect(refused(denyPath, bash("cat << 'EOF'\nsecret/a.py is denied\nEOF"), SECRET)).toBe(false);
 	});
 });
+
+describe("deny-path foreign plan (20261028_1228 P6, I-20261028-111)", () => {
+	test("a foreign plan still refuses a covered path its glob matches", () => {
+		const p = path.join(root, "secret/a.ts");
+		expect(refused(denyPath, { ...call("edit", { path: p, input: "x" }, "sub", [p]), foreign: true }, ["secret/**"])).toBe(true);
+	});
+});

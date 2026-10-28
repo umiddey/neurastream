@@ -1,6 +1,7 @@
 # Changelog
 ## Unreleased
 ### Fixed
+- A plan's deny-path no longer judges paths beyond the ones that made its blockers run when the caller is staffed on a different plan (INCIDENT I-20261028-111): `runBlockers` marks such a call `foreign` (staffing.json, keyed by the task name in `agentId`) and `denyPath` keeps only targets in `paths`, so a subagent of another plan may run a command that merely names paths outside this plan. An agent staffed on the plan itself, Main and unstaffed agents are unchanged.
 - Write-check false refusals from the shipped template (INCIDENT I-20261028-112, I-20261028-113): the suppress regex now requires a comment marker (`#`, `//` or `/*`) before the word, so a fixture or string that merely contains `noqa` is no longer refused; the template ruff run adds `--ignore E501,S101` because ruff's `--select` overrides a repo's own ignore list and long lines and test asserts are style, not new defects.
 ## 0.2.45
 ### Added
