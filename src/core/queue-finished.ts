@@ -67,13 +67,14 @@ function archivedPlans(roots: string[]): string[] {
 	// Main checkouts sort first; a linked worktree adds only plan file names the main checkout lacks.
 	const dirs = repoRoots(roots).map(dir => ({ dir, repo: repoRoot(dir) ?? dir }));
 	dirs.sort((a, b) => Number(b.repo === b.dir) - Number(a.repo === a.dir));
-	for (const { dir } of dirs) {
+	for (const { dir, repo } of dirs) {
 		const found: string[] = [];
 		walkMd(path.join(dir, "docs/plans/archive"), found);
 		for (const file of found) {
-			const name = path.basename(file);
-			if (seen.has(name)) continue;
-			seen.add(name);
+			// Same repo + file name = the same plan seen through another worktree; across repos the name may repeat.
+			const key = `${repo}\0${path.basename(file)}`;
+			if (seen.has(key)) continue;
+			seen.add(key);
 			files.push(file);
 		}
 	}
