@@ -5,6 +5,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { WriteCheckConfig } from "./write-check.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const TEMPLATE_PATH = join(HERE, "../../templates/config.yml");
@@ -205,6 +206,8 @@ export interface Config {
 		/** A second net on the wire: wrap the harness in `secretgate wrap --` at launch. */
 		proxy: "none" | "secretgate";
 	};
+	/** Write-time lint checks (src/core/write-check.ts, plan 20261028_1228): an edit that adds a lint finding or a suppression comment is refused. */
+	write_check: WriteCheckConfig;
 	priority: { sleep_sec: number };
 	alerts: { temp_c: number; mem_psi: number; io_psi: number; cooldown_sec: number };
 	snapshot: { tmp_dest: string; git_repo: string; git_backup: string; excludes: string[] };
@@ -439,6 +442,29 @@ function check(cfg: Config): void {
 	}
 	if (typeof cfg.guards.plan_offer !== "string" || cfg.guards.plan_offer === "") {
 		throw new ConfigError("guards.plan_offer must be a non-empty regex string");
+	}
+	const wc = cfg.write_check;
+	if (wc.applies_to !== "sub" && wc.applies_to !== "all") throw new ConfigError('write_check.applies_to must be "sub" or "all"');
+	if (!(wc.timeout_ms > 0)) throw new ConfigError("write_check.timeout_ms must be > 0");
+	if (!Array.isArray(wc.linters)) throw new ConfigError("write_check.linters must be a list");
+	const regexes: [string, unknown][] = [["write_check.suppress", wc.suppress]];
+	for (const [i, l] of wc.linters.entries()) {
+		const at = `write_check.linters[${i}]`;
+		if (!Array.isArray(l.ext) || l.ext.some((e) => typeof e !== "string" || !e.startsWith(".")))
+			throw new ConfigError(`${at}.ext must be a list of extensions starting with "."`);
+		if (!Array.isArray(l.argv) || l.argv.length === 0 || !l.argv.every((a) => typeof a === "string") || !l.argv.includes("{file}"))
+			throw new ConfigError(`${at}.argv must be a non-empty list of strings containing "{file}"`);
+		if (typeof l.pattern !== "string" || !l.pattern.includes("(?<rule>"))
+			throw new ConfigError(`${at}.pattern must be a regex with a named group rule`);
+		regexes.push([`${at}.pattern`, l.pattern]);
+	}
+	for (const [key, src] of regexes) {
+		if (typeof src !== "string" || src === "") throw new ConfigError(`${key} must be a non-empty regex`);
+		try {
+			new RegExp(src);
+		} catch {
+			throw new ConfigError(`${key} must be a valid regex`);
+		}
 	}
 	try {
 		new RegExp(cfg.guards.plan_offer, "i");

@@ -211,6 +211,19 @@ secrets:
   extra_patterns: []
   proxy: "none"
 
+write_check:
+  enabled: false
+  applies_to: sub
+  timeout_ms: 5000
+  suppress: 'noqa|type:\s*ignore|oxlint-disable|eslint-disable|biome-ignore|@ts-ignore|@ts-expect-error|@ts-nocheck'
+  linters:
+    - ext: [".py"]
+      argv: ["ruff", "check", "--no-cache", "--output-format=concise", "--select", "E,F,B,S,C90,PERF,SIM", "{file}"]
+      pattern: '^.+?:\d+:\d+: (?<rule>\S+) '
+    - ext: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]
+      argv: ["oxlint", "-f", "unix", "-D", "correctness", "-D", "suspicious", "-D", "perf", "{file}"]
+      pattern: '^.+?:\d+:\d+: .*\[(?:Error|Warning)/(?<rule>[^\]]+)\]'
+
 priority:
   sleep_sec: 120
 
@@ -337,9 +350,14 @@ The loader rejects:
 - `knowledge.roots` that is not a non-empty list of non-empty paths, or `knowledge.max_age_s` below 1 or not an integer
 - a `brief.repo_rules` entry whose `match`, `require`, `first` or `unless` does not compile as a case-insensitive regex, or whose `message` is empty
 - `secrets.proxy` that is not `none` or `secretgate`, a `secrets.known_value_files` entry that is not a non-empty path, or a `secrets.extra_patterns` entry without a non-empty `type` and a `regex` that compiles
+- `write_check.applies_to` that is not `sub` or `all`, `write_check.timeout_ms` that is not above 0, a `write_check.suppress` that is empty or does not compile, or a `write_check.linters` entry whose `ext` is not a list of dotted extensions, whose `argv` lacks `{file}`, or whose `pattern` lacks a `(?<rule>` group or does not compile
 - YAML that does not parse
 
 Missing keys are filled from the defaults above. A present key replaces the default. Objects merge one level (`score.penalties` merges per kind; an omitted kind keeps the default). Arrays replace.
+
+## write_check
+
+Write-time lint (`src/core/write-check.ts`, applied by the omp adapter). With `enabled: true`, each edit to a file that a linter entry covers is linted before and after the change. A rule key whose count grows, or a new line matching `suppress`, refuses the edit: the file is restored and the agent gets the reason. Findings that were already there never block. A missing linter, a crash or a timeout allows the edit and logs a note. `applies_to: sub` covers subagents only; `all` covers Main too. Arrays replace, so a user `linters` list replaces the two shipped entries.
 
 
 ## traces.owned_repos
