@@ -68,7 +68,7 @@ export function helpText(): string {
 		"  neurastream guard <event> --json",
 		`                                (${GUARD_USAGE.slice(GUARD_USAGE.indexOf("(") + 1, -1)})`,
 		"  neurastream main [args]       run omp under the launcher (automatic session rollover)",
-		"  neurastream metrics <cmd>     self-metrics: report, ci, false-alarm, rule (see README)",
+		"  neurastream metrics <cmd>     self-metrics: report, features, releases, ci, false-alarm, rule (see README)",
 		"  neurastream incident <cmd>    incidents Main must act on: list, add, plan, dismiss (see README)",
 		"  neurastream traces claims <runId|--since 24h> [--json]",
 		"                                check a run's final-report claims (test counts, exit codes,",
