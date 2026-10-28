@@ -151,3 +151,52 @@ describe("core has no harness name", () => {
 		expect(readFileSync(TEMPLATE_PATH, "utf8").length).toBeGreaterThan(100);
 	});
 });
+
+describe("write_check config", () => {
+	test("defaults ship off, sub-only, with ruff and oxlint entries", () => {
+		const cfg = loadConfig({ file: "/tmp/neurastream-home-config/missing.yml", home, env: {} });
+		expect(cfg.write_check.enabled).toBe(false);
+		expect(cfg.write_check.applies_to).toBe("sub");
+		expect(cfg.write_check.timeout_ms).toBe(5000);
+		expect(cfg.write_check.suppress).toContain("@ts-ignore");
+		expect(cfg.write_check.linters.map((l) => l.argv[0])).toEqual(["ruff", "oxlint"]);
+		expect(cfg.write_check.linters.map((l) => l.ext)).toEqual([[".py"], [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]]);
+	});
+
+	test("a user file turns it on and keeps the template linters", () => {
+		const cfg = loadConfig({ file: withFile("write_check:\n  enabled: true\n"), home, env: {} });
+		expect(cfg.write_check.enabled).toBe(true);
+		expect(cfg.write_check.linters.length).toBe(2);
+	});
+
+	test("a bad suppress regex names the key", () => {
+		const file = withFile('write_check:\n  suppress: "("\n');
+		expect(() => loadConfig({ file, home, env: {} })).toThrow("write_check.suppress");
+	});
+
+	test("an ext without a leading dot names the key", () => {
+		const file = withFile(
+			'write_check:\n  linters: [{ext: ["py"], argv: ["ruff", "{file}"], pattern: "(?<rule>\\\\S+)"}]\n',
+		);
+		expect(() => loadConfig({ file, home, env: {} })).toThrow("write_check.linters[0].ext");
+	});
+
+	test("an argv without {file} names the key", () => {
+		const file = withFile(
+			'write_check:\n  linters: [{ext: [".py"], argv: ["ruff", "check"], pattern: "(?<rule>\\\\S+)"}]\n',
+		);
+		expect(() => loadConfig({ file, home, env: {} })).toThrow("write_check.linters[0].argv");
+	});
+
+	test("a pattern without the rule group names the key", () => {
+		const file = withFile(
+			'write_check:\n  linters: [{ext: [".py"], argv: ["ruff", "{file}"], pattern: "(\\\\S+)"}]\n',
+		);
+		expect(() => loadConfig({ file, home, env: {} })).toThrow("write_check.linters[0].pattern");
+	});
+
+	test("applies_to other than sub or all names the key", () => {
+		const file = withFile("write_check:\n  applies_to: main\n");
+		expect(() => loadConfig({ file, home, env: {} })).toThrow("write_check.applies_to");
+	});
+});

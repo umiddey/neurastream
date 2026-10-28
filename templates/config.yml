@@ -210,6 +210,19 @@ secrets:                     # content redaction (src/core/secret-redact.ts); a 
   extra_patterns: []         # your own shapes, e.g. [{type: "my-token", regex: "myapp_[A-Za-z0-9]{32}"}]
   proxy: "none"              # "none" | "secretgate": launch the harness as `secretgate wrap -- omp` (README: Secrets)
 
+write_check:                 # write-time lint checks (src/core/write-check.ts): an edit that adds a lint finding or suppression comment is undone and the agent is told why
+  enabled: false             # on = check every edit; off in the shipped template
+  applies_to: sub            # "sub" = subagents only; "all" = Main too
+  timeout_ms: 5000           # per linter run; a timeout, crash or missing linter allows the edit and logs a note
+  suppress: 'noqa|type:\s*ignore|oxlint-disable|eslint-disable|biome-ignore|@ts-ignore|@ts-expect-error|@ts-nocheck'   # a new match counts as a new problem
+  linters:
+    - ext: [".py"]
+      argv: ["ruff", "check", "--no-cache", "--output-format=concise", "--select", "E,F,B,S,C90,PERF,SIM", "{file}"]
+      pattern: '^.+?:\d+:\d+: (?<rule>\S+) '
+    - ext: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]
+      argv: ["oxlint", "-f", "unix", "-D", "correctness", "-D", "suspicious", "-D", "perf", "{file}"]
+      pattern: '^.+?:\d+:\d+: .*\[(?:Error|Warning)/(?<rule>[^\]]+)\]'
+
 priority:
   sleep_sec: 120
 
