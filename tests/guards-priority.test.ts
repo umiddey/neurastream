@@ -13,7 +13,8 @@ import { join } from "node:path";
 import type { InjectEvent, SpawnEvent, ToolEvent } from "../src/core/adapter.ts";
 import type { Config } from "../src/core/config.ts";
 import { loadConfig } from "../src/core/config.ts";
-import { checkInject, checkPlanEdit, checkSpawn, checkTool, ownerSaid, priorityProblem, readStaffing, recordSpawns, staffedPlans } from "../src/core/guards.ts";
+import { checkInject, checkPlanEdit, checkSpawn, checkTool, priorityProblem, readStaffing, recordSpawns, staffedPlans } from "../src/core/guards.ts";
+import { ownerSaid } from "../src/core/incidents.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { activePlans, closeLog, stateDirPath } from "../src/core/queue/lib.ts";
 

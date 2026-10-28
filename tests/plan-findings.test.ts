@@ -8,7 +8,8 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { checkPlanEdit, checkStop } from "../src/core/guards.ts";
-import { openIncidents } from "../src/core/incidents.ts";
+import { addIncident, dismissIncident, openIncidents } from "../src/core/incidents.ts";
+import { nowSec } from "../src/core/clock.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
 
 const ROOT = "/tmp/neurastream-home-planfindings/p1";
@@ -109,4 +110,36 @@ test("a stop reply without the offer stops as before", () => {
 	fresh();
 	const d = checkStop({ agent: "main", callsSinceStop: 0, idleStops: 0, ledgerText: "", reply: "backups broken, investigating now" }, cfg);
 	expect(d.allow).toBe(true);
+});
+
+// P3: a finding incident (agent-finding / main-finding) is dismissed only with the owner's own
+// words — --owner "<quote>", a substring of an owner message the inject hook saw in the last
+// 24 h (<queue_state>/owner-messages.jsonl); other kinds keep --why only.
+test("a main-finding refuses --why alone and dismisses with a real owner quote", () => {
+	fresh();
+	const after = BEFORE.replace(OLD, `${OLD}\n- 2026-10-28 09:20 (Main): looked again. Findings: bucket missing.`);
+	checkPlanEdit({ path: PLAN, before: BEFORE, after, agent: "main" }, cfg);
+	const inc = openIncidents(cfg)[0]!;
+	expect(dismissIncident(cfg, inc.id, "not a bug")).toContain("refused");
+	writeFileSync(
+		join(STATE, "owner-messages.jsonl"),
+		`${JSON.stringify({ at: nowSec(), text: "I want you proactively writing bugs; bucket missing is exactly the kind of thing to plan" })}\n`,
+	);
+	expect(dismissIncident(cfg, inc.id, "not a bug", "proactively writing bugs; bucket missing")).toBe(null);
+	expect(openIncidents(cfg)).toHaveLength(0);
+});
+
+test("an owner quote the inject hook never saw refuses; other kinds keep --why only", () => {
+	fresh();
+	const after = BEFORE.replace(OLD, `${OLD}\n- 2026-10-28 09:20 (Main): looked again. Findings: bucket missing.`);
+	checkPlanEdit({ path: PLAN, before: BEFORE, after, agent: "main" }, cfg);
+	const inc = openIncidents(cfg)[0]!;
+	writeFileSync(
+		join(STATE, "owner-messages.jsonl"),
+		`${JSON.stringify({ at: nowSec(), text: "the backup plan is parked, keep going" })}\n`,
+	);
+	expect(dismissIncident(cfg, inc.id, "not a bug", "words the owner never said at all")).toContain("refused");
+	addIncident(cfg, { source: "main", kind: "toy", summary: "not a finding" });
+	const toy = openIncidents(cfg).find(i => i.kind === "toy")!;
+	expect(dismissIncident(cfg, toy.id, "not a bug")).toBe(null);
 });

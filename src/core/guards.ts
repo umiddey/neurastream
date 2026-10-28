@@ -28,7 +28,7 @@ import type { Decision, InjectEvent, PlanEditEvent, SpawnEvent, StopEvent, ToolE
 import { currentTier, takeGo, type Tier } from "./autonomy.ts";
 import { approvalProblem } from "./plan-approval.ts";
 import type { Config } from "./config.ts";
-import { addIncident, openIncidents, type IncidentView } from "./incidents.ts";
+import { addIncident, openIncidents, ownerMessagesFile, ownerSaid, readOwnerMessages, type IncidentView, type OwnerMessage } from "./incidents.ts";
 import { notifyProtectedPaths, notifySecretReadHit } from "./notify.ts";
 import * as q from "./queue/lib.ts";
 import type { Plan } from "./queue/lib.ts";
@@ -103,29 +103,8 @@ function staffingFile(): string {
 	return path.join(q.STATE_DIR, "staffing.json");
 }
 
-export interface OwnerMessage {
-	at: number;
-	text: string;
-}
-
-function ownerMessagesFile(): string {
-	return path.join(q.STATE_DIR, "owner-messages.jsonl");
-}
-
-function readOwnerMessages(): OwnerMessage[] {
-	try {
-		return readFileSync(ownerMessagesFile(), "utf8").split("\n").filter(Boolean)
-			.map(line => JSON.parse(line) as OwnerMessage);
-	} catch {
-		return [];
-	}
-}
-
-export function ownerSaid(words: string, messages: OwnerMessage[], now: number): boolean {
-	const quote = words.toLowerCase().replace(/\s+/g, " ").trim();
-	if (quote.split(" ").length < 4) return false;
-	return messages.some(m => now - m.at >= 0 && now - m.at <= 86400 && m.text.toLowerCase().replace(/\s+/g, " ").includes(quote));
-}
+// The owner-message store (owner-messages.jsonl) and its matcher live in src/core/incidents.ts
+// (20261028_0900 P3): dismissIncident needs them too, and guards already imports incidents.
 
 function recordOwnerMessage(text: string, cfg: Config): void {
 	if (text.trimStart().startsWith("main-guard:") || text.trimStart().startsWith("<system-notice>") || text.includes("<task-result")) return;

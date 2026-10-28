@@ -17,7 +17,7 @@ export const INCIDENT_USAGE = [
 	"usage: neurastream incident list [--open] [--json]",
 	'       neurastream incident add "<summary>" --kind <k> [--evidence <text>]',
 	"       neurastream incident plan <id> <plan.md>",
-	'       neurastream incident dismiss <id> --why "<text>"',
+	'       neurastream incident dismiss <id> --why "<text>" [--owner "<quote>"]',
 ].join("\n");
 
 function flagValue(args: string[], name: string): string | undefined {
@@ -77,12 +77,12 @@ export function planIncidentCmd(cfg: Config, id: string, planPath: string): numb
 	return 0;
 }
 
-export function dismissIncidentCmd(cfg: Config, id: string, why: string | undefined): number {
+export function dismissIncidentCmd(cfg: Config, id: string, why: string | undefined, owner: string | undefined): number {
 	if (!id || why === undefined) {
 		console.error(INCIDENT_USAGE);
 		return 2;
 	}
-	const problem = dismissIncident(cfg, id, why);
+	const problem = dismissIncident(cfg, id, why, owner);
 	if (problem) {
 		console.error(problem);
 		return 1;
@@ -103,7 +103,7 @@ export async function runIncident(args: string[]): Promise<number> {
 	if (sub === "list") return listIncidents(cfg, rest);
 	if (sub === "add") return addIncidentCmd(cfg, rest);
 	if (sub === "plan") return planIncidentCmd(cfg, rest[0] ?? "", rest[1] ?? "");
-	if (sub === "dismiss") return dismissIncidentCmd(cfg, rest[0] ?? "", flagValue(rest, "--why"));
+	if (sub === "dismiss") return dismissIncidentCmd(cfg, rest[0] ?? "", flagValue(rest, "--why"), flagValue(rest, "--owner"));
 	console.error(INCIDENT_USAGE);
 	return 2;
 }
