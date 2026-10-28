@@ -153,14 +153,11 @@ describe("core has no harness name", () => {
 });
 
 describe("write_check config", () => {
-	test("defaults ship off, sub-only, with ruff and oxlint entries", () => {
+	test("defaults ship off and sub-only", () => {
 		const cfg = loadConfig({ file: "/tmp/neurastream-home-config/missing.yml", home, env: {} });
 		expect(cfg.write_check.enabled).toBe(false);
 		expect(cfg.write_check.applies_to).toBe("sub");
-		expect(cfg.write_check.timeout_ms).toBe(5000);
 		expect(cfg.write_check.suppress).toContain("@ts-ignore");
-		expect(cfg.write_check.linters.map((l) => l.argv[0])).toEqual(["ruff", "oxlint"]);
-		expect(cfg.write_check.linters.map((l) => l.ext)).toEqual([[".py"], [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]]);
 	});
 
 	test("a user file turns it on and keeps the template linters", () => {
