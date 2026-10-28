@@ -23,7 +23,7 @@ import { AGENTS_TEMPLATE, renderBlock } from "../../core/agents-md.ts";
 import { chatGo, chatTier, type Tier } from "../../core/autonomy.ts";
 import { burdenRule, repoRules, rulesChanged } from "../../core/repo-rules.ts";
 import { loadConfig, type Config } from "../../core/config.ts";
-import { checkWrite, type WriteCheckConfig } from "../../core/write-check.ts";
+import { checkWrite, deferSteer, type WriteCheckConfig } from "../../core/write-check.ts";
 import { nowSec, strftime } from "../../core/clock.ts";
 import { runDetectors, runDetectorsGated, type DetectorInput } from "../../core/incident-detectors.ts";
 import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, newProgressEntries, planReadNote, recordMainResult, revertMainEdit, rekeySpawnFile } from "../../core/guards.ts";
@@ -579,6 +579,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	const calls = new Map<string, number>(); // subagent call budget, by agent id
 	const pending = new Map<string, Map<string, string>>(); // toolCallId -> plan snapshots
 	const pendingWrite = new Map<string, Map<string, string | null>>(); // toolCallId -> write-check snapshots; null: the file did not exist
+	const deferredWrite = new Map<string, string | null>(); // files that added deferred findings this turn -> text before the first one (null: new file); one steer at agent_end
 	const pendingRules = new Set<string>(); // repos Main worked in, rules to hand over at the next prompt
 	// Chat notify (plans 20261024_2155, 20261025_0130): the text a hand-back already posted
 	// (attempted) — one post per distinct text, never a retry loop. The reply itself comes from
@@ -963,6 +964,8 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 				const r = checkWrite(file, before, after, cfg.write_check);
 				if (r.allow) {
 					if (r.note) adapterLog(cfg, r.note);
+					// The turn-end steer judges from the state before the first deferred addition.
+					if (r.deferred && !deferredWrite.has(file)) deferredWrite.set(file, before);
 					// Parallel calls on one file: their "before" becomes this allowed result, so a later refusal restores to it.
 					for (const other of pendingWrite.values()) if (other.has(file)) other.set(file, after);
 					continue;
@@ -1304,6 +1307,24 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		if (!isMain(ctx)) return;
 		deliverOwnerInbox(pi, cfg);
 		notifyWaitingPlans();
+	});
+	// Write-check deferral (I-20261028-166): one steer per turn end naming the deferred findings
+	// this turn's edits added and never fixed; cleared after, so it is never repeated.
+	pi.on("agent_end", (_e, ctx) => {
+		const c = asCtx(ctx);
+		const wc = cfg.write_check;
+		if (!wc.enabled || (wc.applies_to !== "all" && c.kind !== "sub") || deferredWrite.size === 0) return;
+		const steers: string[] = [];
+		for (const [file, before] of deferredWrite) {
+			let after: string | null = null;
+			try {
+				after = readFileSync(file, "utf8");
+			} catch {}
+			const s = deferSteer(file, before, after, wc);
+			if (s) steers.push(s);
+		}
+		deferredWrite.clear();
+		if (steers.length > 0) pi.sendUserMessage(steers.join("\n"));
 	});
 
 	// omp is really shutting down: the exit-grace fallback must not fire.

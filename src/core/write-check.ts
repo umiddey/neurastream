@@ -18,10 +18,12 @@ export interface WriteCheckConfig {
 	applies_to: "sub" | "all";
 	timeout_ms: number;
 	suppress: string;
+	/** Rules whose new findings do not refuse an edit (I-20261028-166): allowed with a note, reported at turn end. */
+	defer_rules: string[];
 	linters: WriteCheckLinter[];
 }
 
-export type WriteCheckResult = { allow: true; note?: string } | { allow: false; reason: string };
+export type WriteCheckResult = { allow: true; note?: string; deferred?: true } | { allow: false; reason: string };
 
 // Counts per (rule, message) pair, so a rule's old debt never masquerades as the reason for a
 // refusal (I-20261028-150); suppression comments count per matching line under SUPPRESSION.
@@ -87,12 +89,9 @@ function suppressions(text: string, re: RegExp, f: Findings): void {
 	for (const line of text.split("\n")) if (re.test(line)) add(f, findingKey(SUPPRESSION, line), SUPPRESSION, line);
 }
 
-function refusal(file: string, now: Findings, old: Findings): string {
+function refusal(file: string, now: Findings, old: Findings, newKeys: string[]): string {
 	const head = `write-check: this edit adds lint problems to ${file}:`;
-	const rows = [...now.counts].flatMap(([k, n]) => {
-		const delta = n - (old.counts.get(k) ?? 0);
-		return delta > 0 ? [`- ${now.rules.get(k)} (+${delta}): ${now.samples.get(k)}`] : [];
-	});
+	const rows = newKeys.map((k) => `- ${now.rules.get(k)} (+${(now.counts.get(k) ?? 0) - (old.counts.get(k) ?? 0)}): ${now.samples.get(k)}`);
 	const room = REASON_MAX - head.length - TAIL.length - 2;
 	let body = rows.join("\n");
 	if (body.length > room) body = `${body.slice(0, room - 4)}\n...`;
@@ -116,7 +115,42 @@ export function checkWrite(file: string, before: string | null, after: string | 
 	} catch (err) {
 		return { allow: true, note: `write-check: ${file} not checked (${(err as Error).message}); the edit was allowed` };
 	}
-	const grew = [...now.counts].some(([k, n]) => n > (old.counts.get(k) ?? 0));
-	if (!grew) return { allow: true };
-	return { allow: false, reason: refusal(file, now, old) };
+	// A new finding of a deferred rule rides along mid-turn (I-20261028-166): declare-then-use
+	// refactors stay possible; the adapter reports what is still there at the turn's end (deferSteer).
+	const added = [...now.counts].filter(([k, n]) => n > (old.counts.get(k) ?? 0));
+	const real = added.filter(([k]) => !wc.defer_rules.includes(now.rules.get(k) ?? ""));
+	if (real.length > 0) return { allow: false, reason: refusal(file, now, old, real.map(([k]) => k)) };
+	if (added.length === 0) return { allow: true };
+	return {
+		allow: true,
+		deferred: true,
+		note: `write-check: ${file} adds findings under a deferred rule, allowed until turn end:\n${added
+			.map(([k]) => `- ${now.rules.get(k)}: ${now.samples.get(k)}`)
+			.join("\n")}`,
+	};
+}
+
+// Turn-end follow-up for deferred findings (I-20261028-166): the adapter holds each file's text from
+// before the turn's first deferred finding and calls this at agent_end; a non-null return becomes
+// one steer listing what is still there. Fixed, deleted, no matching linter, or a linter that did
+// not finish: null — the edit-time rule holds, a missing or crashed linter never blocks.
+export function deferSteer(file: string, before: string | null, after: string | null, wc: WriteCheckConfig): string | null {
+	if (after === null || before === after || wc.defer_rules.length === 0) return null;
+	const linters = wc.linters.filter((l) => l.ext.includes(extname(file)));
+	if (linters.length === 0) return null;
+	const old: Findings = { counts: new Map(), samples: new Map(), rules: new Map() };
+	const now: Findings = { counts: new Map(), samples: new Map(), rules: new Map() };
+	try {
+		if (before !== null) lintText(file, before, linters, wc, old);
+		lint(file, linters, wc, now);
+	} catch {
+		return null;
+	}
+	const rows = [...now.counts].flatMap(([k, n]) =>
+		n > (old.counts.get(k) ?? 0) && wc.defer_rules.includes(now.rules.get(k) ?? "")
+			? [`- ${now.rules.get(k)}: ${now.samples.get(k)}`]
+			: [],
+	);
+	if (rows.length === 0) return null;
+	return `write-check: ${file} still holds deferred findings added this turn:\n${rows.join("\n")}`;
 }

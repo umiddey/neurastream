@@ -3,7 +3,7 @@ import { mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/core/config.ts";
-import { checkWrite, type WriteCheckConfig, type WriteCheckResult } from "../src/core/write-check.ts";
+import { checkWrite, deferSteer, type WriteCheckConfig, type WriteCheckResult } from "../src/core/write-check.ts";
 
 test("the template's suppress regex needs a comment marker (I-20261028-113)", () => {
 	// Probes are assembled from pieces: this file must not hold text the suppress regex counts.
@@ -33,6 +33,7 @@ function wc(over: Partial<WriteCheckConfig> = {}): WriteCheckConfig {
 		applies_to: "all",
 		timeout_ms: 5000,
 		suppress: "noqa|@ts-ignore|eslint-disable",
+		defer_rules: [],
 		linters: [{ ext: [".ts"], argv: [process.execPath, FAKE, "{file}"], pattern: "^.+?:\\d+:\\d+: (?<rule>\\S+) (?<message>.+)$" }],
 		...over,
 	};
@@ -76,7 +77,7 @@ describe("checkWrite", () => {
 	});
 
 	test("an edit adding a finding under a deferred rule is allowed with a note naming it (I-20261028-166)", () => {
-		const r = run("const a = 1\n", "const a = 1\nlint:F401 unused helper\n", { defer_rules: ["F401"] });
+		const r = run("const a = 1\n", "const a = 1\nlint:F401: unused helper\n", { defer_rules: ["F401"] });
 		expect(r.allow).toBe(true);
 		if (!r.allow) return;
 		expect(r.note).toContain("F401");
@@ -156,5 +157,52 @@ describe("checkWrite", () => {
 		writeFileSync(file, "lint:E1\nlint:E2 lint:E3\n");
 		checkWrite(file, "lint:E1\nlint:E2\n", "lint:E1\nlint:E2 lint:E3\n", wc());
 		expect(readdirSync(d)).toEqual(["a.ts"]);
+	});
+});
+
+describe("deferSteer", () => {
+	test("lists deferred findings still present at turn end (I-20261028-166)", () => {
+		const d = mkdtempSync(join(tmpdir(), "neurastream-wc-"));
+		const file = join(d, "a.ts");
+		const before = "const a = 1\n";
+		const after = "const a = 1\nlint:F401: unused helper\n";
+		writeFileSync(file, after);
+		const s = deferSteer(file, before, after, wc({ defer_rules: ["F401"] }));
+		expect(s).toContain("F401");
+		expect(s).toContain("unused helper");
+		expect(s).toContain("a.ts");
+	});
+
+	test("a finding fixed later in the turn steers nothing (I-20261028-166)", () => {
+		const d = mkdtempSync(join(tmpdir(), "neurastream-wc-"));
+		const file = join(d, "a.ts");
+		const before = "const a = 1\n";
+		const fixed = "const a = 1\nhelper used\n";
+		writeFileSync(file, fixed);
+		expect(deferSteer(file, before, fixed, wc({ defer_rules: ["F401"] }))).toBeNull();
+	});
+
+	test("deferred debt the file already had steers nothing (I-20261028-166)", () => {
+		const d = mkdtempSync(join(tmpdir(), "neurastream-wc-"));
+		const file = join(d, "a.ts");
+		const text = "lint:F401 old debt\n";
+		writeFileSync(file, text);
+		expect(deferSteer(file, text, text, wc({ defer_rules: ["F401"] }))).toBeNull();
+	});
+
+	test("a deleted file, an empty defer_rules list or a failed linter steers nothing", () => {
+		const d = mkdtempSync(join(tmpdir(), "neurastream-wc-"));
+		const file = join(d, "a.ts");
+		writeFileSync(file, "lint:F401 x\n");
+		expect(deferSteer(file, "a\n", null, wc({ defer_rules: ["F401"] }))).toBeNull();
+		expect(deferSteer(file, "a\n", "lint:F401 x\n", wc({ defer_rules: [] }))).toBeNull();
+		expect(
+			deferSteer(
+				file,
+				"a\n",
+				"lint:F401 x\n",
+				wc({ defer_rules: ["F401"], linters: [{ ext: [".ts"], argv: ["no-such-linter-xyz", "{file}"], pattern: "^(?<rule>x)" }] }),
+			),
+		).toBeNull();
 	});
 });

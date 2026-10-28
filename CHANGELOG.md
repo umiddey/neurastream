@@ -1,5 +1,7 @@
 # Changelog
 ## Unreleased
+### Added
+- Deferred write-check rules (`write_check.defer_rules`, INCIDENT I-20261028-166): a new finding of a deferred rule (template: oxlint `no-unused-vars`, ruff `F401`, `F841`) no longer refuses the edit — it is allowed with a logged note, and the omp adapter injects one steer at the turn's end naming the deferred findings still present, so a declare-then-use refactor works with plain edits.
 ### Fixed
 - A write-check refusal names the findings the edit added, each with its own sample line (INCIDENT I-20261028-150, I-20261028-151): findings are compared as a `(rule, message)` multiset instead of per rule, so a rule's old lint debt is no longer listed as the refusal's reason (the single sample was the old warning) and new findings of a busy rule no longer hide behind one merged count. The template linter patterns capture a `message` group; a pattern without one keeps the older per-rule counting.
 - A refused write-check edit no longer undoes an earlier allowed edit to the same file from the same parallel batch (INCIDENT I-20261028-135): once an edit is allowed, every other pending call's "before" on that file becomes the allowed result, so a refusal restores the file to it and not to the pre-batch text.

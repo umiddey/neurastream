@@ -215,6 +215,7 @@ write_check:                 # write-time lint checks (src/core/write-check.ts):
   applies_to: sub            # "sub" = subagents only; "all" = Main too
   timeout_ms: 5000           # per linter run; a timeout, crash or missing linter allows the edit and logs a note
   suppress: '(#|//|/\*)\s*(noqa|type:\s*ignore|oxlint-disable|eslint-disable|biome-ignore|@ts-ignore|@ts-expect-error|@ts-nocheck)'   # a new match counts as a new problem; the word only counts inside a comment
+  defer_rules: ["no-unused-vars", "F401", "F841"]   # a new finding of one of these rules is allowed with a logged note and only reported at turn end if still present (I-20261028-166); [] turns the deferral off
   linters:
     - ext: [".py"]
       argv: ["ruff", "check", "--no-cache", "--output-format=concise", "--select", "E,F,B,S,C90,PERF,SIM", "--ignore", "E501,S101", "{file}"]

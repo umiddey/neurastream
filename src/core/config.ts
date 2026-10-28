@@ -447,6 +447,8 @@ function check(cfg: Config): void {
 	if (wc.applies_to !== "sub" && wc.applies_to !== "all") throw new ConfigError('write_check.applies_to must be "sub" or "all"');
 	if (!(wc.timeout_ms > 0)) throw new ConfigError("write_check.timeout_ms must be > 0");
 	if (!Array.isArray(wc.linters)) throw new ConfigError("write_check.linters must be a list");
+	if (!Array.isArray(wc.defer_rules) || wc.defer_rules.some((r) => typeof r !== "string" || r === ""))
+		throw new ConfigError("write_check.defer_rules must be a list of non-empty rule names");
 	const regexes: [string, unknown][] = [["write_check.suppress", wc.suppress]];
 	for (const [i, l] of wc.linters.entries()) {
 		const at = `write_check.linters[${i}]`;
