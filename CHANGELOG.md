@@ -1,5 +1,5 @@
 # Changelog
-## Unreleased
+## 0.2.47
 ### Fixed
 - The bare `queue-finished` command is installed again (INCIDENT I-20261028-119): it was the only queue script without a `bin/` wrapper and package.json `bin` row, so the rules table's `queue-finished` failed with "command not found" while `neurastream queue-finished` worked.
 ## 0.2.46
