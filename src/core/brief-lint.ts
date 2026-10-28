@@ -92,7 +92,8 @@ function lint(path: string, cfg: Config): { errs: string[]; warns: string[] } {
 	// plan's own MRs and branches instead.
 	if (!sections(text).has("progress")) {
 		const toks = new Set<string>();
-		for (const m of text.matchAll(/[!#]\d+/g)) toks.add(m[0]);
+		for (const m of text.matchAll(/!\d+/g)) toks.add(m[0]); // GitLab MR !N is an MR reference alone
+		for (const m of text.matchAll(/\b(?:MR|PR) (#\d+)/g)) toks.add(m[1]!); // a bare #N is prose noise ("INDEX #2")
 		for (const tok of toks) {
 			need(
 				briefNamesPending(text, "MR", tok),

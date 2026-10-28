@@ -288,6 +288,14 @@ test("a brief naming an MR in prose is refused; the MR !N: line passes", () => {
 	expect(briefLint([line], cfg)).toBe(0);
 });
 
+test("a bare #N is prose noise: #N counts only after MR or PR", () => {
+	expect(briefLint([brief("20261028_1530_hash_noise.md", null, false, cfg, ["Work INDEX #2 first, then step #3."])], cfg)).toBe(0);
+	const { rc, out } = captureLint([brief("20261028_1531_pr_prose.md", null, false, cfg, ["The same fix landed upstream as PR #33."])]);
+	expect(rc).toBe(1);
+	expect(out).toContain("MR #33 is named in prose");
+	expect(briefLint([brief("20261028_1532_pr_line.md", null, false, cfg, ["MR #33: the upstream fix — this task: only our config half"])], cfg)).toBe(0);
+});
+
 test("a plan (Progress section) may mention an MR in prose", () => {
 	const p = join(TMP, "20261028_1502_plan_mr.md");
 	writeFileSync(
