@@ -1252,8 +1252,8 @@ html{scroll-padding-top:64px}
 body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.4 system-ui,-apple-system,sans-serif}
 .top{position:sticky;top:0;display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--bg);z-index:2}
 .logo{font-weight:800;color:var(--acc)}
-.pills{display:flex;background:var(--card);border:1px solid var(--bd);border-radius:999px;padding:3px;flex:1}
-.pills a{flex:1;text-align:center;padding:5px 0;border-radius:999px;color:var(--mut);text-decoration:none;font-size:13px}
+.pills{display:flex;background:var(--card);border:1px solid var(--bd);border-radius:999px;padding:3px;flex:1;gap:3px;overflow-x:auto}
+.pills a{flex:none;text-align:center;padding:5px 10px;border-radius:999px;color:var(--mut);text-decoration:none;font-size:13px;white-space:nowrap}
 .pills a.on{background:var(--bg);color:var(--fg);font-weight:600;box-shadow:0 0 0 1px var(--bd)}
 .lock{border:1px solid var(--bd);background:var(--card);border-radius:999px;padding:6px 10px;font-size:13px;color:var(--fg);position:relative;flex:none}
 .lock summary{list-style:none;white-space:nowrap}
