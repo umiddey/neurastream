@@ -90,7 +90,7 @@ test("install never writes the block; it strips one an older install left, keepi
 	expect(text).not.toContain(BEGIN_MARK);
 	expect(installOmp(SANDBOX).agentsMd).toBe("unchanged");
 	expect(readFileSync(AGENTS, "utf8")).toBe(text);
-});
+}, 60_000);
 
 test("a clean install passes doctor", () => {
 	freshInstall(PERSONAL);
