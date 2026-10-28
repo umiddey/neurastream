@@ -8,7 +8,7 @@ fi
 WT=/home/ukd/Work/neurastream-main-only
 [ -d "$WT" ] || { echo "main-only-scope: no worktree"; exit 0; }
 cd "$WT" || exit 1
-ALLOWED='^(src/adapters/omp/(index|launch|install|doctor)\.ts|src/core/agents-md\.ts|tests/[^/]+\.test\.ts|README\.md|CHANGELOG\.md|docs/adapter\.md)$'
+ALLOWED='^(src/adapters/omp/(index|launch|install|doctor)\.ts|src/core/(agents-md|rollover)\.ts|tests/[^/]+\.test\.ts|README\.md|CHANGELOG\.md|docs/adapter\.md)$'
 BASE=$(git merge-base origin/main HEAD 2>/dev/null || echo origin/main)
 FILES=$( { git diff --name-only "$BASE"; git ls-files --others --exclude-standard; } 2>/dev/null | sort -u)
 rc=0
