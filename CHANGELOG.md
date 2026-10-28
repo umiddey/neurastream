@@ -1,4 +1,7 @@
 # Changelog
+## Unreleased
+### Fixed
+- Write-check false refusals from the shipped template (INCIDENT I-20261028-112, I-20261028-113): the suppress regex now requires a comment marker (`#`, `//` or `/*`) before the word, so a fixture or string that merely contains `noqa` is no longer refused; the template ruff run adds `--ignore E501,S101` because ruff's `--select` overrides a repo's own ignore list and long lines and test asserts are style, not new defects.
 ## 0.2.45
 ### Added
 - Write-time checks (plan 20261028_1228, P1–P3): with `write_check.enabled` on, an edit that adds a lint finding or a suppression comment to a linted file is undone and the call returns an error naming each new rule; `applies_to: sub` (default) checks subagents only, `all` checks Main too. Only findings the edit adds count, so old lint debt never blocks a file; a missing, crashed or timed-out linter allows the edit and logs a note. The template ships ruff (Python, incl. security rules `S`) and oxlint (TS/JS) entries, off by default.

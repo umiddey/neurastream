@@ -214,10 +214,10 @@ write_check:                 # write-time lint checks (src/core/write-check.ts):
   enabled: false             # on = check every edit; off in the shipped template
   applies_to: sub            # "sub" = subagents only; "all" = Main too
   timeout_ms: 5000           # per linter run; a timeout, crash or missing linter allows the edit and logs a note
-  suppress: 'noqa|type:\s*ignore|oxlint-disable|eslint-disable|biome-ignore|@ts-ignore|@ts-expect-error|@ts-nocheck'   # a new match counts as a new problem
+  suppress: '(#|//|/\*)\s*(noqa|type:\s*ignore|oxlint-disable|eslint-disable|biome-ignore|@ts-ignore|@ts-expect-error|@ts-nocheck)'   # a new match counts as a new problem; the word only counts inside a comment
   linters:
     - ext: [".py"]
-      argv: ["ruff", "check", "--no-cache", "--output-format=concise", "--select", "E,F,B,S,C90,PERF,SIM", "{file}"]
+      argv: ["ruff", "check", "--no-cache", "--output-format=concise", "--select", "E,F,B,S,C90,PERF,SIM", "--ignore", "E501,S101", "{file}"]
       pattern: '^.+?:\d+:\d+: (?<rule>\S+) '
     - ext: [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"]
       argv: ["oxlint", "-f", "unix", "-D", "correctness", "-D", "suspicious", "-D", "perf", "{file}"]

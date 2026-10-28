@@ -215,10 +215,10 @@ write_check:
   enabled: false
   applies_to: sub
   timeout_ms: 5000
-  suppress: 'noqa|type:\s*ignore|oxlint-disable|eslint-disable|biome-ignore|@ts-ignore|@ts-expect-error|@ts-nocheck'
+  suppress: '(#|//|/\*)\s*(noqa|type:\s*ignore|oxlint-disable|eslint-disable|biome-ignore|@ts-ignore|@ts-expect-error|@ts-nocheck)'
   linters:
     - ext: [".py"]
-      argv: ["ruff", "check", "--no-cache", "--output-format=concise", "--select", "E,F,B,S,C90,PERF,SIM", "{file}"]
+      argv: ["ruff", "check", "--no-cache", "--output-format=concise", "--select", "E,F,B,S,C90,PERF,SIM", "--ignore", "E501,S101", "{file}"]
       pattern: '^.+?:\d+:\d+: (?<rule>\S+) '
     - ext: [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"]
       argv: ["oxlint", "-f", "unix", "-D", "correctness", "-D", "suspicious", "-D", "perf", "{file}"]
@@ -358,6 +358,8 @@ Missing keys are filled from the defaults above. A present key replaces the defa
 ## write_check
 
 Write-time lint (`src/core/write-check.ts`, applied by the omp adapter). With `enabled: true`, each edit to a file that a linter entry covers is linted before and after the change. A rule key whose count grows, or a new line matching `suppress`, refuses the edit: the file is restored and the agent gets the reason. Findings that were already there never block. A missing linter, a crash or a timeout allows the edit and logs a note. `applies_to: sub` covers subagents only; `all` covers Main too. Arrays replace, so a user `linters` list replaces the two shipped entries.
+
+The shipped `suppress` regex only counts a marked word: a comment marker (`#`, `//` or `/*`) must sit before it, so a test fixture or string that merely contains `noqa` is not a suppression (INCIDENT I-20261028-113). The shipped ruff run adds `--ignore E501,S101` after its `--select`: ruff's `--select` overrides a repo's own ignore list, and long lines and `assert` in tests are style, not defects an edit may not add (INCIDENT I-20261028-112).
 
 
 ## traces.owned_repos

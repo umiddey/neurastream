@@ -2,7 +2,17 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { loadConfig } from "../src/core/config.ts";
 import { checkWrite, type WriteCheckConfig, type WriteCheckResult } from "../src/core/write-check.ts";
+
+test("the template's suppress regex needs a comment marker (I-20261028-113)", () => {
+	// Probes are assembled from pieces: this file must not hold text the suppress regex counts.
+	const { suppress } = loadConfig({ file: "/tmp/neurastream-home-wc/missing.yml", home: "/tmp/neurastream-home-wc", env: {} }).write_check;
+	const rx = new RegExp(suppress);
+	expect(rx.test(`x = 1  # ${"no"}${"qa"}: E501`)).toBe(true);
+	expect(rx.test(`// ${"@ts-"}${"ignore"}`)).toBe(true);
+	expect(rx.test(`const s = "${"no"}${"qa"}"`)).toBe(false);
+});
 
 const FAKE = join(import.meta.dir, "fixtures/write-check/fake-linter.ts");
 const TAIL = "The file was restored to its state before this edit; fix it and edit again — do not add suppression comments.";
