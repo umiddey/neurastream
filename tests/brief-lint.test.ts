@@ -164,7 +164,7 @@ test("brief.repo_rules fire from config; first and unless gate on the title line
 // is still checked whole.
 const GONE = join(TMP, "home", "projects", "gone-wt", "src", "deep", "gone.ts");
 
-function captureLint(files: string[]): { rc: number; out: string } {
+function captureLint(files: string[], c: Config = cfg): { rc: number; out: string } {
 	const chunks: string[] = [];
 	const orig = process.stdout.write.bind(process.stdout);
 	process.stdout.write = ((chunk: string | Uint8Array) => {
@@ -172,7 +172,7 @@ function captureLint(files: string[]): { rc: number; out: string } {
 		return true;
 	}) as typeof process.stdout.write;
 	try {
-		return { rc: briefLint(files, cfg), out: chunks.join("") };
+		return { rc: briefLint(files, c), out: chunks.join("") };
 	} finally {
 		process.stdout.write = orig;
 	}
@@ -273,3 +273,165 @@ test("a plain brief without Phases is still checked whole", () => {
 	expect(rc).toBe(1);
 	expect(out).toContain(GONE);
 });
+
+// --- P4/P4b (plan 20261028_1600): MR naming, main-checkout plan paths, blocker scope ---
+
+test("a brief naming an MR in prose is refused; the MR !N: line passes", () => {
+	const prose = captureLint([
+		brief("20261028_1500_mr_prose.md", null, false, cfg, ["Finish the work pushed as MR !211 first."]),
+	]);
+	expect(prose.rc).toBe(1);
+	expect(prose.out).toContain("MR !211 is named in prose");
+	const line = brief("20261028_1501_mr_line.md", null, false, cfg, [
+		"MR !211: the e2 classification half — this task: only the export half",
+	]);
+	expect(briefLint([line], cfg)).toBe(0);
+});
+
+test("a bare #N is prose noise: #N counts only after MR or PR", () => {
+	expect(briefLint([brief("20261028_1530_hash_noise.md", null, false, cfg, ["Work INDEX #2 first, then step #3."])], cfg)).toBe(0);
+	const { rc, out } = captureLint([brief("20261028_1531_pr_prose.md", null, false, cfg, ["The same fix landed upstream as PR #33."])]);
+	expect(rc).toBe(1);
+	expect(out).toContain("MR #33 is named in prose");
+	expect(briefLint([brief("20261028_1532_pr_line.md", null, false, cfg, ["MR #33: the upstream fix — this task: only our config half"])], cfg)).toBe(0);
+});
+
+test("a plan (Progress section) may mention an MR in prose", () => {
+	const p = join(TMP, "20261028_1502_plan_mr.md");
+	writeFileSync(
+		p,
+		[
+			"# 20261028_1502_plan_mr",
+			"",
+			"## Goal",
+			"- Never redo work already pushed as MR !211. Stop and report within ~60 calls.",
+			"",
+			"## Forbidden",
+			"- never push",
+			"",
+			"## Phases",
+			"- [ ] P1 gate — verify: `true`",
+			"",
+			"## Done check",
+			"`true`",
+			"",
+			"## Progress",
+			"Status: open",
+			"",
+		].join("\n"),
+	);
+	expect(briefLint([p], cfg)).toBe(0);
+});
+
+// --- P4/P4b (plan 20261028_1600): MR naming, main-checkout plan paths, blocker scope ---
+
+const ROOT = join(TMP, "home", "projects", "toy");
+const WT = join(TMP, "home", "projects", "toy-wt"); // same work root as ROOT — the live layout
+const BLOCKERS = join(TMP, "home", ".omp", "agent", "blockers");
+const INDEX = join(TMP, "home", ".omp", "agent", "INDEX.md");
+const PLAN_BASE = "20261028_1400_scoped.md";
+const scopeCfg: Config = loadConfig({
+	home: join(TMP, "home"),
+	env: {
+		MAIN_GUARD_ROOTS: join(TMP, "home", "projects"), // holds both the main checkout and the worktree
+		QUEUE_INDEX: INDEX,
+		QUEUE_BLOCKERS: BLOCKERS,
+	},
+});
+
+function scopeFixture(): void {
+	mkdirSync(join(ROOT, "docs/plans"), { recursive: true });
+	mkdirSync(join(WT, "docs/plans"), { recursive: true });
+	mkdirSync(join(WT, "src/core"), { recursive: true });
+	mkdirSync(join(WT, "tests"), { recursive: true });
+	mkdirSync(BLOCKERS, { recursive: true });
+	writeFileSync(INDEX, `${join(ROOT, "docs/plans", PLAN_BASE)}\n`);
+	const plan = [
+		"# scoped plan",
+		"",
+		"## Goal",
+		"- Stay in scope. Stop and report within ~60 calls.",
+		"",
+		"## Forbidden",
+		"- never push",
+		"",
+		"## Blockers",
+		"- scope.sh",
+		"",
+		"## Phases",
+		"- [ ] P1 gate — verify: `true`",
+		"",
+		"## Done check",
+		"`true`",
+		"",
+		"## Progress",
+		"Status: open",
+		"",
+	].join("\n");
+	writeFileSync(join(ROOT, "docs/plans", PLAN_BASE), plan);
+	writeFileSync(join(WT, "docs/plans", PLAN_BASE), plan);
+	writeFileSync(join(WT, "src/core/guards.ts"), "export const x = 1;\n");
+	writeFileSync(join(WT, "src/core/brief-lint.ts"), "export const y = 1;\n");
+	writeFileSync(join(WT, "tests/one.test.ts"), "test('x', () => {});\n");
+	writeFileSync(join(BLOCKERS, "scope.sh"), "#!/bin/sh\nALLOWED='^(src/core/guards\\.ts|tests/one\\.test\\.ts)$'\nexit 0\n");
+}
+
+// A brief that satisfies every other rule and names one file under the toy worktree.
+function scopeBrief(name: string, body: string): string {
+	const p = join(TMP, name);
+	writeFileSync(
+		p,
+		[
+			"# " + name.replace(/\.md$/, ""),
+			"",
+			"## Goal",
+			"- Work the scoped plan. Stop and report within ~60 calls.",
+			"",
+			body,
+			"",
+			"## Forbidden",
+			"- never push",
+			"",
+			"## Acceptance",
+			"- exit 0",
+			"",
+		].join("\n"),
+	);
+	return p;
+}
+
+test("a brief naming the plan copy in a same-root worktree is refused; the indexed main checkout path passes", () => {
+	scopeFixture();
+	const noPlan = captureLint([scopeBrief("20261028_1510_no_plan.md", "Read more of the plan someday.")], scopeCfg);
+	expect(noPlan.rc).toBe(1);
+	expect(noPlan.out).toContain("no line names the plan's absolute path in its main checkout");
+	const wtCopy = captureLint(
+		[scopeBrief("20261028_1511_wt_copy.md", `Plan: ${join(WT, "docs/plans", PLAN_BASE)} has the phases.`)],
+		scopeCfg,
+	);
+	expect(wtCopy.rc).toBe(1);
+	expect(wtCopy.out).toContain("worktree path");
+	const mainCopy = scopeBrief("20261028_1512_main_copy.md", `Plan: ${join(ROOT, "docs/plans", PLAN_BASE)} has the phases.`);
+	expect(briefLint([mainCopy], scopeCfg)).toBe(0);
+});
+
+test("a src/tests path the plan's blocker ALLOWED regex rejects is refused", () => {
+	scopeFixture();
+	const inScope = scopeBrief(
+		"20261028_1520_in_scope.md",
+		[`Plan: ${join(ROOT, "docs/plans", PLAN_BASE)} has the phases.`, `Touch ${join(WT, "src/core/guards.ts")} only.`].join("\n"),
+	);
+	expect(briefLint([inScope], scopeCfg)).toBe(0);
+	const outScope = captureLint(
+		[
+			scopeBrief(
+				"20261028_1521_out_scope.md",
+				[`Plan: ${join(ROOT, "docs/plans", PLAN_BASE)} has the phases.`, `Touch ${join(WT, "src/core/brief-lint.ts")} too.`].join("\n"),
+			),
+		],
+		scopeCfg,
+	);
+	expect(outScope.rc).toBe(1);
+	expect(outScope.out).toContain("scope.sh does not allow src/core/brief-lint.ts");
+});
+

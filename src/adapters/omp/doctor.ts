@@ -178,7 +178,7 @@ export function doctorReport(home: string, env: NodeJS.ProcessEnv = process.env,
 		if (seen.has(file.live)) continue;
 		seen.add(file.live);
 		if (!existsSync(file.live)) {
-			problems.push(`missing: ${file.live}`);
+			problems.push(`missing: ${file.live} — run: neurastream adapter install omp`);
 			continue;
 		}
 		if (isPackageFile(file.live, file.source)) {

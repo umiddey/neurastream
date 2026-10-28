@@ -159,6 +159,15 @@ export interface Config {
 	};
 	/** The owner's phone page (`neurastream ui`): binds the tailnet address only. */
 	ui: { enabled: boolean; port: number; owner_login: string };
+	/** Plan review gate (plan 20261028_1600): reuse lines and, from P2 on, the reviewer PASS lock. */
+	review: {
+		/** Plans stamped before this ISO date are exempt from the reuse-line and reviewer-PASS gates; "" = off. */
+		since: string;
+		/** Agents a review spawn may run under: the PASS exemption needs one of these plus the brief's `Plan review: <plan>` line. */
+		agents: string[];
+		/** Minutes the spawn gate caches a repo's open-MR list in <queue_state>/mr-cache.json; 0 = no cache. */
+		mr_cache_minutes: number;
+	};
 	/** Static pages hosted over the tailnet. */
 	pages: { enabled: boolean; port: number; dir: string; keep_days: number };
 	/** Repo-local HTML explainers under docs/knowledge/ (owner page Knowledge tab). */
@@ -447,6 +456,8 @@ function check(cfg: Config): void {
 	if (wc.applies_to !== "sub" && wc.applies_to !== "all") throw new ConfigError('write_check.applies_to must be "sub" or "all"');
 	if (!(wc.timeout_ms > 0)) throw new ConfigError("write_check.timeout_ms must be > 0");
 	if (!Array.isArray(wc.linters)) throw new ConfigError("write_check.linters must be a list");
+	if (!Array.isArray(wc.defer_rules) || wc.defer_rules.some((r) => typeof r !== "string" || r === ""))
+		throw new ConfigError("write_check.defer_rules must be a list of non-empty rule names");
 	const regexes: [string, unknown][] = [["write_check.suppress", wc.suppress]];
 	for (const [i, l] of wc.linters.entries()) {
 		const at = `write_check.linters[${i}]`;
@@ -472,6 +483,11 @@ function check(cfg: Config): void {
 		throw new ConfigError(`guards.plan_offer: not a valid regex: ${cfg.guards.plan_offer}`);
 	}
 	if (!(cfg.rollover.max_session_mb > 0)) throw new ConfigError("rollover.max_session_mb must be > 0");
+	if (typeof cfg.review.since !== "string") throw new ConfigError("review.since must be an ISO date string (\"\" = off)");
+	if (!Array.isArray(cfg.review.agents) || cfg.review.agents.some(a => typeof a !== "string" || !a.trim()))
+		throw new ConfigError('review.agents must be a list of agent names allowed to run review spawns (default ["reviewer"])');
+	if (!Number.isInteger(cfg.review.mr_cache_minutes) || cfg.review.mr_cache_minutes < 0)
+		throw new ConfigError("review.mr_cache_minutes must be an integer >= 0 (minutes the spawn gate caches a repo's open-MR list; 0 = no cache)");
 	if (cfg.autonomy.tier !== "strict" && cfg.autonomy.tier !== "opinionated" && cfg.autonomy.tier !== "full")
 		throw new ConfigError('autonomy.tier must be "strict", "opinionated" or "full"');
 	if (!Number.isInteger(cfg.autonomy.strict_edit_limit) || cfg.autonomy.strict_edit_limit < 1)

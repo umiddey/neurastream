@@ -216,6 +216,7 @@ write_check:
   applies_to: sub
   timeout_ms: 5000
   suppress: '(#|//|/\*)\s*(noqa|type:\s*ignore|oxlint-disable|eslint-disable|biome-ignore|@ts-ignore|@ts-expect-error|@ts-nocheck)'
+  defer_rules: ["no-unused-vars", "F401", "F841"]
   linters:
     - ext: [".py"]
       argv: ["ruff", "check", "--no-cache", "--output-format=concise", "--select", "E,F,B,S,C90,PERF,SIM", "--ignore", "E501,S101", "{file}"]
@@ -303,6 +304,12 @@ traces:
 
 `autonomy.*` is the owner's preference layer (src/core/autonomy.ts): how much Main may do without asking. `autonomy.tier` (default `opinionated`) is the tier in force whenever `<queue_state>/autonomy-tier` does not name one of the three; the owner moves the real setting any time with the whole chat message `tier strict|opinionated|full` (when `guards.chat_unlock` is on) or the phone page's tier buttons — never a tool call, the state dir is protected. `strict` caps Main's project-file changes at `autonomy.strict_edit_limit` per `guards.main_window_min` minutes and refuses `git push`, `glab mr merge` and `gh pr merge` (seen through `sh -c`/`sudo` like the ui-start rule) until the owner types the approve phrase `autonomy.go_phrase` (default `go push`): the whole trimmed message, case-insensitive with inner spaces collapsed — a bare `go` is an ordinary message. One landing, valid `autonomy.go_minutes` minutes, consumed by the first gated call. `opinionated` keeps `guards.main_edit_limit`. `full` drops the edit cap and accepts a `Priority skip: <plan> — Main: "<reason>"` line (reason ≥ 4 words) at the priority gate; the owner-quote proof still works there. Every tier keeps the owner-only moves owner-only: protected guard files, starting the phone page, notify secrets, the unlock and the tier file itself.
 
+`review.since` (default `"2026-10-28"`) starts the plan review gate (plan 20261028_1600): a plan stamped at or after it must carry a `## Reuse` section — one line per new setting, function, file or dependency, `- new: <thing> — checked: <path>:<line> — reuse: <how, or why not>` (`- new: none — …` when nothing is new) — and every cited path must exist relative to the plan's repo; queue-check lists violations as queue problems and the spawn guard refuses a brief on such a plan. Plans stamped before `since` are grandfathered until the audit pass removes the setting; `""` switches the check off. The reviewer PASS lock (P2) and the pending-work cache (P3) ride the same `review:` group.
+
+`review.mr_cache_minutes` (default `10`, `0` = no cache) bounds the spawn gate's open-MR cache: for `review.mr_cache_minutes` minutes after one repo's forge list, a spawn on a plan of that repo reuses `<queue_state>/mr-cache.json` instead of calling `glab`/`gh` again. A forge outage is never cached — the spawn gate degrades to a guard-log line and the next spawn retries, exactly like the MR sweep.
+
+`review.agents` (default `["reviewer"]`) lists the agents a review spawn may run under: the reviewer-PASS gate exempts a spawn whose agent is on this list and whose brief carries the `Plan review: <plan>` line naming the plan. Everyone else needs the recorded PASS, and only a subagent's `PLAN REVIEW: PASS|FAIL` progress entry can record one (`<queue_state>/plan-reviews.json`; Main's plan edits never record).
+
 `score.default_branch` has no default. It is config, not a core literal: set it here or pass `--branch`; with `score.default_repo` empty, `accept` / `check` require `--repo` and `--branch`.
 
 `score.waste_weight` must be between 0 and 1. It scales each model's points-per-dollar ranking by its wasted-call fraction; the default 0 leaves the existing ranking unchanged.
@@ -350,17 +357,20 @@ The loader rejects:
 - `knowledge.roots` that is not a non-empty list of non-empty paths, or `knowledge.max_age_s` below 1 or not an integer
 - a `brief.repo_rules` entry whose `match`, `require`, `first` or `unless` does not compile as a case-insensitive regex, or whose `message` is empty
 - `secrets.proxy` that is not `none` or `secretgate`, a `secrets.known_value_files` entry that is not a non-empty path, or a `secrets.extra_patterns` entry without a non-empty `type` and a `regex` that compiles
-- `write_check.applies_to` that is not `sub` or `all`, `write_check.timeout_ms` that is not above 0, a `write_check.suppress` that is empty or does not compile, or a `write_check.linters` entry whose `ext` is not a list of dotted extensions, whose `argv` lacks `{file}`, or whose `pattern` lacks a `(?<rule>` group or does not compile
+- `write_check.applies_to` that is not `sub` or `all`, `write_check.timeout_ms` that is not above 0, a `write_check.suppress` that is empty or does not compile, a `write_check.defer_rules` that is not a list of non-empty rule names, or a `write_check.linters` entry whose `ext` is not a list of dotted extensions, whose `argv` lacks `{file}`, or whose `pattern` lacks a `(?<rule>` group or does not compile
 - YAML that does not parse
 
 Missing keys are filled from the defaults above. A present key replaces the default. Objects merge one level (`score.penalties` merges per kind; an omitted kind keeps the default). Arrays replace.
 
 ## write_check
 
-Write-time lint (`src/core/write-check.ts`, applied by the omp adapter). With `enabled: true`, each edit to a file that a linter entry covers is linted before and after the change. A rule key whose count grows, or a new line matching `suppress`, refuses the edit: the file is restored and the agent gets the reason. Findings that were already there never block. A missing linter, a crash or a timeout allows the edit and logs a note. `applies_to: sub` covers subagents only; `all` covers Main too. Arrays replace, so a user `linters` list replaces the two shipped entries.
+Write-time lint (`src/core/write-check.ts`, applied by the omp adapter). With `enabled: true`, each edit to a file that a linter entry covers is linted before and after the change. A `(rule, message)` pair whose count grows, or a new line matching `suppress`, refuses the edit: the file is restored and the agent gets the reason. Findings that were already there never block. A missing linter, a crash or a timeout allows the edit and logs a note. `applies_to: sub` covers subagents only; `all` covers Main too. Arrays replace, so a user `linters` list replaces the two shipped entries.
+
+A pattern may name a `(?<message>` group next to `rule`; findings are then compared by `(rule, message)` multiset, so the refusal names each new finding's own line and a rule's old debt can neither be blamed for a refusal nor hide the new finding behind one merged count (INCIDENT I-20261028-150, I-20261028-151). A pattern without a `message` group keeps the older per-rule counting.
 
 The shipped `suppress` regex only counts a marked word: a comment marker (`#`, `//` or `/*`) must sit before it, so a test fixture or string that merely contains `noqa` is not a suppression (INCIDENT I-20261028-113). The shipped ruff run adds `--ignore E501,S101` after its `--select`: ruff's `--select` overrides a repo's own ignore list, and long lines and `assert` in tests are style, not defects an edit may not add (INCIDENT I-20261028-112).
 
+A new finding whose rule is in `defer_rules` does not refuse the edit: it is allowed with a logged note, and the omp adapter re-lints the file at the turn's end — one steer lists the deferred findings still present, a file fixed or deleted later in the turn steers nothing (INCIDENT I-20261028-166, so a declare-then-use refactor works with plain edits). A missing or crashed linter steers nothing too. `defer_rules: []` turns the deferral off.
 
 ## traces.owned_repos
 
