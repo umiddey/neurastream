@@ -112,7 +112,7 @@ export const OWNER_AWAY =
 	"Owner away (automatic rollover). Continue the work in the note and the queue; the owner reads results later.";
 
 /** The one-time note instruction for Main's next turn. `reason` (a stale install) names both versions and replaces the size line. */
-export function noteRequest(path: string, auto = false, reason = ""): string {
+export function noteRequest(path: string, reason = ""): string {
 	return [
 		reason
 			? `${NOTE_REQUEST_PREFIX} a new neurastream version is installed (${reason}).`
@@ -120,9 +120,7 @@ export function noteRequest(path: string, auto = false, reason = ""): string {
 		`Write a handoff note to ${path} (overwrite it). Cover the work in progress and its state, the decisions made and why, the next step, and the files involved.`,
 		"Do not list holds or owner blockers in the note; they come from the plans' WAITING on owner lines.",
 		"Do not state which agents or providers are rate-limited or free; that comes from agent-ledger --cap.",
-		auto
-			? "As soon as this note is written and no own jobs run, this session restarts into a fresh one that starts from this note verbatim plus the generated main-start state."
-			: "When the owner's next message arrives, this session closes and a fresh one starts from that note verbatim plus the generated main-start state.",
+		"As soon as this note is written and none of its own jobs are running, this session restarts into a fresh one that starts from this note verbatim plus the generated main-start state.",
 	].join("\n");
 }
 

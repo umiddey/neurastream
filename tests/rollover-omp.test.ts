@@ -467,6 +467,29 @@ test("omp really shutting down (session_shutdown) cancels the in-process fallbac
 	expect(existsSync(relaunchPath())).toBe(true);
 });
 
+test("the exit-grace fallback still fires after the hook returns: the event loop keeps running", async () => {
+	resetState();
+	const host = fakeHost();
+	createOmpAdapter(host, graceCfg());
+	const { ctx, opened } = ctxAwaitingOpen();
+	const handedOff = handoffSignal(host);
+	vi.useFakeTimers();
+	try {
+		await armReady(host, ctx, "## In progress\nstep");
+		await host.emit("agent_end", {}, ctx); // the hook returns here; the grace timer is now pending
+		expect(existsSync(relaunchPath())).toBe(true);
+		// Nothing in the hook runs the fallback: only the timer loop can fire it after the hook returned.
+		vi.advanceTimersByTime(60_000);
+	} finally {
+		vi.useRealTimers();
+	}
+	// A fired fallback deletes the request synchronously; the rollover then runs to its real end.
+	expect(existsSync(relaunchPath())).toBe(false);
+	await opened;
+	await handedOff;
+	expect(newSessions).toEqual([{ parentSession: SESSION_FILE }]);
+}, 60_000);
+
 test("a terminal run end during the in-process rollover does not request a new relaunch", async () => {
 	resetState();
 	const host = fakeHost();

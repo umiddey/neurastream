@@ -1061,7 +1061,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	// The note request for a state. A stale install names both versions in place of the size line.
 	const noteRequestFor = (c: RolloverCtx, snap: { stale: boolean; liveVersion: string | null }): string => {
 		const reason = snap.stale ? `neurastream on disk is ${snap.liveVersion ?? "unknown"}, this session runs ${loadedVersion ?? "unknown"}` : undefined;
-		return noteRequest(notePath(c.sessionId), true, reason);
+		return noteRequest(notePath(c.sessionId), reason);
 	};
 
 	let relaunched = false;
