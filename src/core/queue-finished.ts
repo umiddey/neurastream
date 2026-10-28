@@ -8,7 +8,8 @@ import { finishedEntry, finishedKey, finishedPath, parsePlan, planRepo, prependF
 
 const USAGE = "usage: queue-finished --backfill | --dedupe | queue-finished <word>";
 
-function walkMd(dir: string, out: string[]): void {
+/** Shared with src/core/results.ts: every *.md under dir, recursively. */
+export function walkMd(dir: string, out: string[]): void {
 	let names: string[];
 	try {
 		names = readdirSync(dir);
@@ -28,8 +29,8 @@ function walkMd(dir: string, out: string[]): void {
 	}
 }
 
-/** Repos named by work_roots, plus one level of children so a root that holds many checkouts still counts. */
-function repoRoots(roots: string[]): string[] {
+/** Repos named by work_roots, plus one level of children so a root that holds many checkouts still counts. Shared with src/core/results.ts. */
+export function repoRoots(roots: string[]): string[] {
 	const out: string[] = [];
 	for (const root of roots) {
 		if (!existsSync(root)) continue;

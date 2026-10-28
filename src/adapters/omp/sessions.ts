@@ -158,13 +158,10 @@ function build(file: string, cfg: Config, mtime: number, agentsDir: string): Run
 		} catch {
 			continue;
 		}
-		const ts = d.timestamp;
-		if (typeof ts === "string") {
-			const t = parseTs(ts);
-			if (t !== null) {
-				first = first ?? t;
-				last = t;
-			}
+		const ts = typeof d.timestamp === "string" ? parseTs(d.timestamp) : null;
+		if (ts !== null) {
+			first = first ?? ts;
+			last = ts;
 		}
 		if (d.customType === "session_exit") exited = true;
 		if (d.customType === "tool_execution_start") {
@@ -222,7 +219,12 @@ function build(file: string, cfg: Config, mtime: number, agentsDir: string): Run
 				role: typeof m.role === "string" ? m.role : "",
 				cost: lineCost,
 				text: pyDumps(m.content ?? "").slice(0, 20000),
+				ts,
 			});
+		} else if (m.role === "user" && !messages.length) {
+			// A sub keeps only its first user message: results (src/core/results.ts) price the run
+			// by the plan path that message names.
+			messages.push({ role: "user", cost: lineCost, text: pyDumps(m.content ?? "").slice(0, 20000), ts });
 		}
 	}
 
@@ -271,7 +273,8 @@ function build(file: string, cfg: Config, mtime: number, agentsDir: string): Run
 		startedAt: first,
 		lastWriteAt: mtime,
 		endedAt: last,
-		messages: isMain ? messages : [],
+		// Subs: build() above keeps only the first user message, which results.ts prices by.
+		messages,
 		scoreModel,
 		scoreCost,
 		scoreHours: ((last ?? 0) - (first ?? 0)) / 3600,

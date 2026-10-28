@@ -12,6 +12,8 @@ import { buildReport, type BloatSummary, type ProviderSummary } from "../core/re
 import { providerFindings } from "../core/trace-provider.ts";
 import { bloatRules } from "../core/trace-bloat.ts";
 import { getAdapter } from "../adapters/index.ts";
+import { featuresReport, loadPlans, type FeaturesReport } from "../core/results.ts";
+import { gitTop } from "../core/queue/lib.ts";
 import { assignDumps, bloatReport } from "./traces.ts";
 
 export const METRICS_USAGE = [
@@ -19,6 +21,7 @@ export const METRICS_USAGE = [
 	'       neurastream metrics false-alarm <log-ts> --why "<text>"',
 	'       neurastream metrics rule "<text>" --approved|--rejected',
 	"       neurastream metrics report [--days N]",
+	"       neurastream metrics features [--days N] [--json]",
 ].join("\n");
 
 function flagValue(args: string[], name: string): string | undefined {
@@ -153,6 +156,51 @@ export function reportCmd(cfg: Config, source: RunSource, args: string[], now: n
 	return 0;
 }
 
+/** Local `YYYY-MM-DD HH:MM`, the stamp style Progress entries use. */
+function localStamp(ts: number): string {
+	const d = new Date(ts * 1000);
+	const two = (n: number) => String(n).padStart(2, "0");
+	return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}`;
+}
+
+function featuresTable(r: FeaturesReport): string {
+	const out = [`Results: last ${r.days} days [${localStamp(r.from)} to ${localStamp(r.to)})`];
+	out.push("stem                           kind        plans fix  $total  $first  closed at");
+	for (const row of r.rows) {
+		out.push(
+			`${row.stem.padEnd(30)} ${row.kind.padEnd(11)} ${String(row.plans).padEnd(5)} ${String(row.fixPlans).padEnd(4)} ` +
+				`${row.total.toFixed(2).padEnd(7)} ${row.first.toFixed(2).padEnd(7)} ${localStamp(row.closedAt)}`,
+		);
+	}
+	for (const s of r.summaries) {
+		const perFeature = s.perFeature === null ? "n/a" : `$${s.perFeature.toFixed(2)}`;
+		const firstPass = s.firstPass === null ? "n/a" : `$${s.firstPass.toFixed(2)}`;
+		const overhead = s.overheadPct === null ? "n/a" : `${s.overheadPct.toFixed(0)}%`;
+		out.push(
+			`${s.kind}: finished ${s.finished} (${s.perDay.toFixed(2)}/day), ${perFeature}/feature, first-pass ${firstPass}, ` +
+				`overhead ${overhead}, open chains ${s.openChains} ($${s.openSunk.toFixed(2)} sunk)`,
+		);
+	}
+	return out.join("\n");
+}
+
+/** `metrics features`: $ per finished feature over the queue's own plan chains. */
+export function featuresCmd(cfg: Config, source: RunSource, args: string[], now: number): number {
+	const raw = flagValue(args, "--days");
+	const days = raw === undefined ? cfg.metrics.report_days : Number(raw);
+	if (!Number.isInteger(days) || days < 1) {
+		console.error(METRICS_USAGE);
+		return 2;
+	}
+	const report = featuresReport(source.listRuns(now - days * 86400), loadPlans(cfg), gitTop(import.meta.dir)?.repo ?? null, days, now);
+	if (args.includes("--json")) {
+		console.log(JSON.stringify(report, null, 2));
+		return 0;
+	}
+	console.log(featuresTable(report));
+	return 0;
+}
+
 export async function runMetrics(args: string[]): Promise<number> {
 	let cfg: Config;
 	try {
@@ -165,6 +213,7 @@ export async function runMetrics(args: string[]): Promise<number> {
 	const now = nowSec();
 	if (sub === "ci") return recordCi(cfg, rest[0] ?? "", rest[1] ?? "", now);
 	if (sub === "report") return reportCmd(cfg, getAdapter(cfg).runSource(cfg), rest, now);
+	if (sub === "features") return featuresCmd(cfg, getAdapter(cfg).runSource(cfg), rest, now);
 	if (sub === "false-alarm") return recordFalseAlarm(cfg, rest[0] ?? "", flagValue(rest, "--why") ?? "", now);
 	if (sub === "rule") {
 		const approved = rest.includes("--approved");

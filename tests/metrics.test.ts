@@ -143,13 +143,13 @@ test("M4 counts owner messages, corrections and Main's trailing-? questions from
 		kind: "main",
 		lastWriteAt: NOW - 100,
 		messages: [
-			{ role: "user", cost: 0, text: JSON.stringify([{ type: "text", text: "no, that is wrong" }]) },
-			{ role: "user", cost: 0, text: JSON.stringify("ok thanks") },
-			{ role: "assistant", cost: 0, text: JSON.stringify([{ type: "text", text: "Shall I continue?" }]) },
-			{ role: "assistant", cost: 0, text: JSON.stringify([{ type: "text", text: "Done." }]) },
+			{ role: "user", cost: 0, ts: null, text: JSON.stringify([{ type: "text", text: "no, that is wrong" }]) },
+			{ role: "user", cost: 0, ts: null, text: JSON.stringify("ok thanks") },
+			{ role: "assistant", cost: 0, ts: null, text: JSON.stringify([{ type: "text", text: "Shall I continue?" }]) },
+			{ role: "assistant", cost: 0, ts: null, text: JSON.stringify([{ type: "text", text: "Done." }]) },
 		],
 	});
-	const sub = run({ id: "s", kind: "sub", lastWriteAt: NOW - 100, messages: [{ role: "user", cost: 0, text: "no" }] });
+	const sub = run({ id: "s", kind: "sub", lastWriteAt: NOW - 100, messages: [{ role: "user", cost: 0, ts: null, text: "no" }] });
 	const patterns = ["\\bno\\b", "wrong"].map((p) => new RegExp(p, "i"));
 	expect(m4([main, sub], cur, patterns)).toEqual({ users: 2, corrections: 1, questions: 1 });
 });
@@ -164,7 +164,7 @@ test("M4 does not count the rollover note request or a handoff's note as owner c
 		id: "20261023-main",
 		kind: "main",
 		lastWriteAt: NOW - 100,
-		messages: machine.map(text => ({ role: "user", cost: 0, text: JSON.stringify([{ type: "text", text }]) })),
+		messages: machine.map(text => ({ role: "user", cost: 0, ts: null, text: JSON.stringify([{ type: "text", text }]) })),
 	});
 	const patterns = ["\\bno\\b", "wrong", "stop"].map((p) => new RegExp(p, "i"));
 	expect(m4([main], cur, patterns)).toEqual({ users: 3, corrections: 1, questions: 0 });
