@@ -183,6 +183,51 @@ test("chain kind follows the self repo", () => {
 	expect(cs.find(c => c.stem === ALPHA)!.kind).toBe("product");
 });
 
+// P5c fixture: a git repo plus a linked worktree, both holding the same plan; a second home
+// keeps the sandbox config scoped to them so the other tests' discovery lists stay untouched.
+const WTHOME = join(TMP, "wthome");
+const WTROOT = join(TMP, "wtroot");
+const WT = "20261024_2100_wtplan";
+mkdirSync(join(WTHOME, ".config/neurastream"), { recursive: true });
+writeFileSync(
+	join(WTHOME, ".config/neurastream/config.yml"),
+	`paths:
+  home: "${WTHOME}"
+  work_roots: ["${WTROOT}"]
+  agent_dir: "${join(WTHOME, "agent")}"
+  queue_index: "${join(WTHOME, "agent/INDEX.md")}"
+  blockers: "${join(WTHOME, "agent/blockers")}"
+  queue_state: "${join(WTHOME, "state")}"
+  subagents: "${join(WTHOME, "agent/notes/subagents.md")}"
+  cancelled: "${join(WTHOME, "agent/CANCELLED.md")}"
+  unlock: "${join(WTHOME, "agent/.guard-unlock")}"
+`,
+);
+const WT_CFG: Config = loadConfig({ home: WTHOME, env: {} });
+
+test("a linked worktree's plan copy collapses onto the main checkout (one chain, self kind)", () => {
+	const who = ["-c", "user.email=t@t", "-c", "user.name=t"];
+	const mainRepo = join(WTROOT, "mainrepo");
+	mkdirSync(join(mainRepo, "docs/plans"), { recursive: true });
+	writeFileSync(join(mainRepo, "docs/plans", `${WT}.md`), planText("Wt", ["worktree copy of the plan"], "open", ["- 2026-10-25 10:00 CEST Main: started. Findings: none"]));
+	git(["init", "-q"], mainRepo);
+	git([...who, "add", "-A"], mainRepo);
+	git([...who, "commit", "-q", "-m", "one"], mainRepo);
+	const copy = join(WTROOT, "wtcopy");
+	git(["worktree", "add", "-q", copy, "-b", "wtbranch"], mainRepo);
+	// The copy closes while the main checkout's copy stays open and is touched last: closed
+	// beats open, so the newest-mtime open copy must not win.
+	writeFileSync(join(copy, "docs/plans", `${WT}.md`), planText("Wt", ["worktree copy of the plan"], "complete", ["- 2026-10-26 10:00 CEST Main: done. Findings: none"]));
+	utimesSync(join(mainRepo, "docs/plans", `${WT}.md`), new Date(), new Date());
+	const nodes = loadPlans(WT_CFG).filter(p => p.stem === WT);
+	expect(nodes.length).toBe(1);
+	expect(nodes[0]!.repo).toBe(mainRepo);
+	expect(nodes[0]!.closed).toBe(true);
+	expect(nodes[0]!.closedAt).toBe(Date.UTC(2026, 9, 26, 10) / 1000 - 7200);
+	expect(chains(nodes, mainRepo).map(c => c.kind)).toEqual(["neurastream"]);
+	expect(chains(nodes, null).map(c => c.kind)).toEqual(["product"]);
+});
+
 function msg(role: string, cost: number, ts: number | null, text: string): RunMessage {
 	return { role, cost, text, ts };
 }

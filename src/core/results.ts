@@ -3,13 +3,13 @@
 // discovery reuses the queue's walkers (no new path config); all functions here are pure over
 // their arguments — the CLI passes the run source, the window and the self repo.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import type { Run } from "./adapter.ts";
 import type { Config } from "./config.ts";
 import type { Ev } from "./metrics.ts";
 import { applyQueueEnv } from "./queue/env.ts";
-import { parsePlan } from "./queue/lib.ts";
+import { gitTop, parsePlan } from "./queue/lib.ts";
 import { repoRoots, walkMd } from "./queue-finished.ts";
 
 const HOUR = 3600;
@@ -54,38 +54,44 @@ export function closeTime(text: string): number | null {
 	return best;
 }
 
-/** Every dated plan under docs/plans/** of each repo the queue knows (work_roots plus one level of children). */
+/** Every dated plan under docs/plans/** of each repo the queue knows (work_roots plus one level of children). A git worktree carries a copy of docs/plans and gitTop maps it to the main checkout, so one node per (canonical repo, stem) survives: an archived or closed copy beats an open one, else the newest mtime wins. */
 export function loadPlans(cfg: Config): PlanNode[] {
 	applyQueueEnv(cfg);
-	const nodes: PlanNode[] = [];
-	const seen = new Set<string>();
+	const best = new Map<string, { node: PlanNode; mtime: number }>();
 	for (const repo of repoRoots(cfg.paths.work_roots)) {
 		const files: string[] = [];
 		walkMd(path.join(repo, "docs/plans"), files);
 		for (const file of files) {
 			const base = path.basename(file);
 			// Progress archives (<stem>-progress.md) and unstamped lists (CANCELLED.md) are not plans.
-			if (!STEM.test(base) || base.endsWith("-progress.md") || seen.has(file)) continue;
-			seen.add(file);
+			if (!STEM.test(base) || base.endsWith("-progress.md")) continue;
 			let text: string;
 			try {
 				text = readFileSync(file, "utf8");
 			} catch {
 				continue;
 			}
+			let mtime = 0;
+			try {
+				mtime = statSync(file).mtimeMs;
+			} catch {}
 			const archived = file.split(path.sep).includes("archive");
 			const status = parsePlan(repo, file, text).status;
-			nodes.push({
+			const node: PlanNode = {
 				stem: base.slice(0, -3),
 				file,
-				repo,
+				repo: gitTop(file)?.repo ?? repo,
 				parents: [],
 				archived,
 				closed: archived || status === "complete" || status === "cancelled",
 				closedAt: closeTime(text),
-			});
+			};
+			const key = `${node.repo}/${node.stem}`;
+			const cur = best.get(key);
+			if (!cur || (node.closed !== cur.node.closed ? node.closed : mtime > cur.mtime)) best.set(key, { node, mtime });
 		}
 	}
+	const nodes = [...best.values()].map(b => b.node);
 	const stems = new Set(nodes.map(n => n.stem));
 	for (const n of nodes) {
 		let text = "";
