@@ -326,12 +326,17 @@ test("a plan (Progress section) may mention an MR in prose", () => {
 // --- P4/P4b (plan 20261028_1600): MR naming, main-checkout plan paths, blocker scope ---
 
 const ROOT = join(TMP, "home", "projects", "toy");
-const WT = join(TMP, "home", "wt-toy");
+const WT = join(TMP, "home", "projects", "toy-wt"); // same work root as ROOT — the live layout
 const BLOCKERS = join(TMP, "home", ".omp", "agent", "blockers");
+const INDEX = join(TMP, "home", ".omp", "agent", "INDEX.md");
 const PLAN_BASE = "20261028_1400_scoped.md";
 const scopeCfg: Config = loadConfig({
 	home: join(TMP, "home"),
-	env: { MAIN_GUARD_ROOTS: ROOT, QUEUE_BLOCKERS: BLOCKERS },
+	env: {
+		MAIN_GUARD_ROOTS: join(TMP, "home", "projects"), // holds both the main checkout and the worktree
+		QUEUE_INDEX: INDEX,
+		QUEUE_BLOCKERS: BLOCKERS,
+	},
 });
 
 function scopeFixture(): void {
@@ -340,6 +345,7 @@ function scopeFixture(): void {
 	mkdirSync(join(WT, "src/core"), { recursive: true });
 	mkdirSync(join(WT, "tests"), { recursive: true });
 	mkdirSync(BLOCKERS, { recursive: true });
+	writeFileSync(INDEX, `${join(ROOT, "docs/plans", PLAN_BASE)}\n`);
 	const plan = [
 		"# scoped plan",
 		"",
@@ -394,7 +400,7 @@ function scopeBrief(name: string, body: string): string {
 	return p;
 }
 
-test("a brief naming the plan copy in a worktree is refused; the main checkout path passes", () => {
+test("a brief naming the plan copy in a same-root worktree is refused; the indexed main checkout path passes", () => {
 	scopeFixture();
 	const noPlan = captureLint([scopeBrief("20261028_1510_no_plan.md", "Read more of the plan someday.")], scopeCfg);
 	expect(noPlan.rc).toBe(1);

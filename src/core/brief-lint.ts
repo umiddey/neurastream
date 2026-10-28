@@ -3,7 +3,7 @@ import { basename, dirname } from "node:path";
 import type { Config } from "./config.ts";
 import { briefBudget, briefNamesPending } from "./guards.ts";
 import { exitText, helpDoc, printText } from "./help.ts";
-import { sections } from "./queue/lib.ts";
+import { readIndex, sections } from "./queue/lib.ts";
 
 const OUTPUT_HINT = /(report|progress|review|handoff|log|brief)[\w-]*\.(md|log|txt|json)$|\.log$/;
 const TICKED_PHASE = /^\s*[-*]\s+\[[xX]\]/;
@@ -103,28 +103,29 @@ function lint(path: string, cfg: Config): { errs: string[]; warns: string[] } {
 	}
 
 	// P4b (INCIDENT I-20261028-149): a helper wrote its Progress into the worktree copy of the plan
-	// and committed it there. A brief that works a plan must name the plan's absolute path in its
-	// main checkout; naming only a worktree copy is that incident again. (INCIDENT I-20261028-153):
-	// the plan's scope blocker did not allow a file the brief told the helper to change — when a
-	// plan blocker script carries ALLOWED='…', every src/tests path the brief names must be inside it.
-	if (cfg.paths.work_roots.length && /\bplans?\b/i.test(text)) {
-		const noPlanLine = "no line names the plan's absolute path in its main checkout (paths.work_roots)";
+	// and committed it there. Worktrees share the work roots with main checkouts, so the plan's main
+	// checkout is wherever the queue index lists it (paths.queue_index, read with the queue's own
+	// readIndex): the brief must name an indexed plan path, and a same-basename docs/plans path is
+	// the worktree copy. (INCIDENT I-20261028-153): the plan's scope blocker did not allow a file
+	// the brief told the helper to change — when a plan blocker script carries ALLOWED='…', every
+	// src/tests path the brief names must be inside it.
+	if (/\bplans?\b/i.test(text)) {
+		const indexed = readIndex(cfg.paths.queue_index);
+		const noPlanLine = "no line names the plan's absolute path in its main checkout (paths.queue_index)";
 		const planPaths = [...paths].map(clean).filter(p => /\/docs\/plans\/[\w.-]+\.md$/.test(p));
-		const inRoot = planPaths.filter(p => cfg.paths.work_roots.some(r => p.startsWith(r.replace(/\/+$/, "") + "/")));
-		if (!inRoot.length) {
+		const named = planPaths.filter(p => indexed.includes(p));
+		if (indexed.length && !named.length) {
 			const copy = planPaths[0];
 			if (copy) {
-				const main = cfg.paths.work_roots
-					.map(r => `${r.replace(/\/+$/, "")}/docs/plans/${basename(copy)}`)
-					.find(p => existsSync(p));
+				const main = indexed.find(p => basename(p) === basename(copy));
 				errs.push(
 					main
-						? `worktree path ${copy} is the plan's copy; name the main checkout's copy ${main} (paths.work_roots)`
+						? `worktree path ${copy} is the plan's copy; name the main checkout's copy ${main} (paths.queue_index)`
 						: noPlanLine,
 				);
 			} else errs.push(noPlanLine);
 		}
-		const planFile = inRoot.find(p => existsSync(p));
+		const planFile = named.find(p => existsSync(p));
 		if (planFile) {
 			const blockersDir = cfg.paths.blockers.replace(/\/+$/, "");
 			for (const line of (sections(readFileSync(planFile, "utf8")).get("blockers") ?? "").split("\n")) {
