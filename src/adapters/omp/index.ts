@@ -1000,7 +1000,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 				return undefined;
 			}
 		}
-		const d = checkStop({ agent: "main", callsSinceStop, idleStops, ledgerText: ledgerText(cfg) }, cfg);
+		const d = checkStop({ agent: "main", callsSinceStop, idleStops, ledgerText: ledgerText(cfg), reply: reply?.text ?? undefined }, cfg);
 		callsSinceStop = d.state?.callsSinceStop ?? 0;
 		idleStops = d.state?.idleStops ?? idleStops;
 		if (d.allow) {

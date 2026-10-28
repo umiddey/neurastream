@@ -119,6 +119,8 @@ export interface Config {
 		chat_unlock: boolean;
 		plan_read_max_hours: number;
 		idle_stops: number;
+		/** A Main stop reply matching this regex (case-insensitive) offers to plan instead of planning; the stop is refused (20261028_0900 P2). */
+		plan_offer: string;
 		/** Provider rate limits (src/core/rate-limit.ts): a turn that ends on one waits it out instead of
 		 *  asking again straight into the limit. The words and the waits come from here. */
 		rate_limit: {
@@ -434,6 +436,14 @@ function check(cfg: Config): void {
 	}
 	if (cfg.guards.sub_max_calls_cap < cfg.guards.sub_max_calls) {
 		throw new ConfigError("guards.sub_max_calls_cap must be >= guards.sub_max_calls");
+	}
+	if (typeof cfg.guards.plan_offer !== "string" || cfg.guards.plan_offer === "") {
+		throw new ConfigError("guards.plan_offer must be a non-empty regex string");
+	}
+	try {
+		new RegExp(cfg.guards.plan_offer, "i");
+	} catch {
+		throw new ConfigError(`guards.plan_offer: not a valid regex: ${cfg.guards.plan_offer}`);
 	}
 	if (!(cfg.rollover.max_session_mb > 0)) throw new ConfigError("rollover.max_session_mb must be > 0");
 	if (cfg.autonomy.tier !== "strict" && cfg.autonomy.tier !== "opinionated" && cfg.autonomy.tier !== "full")

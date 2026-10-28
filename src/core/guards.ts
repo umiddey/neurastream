@@ -1379,6 +1379,12 @@ export function liveSubagents(ledgerOut: string): string[] {
 export function checkStop(e: StopEvent, cfg: Config): Decision {
 	if (e.agent !== "main") return ALLOW;
 	const state = { callsSinceStop: e.callsSinceStop, idleStops: e.idleStops };
+	// 20261028_0900 P2: a reply that offers to plan instead of planning is refused for the offer
+	// itself; the two-empty-stops valves below never release this block.
+	if (e.reply && new RegExp(cfg.guards.plan_offer, "i").test(e.reply)) {
+		log(cfg.paths.guard_log, "BLOCK stop: reply offers to plan instead of planning it");
+		return { allow: false, reason: "main-guard: don't offer it — write the plan and index it", state };
+	}
 	let open: string[];
 	try {
 		open = openQueue();

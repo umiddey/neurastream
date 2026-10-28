@@ -7,8 +7,9 @@ import { afterAll, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig, type Config } from "../src/core/config.ts";
-import { checkPlanEdit } from "../src/core/guards.ts";
+import { checkPlanEdit, checkStop } from "../src/core/guards.ts";
 import { openIncidents } from "../src/core/incidents.ts";
+import { applyQueueEnv } from "../src/core/queue/env.ts";
 
 const ROOT = "/tmp/neurastream-home-planfindings/p1";
 const HOME = join(ROOT, "home");
@@ -48,6 +49,7 @@ function fresh(): void {
 	for (const d of [join(TOY, "docs/plans"), join(AGENT, "notes"), join(HOME, ".config/neurastream"), STATE])
 		mkdirSync(d, { recursive: true });
 	writeFileSync(PLAN, BEFORE);
+	writeFileSync(join(AGENT, "INDEX.md"), "");
 	writeFileSync(
 		join(HOME, ".config/neurastream/config.yml"),
 		`paths:
@@ -65,6 +67,7 @@ function fresh(): void {
 `,
 	);
 	cfg = loadConfig({ home: HOME, env: {} });
+	applyQueueEnv(cfg);
 }
 
 afterAll(() => {
@@ -84,4 +87,26 @@ test("Main's own Findings item becomes an open main-finding incident", () => {
 		evidence: `${PLAN} (main)`,
 		resolution: null,
 	});
+});
+
+// P2: a stop reply that offers to plan instead of planning is refused (guards.plan_offer), and
+// the two-empty-stops valve does not release that block; a reply without the offer stops as before.
+test("a stop reply that offers to plan is refused", () => {
+	fresh();
+	const d = checkStop({ agent: "main", callsSinceStop: 0, idleStops: 0, ledgerText: "", reply: "backups broken, want me to write a plan?" }, cfg);
+	expect(d.allow).toBe(false);
+	expect(d.reason).toContain("don't offer it — write the plan and index it");
+});
+
+test("two idle stops do not release the offer block", () => {
+	fresh();
+	const d = checkStop({ agent: "main", callsSinceStop: 0, idleStops: 2, ledgerText: "", reply: "should I plan this?" }, cfg);
+	expect(d.allow).toBe(false);
+	expect(d.reason).toContain("don't offer it — write the plan and index it");
+});
+
+test("a stop reply without the offer stops as before", () => {
+	fresh();
+	const d = checkStop({ agent: "main", callsSinceStop: 0, idleStops: 0, ledgerText: "", reply: "backups broken, investigating now" }, cfg);
+	expect(d.allow).toBe(true);
 });
