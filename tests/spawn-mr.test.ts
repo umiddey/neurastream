@@ -5,7 +5,7 @@
 // dir, no real forge.
 
 import { afterAll, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SpawnEvent } from "../src/core/adapter.ts";
@@ -75,11 +75,14 @@ Status: open
 const NO_ORIGIN_RUNNER: CommandRunner = args =>
 	args[0] === "git" ? { code: 1, stdout: "", stderr: "no origin", missing: false } : { code: 127, stdout: "", stderr: "", missing: true };
 
-writeFileSync(PLAN, planText());
 mkdirSync(join(TOY, "src"), { recursive: true });
-writeFileSync(join(TOY, "src/a.ts"), "export const a = 1;\n");
+mkdirSync(join(TOY, ".git"), { recursive: true }); // planRepo walks up to .git; without it citations resolve under docs/plans
 for (const d of [join(AGENT, "blockers"), join(AGENT, "notes"), join(TOY, "docs/plans"), STATE, join(HOME, ".config/neurastream")])
 	mkdirSync(d, { recursive: true });
+writeFileSync(PLAN, planText());
+writeFileSync(join(TOY, "src/a.ts"), "export const a = 1;\n");
+writeFileSync(join(AGENT, "blockers/no-push"), "#!/bin/sh\nexit 0\n");
+chmodSync(join(AGENT, "blockers/no-push"), 0o755);
 writeFileSync(join(AGENT, "INDEX.md"), `${PLAN}\n`);
 writeFileSync(join(AGENT, "notes/subagents.md"), "## Allowed\n\n- `worker`\n- `reviewer`\n");
 writeFileSync(join(AGENT, "CANCELLED.md"), "");
@@ -127,6 +130,7 @@ function resetForge(mrs = OPEN_211, wip = ""): void {
 	glabFails = false;
 	wipOutput = wip;
 	glabCalls = 0;
+	rmSync(join(STATE, "mr-cache.json"), { force: true }); // a reset forge must be asked again, not served the previous test's cache
 }
 
 function spawnEv(brief: string): SpawnEvent {
@@ -227,6 +231,7 @@ test("the open-MR list is cached for review.mr_cache_minutes", () => {
 
 test("the task tool path runs the same gate", () => {
 	resetForge();
+	refresh();
 	const files: string[] = [];
 	const budgets: Record<string, number | null> = {};
 	const staffing: Record<string, string[]> = {};

@@ -305,6 +305,8 @@ traces:
 
 `review.since` (default `"2026-10-28"`) starts the plan review gate (plan 20261028_1600): a plan stamped at or after it must carry a `## Reuse` section — one line per new setting, function, file or dependency, `- new: <thing> — checked: <path>:<line> — reuse: <how, or why not>` (`- new: none — …` when nothing is new) — and every cited path must exist relative to the plan's repo; queue-check lists violations as queue problems and the spawn guard refuses a brief on such a plan. Plans stamped before `since` are grandfathered until the audit pass removes the setting; `""` switches the check off. The reviewer PASS lock (P2) and the pending-work cache (P3) ride the same `review:` group.
 
+`review.mr_cache_minutes` (default `10`, `0` = no cache) bounds the spawn gate's open-MR cache: for `review.mr_cache_minutes` minutes after one repo's forge list, a spawn on a plan of that repo reuses `<queue_state>/mr-cache.json` instead of calling `glab`/`gh` again. A forge outage is never cached — the spawn gate degrades to a guard-log line and the next spawn retries, exactly like the MR sweep.
+
 `score.default_branch` has no default. It is config, not a core literal: set it here or pass `--branch`; with `score.default_repo` empty, `accept` / `check` require `--repo` and `--branch`.
 
 `score.waste_weight` must be between 0 and 1. It scales each model's points-per-dollar ranking by its wasted-call fraction; the default 0 leaves the existing ranking unchanged.
