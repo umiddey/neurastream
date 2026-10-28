@@ -19,6 +19,11 @@ test("template linter patterns capture the finding message (I-20261028-150)", ()
 	for (const l of linters) expect(l.pattern).toContain("(?<message>");
 });
 
+test("the template ships the deferred rules (I-20261028-166)", () => {
+	const { defer_rules } = loadConfig({ file: "/tmp/neurastream-home-wc/missing.yml", home: "/tmp/neurastream-home-wc", env: {} }).write_check;
+	expect(defer_rules).toEqual(["no-unused-vars", "F401", "F841"]);
+});
+
 const FAKE = join(import.meta.dir, "fixtures/write-check/fake-linter.ts");
 const TAIL = "The file was restored to its state before this edit; fix it and edit again — do not add suppression comments.";
 
@@ -68,6 +73,26 @@ describe("checkWrite", () => {
 		if (r.allow) return;
 		expect(r.reason).toContain("new debt");
 		expect(r.reason).not.toContain("old debt");
+	});
+
+	test("an edit adding a finding under a deferred rule is allowed with a note naming it (I-20261028-166)", () => {
+		const r = run("const a = 1\n", "const a = 1\nlint:F401 unused helper\n", { defer_rules: ["F401"] });
+		expect(r.allow).toBe(true);
+		if (!r.allow) return;
+		expect(r.note).toContain("F401");
+		expect(r.note).toContain("unused helper");
+	});
+
+	test("a deferred finding does not hide a real one from the refusal (I-20261028-166)", () => {
+		const r = run("const a = 1\n", "lint:E101 real\nlint:F401 unused\n", { defer_rules: ["F401"] });
+		expect(r.allow).toBe(false);
+		if (r.allow) return;
+		expect(r.reason).toContain("E101");
+		expect(r.reason).not.toContain("F401");
+	});
+
+	test("an empty defer_rules list refuses as before (I-20261028-166)", () => {
+		expect(run("a\n", "lint:F401 unused\n", { defer_rules: [] }).allow).toBe(false);
 	});
 
 	test("a pattern without a message group keeps counting per rule", () => {

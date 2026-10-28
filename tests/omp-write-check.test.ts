@@ -17,17 +17,22 @@ interface FakeHost {
 	sendUserMessage(content: string): void;
 	sendMessage(message: unknown, options: unknown): void;
 	emit(event: string, payload: unknown, ctx: unknown): Promise<unknown[]>;
+	sent: string[];
 }
 
 function fakeHost(): FakeHost {
 	const handlers = new Map<string, Handler[]>();
+	const sent: string[] = [];
 	return {
 		on(event, cb) {
 			handlers.set(event, [...(handlers.get(event) ?? []), cb]);
 		},
 		registerCommand() {},
-		sendUserMessage() {},
+		sendUserMessage(content: string) {
+			sent.push(content);
+		},
 		sendMessage() {},
+		sent,
 		async emit(event, payload, ctx) {
 			const out: unknown[] = [];
 			for (const cb of handlers.get(event) ?? []) {
@@ -175,4 +180,32 @@ test("a refused second edit on a file keeps the first allowed edit of the same b
 	const r2 = await host.emit("tool_result", { ...second, content: [{ type: "text", text: "done" }], isError: false }, SUB);
 	expect(r2.filter(isRefusal).length).toBe(1);
 	expect(readFileSync(file, "utf8")).toBe("ok\nfine\n");
+});
+
+test("a new deferred finding is allowed now and steered once at turn end (I-20261028-166)", async () => {
+	const file = join(TMP, "defer.txt");
+	writeFileSync(file, "ok\n");
+	const host = fakeHost();
+	createOmpAdapter(host as never, cfgWith({ defer_rules: ["f401"] }));
+	const results = await run(host, SUB, "write", { path: file }, "ok\nlint:f401 unused helper\n");
+	expect(results.filter(isRefusal)).toEqual([]);
+	expect(readFileSync(file, "utf8")).toBe("ok\nlint:f401 unused helper\n");
+	await host.emit("agent_end", {}, SUB);
+	expect(host.sent.length).toBe(1);
+	expect(host.sent[0]).toContain("f401");
+	expect(host.sent[0]).toContain("defer.txt");
+	// One steer per turn end: the list is cleared after it goes out.
+	await host.emit("agent_end", {}, SUB);
+	expect(host.sent.length).toBe(1);
+});
+
+test("a deferred finding fixed by a later edit steers nothing (I-20261028-166)", async () => {
+	const file = join(TMP, "defer-fixed.txt");
+	writeFileSync(file, "ok\n");
+	const host = fakeHost();
+	createOmpAdapter(host as never, cfgWith({ defer_rules: ["f401"] }));
+	await run(host, SUB, "write", { path: file }, "ok\nlint:f401 helper\n");
+	await run(host, SUB, "write", { path: file }, "ok\nhelper used\n");
+	await host.emit("agent_end", {}, SUB);
+	expect(host.sent).toEqual([]);
 });

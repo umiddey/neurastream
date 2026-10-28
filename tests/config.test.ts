@@ -196,4 +196,9 @@ describe("write_check config", () => {
 		const file = withFile("write_check:\n  applies_to: main\n");
 		expect(() => loadConfig({ file, home, env: {} })).toThrow("write_check.applies_to");
 	});
+
+	test("a bad defer_rules entry names the key (I-20261028-166)", () => {
+		const file = withFile('write_check:\n  defer_rules: [""]\n');
+		expect(() => loadConfig({ file, home, env: {} })).toThrow("write_check.defer_rules");
+	});
 });
