@@ -75,6 +75,7 @@ function cfgWith(wc: Partial<Config["write_check"]> = {}): Config {
 
 const SUB = { agent: { kind: "sub", id: "sub-1" }, cwd: TMP };
 const MAIN = { agent: { kind: "main", id: "main" }, cwd: TMP };
+const MAIN2 = { agent: { kind: "main", id: "main-2" }, cwd: TMP };
 let seq = 0;
 
 interface Refusal {
@@ -182,30 +183,47 @@ test("a refused second edit on a file keeps the first allowed edit of the same b
 	expect(readFileSync(file, "utf8")).toBe("ok\nfine\n");
 });
 
-test("a new deferred finding is allowed now and steered once at turn end (I-20261028-166)", async () => {
-	const file = join(TMP, "defer.txt");
+test("a Main session's turn end steers only its own deferred files (I-20261028-166)", async () => {
+	const file1 = join(TMP, "defer-s1.txt");
+	const file2 = join(TMP, "defer-s2.txt");
+	writeFileSync(file1, "ok\n");
+	writeFileSync(file2, "ok\n");
+	const host = fakeHost();
+	createOmpAdapter(host as never, cfgWith({ applies_to: "all", defer_rules: ["f401"] }));
+	await run(host, MAIN, "write", { path: file1 }, "ok\nlint:f401: one\n");
+	await run(host, MAIN2, "write", { path: file2 }, "ok\nlint:f401: two\n");
+	await host.emit("agent_end", {}, MAIN);
+	expect(host.sent.length).toBe(1);
+	expect(host.sent[0]).toContain("defer-s1.txt");
+	expect(host.sent[0]).not.toContain("defer-s2.txt");
+	// The other session's file is still pending: its own turn end steers it, once.
+	await host.emit("agent_end", {}, MAIN2);
+	expect(host.sent.length).toBe(2);
+	expect(host.sent[1]).toContain("defer-s2.txt");
+	await host.emit("agent_end", {}, MAIN2);
+	expect(host.sent.length).toBe(2);
+});
+
+test("a subagent's deferred finding rides the tool result and the turn-end log, never a steer (I-20261028-166)", async () => {
+	const file = join(TMP, "defer-sub.txt");
 	writeFileSync(file, "ok\n");
 	const host = fakeHost();
 	createOmpAdapter(host as never, cfgWith({ defer_rules: ["f401"] }));
-	const results = await run(host, SUB, "write", { path: file }, "ok\nlint:f401 unused helper\n");
+	const results = await run(host, SUB, "write", { path: file }, "ok\nlint:f401: helper\n");
 	expect(results.filter(isRefusal)).toEqual([]);
-	expect(readFileSync(file, "utf8")).toBe("ok\nlint:f401 unused helper\n");
+	expect(readFileSync(file, "utf8")).toBe("ok\nlint:f401: helper\n");
+	expect(JSON.stringify(results)).toContain("deferred");
 	await host.emit("agent_end", {}, SUB);
-	expect(host.sent.length).toBe(1);
-	expect(host.sent[0]).toContain("f401");
-	expect(host.sent[0]).toContain("defer.txt");
-	// One steer per turn end: the list is cleared after it goes out.
-	await host.emit("agent_end", {}, SUB);
-	expect(host.sent.length).toBe(1);
+	expect(host.sent).toEqual([]);
 });
 
 test("a deferred finding fixed by a later edit steers nothing (I-20261028-166)", async () => {
 	const file = join(TMP, "defer-fixed.txt");
 	writeFileSync(file, "ok\n");
 	const host = fakeHost();
-	createOmpAdapter(host as never, cfgWith({ defer_rules: ["f401"] }));
-	await run(host, SUB, "write", { path: file }, "ok\nlint:f401 helper\n");
-	await run(host, SUB, "write", { path: file }, "ok\nhelper used\n");
-	await host.emit("agent_end", {}, SUB);
+	createOmpAdapter(host as never, cfgWith({ applies_to: "all", defer_rules: ["f401"] }));
+	await run(host, MAIN, "write", { path: file }, "ok\nlint:f401 helper\n");
+	await run(host, MAIN, "write", { path: file }, "ok\nhelper used\n");
+	await host.emit("agent_end", {}, MAIN);
 	expect(host.sent).toEqual([]);
 });
