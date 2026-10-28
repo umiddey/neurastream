@@ -337,7 +337,7 @@ test("metricsDueLine: missing report says never, an 8-day-old report is due, a 1
 });
 
 function incident(id: string, ts: number, resolution: IncidentView["resolution"]): IncidentView {
-	return { id, fingerprint: id, source: "realtime", kind: "k", summary: id, evidence: "", ts, count: 1, lastSeen: ts, resolution };
+	return { id, fingerprint: id, source: "realtime", kind: "k", summary: id, evidence: "", ts, count: 1, lastSeen: ts, resolution, proposal: null };
 }
 
 test("M6 counts the window's incident stories and the median hours from open to fixed", () => {

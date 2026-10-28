@@ -34,9 +34,19 @@ export type ResolutionRec =
 	/** `ts` is the close time; older records (written before plan P5) may lack it. */
 	| { type: "fixed"; id: string; plan: string; ts?: number };
 
+/** Main's written reason that a finding is or is not a bug (`incident propose`). Not a resolution: the incident stays open. */
+export interface ProposalRec {
+	type: "propose";
+	id: string;
+	why: string;
+	ts: number;
+}
+
 export interface IncidentView extends IncidentRec {
 	/** Last resolution record for the id; null while the incident is open. */
 	resolution: ResolutionRec | null;
+	/** Main's latest proposal for the id (`incident propose`); null when none. */
+	proposal: ProposalRec | null;
 }
 
 export interface IncidentInput {
@@ -57,7 +67,7 @@ export function defaultFingerprint(input: Pick<IncidentInput, "source" | "kind" 
 	return q.sha(`${input.source}|${input.kind}|${input.summary.replace(/\s+/g, " ").trim().toLowerCase()}`);
 }
 
-function parseLine(line: string): IncidentRec | ResolutionRec | null {
+function parseLine(line: string): IncidentRec | ResolutionRec | ProposalRec | null {
 	let rec: Record<string, unknown>;
 	try {
 		const parsed: unknown = JSON.parse(line);
@@ -77,6 +87,10 @@ function parseLine(line: string): IncidentRec | ResolutionRec | null {
 		if (typeof rec.why !== "string") return null;
 		return { type: "dismiss", id: rec.id, why: rec.why };
 	}
+	if (rec.type === "propose") {
+		if (typeof rec.why !== "string" || typeof rec.ts !== "number") return null;
+		return { type: "propose", id: rec.id, why: rec.why, ts: rec.ts };
+	}
 	if (rec.type !== undefined) return null;
 	if (typeof rec.fingerprint !== "string" || typeof rec.kind !== "string" || typeof rec.summary !== "string" || typeof rec.ts !== "number")
 		return null;
@@ -94,20 +108,22 @@ function parseLine(line: string): IncidentRec | ResolutionRec | null {
 	};
 }
 
-function readStore(file: string): { incidents: IncidentRec[]; resolutions: ResolutionRec[]; lines: string[] } {
+function readStore(file: string): { incidents: IncidentRec[]; resolutions: ResolutionRec[]; proposals: ProposalRec[]; lines: string[] } {
 	let lines: string[] = [];
 	try {
 		lines = readFileSync(file, "utf8").split("\n").filter(l => l.trim());
 	} catch {}
 	const incidents: IncidentRec[] = [];
 	const resolutions: ResolutionRec[] = [];
+	const proposals: ProposalRec[] = [];
 	for (const line of lines) {
 		const rec = parseLine(line);
 		if (!rec) continue;
-		if ("type" in rec) resolutions.push(rec);
-		else incidents.push(rec);
+		if (!("type" in rec)) incidents.push(rec);
+		else if (rec.type === "propose") proposals.push(rec);
+		else resolutions.push(rec);
 	}
-	return { incidents, resolutions, lines };
+	return { incidents, resolutions, proposals, lines };
 }
 
 function writeFile(cfg: Config, file: string, lines: string[]): void {
@@ -119,10 +135,15 @@ function writeFile(cfg: Config, file: string, lines: string[]): void {
 export function readIncidents(cfg: Config): IncidentView[] {
 	const store = readStore(incidentsFile(cfg));
 	const views = new Map<string, IncidentView>();
-	for (const rec of store.incidents) views.set(rec.id, { ...rec, resolution: null });
+	for (const rec of store.incidents) views.set(rec.id, { ...rec, resolution: null, proposal: null });
 	for (const res of store.resolutions) {
 		const v = views.get(res.id);
 		if (v) v.resolution = res;
+	}
+	// A later propose replaces an earlier one: file order, last wins.
+	for (const p of store.proposals) {
+		const v = views.get(p.id);
+		if (v) v.proposal = p;
 	}
 	return [...views.values()];
 }
@@ -148,7 +169,7 @@ export function addIncident(cfg: Config, input: IncidentInput, now = nowSec()): 
 			return rec && !("type" in rec) && rec.id === open.id ? JSON.stringify(open) : line;
 		});
 		writeFile(cfg, file, lines);
-		return { incident: { ...open, resolution: null }, deduped: true };
+		return { incident: { ...open, resolution: null, proposal: null }, deduped: true };
 	}
 	const day = strftime(now, "%Y%m%d");
 	const prefix = `I-${day}-`;
@@ -166,7 +187,7 @@ export function addIncident(cfg: Config, input: IncidentInput, now = nowSec()): 
 	};
 	mkdirSync(dirname(file), { recursive: true });
 	appendFileSync(file, `${JSON.stringify(rec)}\n`);
-	return { incident: { ...rec, resolution: null }, deduped: false };
+	return { incident: { ...rec, resolution: null, proposal: null }, deduped: false };
 }
 
 /**
@@ -202,6 +223,10 @@ export function planIncident(cfg: Config, id: string, planPath: string): string 
 /** The kinds plan-guard's recordFindings writes; only the owner's own words dismiss them. */
 const FINDING_KINDS: Record<string, true> = { "agent-finding": true, "main-finding": true };
 
+export function isFindingKind(kind: string): boolean {
+	return Object.hasOwn(FINDING_KINDS, kind);
+}
+
 export interface OwnerMessage {
 	at: number;
 	text: string;
@@ -226,6 +251,24 @@ export function ownerSaid(words: string, messages: OwnerMessage[], now: number):
 	return messages.some(m => now - m.at >= 0 && now - m.at <= 86400 && m.text.toLowerCase().replace(/\s+/g, " ").includes(quote));
 }
 
+/** The proof a proposal must cite: a file and a line, e.g. `src/core/guards.ts:40`. */
+const PROOF_REF = /\S+:\d+/;
+
+/** Records Main's reason that a finding is or is not a bug. A finding stays open after a proposal: the
+ *  owner taps it on the phone page or a plan closes it. A newer proposal replaces the older one. */
+export function proposeIncident(cfg: Config, id: string, why: string, now = nowSec()): string | null {
+	const file = incidentsFile(cfg);
+	const store = readStore(file);
+	const rec = store.incidents.find(i => i.id === id);
+	if (!rec) return `unknown incident ${id}`;
+	if (store.resolutions.some(r => r.id === id)) return `incident ${id} already has a resolution record`;
+	if (!isFindingKind(rec.kind)) return `refused: propose is for finding incidents (agent-finding, main-finding); ${id} is ${rec.kind}`;
+	if (!PROOF_REF.test(why)) return "refused: the why must cite the proof as file:line, e.g. src/core/guards.ts:40";
+	mkdirSync(dirname(file), { recursive: true });
+	appendFileSync(file, `${JSON.stringify({ type: "propose", id, why: why.trim(), ts: now })}\n`);
+	return null;
+}
+
 /** Records why an incident is not a bug (or not worth fixing); an empty why is refused. A finding
  *  incident (kind "agent-finding"/"main-finding") is dismissed only with `owner` — a quote
  *  `ownerSaid` matches against the owner's own messages of the last 24 h (20261028_0900 P3: the
@@ -238,7 +281,7 @@ export function dismissIncident(cfg: Config, id: string, why: string, owner?: st
 	const res = store.resolutions.filter(r => r.id === id).at(-1);
 	if (res) return `incident ${id} already has a ${res.type} record`;
 	if (!why.trim()) return "refused: an empty --why would hide the incident without a recorded reason";
-	if (FINDING_KINDS[rec.kind]) {
+	if (isFindingKind(rec.kind)) {
 		if (owner === undefined)
 			return `refused: a ${rec.kind} is dismissed only with the owner's words: --owner "<quote>" (part of an owner message of the last 24 h)`;
 		if (!ownerSaid(owner, readOwnerMessages(), nowSec()))
