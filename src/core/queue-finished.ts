@@ -1,12 +1,12 @@
 // queue-finished: fill and search FINISHED.md. Backfill reads archived plans; a word prints matches.
 
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Config } from "./config.ts";
 import { applyQueueEnv } from "./queue/env.ts";
-import { finishedEntry, finishedPath, parsePlan, planRepo, prependFinished } from "./queue/lib.ts";
+import { finishedEntry, finishedKey, finishedPath, parsePlan, planRepo, prependFinished, repoRoot } from "./queue/lib.ts";
 
-const USAGE = "usage: queue-finished --backfill | queue-finished <word>";
+const USAGE = "usage: queue-finished --backfill | --dedupe | queue-finished <word>";
 
 function walkMd(dir: string, out: string[]): void {
 	let names: string[];
@@ -63,7 +63,21 @@ function stampDate(file: string): string {
 
 function archivedPlans(roots: string[]): string[] {
 	const files: string[] = [];
-	for (const repo of repoRoots(roots)) walkMd(path.join(repo, "docs/plans/archive"), files);
+	const seen = new Set<string>();
+	// Main checkouts sort first; a linked worktree adds only plan file names the main checkout lacks.
+	const dirs = repoRoots(roots).map(dir => ({ dir, repo: repoRoot(dir) ?? dir }));
+	dirs.sort((a, b) => Number(b.repo === b.dir) - Number(a.repo === a.dir));
+	for (const { dir, repo } of dirs) {
+		const found: string[] = [];
+		walkMd(path.join(dir, "docs/plans/archive"), found);
+		for (const file of found) {
+			// Same repo + file name = the same plan seen through another worktree; across repos the name may repeat.
+			const key = `${repo}\0${path.basename(file)}`;
+			if (seen.has(key)) continue;
+			seen.add(key);
+			files.push(file);
+		}
+	}
 	return files;
 }
 
@@ -88,6 +102,29 @@ function backfill(cfg: Config): number {
 		if (prependFinished(finishedEntry(plan, plan.file, stampDate(plan.file)))) added++;
 	}
 	console.log(`queue-finished: backfill added ${added} (${plans.length} complete archived)`);
+	return 0;
+}
+
+/** Keeps the first entry for each finished key and drops later repeats. */
+function dedupe(): number {
+	const file = finishedPath();
+	let text = "";
+	try {
+		text = readFileSync(file, "utf8");
+	} catch {}
+	const seen = new Set<string>();
+	const kept: string[] = [];
+	let removed = 0;
+	for (const block of text.split(/^(?=## )/m)) {
+		if (!block.startsWith("## ")) kept.push(block);
+		else if (seen.has(finishedKey(block))) removed++;
+		else {
+			seen.add(finishedKey(block));
+			kept.push(block);
+		}
+	}
+	if (removed) writeFileSync(file, kept.join(""));
+	console.log(`queue-finished: removed ${removed} duplicate entries`);
 	return 0;
 }
 
@@ -117,6 +154,7 @@ export function queueFinished(args: string[], cfg: Config): number {
 		return 0;
 	}
 	if (args.includes("--backfill")) return backfill(cfg);
+	if (args.includes("--dedupe")) return dedupe();
 	const word = args.filter(a => !a.startsWith("-")).join(" ").trim();
 	if (!word) {
 		console.error(USAGE);

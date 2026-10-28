@@ -295,9 +295,13 @@ export function parsePlan(repo: string, file: string, text: string | null, block
 	};
 }
 
-/** A plan's repo: the main checkout holding the plan file; a linked worktree resolves to its main repo. */
+/** A plan's repo: the main checkout holding the plan file; a linked worktree resolves to its main repo; without git, an archived plan reports the repo dir above docs/plans/archive/<YYYYMM>, never the month folder. */
 export function planRepo(file: string): string {
-	return repoRoot(file) ?? path.dirname(file);
+	const root = repoRoot(file);
+	if (root) return root;
+	const dir = path.dirname(file);
+	const m = /^(.*\/)docs\/plans\/archive\/\d{6}$/.exec(dir);
+	return m?.[1] ? m[1].replace(/\/$/, "") : dir;
 }
 
 export function readPlans(files: string[], blockersDir = blockersDirPath()): Plan[] {
@@ -813,14 +817,21 @@ export function finishedEntry(plan: Plan, archived: string, date: string): strin
 	return [`## ${date} · ${path.basename(plan.repo)} · ${plan.title}`, ...body].join("\n");
 }
 
-/** Inserts the entry above older ones. Returns false when that Plan path is already listed. */
+/** Identity of a finished entry: its repo name and archived plan file name. Worktrees of one repo share it. */
+export function finishedKey(entry: string): string {
+	const lines = entry.split("\n");
+	const repo = (lines[0] ?? "").split(" · ")[1] ?? "";
+	return `${repo}\n${path.basename(lines.find(l => l.startsWith("Plan: ")) ?? "")}`;
+}
+
+/** Inserts the entry above older ones. Returns false when that repo's plan file is already listed. */
 export function prependFinished(entry: string, file = finishedPath()): boolean {
-	const planLine = entry.split("\n").find(l => l.startsWith("Plan: "));
 	let current = "";
 	try {
 		current = readFileSync(file, "utf8");
 	} catch {}
-	if (planLine && current.split("\n").includes(planLine)) return false;
+	const key = finishedKey(entry);
+	if (current.split(/^(?=## )/m).some(b => finishedKey(b) === key)) return false;
 	mkdirSync(path.dirname(file), { recursive: true });
 	const block = entry.endsWith("\n") ? entry : `${entry}\n`;
 	if (!current.trim()) {

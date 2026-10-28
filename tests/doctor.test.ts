@@ -45,6 +45,15 @@ test("clean install is ok", () => {
 	expect(ran.status).toBe(0);
 });
 
+test("a missing bin names the install step and exits 1", () => {
+	install();
+	const live = join(HOME, ".local/bin/queue-check");
+	unlinkSync(live);
+	const ran = doctor(npmStub(`#!/bin/sh\necho ${INSTALLED}\n`));
+	expect(ran.status).toBe(1);
+	expect(ran.stdout).toContain(`missing: ${live} — run: neurastream adapter install omp`);
+});
+
 test("an edited bin is named and exits 1", () => {
 	install();
 	const live = join(HOME, ".local/bin/queue-check");

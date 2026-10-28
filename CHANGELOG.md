@@ -5,6 +5,7 @@
 ### Fixed
 - A write-check refusal names the findings the edit added, each with its own sample line (INCIDENT I-20261028-150, I-20261028-151): findings are compared as a `(rule, message)` multiset instead of per rule, so a rule's old lint debt is no longer listed as the refusal's reason (the single sample was the old warning) and new findings of a busy rule no longer hide behind one merged count. The template linter patterns capture a `message` group; a pattern without one keeps the older per-rule counting.
 - A refused write-check edit no longer undoes an earlier allowed edit to the same file from the same parallel batch (INCIDENT I-20261028-135): once an edit is allowed, every other pending call's "before" on that file becomes the allowed result, so a refusal restores the file to it and not to the pre-batch text.
+- `queue-finished --backfill` writes the repo dir, never the month folder, into FINISHED.md headers even when the archived plan's checkout has no `.git` up-tree, and also reads a linked worktree's archive for plan files the main checkout lacks, so those entries exist too.
 ## 0.2.47
 ### Fixed
 - The bare `queue-finished` command is installed again (INCIDENT I-20261028-119): it was the only queue script without a `bin/` wrapper and package.json `bin` row, so the rules table's `queue-finished` failed with "command not found" while `neurastream queue-finished` worked.
