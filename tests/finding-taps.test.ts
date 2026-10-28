@@ -5,13 +5,13 @@
 // owner tap buttons.
 
 import { afterAll, beforeEach, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { join } from "node:path";
 import { runIncident } from "../src/cli/incident.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { addIncident, dismissIncident, openIncidents, readIncidents } from "../src/core/incidents.ts";
-import { incidentRows, startOwnerUi } from "../src/core/owner-ui.ts";
+import { incidentRows, inboxPath, startOwnerUi } from "../src/core/owner-ui.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
 import type { Tailscale } from "../src/core/tailscale.ts";
 
@@ -142,6 +142,90 @@ test("the agents page shows Main's why and two tap buttons for a finding, and sa
 		expect(html).toContain(`name="choice" value="false"`);
 		expect(html).toContain("Main has not said why yet");
 		expect(html).toContain(unproposed.id);
+	} finally {
+		svc.stop();
+	}
+});
+
+// P3: the owner's two tap buttons. POST /incident is the only write path; red until the handler exists.
+function startPage() {
+	return startOwnerUi({
+		cfg: { ...cfg, ui: { ...cfg.ui, enabled: true, port: 7787, owner_login: OWNER } },
+		tailscale: TS,
+		source: { listRuns: () => [], mainSession: () => null },
+		hostname: "127.0.0.1",
+		port: 0,
+		peerOf: () => PEER,
+	});
+}
+
+function postForm(port: number, path: string, fields: Record<string, string>): Promise<{ status: number; body: string }> {
+	const { promise, resolve, reject } = Promise.withResolvers<{ status: number; body: string }>();
+	const payload = new URLSearchParams(fields).toString();
+	const req = request(
+		{
+			host: "127.0.0.1",
+			port,
+			path,
+			method: "POST",
+			headers: {
+				host: `${OWN_IP}:${port}`,
+				origin: `http://${OWN_IP}:${port}`,
+				accept: "application/json",
+				"content-type": "application/x-www-form-urlencoded",
+				"content-length": Buffer.byteLength(payload),
+			},
+		},
+		res => {
+			let body = "";
+			res.setEncoding("utf8");
+			res.on("data", chunk => (body += chunk));
+			res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
+		},
+	);
+	req.on("error", reject);
+	req.end(payload);
+	return promise;
+}
+
+test("POST /incident choice=false closes a finding and records the owner's tap with Main's why", async () => {
+	const id = addIncident(cfg, { source: "findings", kind: "agent-finding", summary: "bucket missing" }).incident.id;
+	expect(await runIncident(["propose", id, "--why", WHY])).toBe(0);
+	const svc = startPage();
+	try {
+		const res = await postForm(svc.port, "/incident", { id, choice: "false", tab: "agents" });
+		expect(res.status).toBe(200);
+		expect(JSON.parse(res.body).ok).toBe(true);
+	} finally {
+		svc.stop();
+	}
+	expect(openIncidents(cfg).map(i => i.id)).not.toContain(id);
+	const resolution = readIncidents(cfg).find(i => i.id === id)?.resolution;
+	expect(resolution && "why" in resolution ? resolution.why : "").toContain(`owner tapped "false alarm" on the phone page (${OWNER}): ${WHY}`);
+});
+
+test("POST /incident choice=bug keeps the finding open and adds one inbox message", async () => {
+	const id = addIncident(cfg, { source: "findings", kind: "main-finding", summary: "stop guard reads nothing" }).incident.id;
+	const svc = startPage();
+	try {
+		const res = await postForm(svc.port, "/incident", { id, choice: "bug", tab: "agents" });
+		expect(res.status).toBe(200);
+		expect(JSON.parse(res.body).ok).toBe(true);
+	} finally {
+		svc.stop();
+	}
+	expect(openIncidents(cfg).map(i => i.id)).toContain(id);
+	const inbox = readFileSync(inboxPath(), "utf8").split("\n").filter(l => l.includes(`"id":"`) && l.includes(`"kind":"message"`));
+	expect(inbox.length).toBe(1);
+});
+
+test("POST /incident refuses an unknown or already-closed incident with 409", async () => {
+	const id = addIncident(cfg, { source: "findings", kind: "agent-finding", summary: "already closed" }).incident.id;
+	expect(dismissIncident(cfg, id, "a reason", undefined, OWNER)).toBe(null);
+	const svc = startPage();
+	try {
+		expect((await postForm(svc.port, "/incident", { id: "I-19990101-9", choice: "false", tab: "agents" })).status).toBe(409);
+		expect((await postForm(svc.port, "/incident", { id, choice: "false", tab: "agents" })).status).toBe(409);
 	} finally {
 		svc.stop();
 	}

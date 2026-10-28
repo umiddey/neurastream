@@ -16,7 +16,7 @@ import { chatTier, currentTier, type Tier } from "./autonomy.ts";
 import type { Config } from "./config.ts";
 import { nowSec, strftime } from "./clock.ts";
 import { cpuCount } from "./host.ts";
-import { isFindingKind, openIncidents } from "./incidents.ts";
+import { dismissIncident, isFindingKind, openIncidents } from "./incidents.ts";
 import { byText, knowledgeManifest, readKnowledgeTopicFile, urlField, urlValue, type KnowledgeEntry } from "./knowledge.ts";
 import { log } from "./guards.ts";
 import { readMetricEvents } from "./metrics.ts";
@@ -686,6 +686,12 @@ function receiptText(sent: string, params: URLSearchParams): string | null {
 		case "message":
 			text = `Sent to Main · ${strftime(nowSec(), "%H:%M")}`;
 			break;
+		case "incident-closed":
+			text = `Marked as a false alarm · ${strftime(nowSec(), "%H:%M")}`;
+			break;
+		case "incident-bug":
+			text = `Sent to Main to plan the fix · ${strftime(nowSec(), "%H:%M")}`;
+			break;
 		case "unlock": {
 			const minutes = Number(params.get("minutes"));
 			text = Number.isInteger(minutes) && minutes > 0 ? `Unlocked for ${minutes} min` : "Unlocked";
@@ -1196,6 +1202,47 @@ function handleAnswer(cfg: Config, source: RunSource, fields: Record<string, str
 	return redirect(sentTo(fields.tab ?? "", "sent=answer"));
 }
 
+// ---- POST /incident (plan P3): the owner's tap on a finding: "false alarm" closes it, "bug" plans it ----
+
+function handleIncident(cfg: Config, fields: Record<string, string>, login: string, wantsJson: boolean): Response {
+	const id = (fields.id ?? "").trim();
+	const choice = (fields.choice ?? "").trim();
+	const fail = (error: string, status: number): Response => (wantsJson ? jsonFail(error, status) : textRes(error, status));
+	if (choice !== "bug" && choice !== "false") return fail("choice must be bug or false", 400);
+	const view = openIncidents(cfg).find(i => i.id === id);
+	if (!view) return fail("incident is not open", 409);
+	if (!isFindingKind(view.kind)) return fail("only a finding is tapped here", 409);
+	if (choice === "false") {
+		const why = `owner tapped "false alarm" on the phone page (${login}): ${view.proposal?.why ?? "no reason given"}`;
+		const err = dismissIncident(cfg, id, why, undefined, login);
+		if (err) return fail(err, 409);
+		if (wantsJson) return jsonSent("incident-closed", receiptText("incident-closed", new URLSearchParams()));
+		return redirect(sentTo(fields.tab ?? "", "sent=incident-closed"));
+	}
+	storeOwnerMessage(`${id}: it's a bug — plan it`, login, []);
+	if (wantsJson) return jsonSent("incident-bug", receiptText("incident-bug", new URLSearchParams()));
+	return redirect(sentTo(fields.tab ?? "", "sent=incident-bug"));
+}
+
+/** Stores an owner message (text and images) under a new id and inboxes it for Main (P13/P14). */
+function storeOwnerMessage(text: string, login: string, images: { bytes: Uint8Array; kind: string }[]): void {
+	const ts = nowSec();
+	// The dir name starts with a whole-second ts: the sweep and the image route both parse it.
+	const id = `${Math.floor(ts)}-${randomUUID().slice(0, 6)}`;
+	const dir = `${ownerMessagesDir()}/${id}`;
+	mkdirSync(dir, { recursive: true });
+	const names: string[] = [];
+	for (let i = 0; i < images.length; i++) {
+		const name = `${i + 1}.${IMAGE_EXT[images[i]!.kind]}`;
+		writeFileSync(`${dir}/${name}`, images[i]!.bytes);
+		names.push(name);
+	}
+	writeFileSync(`${dir}/message.json`, `${JSON.stringify({ ts, text, login, images: names })}\n`);
+	mkdirSync(stateDirPath(), { recursive: true });
+	// The text stays out of owner-inbox.jsonl; Main reads message.json through the id (P14).
+	appendFileSync(inboxPath(), `${JSON.stringify({ ts, kind: "message", id, login })}\n`);
+}
+
 // ---- POST /message (plan P13): the owner's one-way note plus images, inboxed by id ----
 
 async function handleMessage(req: Request, login: string, wantsJson: boolean): Promise<Response> {
@@ -1223,21 +1270,7 @@ async function handleMessage(req: Request, login: string, wantsJson: boolean): P
 		if (!kind) return fail("attachments must be PNG, JPEG, GIF or WEBP images — the type is read from the file itself");
 		images.push({ bytes: data, kind });
 	}
-	const ts = nowSec();
-	// The dir name starts with a whole-second ts: the sweep and the image route both parse it.
-	const id = `${Math.floor(ts)}-${randomUUID().slice(0, 6)}`;
-	const dir = `${ownerMessagesDir()}/${id}`;
-	mkdirSync(dir, { recursive: true });
-	const names: string[] = [];
-	for (let i = 0; i < images.length; i++) {
-		const name = `${i + 1}.${IMAGE_EXT[images[i]!.kind]}`;
-		writeFileSync(`${dir}/${name}`, images[i]!.bytes);
-		names.push(name);
-	}
-	writeFileSync(`${dir}/message.json`, `${JSON.stringify({ ts, text, login, images: names })}\n`);
-	mkdirSync(stateDirPath(), { recursive: true });
-	// The text stays out of owner-inbox.jsonl; Main reads message.json through the id (P14).
-	appendFileSync(inboxPath(), `${JSON.stringify({ ts, kind: "message", id, login })}\n`);
+	storeOwnerMessage(text, login, images);
 	if (wantsJson) return jsonSent("message", receiptText("message", new URLSearchParams()));
 	return redirect("/?sent=message");
 }
@@ -1481,6 +1514,9 @@ export function startOwnerUi(opts: OwnerUiOptions): OwnerUiServer {
 							const wantsJson = (req.headers.get("accept") ?? "").includes("application/json");
 							if (url.pathname === "/message") {
 								res = await handleMessage(req, login, wantsJson);
+								code = res.status;
+							} else if (url.pathname === "/incident") {
+								res = handleIncident(cfg, await fieldsOf(req), login, wantsJson);
 								code = res.status;
 							} else if (url.pathname === "/answer") {
 								res = handleAnswer(cfg, source, await fieldsOf(req), login, wantsJson);

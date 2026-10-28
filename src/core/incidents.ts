@@ -272,8 +272,9 @@ export function proposeIncident(cfg: Config, id: string, why: string, now = nowS
 /** Records why an incident is not a bug (or not worth fixing); an empty why is refused. A finding
  *  incident (kind "agent-finding"/"main-finding") is dismissed only with `owner` — a quote
  *  `ownerSaid` matches against the owner's own messages of the last 24 h (20261028_0900 P3: the
- *  agent that found the bug cannot also wave it away). */
-export function dismissIncident(cfg: Config, id: string, why: string, owner?: string): string | null {
+ *  agent that found the bug cannot also wave it away). `tapLogin` is the owner's login from the
+ *  owner page's authenticated POST /incident ("false alarm" tap); only that handler passes it. */
+export function dismissIncident(cfg: Config, id: string, why: string, owner?: string, tapLogin?: string): string | null {
 	const file = incidentsFile(cfg);
 	const store = readStore(file);
 	const rec = store.incidents.find(i => i.id === id);
@@ -281,7 +282,7 @@ export function dismissIncident(cfg: Config, id: string, why: string, owner?: st
 	const res = store.resolutions.filter(r => r.id === id).at(-1);
 	if (res) return `incident ${id} already has a ${res.type} record`;
 	if (!why.trim()) return "refused: an empty --why would hide the incident without a recorded reason";
-	if (isFindingKind(rec.kind)) {
+	if (isFindingKind(rec.kind) && tapLogin === undefined) {
 		if (owner === undefined)
 			return `refused: a ${rec.kind} is dismissed only with the owner's words: --owner "<quote>" (part of an owner message of the last 24 h)`;
 		if (!ownerSaid(owner, readOwnerMessages(), nowSec()))
