@@ -220,7 +220,7 @@ write_check:
     - ext: [".py"]
       argv: ["ruff", "check", "--no-cache", "--output-format=concise", "--select", "E,F,B,S,C90,PERF,SIM", "{file}"]
       pattern: '^.+?:\d+:\d+: (?<rule>\S+) '
-    - ext: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]
+    - ext: [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"]
       argv: ["oxlint", "-f", "unix", "-D", "correctness", "-D", "suspicious", "-D", "perf", "{file}"]
       pattern: '^.+?:\d+:\d+: .*\[(?:Error|Warning)/(?<rule>[^\]]+)\]'
 
