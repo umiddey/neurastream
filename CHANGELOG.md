@@ -1,4 +1,7 @@
 # Changelog
+## 0.2.44
+### Added
+- The owner's own Main-only lines: `MAIN.md` in `paths.agent_dir` (`~/.omp/agent/MAIN.md` with the omp layout) is appended, trimmed, after the managed rules block in Main's prompt; a missing or blank file leaves the block unchanged (plan 20261027_1215_main_only P6).
 ## 0.2.43
 ### Added
 - Finding incidents get a reason and two owner buttons on the Agents page (plan 20261028_1135, P1–P3): `neurastream incident propose <id> --why "<file:line and reason>"` records Main's reason and keeps the incident open (the why must cite `file:line`); the page shows that reason with **False alarm** (closes it, the reason becomes the dismissal, recorded with the owner's login) and **It's a bug — plan it** (keeps it open, one message to Main's inbox). `POST /incident` sits behind the same origin and tailnet-owner checks as the other POST routes.
