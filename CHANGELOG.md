@@ -1,4 +1,7 @@
 # Changelog
+## Unreleased
+### Fixed
+- A refused write-check edit no longer undoes an earlier allowed edit to the same file from the same parallel batch (INCIDENT I-20261028-135): once an edit is allowed, every other pending call's "before" on that file becomes the allowed result, so a refusal restores the file to it and not to the pre-batch text.
 ## 0.2.47
 ### Fixed
 - The bare `queue-finished` command is installed again (INCIDENT I-20261028-119): it was the only queue script without a `bin/` wrapper and package.json `bin` row, so the rules table's `queue-finished` failed with "command not found" while `neurastream queue-finished` worked.

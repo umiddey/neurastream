@@ -963,6 +963,8 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 				const r = checkWrite(file, before, after, cfg.write_check);
 				if (r.allow) {
 					if (r.note) adapterLog(cfg, r.note);
+					// Parallel calls on one file: their "before" becomes this allowed result, so a later refusal restores to it.
+					for (const other of pendingWrite.values()) if (other.has(file)) other.set(file, after);
 					continue;
 				}
 				try {
