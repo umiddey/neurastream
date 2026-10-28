@@ -16,7 +16,7 @@ import { chatTier, currentTier, type Tier } from "./autonomy.ts";
 import type { Config } from "./config.ts";
 import { nowSec, strftime } from "./clock.ts";
 import { cpuCount } from "./host.ts";
-import { openIncidents } from "./incidents.ts";
+import { isFindingKind, openIncidents } from "./incidents.ts";
 import { byText, knowledgeManifest, readKnowledgeTopicFile, urlField, urlValue, type KnowledgeEntry } from "./knowledge.ts";
 import { log } from "./guards.ts";
 import { readMetricEvents } from "./metrics.ts";
@@ -165,6 +165,8 @@ export interface IncidentRow {
 	kind: string;
 	summary: string;
 	count: number;
+	/** Main's latest written reason for a finding incident; null when none or not a finding. */
+	proposal: string | null;
 }
 
 /** A markdown table from the ranking board plus every non-table line, kept in order. */
@@ -267,7 +269,13 @@ export function ciRows(cfg: Config): CiRow[] {
 }
 
 export function incidentRows(cfg: Config): IncidentRow[] {
-	return openIncidents(cfg).map(i => ({ id: i.id, kind: i.kind, summary: i.summary, count: i.count }));
+	return openIncidents(cfg).map(i => ({
+		id: i.id,
+		kind: i.kind,
+		summary: i.summary,
+		count: i.count,
+		proposal: isFindingKind(i.kind) ? (i.proposal?.why ?? null) : null,
+	}));
 }
 
 export function scoresData(cfg: Config): ScoresData {
@@ -563,9 +571,20 @@ function ciHtml(rows: CiRow[]): string {
 		.join("")}</ul>`;
 }
 
-function incidentsHtml(rows: IncidentRow[]): string {
+function incidentsHtml(rows: IncidentRow[], tab: string): string {
 	return `<ul class="incidents">${rows
-		.map(r => `<li><span class="mono">${esc(r.id)}</span> <span class="chip bad">${esc(r.kind)}</span> ${esc(r.summary)}${r.count > 1 ? ` · ${r.count}x` : ""}</li>`)
+		.map(r => {
+			const head = `<span class="mono">${esc(r.id)}</span> <span class="chip bad">${esc(r.kind)}</span> ${esc(r.summary)}${r.count > 1 ? ` · ${r.count}x` : ""}`;
+			if (!isFindingKind(r.kind)) return `<li>${head}</li>`;
+			const why = r.proposal === null ? `<em>Main has not said why yet</em>` : esc(r.proposal);
+			return `<li>${head}<div class="sub">${why}</div>
+<form method="post" action="/incident" class="inline">
+<input type="hidden" name="id" value="${esc(r.id)}">
+<input type="hidden" name="tab" value="${esc(tab)}">
+<button class="btn" type="submit" name="choice" value="bug">It's a bug — plan it</button>
+<button class="btn" type="submit" name="choice" value="false">False alarm</button>
+</form></li>`;
+		})
 		.join("")}</ul>`;
 }
 
@@ -935,7 +954,7 @@ export function renderPage(cfg: Config, data: PageData, params: URLSearchParams,
 	const working =
 		data.agents === null ? na("Working now") : data.agents.length ? `<ul class="agents">${data.agents.map(agentRowHtml).join("")}</ul>` : `<p class="empty">No agents running</p>`;
 	const scores = data.scores === null ? na("Agent scores") : scoresHtml(data.scores);
-	const incidents = data.incidents === null ? na("Incidents") : data.incidents.length ? incidentsHtml(data.incidents) : `<p class="empty">No open incidents</p>`;
+	const incidents = data.incidents === null ? na("Incidents") : data.incidents.length ? incidentsHtml(data.incidents, tab) : `<p class="empty">No open incidents</p>`;
 	const merges = data.ci === null ? na("Merges") : data.ci.length ? ciHtml(data.ci) : `<p class="empty">No CI runs recorded</p>`;
 	const machine = data.machine === null ? na("Machine") : machineHtml(cfg, data.machine);
 	const body =

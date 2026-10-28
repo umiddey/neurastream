@@ -1,14 +1,19 @@
 // Finding taps (plan 20261028_1135_finding_taps). P1: Main proposes, in writing, why a finding
 // incident is or is not a bug (`neurastream incident propose <id> --why "<file:line + reason>"`).
 // A proposal is not a resolution: the incident stays open until the owner taps or a plan lands.
+// P2: the open-incident row carries Main's latest why, and the agents page shows it with two
+// owner tap buttons.
 
 import { afterAll, beforeEach, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { request } from "node:http";
 import { join } from "node:path";
 import { runIncident } from "../src/cli/incident.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { addIncident, dismissIncident, openIncidents, readIncidents } from "../src/core/incidents.ts";
+import { incidentRows, startOwnerUi } from "../src/core/owner-ui.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
+import type { Tailscale } from "../src/core/tailscale.ts";
 
 const ROOT = "/tmp/neurastream-home-findingtaps/p1";
 const HOME = join(ROOT, "home");
@@ -16,6 +21,16 @@ const AGENT = join(HOME, ".omp/agent");
 const TOY = join(HOME, "projects/toy");
 const STATE = join(HOME, ".local/state/queue");
 const SAVED_HOME = process.env.HOME;
+
+const OWNER = "owner@example.com";
+const OWN_IP = "100.95.10.2"; // fixture: this machine's tailnet address
+const PEER = "100.95.10.9"; // fixture: the owner's phone
+const TS: Tailscale = {
+	ip4: () => OWN_IP,
+	dnsName: () => "ukd.tail4295de.ts.net",
+	whois: (peer: string) => (peer === PEER ? OWNER : null),
+	logins: () => [OWNER],
+};
 
 let cfg: Config;
 
@@ -80,4 +95,54 @@ test("incident propose refuses an unknown id, a resolved incident, a non-finding
 	expect(readIncidents(cfg).find(i => i.id === finding.id)?.proposal ?? null).toBe(null);
 	expect(dismissIncident(cfg, closed.id, "closed to test refusals")).toBe(null);
 	expect(await runIncident(["propose", closed.id, "--why", WHY])).toBe(1);
+});
+
+// P2: the open-incident row carries Main's latest why, and the agents page shows it with two
+// owner tap buttons. Red until incidentRows and incidentsHtml change.
+test("incidentRows carries Main's latest why for a finding and null for a non-finding", async () => {
+	const finding = addIncident(cfg, { source: "findings", kind: "agent-finding", summary: "bucket missing" }).incident;
+	const toy = addIncident(cfg, { source: "realtime", kind: "toy", summary: "not a finding" }).incident;
+	expect(await runIncident(["propose", finding.id, "--why", WHY])).toBe(0);
+	const rows = incidentRows(cfg);
+	expect(rows.find(r => r.id === finding.id)?.proposal).toBe(WHY);
+	expect(rows.find(r => r.id === toy.id)?.proposal).toBe(null);
+});
+
+function pageHtml(port: number, path: string): Promise<string> {
+	const { promise, resolve, reject } = Promise.withResolvers<string>();
+	const req = request({ host: "127.0.0.1", port, path, method: "GET", headers: { host: `${OWN_IP}:${port}` } }, res => {
+		let body = "";
+		res.setEncoding("utf8");
+		res.on("data", chunk => (body += chunk));
+		res.on("end", () => resolve(body));
+	});
+	req.on("error", reject);
+	req.end();
+	return promise;
+}
+
+test("the agents page shows Main's why and two tap buttons for a finding, and says so when there is no why", async () => {
+	const proposed = addIncident(cfg, { source: "findings", kind: "agent-finding", summary: "bucket missing" }).incident;
+	const unproposed = addIncident(cfg, { source: "findings", kind: "main-finding", summary: "no reason yet" }).incident;
+	expect(await runIncident(["propose", proposed.id, "--why", WHY])).toBe(0);
+	const svc = startOwnerUi({
+		cfg: { ...cfg, ui: { ...cfg.ui, enabled: true, port: 7787, owner_login: OWNER } },
+		tailscale: TS,
+		source: { listRuns: () => [], mainSession: () => null },
+		hostname: "127.0.0.1",
+		port: 0,
+		peerOf: () => PEER,
+	});
+	try {
+		const html = await pageHtml(svc.port, "/?tab=agents");
+		expect(html).toContain(WHY);
+		expect(html).toContain(`action="/incident"`);
+		expect(html).toContain(`name="id" value="${proposed.id}"`);
+		expect(html).toContain(`name="choice" value="bug"`);
+		expect(html).toContain(`name="choice" value="false"`);
+		expect(html).toContain("Main has not said why yet");
+		expect(html).toContain(unproposed.id);
+	} finally {
+		svc.stop();
+	}
 });
