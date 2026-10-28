@@ -1,7 +1,8 @@
 // `neurastream incident …`: the incident list Main must act on (store: src/core/incidents.ts).
 // `list` prints incidents (--open: only the ones with no plan/dismiss/fixed yet; --json: the full
 // records); `add` records Main's own finding (source "main"); `plan` records the plan that fixes
-// an incident; `dismiss` records why an incident is not a bug.
+// an incident; `dismiss` records why an incident is not a bug; `propose` records Main's written reason
+// (file:line proof) for a finding, which leaves the incident open.
 
 import { ConfigError, loadConfig, type Config } from "../core/config.ts";
 import {
@@ -9,6 +10,7 @@ import {
 	dismissIncident,
 	openIncidents,
 	planIncident,
+	proposeIncident,
 	readIncidents,
 	type IncidentView,
 } from "../core/incidents.ts";
@@ -91,6 +93,20 @@ export function dismissIncidentCmd(cfg: Config, id: string, why: string | undefi
 	return 0;
 }
 
+export function proposeIncidentCmd(cfg: Config, id: string, why: string | undefined): number {
+	if (!id || why === undefined) {
+		console.error(INCIDENT_USAGE);
+		return 2;
+	}
+	const problem = proposeIncident(cfg, id, why);
+	if (problem) {
+		console.error(problem);
+		return 1;
+	}
+	console.log(`incident ${id}: proposal recorded (still open)`);
+	return 0;
+}
+
 export async function runIncident(args: string[]): Promise<number> {
 	let cfg: Config;
 	try {
@@ -104,6 +120,7 @@ export async function runIncident(args: string[]): Promise<number> {
 	if (sub === "add") return addIncidentCmd(cfg, rest);
 	if (sub === "plan") return planIncidentCmd(cfg, rest[0] ?? "", rest[1] ?? "");
 	if (sub === "dismiss") return dismissIncidentCmd(cfg, rest[0] ?? "", flagValue(rest, "--why"), flagValue(rest, "--owner"));
+	if (sub === "propose") return proposeIncidentCmd(cfg, rest[0] ?? "", flagValue(rest, "--why"));
 	console.error(INCIDENT_USAGE);
 	return 2;
 }
