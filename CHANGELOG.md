@@ -1,4 +1,7 @@
 # Changelog
+## Unreleased
+### Added
+- Finding incidents get a reason and two owner buttons on the Agents page (plan 20261028_1135, P1–P3): `neurastream incident propose <id> --why "<file:line and reason>"` records Main's reason and keeps the incident open (the why must cite `file:line`); the page shows that reason with **False alarm** (closes it, the reason becomes the dismissal, recorded with the owner's login) and **It's a bug — plan it** (keeps it open, one message to Main's inbox). `POST /incident` sits behind the same origin and tailnet-owner checks as the other POST routes.
 ## 0.2.42
 ### Changed
 - Plain `omp` no longer runs neurastream: no hook, no command, no guard. Start Main with `neurastream main`, which sets `NEURASTREAM_MAIN_LAUNCHER=1` for its omp; child harnesses inherit it.
