@@ -169,6 +169,8 @@ Agent pins ship as templates. Adapter install copies `templates/agents/*.md` (no
 
 Spawn names are the pin `name` field. Core checks the name against `## Allowed` in `paths.subagents`. It does not know which names exist.
 
+The adapter comes up only under `neurastream main`: that launcher sets `NEURASTREAM_MAIN_LAUNCHER=1` (`MAIN_ENV` in `launch.ts`) for the omp it starts, and `ompExtension` registers nothing without it. The switch is an env var, not a flag, because children inherit the env: an omp a tool starts from inside Main stays guarded.
+
 ## Adding a feature
 
 Core logic and its types live in `src/core` and name no harness — `tests/host-neutral.test.ts` and the substring scan in `tests/config.test.ts` hold that line. Whatever the feature must learn from the harness (sessions, traces, dumps, launch, install, doctor) goes through a `HarnessAdapter` member, and the CLI picks the adapter with `getAdapter(cfg)` on the config key `harness` — never an import from `src/adapters/omp/`.

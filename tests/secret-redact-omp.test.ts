@@ -64,9 +64,10 @@ ${secrets}`,
 }
 
 // Inherited QUEUE_* would override the sandbox config.yml in the child: env beats config.
+// The launcher flag is what `neurastream main` sets; without it the extension registers nothing.
 function envFor(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
 	const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("QUEUE_")));
-	return { ...env, HOME, QUEUE_CLOSE_BIN: join(HOME, "close-stub"), ...extra };
+	return { ...env, HOME, QUEUE_CLOSE_BIN: join(HOME, "close-stub"), NEURASTREAM_MAIN_LAUNCHER: "1", ...extra };
 }
 
 const REGISTER = `

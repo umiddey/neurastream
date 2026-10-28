@@ -636,7 +636,7 @@ out.push(fs.readFileSync(${JSON.stringify(P6PLAN)}, "utf8") === ${JSON.stringify
 console.log(JSON.stringify(out));
 `;
 		const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("QUEUE_")));
-		const r = spawnSync("bun", ["-e", body], { encoding: "utf8", cwd: "/tmp", env: { ...env, HOME: P6 }, timeout: 60000 });
+		const r = spawnSync("bun", ["-e", body], { encoding: "utf8", cwd: "/tmp", env: { ...env, HOME: P6, NEURASTREAM_MAIN_LAUNCHER: "1" }, timeout: 60000 });
 		if (r.status !== 0) throw new Error(`p6 adapter run failed: ${r.stderr}`);
 		return JSON.parse((r.stdout.trim().split("\n").pop() ?? "null"), (_k, v) => (v === null ? undefined : v)) as unknown[];
 	}
