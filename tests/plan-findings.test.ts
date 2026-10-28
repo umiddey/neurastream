@@ -4,8 +4,9 @@
 // like a subagent's (src/core/guards.ts checkMainPlan -> recordFindings).
 
 import { afterAll, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { checkPlanEdit, checkStop } from "../src/core/guards.ts";
 import { addIncident, dismissIncident, openIncidents } from "../src/core/incidents.ts";
@@ -142,4 +143,42 @@ test("an owner quote the inject hook never saw refuses; other kinds keep --why o
 	addIncident(cfg, { source: "main", kind: "toy", summary: "not a finding" });
 	const toy = openIncidents(cfg).find(i => i.kind === "toy")!;
 	expect(dismissIncident(cfg, toy.id, "not a bug")).toBe(null);
+});
+
+// P5 / I-20261028-67: the guard CLI passes a stop event's reply into StopEvent, so a harness
+// without the omp plugin gets the plan-offer block through `neurastream guard stop --json` too.
+const REPO = resolve(import.meta.dir, "..");
+
+function guardCli(event: string, payload: unknown): { code: number; d: { allow: boolean; reason: string } } {
+	const r = spawnSync("bun", [join(REPO, "src/cli/main.ts"), "guard", event, "--json"], {
+		input: JSON.stringify(payload),
+		encoding: "utf8",
+		env: {
+			...process.env,
+			HOME,
+			QUEUE_AGENT: AGENT,
+			QUEUE_INDEX: join(AGENT, "INDEX.md"),
+			QUEUE_BLOCKERS: join(AGENT, "blockers"),
+			QUEUE_STATE: STATE,
+			QUEUE_SUBAGENTS: join(AGENT, "notes/subagents.md"),
+			QUEUE_CANCELLED: join(AGENT, "CANCELLED.md"),
+			QUEUE_UNLOCK: join(AGENT, ".guard-unlock"),
+		},
+	});
+	return { code: r.status ?? 1, d: JSON.parse(r.stdout.trim()) };
+}
+
+test("guard stop --json refuses a reply that offers to plan", () => {
+	fresh();
+	const r = guardCli("stop", { agent: "main", callsSinceStop: 0, idleStops: 0, ledgerText: "", reply: "backups broken, want me to write a plan?" });
+	expect(r.code).toBe(2);
+	expect(r.d.allow).toBe(false);
+	expect(r.d.reason).toContain("don't offer it — write the plan and index it");
+});
+
+test("guard stop --json allows a reply without the offer", () => {
+	fresh();
+	const r = guardCli("stop", { agent: "main", callsSinceStop: 0, idleStops: 0, ledgerText: "", reply: "backups broken, investigating now" });
+	expect(r.code).toBe(0);
+	expect(r.d.allow).toBe(true);
 });

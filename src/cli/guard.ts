@@ -78,6 +78,9 @@ function decide(event: string, p: Record<string, unknown>, cfg: Config): Decisio
 				callsSinceStop: asNumber(p.callsSinceStop),
 				idleStops: asNumber(p.idleStops),
 				ledgerText: asString(p.ledgerText),
+				// P5 (20261028_0900, I-20261028-67): non-omp harnesses reach the plan-offer block
+				// through this CLI, so the reply text travels like the omp adapter's does.
+				...(p.reply === undefined ? {} : { reply: asString(p.reply) }),
 			};
 			return checkStop(e, cfg);
 		}
