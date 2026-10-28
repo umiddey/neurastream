@@ -5,7 +5,7 @@
 
 import { afterAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ompRunSource } from "../src/adapters/omp/sessions.ts";
@@ -261,34 +261,77 @@ test("feature rows and the per-kind summary price finished chains", () => {
 	expect(report.rows.find(r => r.stem === OLD)).toBeUndefined();
 });
 
-test("metrics features prints the table through the real CLI on fixture data", () => {
-	writeFileSync(
-		join(PROJ, "20261026_0900_main.jsonl"),
-		[
-			userLine("2026-10-26T08:10:00Z", `plan ${ALPHA} and ${FIX} together`),
-			assistantLine("2026-10-26T08:20:00Z", "done", 2),
-		].join("\n") + "\n",
-	);
-	// A sub naming alpha only: its whole cost goes to alpha's chain, outside the Main hour split.
-	writeFileSync(
-		join(PROJ, "NsAlpha1.jsonl"),
-		[
-			userLine("2026-10-26T09:30:00Z", `continue ${ALPHA}: run the checks`),
-			assistantLine("2026-10-26T09:31:00Z", "checks done", 0.04),
-		].join("\n") + "\n",
-	);
+// --- the real-CLI tests: every fixture hangs off BASE (P4 step 0) ---
+
+// The spawned CLI windows on the wall clock, so calendar-pinned fixtures leave the window as
+// the days pass (the 2026-10-30 fixtures died on 2026-11-01). These two tests build every
+// timestamp — session lines, plan Progress dates, ci/product rows, even the session files'
+// mtimes, which listRuns pre-filters on — relative to BASE, the current second, and pin the
+// child to the same second through NEURASTREAM_NOW (src/core/clock.ts's test seam). A scratch
+// copy with BASE shifted +30 days must still pass, which proves the pair is day-independent.
+const BASE = Math.floor(Date.now() / 1000);
+const HOUR = 3600;
+/** Local `YYYY-MM-DD HH:MM`, the stamp closeTime parses (bare = local time). */
+const stamp = (ts: number): string => {
+	const d = new Date(ts * 1000);
+	const two = (n: number) => String(n).padStart(2, "0");
+	return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}`;
+};
+const iso = (ts: number): string => new Date(ts * 1000).toISOString();
+/** The CLI's run source skips session files whose mtime is older than the window, so fixture files carry BASE-relative mtimes. */
+function backdate(path: string, ts: number): void {
+	utimesSync(path, ts, ts);
+}
+function cliEnv(): NodeJS.ProcessEnv {
 	const env: NodeJS.ProcessEnv = { ...process.env };
 	for (const k of Object.keys(env)) if (k.startsWith("QUEUE_")) delete env[k];
 	env.HOME = HOME;
-	const r = spawnSync(process.execPath, ["src/cli/main.ts", "metrics", "features", "--days", "7"], {
-		cwd: join(import.meta.dir, ".."),
-		env,
-		encoding: "utf8",
-	});
-	expect(r.status).toBe(0);
-	expect(r.stdout).toContain("Results: last 7 days");
-	expect(r.stdout).toContain(ALPHA);
-	expect(r.stdout).toContain("2.04"); // alpha 1 + fix 1 + sub 0.04
+	env.NEURASTREAM_NOW = String(BASE);
+	return env;
+}
+
+test("metrics features prints the table through the real CLI on fixture data", () => {
+	// ALPHA/FIX carry the chain's close time, so both plans get BASE-relative Progress dates
+	// here (restored after — the fixed-date unit tests above read the same files).
+	const alphaPath = join(PLANS, `${ALPHA}.md`);
+	const fixPath = join(PLANS, `${FIX}.md`);
+	const alphaKeep = readFileSync(alphaPath, "utf8");
+	const fixKeep = readFileSync(fixPath, "utf8");
+	writeFileSync(alphaPath, planText("Alpha", ["build the alpha widget"], "complete", [`- ${stamp(BASE - 3 * DAY)} Main: alpha shipped. Findings: none`]));
+	writeFileSync(fixPath, planText("Fix alpha", [`fix ${ALPHA}: the widget leaked`], "complete", [`- ${stamp(BASE - 2 * DAY + HOUR)} Main: fix shipped. Findings: none`]));
+	try {
+		const main = join(PROJ, "20261026_0900_main.jsonl");
+		writeFileSync(
+			main,
+			[
+				userLine(iso(BASE - 3 * DAY), `plan ${ALPHA} and ${FIX} together`),
+				assistantLine(iso(BASE - 3 * DAY + 600), "done", 2),
+			].join("\n") + "\n",
+		);
+		backdate(main, BASE - 3 * DAY);
+		// A sub naming alpha only: its whole cost goes to alpha's chain, outside the Main hour split.
+		const sub = join(PROJ, "NsAlpha1.jsonl");
+		writeFileSync(
+			sub,
+			[
+				userLine(iso(BASE - 3 * DAY + 80 * 60), `continue ${ALPHA}: run the checks`),
+				assistantLine(iso(BASE - 3 * DAY + 81 * 60), "checks done", 0.04),
+			].join("\n") + "\n",
+		);
+		backdate(sub, BASE - 3 * DAY + 80 * 60);
+		const r = spawnSync(process.execPath, ["src/cli/main.ts", "metrics", "features", "--days", "7"], {
+			cwd: join(import.meta.dir, ".."),
+			env: cliEnv(),
+			encoding: "utf8",
+		});
+		expect(r.status).toBe(0);
+		expect(r.stdout).toContain("Results: last 7 days");
+		expect(r.stdout).toContain(ALPHA);
+		expect(r.stdout).toContain("2.04"); // alpha 1 + fix 1 + sub 0.04
+	} finally {
+		writeFileSync(alphaPath, alphaKeep);
+		writeFileSync(fixPath, fixKeep);
+	}
 });
 
 // --- P3: releases ---
@@ -400,31 +443,42 @@ test("releases: a 10-day-old tag shows both sides, a 2-day-old tag is measuring,
 });
 
 test("metrics releases prints one row per release with before and after through the real CLI", () => {
-	// Fixed dates (not relative to the wall clock) so they line up with the fixture sessions
-	// above: #77 sits before the fixture work (Oct 26 08:00-09:30Z) and before alpha's close
-	// (Oct 27 11:00Z), so both land in its after window. Like the features CLI test, the value
-	// assertions hold while the machine clock is before 2026-11-01 (then they leave the windows).
-	appendMetric(CFG, { type: "ci", mr: "77", repo: REPO, tries: 1, ts: Date.UTC(2026, 9, 25, 12) / 1000 });
-	appendMetric(CFG, { type: "product", repo: REPO, name: "dist_mb", value: 10, ts: Date.UTC(2026, 9, 24, 12) / 1000 });
-	appendMetric(CFG, { type: "product", repo: REPO, name: "dist_mb", value: 12, ts: Date.UTC(2026, 9, 26, 12) / 1000 });
-	const env: NodeJS.ProcessEnv = { ...process.env };
-	for (const k of Object.keys(env)) if (k.startsWith("QUEUE_")) delete env[k];
-	env.HOME = HOME;
-	const r = spawnSync(process.execPath, ["src/cli/main.ts", "metrics", "releases", "--days", "7"], {
-		cwd: join(import.meta.dir, ".."),
-		env,
-		encoding: "utf8",
-	});
-	expect(r.status).toBe(0);
-	expect(r.stdout).toContain("Releases:");
-	expect(r.stdout).toContain("proj#77");
-	expect(r.stdout).toContain("measuring");
-	expect(r.stdout).toContain("dist_mb 10→12");
-	expect(r.stdout).toContain("1.02"); // after #77: (alpha 2.04 + ns2 0.00) / 2 finished product chains
-	// One row per release: the self repo's v* tags plus the one product merge.
-	const vtags = spawnSync("git", ["for-each-ref", "refs/tags/v*", "--format=%(refname:short)"], {
-		cwd: join(import.meta.dir, ".."),
-		encoding: "utf8",
-	}).stdout.split("\n").filter(Boolean).length;
-	expect(r.stdout.split("\n").filter(l => l.includes("→")).length).toBe(vtags + 1);
+	// All BASE-relative, like the features CLI test: #77 sits 4 days back, before the fixture
+	// work (3 days back) and before alpha's and ns2's closes (2 days back), so both land in its
+	// after window and the after side is still measuring.
+	const alphaPath = join(PLANS, `${ALPHA}.md`);
+	const fixPath = join(PLANS, `${FIX}.md`);
+	const ns2Path = join(NSREPO, "docs/plans", `${NS2}.md`);
+	const alphaKeep = readFileSync(alphaPath, "utf8");
+	const fixKeep = readFileSync(fixPath, "utf8");
+	const ns2Keep = readFileSync(ns2Path, "utf8");
+	writeFileSync(alphaPath, planText("Alpha", ["build the alpha widget"], "complete", [`- ${stamp(BASE - 3 * DAY)} Main: alpha shipped. Findings: none`]));
+	writeFileSync(fixPath, planText("Fix alpha", [`fix ${ALPHA}: the widget leaked`], "complete", [`- ${stamp(BASE - 2 * DAY + HOUR)} Main: fix shipped. Findings: none`]));
+	writeFileSync(ns2Path, planText("Ns2", ["engine work two"], "complete", [`- ${stamp(BASE - 2 * DAY)} Main: ns2 done. Findings: none`]));
+	try {
+		appendMetric(CFG, { type: "ci", mr: "77", repo: REPO, tries: 1, ts: BASE - 4 * DAY });
+		appendMetric(CFG, { type: "product", repo: REPO, name: "dist_mb", value: 10, ts: BASE - 5 * DAY });
+		appendMetric(CFG, { type: "product", repo: REPO, name: "dist_mb", value: 12, ts: BASE - 1 * DAY });
+		const r = spawnSync(process.execPath, ["src/cli/main.ts", "metrics", "releases", "--days", "7"], {
+			cwd: join(import.meta.dir, ".."),
+			env: cliEnv(),
+			encoding: "utf8",
+		});
+		expect(r.status).toBe(0);
+		expect(r.stdout).toContain("Releases:");
+		expect(r.stdout).toContain("proj#77");
+		expect(r.stdout).toContain("measuring");
+		expect(r.stdout).toContain("dist_mb 10→12");
+		expect(r.stdout).toContain("1.02"); // after #77: (alpha 2.04 + ns2 0.00) / 2 finished product chains
+		// One row per release: the self repo's v* tags plus the one product merge.
+		const vtags = spawnSync("git", ["for-each-ref", "refs/tags/v*", "--format=%(refname:short)"], {
+			cwd: join(import.meta.dir, ".."),
+			encoding: "utf8",
+		}).stdout.split("\n").filter(Boolean).length;
+		expect(r.stdout.split("\n").filter(l => l.includes("→")).length).toBe(vtags + 1);
+	} finally {
+		writeFileSync(alphaPath, alphaKeep);
+		writeFileSync(fixPath, fixKeep);
+		writeFileSync(ns2Path, ns2Keep);
+	}
 });
