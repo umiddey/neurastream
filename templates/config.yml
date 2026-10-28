@@ -145,6 +145,9 @@ autonomy:
   go_minutes: 10           # minutes the approve phrase approves exactly one push/merge in tier strict
   go_phrase: "go push"     # the whole chat message that approves one push/merge in tier strict (I-20261025-201); a bare `go` is an ordinary message
 
+review:                    # plan review gate (plan 20261028_1600): reuse lines now, reviewer PASS from P2 (docs/config.md)
+  since: "2026-10-28"      # plans stamped before this ISO date are exempt from the reuse-line and reviewer-PASS gates; "" = off
+
 ui:
   enabled: false        # the owner's phone page (neurastream ui); binds the tailnet address only
   port: 7787

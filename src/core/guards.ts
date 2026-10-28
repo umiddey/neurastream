@@ -316,7 +316,7 @@ function unticked(p: Plan): string[] {
 
 // Plans an implementer brief may run on; returns [reason, null] or [null, plan files].
 export function planGate(text: string, label: string, cfg?: Config): [string | null, string[]] {
-	const plans = q.activePlans();
+	const plans = q.activePlans(undefined, undefined, cfg?.review.since ?? "");
 	const unclosed = plans.filter(p => (p.status === "complete" || p.status === "cancelled") && !q.awaitingMerge(p));
 	if (unclosed.length)
 		return [
@@ -1048,7 +1048,7 @@ export function checkInject(e: InjectEvent, cfg: Config): Decision {
 	recordOwnerMessage(e.inject, cfg);
 	let summary: string;
 	try {
-		summary = q.queueSummary();
+		summary = q.queueSummary(undefined, cfg.review.since);
 	} catch (err) {
 		summary = `Queue unreadable (${q.INDEX}): ${err}`;
 	}
@@ -1331,12 +1331,12 @@ function readMainReads(): Record<string, string> {
 }
 
 // Plans still responsible for: open plans (parked "WAITING on owner" excluded) plus queue problems.
-export function openQueue(): string[] {
+export function openQueue(reviewSince = ""): string[] {
 	const open = q
 		.activePlans()
 		.filter(p => !p.waiting && !q.awaitingMerge(p))
 		.map(p => p.file);
-	for (const prob of q.queueProblems()) open.push(`${prob.where}: ${prob.problem}`);
+	for (const prob of q.queueProblems(undefined, undefined, reviewSince)) open.push(`${prob.where}: ${prob.problem}`);
 	const unique: string[] = [];
 	for (const item of open) if (!unique.includes(item)) unique.push(item);
 	return unique;
@@ -1371,7 +1371,7 @@ export function checkStop(e: StopEvent, cfg: Config): Decision {
 	}
 	let open: string[];
 	try {
-		open = openQueue();
+		open = openQueue(cfg.review.since);
 	} catch (err) {
 		log(cfg.paths.guard_log, `BLOCK stop: cannot read queue: ${err}`);
 		open = [`queue unreadable (${q.INDEX}): ${err}`];

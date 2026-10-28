@@ -2,7 +2,7 @@
 // Everything runs in-process against temp dirs; no live state dir, no real forge.
 
 import { afterAll, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parsePlan, queueProblems, type Plan } from "../src/core/queue/lib.ts";
@@ -39,6 +39,9 @@ Branch: feat/toy
 ## Phases
 - [ ] P1 do the thing — verify: \`test -f src/a.ts\`
 
+## Code read by Main
+- \`src/a.ts\`
+
 ## Reuse-placeholder
 
 ## Done check
@@ -58,7 +61,7 @@ function planFile(stamp: string, reuse?: string): string {
 }
 
 function parsed(file: string): Plan {
-	return parsePlan(REPO, file, planText(file), BLOCKERS, SINCE);
+	return parsePlan(REPO, file, readFileSync(file, "utf8"), BLOCKERS, SINCE);
 }
 
 // --- P1: reuse lines ---
