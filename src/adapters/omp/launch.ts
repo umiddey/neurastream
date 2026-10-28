@@ -178,6 +178,7 @@ export async function runMainLauncher(args: string[], cfg: Config, opts: LaunchO
 	}
 	for (;;) {
 		const started = Date.now();
+		// The env, not a flag: the child inherits it, so an omp started from inside Main stays guarded.
 		const code = await runChild(proxy.cmd, [...proxy.prefix, ...runArgs], { ...process.env, [MAIN_ENV]: "1" });
 		const req = readRequest(started, cfg);
 		if (req === null) return code;
