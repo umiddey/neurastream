@@ -101,6 +101,52 @@ function lint(path: string, cfg: Config): { errs: string[]; warns: string[] } {
 		}
 	}
 
+	// P4b (INCIDENT I-20261028-149): a helper wrote its Progress into the worktree copy of the plan
+	// and committed it there. A brief that works a plan must name the plan's absolute path in its
+	// main checkout; naming only a worktree copy is that incident again. (INCIDENT I-20261028-153):
+	// the plan's scope blocker did not allow a file the brief told the helper to change — when a
+	// plan blocker script carries ALLOWED='…', every src/tests path the brief names must be inside it.
+	if (cfg.paths.work_roots.length && /\bplans?\b/i.test(text)) {
+		const noPlanLine = "no line names the plan's absolute path in its main checkout (paths.work_roots)";
+		const planPaths = [...paths].map(clean).filter(p => /\/docs\/plans\/[\w.-]+\.md$/.test(p));
+		const inRoot = planPaths.filter(p => cfg.paths.work_roots.some(r => p.startsWith(r.replace(/\/+$/, "") + "/")));
+		if (!inRoot.length) {
+			const copy = planPaths[0];
+			if (copy) {
+				const main = cfg.paths.work_roots
+					.map(r => `${r.replace(/\/+$/, "")}/docs/plans/${basename(copy)}`)
+					.find(p => existsSync(p));
+				errs.push(
+					main
+						? `worktree path ${copy} is the plan's copy; name the main checkout's copy ${main} (paths.work_roots)`
+						: noPlanLine,
+				);
+			} else errs.push(noPlanLine);
+		}
+		const planFile = inRoot.find(p => existsSync(p));
+		if (planFile) {
+			const blockersDir = cfg.paths.blockers.replace(/\/+$/, "");
+			for (const line of (sections(readFileSync(planFile, "utf8")).get("blockers") ?? "").split("\n")) {
+				const name = /^[-*]\s+(\S+)\s*$/.exec(line.trim())?.[1];
+				if (!name) continue;
+				const script = `${blockersDir}/${name}`;
+				if (!existsSync(script)) continue;
+				const m = /^ALLOWED=['"](.+)['"]\s*$/m.exec(readFileSync(script, "utf8"));
+				if (!m) continue;
+				let allowed: RegExp;
+				try {
+					allowed = new RegExp(m[1]!);
+				} catch {
+					continue; // a blocker with a broken ALLOWED regex is that blocker's bug, not this brief's
+				}
+				for (const raw of paths) {
+					const rel = /\/((?:src|tests)\/[\w./-]+)$/.exec(clean(raw))?.[1];
+					if (rel && !allowed.test(rel)) errs.push(`plan blocker ${name} does not allow ${rel} (its ALLOWED regex rejects it)`);
+				}
+			}
+		}
+	}
+
 	// The brief's call-budget rule: either the classic "stop within ~N calls" line or a Main-set
 	// per-spawn `Call budget: <N>` line counts.
 	need(

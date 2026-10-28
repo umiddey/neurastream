@@ -164,7 +164,7 @@ test("brief.repo_rules fire from config; first and unless gate on the title line
 // is still checked whole.
 const GONE = join(TMP, "home", "projects", "gone-wt", "src", "deep", "gone.ts");
 
-function captureLint(files: string[]): { rc: number; out: string } {
+function captureLint(files: string[], c: Config = cfg): { rc: number; out: string } {
 	const chunks: string[] = [];
 	const orig = process.stdout.write.bind(process.stdout);
 	process.stdout.write = ((chunk: string | Uint8Array) => {
@@ -172,7 +172,7 @@ function captureLint(files: string[]): { rc: number; out: string } {
 		return true;
 	}) as typeof process.stdout.write;
 	try {
-		return { rc: briefLint(files, cfg), out: chunks.join("") };
+		return { rc: briefLint(files, c), out: chunks.join("") };
 	} finally {
 		process.stdout.write = orig;
 	}
@@ -388,12 +388,13 @@ function scopeBrief(name: string, body: string): string {
 
 test("a brief naming the plan copy in a worktree is refused; the main checkout path passes", () => {
 	scopeFixture();
-	const noPlan = captureLint([scopeBrief("20261028_1510_no_plan.md", "Read more of the plan someday.")]);
+	const noPlan = captureLint([scopeBrief("20261028_1510_no_plan.md", "Read more of the plan someday.")], scopeCfg);
 	expect(noPlan.rc).toBe(1);
 	expect(noPlan.out).toContain("no line names the plan's absolute path in its main checkout");
-	const wtCopy = captureLint([
-		scopeBrief("20261028_1511_wt_copy.md", `Plan: ${join(WT, "docs/plans", PLAN_BASE)} has the phases.`),
-	]);
+	const wtCopy = captureLint(
+		[scopeBrief("20261028_1511_wt_copy.md", `Plan: ${join(WT, "docs/plans", PLAN_BASE)} has the phases.`)],
+		scopeCfg,
+	);
 	expect(wtCopy.rc).toBe(1);
 	expect(wtCopy.out).toContain("worktree path");
 	const mainCopy = scopeBrief("20261028_1512_main_copy.md", `Plan: ${join(ROOT, "docs/plans", PLAN_BASE)} has the phases.`);
@@ -407,12 +408,15 @@ test("a src/tests path the plan's blocker ALLOWED regex rejects is refused", () 
 		[`Plan: ${join(ROOT, "docs/plans", PLAN_BASE)} has the phases.`, `Touch ${join(WT, "src/core/guards.ts")} only.`].join("\n"),
 	);
 	expect(briefLint([inScope], scopeCfg)).toBe(0);
-	const outScope = captureLint([
-		scopeBrief(
-			"20261028_1521_out_scope.md",
-			[`Plan: ${join(ROOT, "docs/plans", PLAN_BASE)} has the phases.`, `Touch ${join(WT, "src/core/brief-lint.ts")} too.`].join("\n"),
-		),
-	]);
+	const outScope = captureLint(
+		[
+			scopeBrief(
+				"20261028_1521_out_scope.md",
+				[`Plan: ${join(ROOT, "docs/plans", PLAN_BASE)} has the phases.`, `Touch ${join(WT, "src/core/brief-lint.ts")} too.`].join("\n"),
+			),
+		],
+		scopeCfg,
+	);
 	expect(outScope.rc).toBe(1);
 	expect(outScope.out).toContain("scope.sh does not allow src/core/brief-lint.ts");
 });
