@@ -3,9 +3,11 @@
 // each with Do / Stuck until then / Why you), 12 queued plans across 3 repos each with its own
 // file, a Summary line, and a status chip covering every queue state, 3 agents incl. 1 that died
 // before its first reply (model from the spawning agent's frontmatter, never "?"), a scores table,
-// an incident, low disk, and spend across the last 10 hours. `--tab <now|queue|agents|spend>`
-// picks the tab (default now). The output is meant for screenshots and review; it is not a test
-// and touches nothing outside <out.html>.
+// an incident, low disk, and spend across the last 10 hours. The Results tab (plan
+// 20261025_2148 P4) gets six releases over ~30 days — product merges vs neurastream tags, $ per
+// feature improving after the middle ones, dist_mb growing, the newest still measuring.
+// `--tab <now|queue|agents|spend|results>` picks the tab (default now). The output is meant for
+// screenshots and review; it is not a test and touches nothing outside <out.html>.
 // Usage: bun scripts/ui-preview.ts <out.html> [--tab <name>]
 
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -13,7 +15,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { loadConfig } from "../src/core/config.ts";
 import { nowSec } from "../src/core/clock.ts";
-import { renderPage, type AgentRow, type CiRow, type IncidentRow, type NowStats, type PageData, type QueueRow, type QuestionRow } from "../src/core/owner-ui.ts";
+import type { ReleaseRow, ReleaseSideStats } from "../src/core/results.ts";
+import { renderPage, type AgentRow, type CiRow, type IncidentRow, type NowStats, type PageData, type QueueRow, type QuestionRow, type ResultsData } from "../src/core/owner-ui.ts";
 
 const out = process.argv[2];
 if (!out) {
@@ -217,6 +220,50 @@ const ci: CiRow[] = [
 
 const incidents: IncidentRow[] = [{ id: "I-20261025-01", kind: "usage-limit", summary: "glm usage limit hit at 02:00; resets 08:03 local", count: 2 }];
 
+// Six releases over ~30 days for the Results tab: the y metrics read each release's after side,
+// so the measuring newest release plots no point until its window fills.
+const relSide = (perFeature: number | null, dist: number | null): ReleaseSideStats => ({
+	perFeature,
+	featuresPerDay: perFeature === null ? null : 0.6,
+	callsPerFeature: perFeature === null ? null : 3.2,
+	tokensPerCall: perFeature === null ? null : 870,
+	fixPlansPerFeature: perFeature === null ? null : 0.4,
+	products: [{ repo: "/srv/code/alpha", name: "dist_mb", value: dist }],
+});
+const relTs = nowSec();
+const relRow = (name: string, kind: "product" | "neurastream", daysAgo: number, before: [number, number], after: [number | null, number | null]): ReleaseRow => ({
+	name,
+	kind,
+	repo: kind === "product" ? "/srv/code/alpha" : "/srv/code/neurastream",
+	ts: relTs - daysAgo * 86400,
+	measuring: after[0] === null,
+	before: relSide(before[0], before[1]),
+	after: relSide(after[0], after[1]),
+});
+const results: ResultsData = {
+	features: {
+		days: 7,
+		from: relTs - 7 * 86400,
+		to: relTs,
+		rows: [{ stem: "20261026_1400_login_retry", kind: "product", plans: 2, fixPlans: 1, total: 12.4, first: 9.1, closedAt: relTs - 2 * 86400 }],
+		summaries: [
+			{ kind: "product", finished: 3, perDay: 0.43, perFeature: 13.4, firstPass: 9.1, overheadPct: 4, openChains: 2, openSunk: 31.2 },
+			{ kind: "neurastream", finished: 2, perDay: 0.29, perFeature: 4.9, firstPass: 3.8, overheadPct: 7, openChains: 1, openSunk: 5.4 },
+		],
+	},
+	releases: {
+		days: 7,
+		rows: [
+			relRow("v0.2.33", "neurastream", 30, [6.4, 39], [5.9, 41]),
+			relRow("alpha#141", "product", 25, [17.5, 41], [16.8, 43]),
+			relRow("alpha#148", "product", 18, [16.8, 43], [15.2, 44]),
+			relRow("v0.2.36", "neurastream", 12, [5.9, 44], [4.9, 44]),
+			relRow("alpha#155", "product", 6, [15.2, 45], [13.4, 47]),
+			relRow("v0.2.38", "neurastream", 1, [4.9, 47], [null, null]),
+		],
+	},
+};
+
 const data: PageData = {
 	questions,
 	agents,
@@ -234,6 +281,9 @@ const data: PageData = {
 	},
 	machine: { freeGb: 6.2, diskMin: 20, load: 1.84, loadMax: 16, cores: 16 },
 	stats,
+	results,
+	// The preview carries no knowledge manifest: the Base tab renders its unavailable note.
+	knowledge: null,
 	messages: [{ id: "1792953589-a1b2c3", ts: ts - 7200, text: "Please check this photo from the site visit.", images: ["1.jpg"] }],
 	lockMinutesLeft: 12,
 };
@@ -243,4 +293,4 @@ const cfg = { ...base, guards: { ...base.guards, chat_unlock: true } };
 const html = renderPage(cfg, data, new URLSearchParams(tab ? `tab=${tab}` : ""), "preview-fixed-nonce");
 mkdirSync(dirname(resolve(out)), { recursive: true });
 writeFileSync(out, html);
-console.log(`wrote ${out} (${html.length} bytes, tab=${tab || "now"}, ${questions.length} waiting, ${queue.length} queued, ${stats.runs24} runs/$${stats.spend24.toFixed(2)} in 24 h)`);
+console.log(`wrote ${out} (${html.length} bytes, tab=${tab || "now"}, ${questions.length} waiting, ${queue.length} queued, ${stats.runs24} runs/$${stats.spend24.toFixed(2)} in 24 h, ${results.releases.rows.length} releases)`);

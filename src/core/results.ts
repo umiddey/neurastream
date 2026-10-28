@@ -266,6 +266,22 @@ export interface ReleaseTag {
 	ts: number;
 }
 
+/** The self repo's `v*` tags with their tag dates; a non-git repo or a git failure lists none. Lives here (not cli/) because the owner page's Results tab reads it too. */
+export function gatherTags(repo: string | null): ReleaseTag[] {
+	if (!repo) return [];
+	const proc = Bun.spawnSync(["git", "-C", repo, "for-each-ref", "refs/tags/v*", "--format=%(refname:short) %(creatordate:unix)"], {
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	if (proc.exitCode !== 0) return [];
+	const out: ReleaseTag[] = [];
+	for (const line of proc.stdout.toString().split("\n")) {
+		const m = line.match(/^(\S+) (\d+)$/);
+		if (m) out.push({ name: m[1]!, ts: Number(m[2]) });
+	}
+	return out;
+}
+
 export interface ProductValue {
 	repo: string;
 	name: string;

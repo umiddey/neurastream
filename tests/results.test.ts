@@ -11,8 +11,7 @@ import { join } from "node:path";
 import { ompRunSource } from "../src/adapters/omp/sessions.ts";
 import type { Run, RunMessage } from "../src/core/adapter.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
-import { chains, closeTime, featuresReport, loadPlans, releasesReport } from "../src/core/results.ts";
-import { gatherTags } from "../src/cli/metrics.ts";
+import { chains, closeTime, featuresReport, gatherTags, loadPlans, releasesReport } from "../src/core/results.ts";
 import { appendMetric, type Ev } from "../src/core/metrics.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "ns-results-"));

@@ -12,7 +12,7 @@ import { buildReport, type BloatSummary, type ProviderSummary } from "../core/re
 import { providerFindings } from "../core/trace-provider.ts";
 import { bloatRules } from "../core/trace-bloat.ts";
 import { getAdapter } from "../adapters/index.ts";
-import { featuresReport, loadPlans, releasesReport, type FeaturesReport, type ReleasesReport } from "../core/results.ts";
+import { featuresReport, gatherTags, loadPlans, releasesReport, type FeaturesReport, type ReleasesReport } from "../core/results.ts";
 import { gitTop } from "../core/queue/lib.ts";
 import { assignDumps, bloatReport } from "./traces.ts";
 
@@ -222,22 +222,6 @@ export function featuresCmd(cfg: Config, source: RunSource, args: string[], now:
 	}
 	console.log(featuresTable(report));
 	return 0;
-}
-
-/** The self repo's `v*` tags with their tag dates; a non-git repo or a git failure lists none. */
-export function gatherTags(repo: string | null): { name: string; ts: number }[] {
-	if (!repo) return [];
-	const proc = Bun.spawnSync(["git", "-C", repo, "for-each-ref", "refs/tags/v*", "--format=%(refname:short) %(creatordate:unix)"], {
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	if (proc.exitCode !== 0) return [];
-	const out: { name: string; ts: number }[] = [];
-	for (const line of proc.stdout.toString().split("\n")) {
-		const m = line.match(/^(\S+) (\d+)$/);
-		if (m) out.push({ name: m[1]!, ts: Number(m[2]) });
-	}
-	return out;
 }
 
 function releasesTable(r: ReleasesReport): string {
