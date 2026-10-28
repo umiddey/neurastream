@@ -23,10 +23,12 @@ export interface WriteCheckConfig {
 
 export type WriteCheckResult = { allow: true; note?: string } | { allow: false; reason: string };
 
-// Counts per rule key; suppression comments count under SUPPRESSION.
+// Counts per (rule, message) pair, so a rule's old debt never masquerades as the reason for a
+// refusal (I-20261028-150); suppression comments count per matching line under SUPPRESSION.
 interface Findings {
 	counts: Map<string, number>;
 	samples: Map<string, string>;
+	rules: Map<string, string>;
 }
 
 const SUPPRESSION = "suppression";
@@ -34,9 +36,16 @@ const REASON_MAX = 2000;
 const SAMPLE_MAX = 300;
 const TAIL = "The file was restored to its state before this edit; fix it and edit again — do not add suppression comments.";
 
-function add(f: Findings, key: string, sample: string): void {
-	f.counts.set(key, (f.counts.get(key) ?? 0) + 1);
-	if (!f.samples.has(key)) f.samples.set(key, sample.trim().slice(0, SAMPLE_MAX));
+// A pattern with a `message` group keys findings by (rule, message), so only a finding whose text
+// is new counts as new; without it, counting stays per rule (the older config format).
+function findingKey(rule: string, message: string | undefined): string {
+	return message === undefined ? rule : `${rule}\u0000${message}`;
+}
+
+function add(f: Findings, k: string, rule: string, sample: string): void {
+	f.counts.set(k, (f.counts.get(k) ?? 0) + 1);
+	if (!f.samples.has(k)) f.samples.set(k, sample.trim().slice(0, SAMPLE_MAX));
+	if (!f.rules.has(k)) f.rules.set(k, rule);
 }
 
 // Runs each linter on `path` and counts its findings. Throws when a linter did not finish
@@ -54,8 +63,9 @@ function lint(path: string, linters: WriteCheckLinter[], wc: WriteCheckConfig, f
 		if (r.error || r.signal) throw new Error(`${cmd} did not finish (${r.error?.message ?? r.signal})`);
 		const re = new RegExp(l.pattern);
 		for (const line of r.stdout.split("\n")) {
-			const rule = re.exec(line)?.groups?.rule;
-			if (rule) add(f, rule, line);
+			const m = re.exec(line);
+			const rule = m?.groups?.rule;
+			if (rule) add(f, findingKey(rule, m?.groups?.message), rule, line);
 		}
 	}
 }
@@ -74,14 +84,14 @@ function lintText(file: string, text: string, linters: WriteCheckLinter[], wc: W
 }
 
 function suppressions(text: string, re: RegExp, f: Findings): void {
-	for (const line of text.split("\n")) if (re.test(line)) add(f, SUPPRESSION, line);
+	for (const line of text.split("\n")) if (re.test(line)) add(f, findingKey(SUPPRESSION, line), SUPPRESSION, line);
 }
 
 function refusal(file: string, now: Findings, old: Findings): string {
 	const head = `write-check: this edit adds lint problems to ${file}:`;
-	const rows = [...now.counts].flatMap(([key, n]) => {
-		const delta = n - (old.counts.get(key) ?? 0);
-		return delta > 0 ? [`- ${key} (+${delta}): ${now.samples.get(key)}`] : [];
+	const rows = [...now.counts].flatMap(([k, n]) => {
+		const delta = n - (old.counts.get(k) ?? 0);
+		return delta > 0 ? [`- ${now.rules.get(k)} (+${delta}): ${now.samples.get(k)}`] : [];
 	});
 	const room = REASON_MAX - head.length - TAIL.length - 2;
 	let body = rows.join("\n");
@@ -93,8 +103,8 @@ export function checkWrite(file: string, before: string | null, after: string | 
 	if (after === null || before === after) return { allow: true };
 	const linters = wc.linters.filter((l) => l.ext.includes(extname(file)));
 	if (linters.length === 0) return { allow: true };
-	const old: Findings = { counts: new Map(), samples: new Map() };
-	const now: Findings = { counts: new Map(), samples: new Map() };
+	const old: Findings = { counts: new Map(), samples: new Map(), rules: new Map() };
+	const now: Findings = { counts: new Map(), samples: new Map(), rules: new Map() };
 	try {
 		const re = new RegExp(wc.suppress);
 		if (before !== null) {
@@ -106,7 +116,7 @@ export function checkWrite(file: string, before: string | null, after: string | 
 	} catch (err) {
 		return { allow: true, note: `write-check: ${file} not checked (${(err as Error).message}); the edit was allowed` };
 	}
-	const grew = [...now.counts].some(([key, n]) => n > (old.counts.get(key) ?? 0));
+	const grew = [...now.counts].some(([k, n]) => n > (old.counts.get(k) ?? 0));
 	if (!grew) return { allow: true };
 	return { allow: false, reason: refusal(file, now, old) };
 }

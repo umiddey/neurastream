@@ -357,7 +357,9 @@ Missing keys are filled from the defaults above. A present key replaces the defa
 
 ## write_check
 
-Write-time lint (`src/core/write-check.ts`, applied by the omp adapter). With `enabled: true`, each edit to a file that a linter entry covers is linted before and after the change. A rule key whose count grows, or a new line matching `suppress`, refuses the edit: the file is restored and the agent gets the reason. Findings that were already there never block. A missing linter, a crash or a timeout allows the edit and logs a note. `applies_to: sub` covers subagents only; `all` covers Main too. Arrays replace, so a user `linters` list replaces the two shipped entries.
+Write-time lint (`src/core/write-check.ts`, applied by the omp adapter). With `enabled: true`, each edit to a file that a linter entry covers is linted before and after the change. A `(rule, message)` pair whose count grows, or a new line matching `suppress`, refuses the edit: the file is restored and the agent gets the reason. Findings that were already there never block. A missing linter, a crash or a timeout allows the edit and logs a note. `applies_to: sub` covers subagents only; `all` covers Main too. Arrays replace, so a user `linters` list replaces the two shipped entries.
+
+A pattern may name a `(?<message>` group next to `rule`; findings are then compared by `(rule, message)` multiset, so the refusal names each new finding's own line and a rule's old debt can neither be blamed for a refusal nor hide the new finding behind one merged count (INCIDENT I-20261028-150, I-20261028-151). A pattern without a `message` group keeps the older per-rule counting.
 
 The shipped `suppress` regex only counts a marked word: a comment marker (`#`, `//` or `/*`) must sit before it, so a test fixture or string that merely contains `noqa` is not a suppression (INCIDENT I-20261028-113). The shipped ruff run adds `--ignore E501,S101` after its `--select`: ruff's `--select` overrides a repo's own ignore list, and long lines and `assert` in tests are style, not defects an edit may not add (INCIDENT I-20261028-112).
 
