@@ -147,6 +147,7 @@ autonomy:
 
 review:                    # plan review gate (plan 20261028_1600): reuse lines now, reviewer PASS from P2 (docs/config.md)
   since: "2026-10-28"      # plans stamped before this ISO date are exempt from the reuse-line and reviewer-PASS gates; "" = off
+  agents: ["reviewer"]     # agents allowed to run a review spawn: the PASS exemption needs one plus the brief's `Plan review:` line
   mr_cache_minutes: 10     # minutes the spawn gate caches a repo's open-MR list in <queue_state>/mr-cache.json; 0 = no cache
 
 ui:

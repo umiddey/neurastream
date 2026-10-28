@@ -125,6 +125,91 @@ function writeMrCache(c: MrCache, cfg: Config): void {
 	}
 }
 
+// --- plan review gate state (plan 20261028_1600): the reviewer PASS record beside the edit window ---
+
+interface PlanReview {
+	verdict: "PASS" | "FAIL";
+	hash: string;
+	finding: string;
+	at: number;
+}
+
+function planReviewsFile(): string {
+	return path.join(q.STATE_DIR, "plan-reviews.json");
+}
+
+function readPlanReviews(): Record<string, PlanReview> {
+	try {
+		const r = JSON.parse(readFileSync(planReviewsFile(), "utf8")) as { reviews?: Record<string, PlanReview> };
+		if (r.reviews && typeof r.reviews === "object") return r.reviews;
+	} catch {}
+	return {};
+}
+
+function writePlanReviews(reviews: Record<string, PlanReview>, cfg: Config): void {
+	try {
+		mkdirSync(q.STATE_DIR, { recursive: true });
+		writeFileSync(planReviewsFile(), JSON.stringify({ reviews }, null, 1));
+	} catch (err) {
+		log(cfg.paths.plan_guard_log, `cannot write ${planReviewsFile()}: ${err}`);
+	}
+}
+
+/** What a PASS covers: the plan text outside "## Progress" without the Main-only lines, so progress notes never expire a review. */
+export function reviewHash(text: string): string {
+	return q.sha(
+		q
+			.outsideProgress(text)
+			.split("\n")
+			.filter(l => !MAIN_ONLY_LINE.test(l))
+			.join("\n"),
+	);
+}
+
+/** The progress entry that records a review; only a subagent's edit can carry one. */
+const REVIEW_LINE = /^- PLAN REVIEW: (PASS|FAIL)/;
+
+/**
+ * P2 (plan 20261028_1600): a spawn on a plan needs a recorded reviewer PASS whose hash still
+ * matches the plan text — progress-only edits keep a PASS valid, any other change expires it,
+ * a FAIL is denied with its first finding. A review spawn itself — an agent from review.agents
+ * whose brief has the `Plan review: <plan>` line — is exempt.
+ */
+export function reviewPassProblem(named: string[], brief: string, agent: string, cfg: Config): string | null {
+	const reviews = readPlanReviews();
+	const reviewLines = brief.split("\n").filter(l => l.startsWith("Plan review:"));
+	for (const file of named) {
+		if (cfg.review.agents.includes(agent) && reviewLines.some(l => l.slice("Plan review:".length).trim() === file)) continue;
+		const rec = reviews[file];
+		if (!rec) return `plan ${file} has no current reviewer PASS. Spawn a reviewer with templates/plan-review-brief.md.`;
+		if (rec.verdict === "FAIL")
+			return `plan ${file} has no current reviewer PASS (FAIL: ${rec.finding || "no finding recorded"}). Spawn a reviewer with templates/plan-review-brief.md.`;
+		let text = "";
+		try {
+			text = readFileSync(file, "utf8");
+		} catch {}
+		if (rec.hash !== reviewHash(text))
+			return `plan ${file} has no current reviewer PASS (changed since review). Spawn a reviewer with templates/plan-review-brief.md.`;
+	}
+	return null;
+}
+
+/** A subagent's `PLAN REVIEW: PASS|FAIL` entry records the review of the plan it edited; Main's edit path never reaches this. */
+function recordReviews(e: PlanEditEvent, cfg: Config): void {
+	const entries = newProgressEntries(e.before, e.after).filter(b => REVIEW_LINE.test(b));
+	if (!entries.length) return;
+	const reviews = readPlanReviews();
+	for (const block of entries) {
+		reviews[e.path] = {
+			verdict: block.startsWith("- PLAN REVIEW: PASS") ? "PASS" : "FAIL",
+			hash: reviewHash(e.after),
+			finding: findingsValue(block) ?? "",
+			at: nowSec(),
+		};
+	}
+	writePlanReviews(reviews, cfg);
+}
+
 function spawnsFile(): string {
 	return path.join(q.STATE_DIR, "spawns.json");
 }
@@ -609,6 +694,8 @@ export function spawnProblem(
 		const pending = pendingWorkProblem(plans, `${context}\n${String(t?.task ?? "")}`, cfg, runner);
 		if (pending) return `${label}: ${pending}`;
 		// The task's own `Call budget:` line wins over the shared context's.
+				const review = reviewPassProblem(plans, `${context}\n${String(t?.task ?? "")}`, String(t?.agent ?? ""), cfg);
+		if (review) return `${label}: ${review}`;
 		const budget = briefBudget(String(t?.task ?? "")) ?? shared;
 		if (budget !== null) {
 			if (!t?.name) return `${label}: "Call budget: ${budget}" needs a task name (the budget is keyed by it).`;
@@ -1099,6 +1186,11 @@ export function checkSpawn(e: SpawnEvent, cfg: Config, runner: CommandRunner = d
 	log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${pendingWork}`)
 	return deny(`main-guard: ${pendingWork}`)
 }
+		const review = reviewPassProblem(named, e.brief, e.agent, cfg);
+	if (review) {
+		log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${review}`);
+		return deny(`main-guard: ${review}`);
+	}
 	const inc = incidentSpawnProblem(`spawn ${e.agent}`, e.brief, named, cfg);
 	if (inc) return deny(`main-guard: ${inc}`);
 	// The owner's pick order and live provider state (plan 20261025_1700 P3), before the spawn records.
@@ -1210,6 +1302,7 @@ export function checkPlanEdit(e: PlanEditEvent, cfg: Config): PlanEditDecision {
 		};
 	}
 	recordFindings(e, cfg);
+	recordReviews(e, cfg);
 	return ALLOW;
 }
 

@@ -307,6 +307,8 @@ traces:
 
 `review.mr_cache_minutes` (default `10`, `0` = no cache) bounds the spawn gate's open-MR cache: for `review.mr_cache_minutes` minutes after one repo's forge list, a spawn on a plan of that repo reuses `<queue_state>/mr-cache.json` instead of calling `glab`/`gh` again. A forge outage is never cached — the spawn gate degrades to a guard-log line and the next spawn retries, exactly like the MR sweep.
 
+`review.agents` (default `["reviewer"]`) lists the agents a review spawn may run under: the reviewer-PASS gate exempts a spawn whose agent is on this list and whose brief carries the `Plan review: <plan>` line naming the plan. Everyone else needs the recorded PASS, and only a subagent's `PLAN REVIEW: PASS|FAIL` progress entry can record one (`<queue_state>/plan-reviews.json`; Main's plan edits never record).
+
 `score.default_branch` has no default. It is config, not a core literal: set it here or pass `--branch`; with `score.default_repo` empty, `accept` / `check` require `--repo` and `--branch`.
 
 `score.waste_weight` must be between 0 and 1. It scales each model's points-per-dollar ranking by its wasted-call fraction; the default 0 leaves the existing ranking unchanged.

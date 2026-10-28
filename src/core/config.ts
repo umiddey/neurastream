@@ -163,6 +163,8 @@ export interface Config {
 	review: {
 		/** Plans stamped before this ISO date are exempt from the reuse-line and reviewer-PASS gates; "" = off. */
 		since: string;
+		/** Agents a review spawn may run under: the PASS exemption needs one of these plus the brief's `Plan review: <plan>` line. */
+		agents: string[];
 		/** Minutes the spawn gate caches a repo's open-MR list in <queue_state>/mr-cache.json; 0 = no cache. */
 		mr_cache_minutes: number;
 	};
@@ -480,6 +482,8 @@ function check(cfg: Config): void {
 	}
 	if (!(cfg.rollover.max_session_mb > 0)) throw new ConfigError("rollover.max_session_mb must be > 0");
 	if (typeof cfg.review.since !== "string") throw new ConfigError("review.since must be an ISO date string (\"\" = off)");
+	if (!Array.isArray(cfg.review.agents) || cfg.review.agents.some(a => typeof a !== "string" || !a.trim()))
+		throw new ConfigError('review.agents must be a list of agent names allowed to run review spawns (default ["reviewer"])');
 	if (!Number.isInteger(cfg.review.mr_cache_minutes) || cfg.review.mr_cache_minutes < 0)
 		throw new ConfigError("review.mr_cache_minutes must be an integer >= 0 (minutes the spawn gate caches a repo's open-MR list; 0 = no cache)");
 	if (cfg.autonomy.tier !== "strict" && cfg.autonomy.tier !== "opinionated" && cfg.autonomy.tier !== "full")

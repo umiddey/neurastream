@@ -16,6 +16,7 @@ const REPO = join(TMP, "repo");
 const BLOCKERS = join(TMP, "blockers");
 const SINCE = "2026-10-28";
 
+mkdirSync(join(REPO, ".git"), { recursive: true }); // planRepo walks up to .git; without it planGate resolves citations under docs/plans
 mkdirSync(join(REPO, "docs/plans"), { recursive: true });
 mkdirSync(join(REPO, "src"), { recursive: true });
 mkdirSync(BLOCKERS, { recursive: true });
@@ -221,8 +222,9 @@ test("Main writing the PASS line records nothing", () => {
 
 test("a review spawn is exempt without a record", () => {
 	rmSync(REVIEWS, { force: true });
+	rmSync(join(GSTATE, "incidents.jsonl"), { force: true }); // the FAIL test's finding is an open incident; this test is about the PASS gate
 	freshProgress();
-	expect(gspawn(`Plan review: ${LOCKED}\nReview this plan against its phases.`, "reviewer")).toMatchObject({ allow: true });
+	expect(gspawn(`Plan review: ${LOCKED}\nReview P1 against its phases.`, "reviewer")).toMatchObject({ allow: true });
 });
 
 afterAll(() => rmSync(TMP, { recursive: true, force: true }));
