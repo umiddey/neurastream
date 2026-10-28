@@ -1,6 +1,6 @@
 {
   "name": "neurastream",
-  "version": "0.2.46",
+  "version": "0.2.47",
   "description": "Guardrails for running many AI coding agents at once: plan queue, blockers, call budgets, provider caps, scoring, merge-verified close.",
   "keywords": [
     "ai-agents",
@@ -46,6 +46,7 @@
     "queue-check": "bin/queue-check",
     "queue-trim": "bin/queue-trim",
     "queue-close": "bin/queue-close",
+    "queue-finished": "bin/queue-finished",
     "queue-cancel": "bin/queue-cancel",
     "main-start": "bin/main-start",
     "machine-guard": "bin/machine-guard",
