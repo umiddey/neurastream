@@ -157,3 +157,22 @@ test("enabled false leaves a subagent edit alone", async () => {
 	expect(results.filter(isRefusal)).toEqual([]);
 	expect(readFileSync(file, "utf8")).toBe("lint:no-eval\n");
 });
+
+test("a refused second edit on a file keeps the first allowed edit of the same batch", async () => {
+	const file = join(TMP, "parallel.txt");
+	writeFileSync(file, "ok\n");
+	const host = fakeHost();
+	createOmpAdapter(host as never, cfgWith());
+	// Two calls issued before either result, as in one parallel batch; both snapshot "ok\n".
+	const first = { toolName: "write", toolCallId: `call-${++seq}`, input: { path: file } };
+	const second = { toolName: "write", toolCallId: `call-${++seq}`, input: { path: file } };
+	expect((await host.emit("tool_call", first, SUB)).some(isBlock)).toBe(false);
+	expect((await host.emit("tool_call", second, SUB)).some(isBlock)).toBe(false);
+	writeFileSync(file, "ok\nfine\n");
+	const r1 = await host.emit("tool_result", { ...first, content: [{ type: "text", text: "done" }], isError: false }, SUB);
+	expect(r1.filter(isRefusal)).toEqual([]);
+	writeFileSync(file, "ok\nfine\nlint:no-eval\n");
+	const r2 = await host.emit("tool_result", { ...second, content: [{ type: "text", text: "done" }], isError: false }, SUB);
+	expect(r2.filter(isRefusal).length).toBe(1);
+	expect(readFileSync(file, "utf8")).toBe("ok\nfine\n");
+});
