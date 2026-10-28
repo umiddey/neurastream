@@ -18,6 +18,7 @@ import {
 export const INCIDENT_USAGE = [
 	"usage: neurastream incident list [--open] [--json]",
 	'       neurastream incident add "<summary>" --kind <k> [--evidence <text>]',
+	'       neurastream incident propose <id> --why "<file:line and reason>"',
 	"       neurastream incident plan <id> <plan.md>",
 	'       neurastream incident dismiss <id> --why "<text>" [--owner "<quote>"]',
 ].join("\n");
