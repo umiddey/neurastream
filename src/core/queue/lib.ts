@@ -813,14 +813,21 @@ export function finishedEntry(plan: Plan, archived: string, date: string): strin
 	return [`## ${date} · ${path.basename(plan.repo)} · ${plan.title}`, ...body].join("\n");
 }
 
-/** Inserts the entry above older ones. Returns false when that Plan path is already listed. */
+/** Identity of a finished entry: its repo name and archived plan file name. Worktrees of one repo share it. */
+export function finishedKey(entry: string): string {
+	const lines = entry.split("\n");
+	const repo = (lines[0] ?? "").split(" · ")[1] ?? "";
+	return `${repo}\n${path.basename(lines.find(l => l.startsWith("Plan: ")) ?? "")}`;
+}
+
+/** Inserts the entry above older ones. Returns false when that repo's plan file is already listed. */
 export function prependFinished(entry: string, file = finishedPath()): boolean {
-	const planLine = entry.split("\n").find(l => l.startsWith("Plan: "));
 	let current = "";
 	try {
 		current = readFileSync(file, "utf8");
 	} catch {}
-	if (planLine && current.split("\n").includes(planLine)) return false;
+	const key = finishedKey(entry);
+	if (current.split(/^(?=## )/m).some(b => finishedKey(b) === key)) return false;
 	mkdirSync(path.dirname(file), { recursive: true });
 	const block = entry.endsWith("\n") ? entry : `${entry}\n`;
 	if (!current.trim()) {
