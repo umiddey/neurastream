@@ -553,17 +553,23 @@ test("queue-cancel matches the original", () => {
 	const oracle = join(home, ".local/bin/queue-cancel");
 	const usage = [
 		[],
-		["--not-a-cancel", "short"],
+		["--never", "short", ""],
 		["--never", "short", "ok"],
 		["--never", "drop the payment module", "owner no"],
 	];
 	for (const args of usage) {
 		match(runBun(oracle, args, env), runPort("queue-cancel", args, env));
 	}
-	match(
-		runBun(oracle, ["--not-a-cancel", "misread the owner message"], env),
-		runPort("queue-cancel", ["--not-a-cancel", "misread the owner message"], env),
-	);
+	// Deliberate break from the original: --not-a-cancel is refused unless main-guard flagged a message.
+	const bare = runPort("queue-cancel", ["--not-a-cancel", "misread the owner message"], env);
+	expect(bare.code).toBe(1);
+	expect(bare.stderr).toContain("nothing is flagged");
+	const stateDir = env.QUEUE_STATE ?? join(home, ".local/state/queue");
+	mkdirSync(stateDir, { recursive: true });
+	writeFileSync(join(stateDir, "cancel-pending.json"), JSON.stringify({ at: "2026-10-28T08:00:00Z", words: "stop it" }));
+	const flagged = runPort("queue-cancel", ["--not-a-cancel", "misread the owner message"], env);
+	expect(flagged.code).toBe(0);
+	expect(existsSync(join(stateDir, "cancel-pending.json"))).toBe(false);
 	const repo = join(home, "Work/toy-queue");
 	match(
 		runBun(oracle, ["--never", "drop payment module", "owner said no", "--repo", repo], env),

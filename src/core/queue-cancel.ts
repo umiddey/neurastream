@@ -33,6 +33,8 @@ export function queueCancel(args: string[], cfg: Config): number {
 
 	if (args[0] === "--not-a-cancel") {
 		const why = (args[1] ?? "").trim();
+		// Only a message main-guard flagged needs an answer; a bare call is a wasted round.
+		if (!cancelPending()) die("nothing is flagged: main-guard did not see cancel words, so there is nothing to record");
 		if (why.length < 10) die(`say why the message was no cancel (at least 10 characters). ${usage}`);
 		clearPending(`not a cancel: ${why}`);
 		console.log("queue-cancel: noted, not a cancel");
