@@ -238,13 +238,21 @@ export function stampIso(file: string): string {
 }
 
 /**
+ * The review gates (P1 reuse lines, P2 reviewer PASS) apply to a plan stamped at or after the
+ * `review.since` cutover — a bare date counts as midnight; `since` "" switches them off.
+ */
+export function reviewApplies(file: string, since: string): boolean {
+	const cutover = since.length === 10 ? `${since}T00:00` : since;
+	return cutover.length > 0 && stampIso(file) >= cutover;
+}
+
+/**
  * P1 (plan 20261028_1600): every new thing a plan adds carries a reuse line with a checked
- * `path:line` citation that exists relative to the plan's repo. A bare date `since` counts as
- * midnight; plans stamped before `since` are exempt, `since` "" switches the check off.
+ * `path:line` citation that exists relative to the plan's repo. Plans stamped before the
+ * `review.since` cutover are exempt.
  */
 function reuseProblems(repo: string, file: string, secs: Map<string, string>, since: string): string[] {
-	const cutover = since.length === 10 ? `${since}T00:00` : since;
-	if (!cutover || stampIso(file) < cutover) return [];
+	if (!reviewApplies(file, since)) return [];
 	const lines = items(secs.get("reuse") ?? "");
 	if (!lines.length)
 		return [`missing or empty "## Reuse" section (one line per new thing: - new: <thing> — checked: <path>:<line> — reuse: <how, or why not>; "- new: none — ..." when nothing is new)`];

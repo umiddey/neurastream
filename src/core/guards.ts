@@ -173,13 +173,15 @@ const REVIEW_LINE = /^- PLAN REVIEW: (PASS|FAIL)/;
  * P2 (plan 20261028_1600): a spawn on a plan needs a recorded reviewer PASS whose hash still
  * matches the plan text — progress-only edits keep a PASS valid, any other change expires it,
  * a FAIL is denied with its first finding. A review spawn itself — an agent from review.agents
- * whose brief has the `Plan review: <plan>` line — is exempt.
+ * whose brief has the `Plan review: <plan>` line — is exempt, and so is any plan stamped
+ * before `review.since` (P4c: same cutover as the reuse-line gate).
  */
 export function reviewPassProblem(named: string[], brief: string, agent: string, cfg: Config): string | null {
 	const reviews = readPlanReviews();
 	const reviewLines = brief.split("\n").filter(l => l.startsWith("Plan review:"));
 	for (const file of named) {
 		if (cfg.review.agents.includes(agent) && reviewLines.some(l => l.slice("Plan review:".length).trim() === file)) continue;
+		if (!q.reviewApplies(file, cfg.review.since)) continue;
 		const rec = reviews[file];
 		if (!rec) return `plan ${file} has no current reviewer PASS. Spawn a reviewer with templates/plan-review-brief.md.`;
 		if (rec.verdict === "FAIL")

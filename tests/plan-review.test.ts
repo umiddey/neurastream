@@ -119,8 +119,8 @@ applyQueueEnv(gcfg);
 const gRunner: CommandRunner = args =>
 	args[0] === "git" ? { code: 1, stdout: "", stderr: "no origin", missing: false } : { code: 127, stdout: "", stderr: "", missing: true };
 
-function gspawn(brief: string, agent = "worker") {
-	return checkSpawn({ agent, invocationKind: "task", brief }, gcfg, gRunner);
+function gspawn(brief: string, agent = "worker", cfg = gcfg) {
+	return checkSpawn({ agent, invocationKind: "task", brief }, cfg, gRunner);
 }
 
 /** A fresh Progress entry so the plan's progress hash is spendable again. */
@@ -193,6 +193,35 @@ test("a review spawn is exempt without a record", () => {
 	rmSync(join(GSTATE, "incidents.jsonl"), { force: true }); // the FAIL test's finding is an open incident; this test is about the PASS gate
 	freshProgress();
 	expect(gspawn(`Plan review: ${LOCKED}\nReview P1 against its phases.`, "reviewer")).toMatchObject({ allow: true });
+});
+
+// --- P4c: the PASS gate honours review.since (plans stamped before the cutover are exempt) ---
+
+const PRE_SINCE = join(REPO, "docs/plans/20261020_0100_presince.md");
+writeFileSync(join(GAGENT, "INDEX.md"), `${LOCKED}\n${PRE_SINCE}\n`);
+writeFileSync(PRE_SINCE, fixturePlan());
+
+test("a plan stamped before review.since spawns with no PASS", () => {
+	rmSync(REVIEWS, { force: true });
+	freshProgress();
+	expect(gspawn(`Work ${PRE_SINCE} on P1`)).toMatchObject({ allow: true });
+});
+
+test("a plan stamped on/after review.since is still refused with no PASS", () => {
+	rmSync(REVIEWS, { force: true });
+	freshProgress();
+	expect(gspawn(`Work ${LOCKED} on P1`)).toMatchObject({
+		allow: false,
+		reason: expect.stringContaining("no current reviewer PASS"),
+	});
+});
+
+test(`since: "" turns the PASS gate off`, () => {
+	rmSync(REVIEWS, { force: true });
+	freshProgress();
+	expect(gspawn(`Work ${LOCKED} on P1`, "worker", { ...gcfg, review: { ...gcfg.review, since: "" } })).toMatchObject({
+		allow: true,
+	});
 });
 
 afterAll(() => rmSync(TMP, { recursive: true, force: true }));
