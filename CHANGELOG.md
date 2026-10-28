@@ -1,4 +1,10 @@
 # Changelog
+## 0.2.41
+### Added
+- Main's own plan Findings become incidents (plan 20261028_0900 P1, INCIDENT I-20261028-64): the Findings items of a Main plan edit open incidents (kind `main-finding`) exactly like a subagent's (`agent-finding`), so a bug Main writes down blocks the stop; the plan the entry is written in does not count as planning it — planning is `neurastream incident plan`.
+- A stop reply that offers to plan refuses the stop (plan 20261028_0900 P2, INCIDENT I-20261028-65): `guards.plan_offer` (new config regex, default `want me to (write|make) a plan|should i plan|shall i plan|if you want, i(''ll)? plan|plan it or`, case-insensitive) is matched against the reply Main stops with and a hit answers "don't offer it — write the plan and index it"; the two-idle-stops release does not lift the block.
+### Fixed
+- A finding incident is dismissed only with the owner's words (plan 20261028_0900 P3): `incident dismiss` on an `agent-finding`/`main-finding` needs `--owner "<quote>"` — a substring of an owner message the inject hook saw in the last 24 h (`<queue_state>/owner-messages.jsonl`, last 50) — so the agent that found the bug cannot also wave it away; other kinds keep `--why` alone.
 ## 0.2.40
 ### Fixed
 - `queue-cancel --not-a-cancel` is refused (exit 1, "nothing is flagged") unless main-guard flagged the owner's message for cancel words, so Main can no longer run it on every turn out of habit (owner, 2026-10-28: "I want you to be forced to stop it").
