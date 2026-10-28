@@ -1,4 +1,7 @@
 # Changelog
+## 0.2.40
+### Fixed
+- `queue-cancel --not-a-cancel` is refused (exit 1, "nothing is flagged") unless main-guard flagged the owner's message for cancel words, so Main can no longer run it on every turn out of habit (owner, 2026-10-28: "I want you to be forced to stop it").
 ## 0.2.39
 ### Fixed
 - The subagent no-push guard's eval path resolves git's subcommand like the bash path does (INCIDENT I-20261027-266): `git stash push` and `git log --grep push` are allowed; `git push`, `git -C x push`, `git -c k=v push` stay blocked.
