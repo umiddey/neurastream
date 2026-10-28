@@ -7,8 +7,8 @@ import { copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readdirSync, re
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { renderBlock, upsertBlock } from "../../core/agents-md.ts";
-import { configFile, loadConfig } from "../../core/config.ts";
+import { stripBlock } from "../../core/agents-md.ts";
+import { configFile } from "../../core/config.ts";
 
 import { adapterLiveFiles, liveAgentsMd } from "./doctor.ts";
 // Registers the plugin-command matcher into core's writeTargets (side effect).
@@ -39,7 +39,7 @@ export interface InstallResult {
 	/** Left alone: not interactive, or answered no. */
 	skillsSkipped: string[];
 	overlay: "written" | "unchanged";
-	agentsMd: "written" | "unchanged";
+	agentsMd: "removed" | "unchanged";
 }
 
 function ensureLink(link: string, target: string): void {
@@ -280,15 +280,17 @@ export function writeOverlay(file: string): "written" | "unchanged" {
 	return "written";
 }
 
-// Writes the managed block into the owner's AGENTS.md: the rest of the file is never touched.
-function writeAgentsMd(home: string): "written" | "unchanged" {
+// Strips the managed block an older install wrote into the owner's AGENTS.md: Main gets the rules
+// in its system prompt now. Bytes outside the markers stay; a file the strip leaves empty is removed.
+// A malformed block is left alone; doctor reports it.
+function removeAgentsMd(home: string): "removed" | "unchanged" {
 	const file = liveAgentsMd(home);
-	const current = existsSync(file) ? readFileSync(file, "utf8") : "";
-	const next = upsertBlock(current, renderBlock(loadConfig({ home })));
-	if (next === current) return "unchanged";
-	mkdirSync(dirname(file), { recursive: true });
-	writeFileSync(file, next);
-	return "written";
+	if (!existsSync(file)) return "unchanged";
+	const { text, state } = stripBlock(readFileSync(file, "utf8"));
+	if (state !== "ok") return "unchanged";
+	if (text === "") unlinkSync(file);
+	else writeFileSync(file, text);
+	return "removed";
 }
 
 function linkPlugin(home: string): string {
@@ -331,7 +333,7 @@ export function installOmp(home: string, ask: ((question: string) => string) | n
 	linkInstalled(home);
 	const plugin = linkPlugin(home);
 	const overlay = writeOverlay(file);
-	const agentsMd = writeAgentsMd(home);
+	const agentsMd = removeAgentsMd(home);
 	const skills = syncSkills(home, ask);
 	return {
 		plugin,

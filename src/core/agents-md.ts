@@ -1,6 +1,6 @@
-// The managed block in the owner's AGENTS.md. The rules come from templates/AGENTS.md with the
-// config's agent dir filled in; they sit between two markers, and only what is between them is
-// ever written or checked against the package's block. Everything outside the markers stays the owner's.
+// The managed block: the rules from templates/AGENTS.md with the config's agent dir filled in,
+// between two markers. Main puts them in its system prompt; install only strips an old copy from
+// the owner's AGENTS.md, and everything outside the markers stays the owner's.
 
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -37,29 +37,8 @@ function span(text: string): { start: number; end: number } | null {
 	return { start: begin, end: end + END_MARK.length };
 }
 
-// Replace the marked block, or append one when the file has none. Bytes outside the markers are kept.
-export function upsertBlock(fileText: string, block: string): string {
-	const at = span(fileText);
-	if (at) return fileText.slice(0, at.start) + block + fileText.slice(at.end);
-	if (fileText === "") return `${block}\n`;
-	return `${fileText}\n${block}\n`;
-}
-
-// "missing": no block in the file. "stale": the block differs, or its markers are malformed.
-export function blockState(fileText: string, block: string): "ok" | "stale" | "missing" {
-	let at: { start: number; end: number } | null;
-	try {
-		at = span(fileText);
-	} catch {
-		return "stale";
-	}
-	if (!at) return "missing";
-	return fileText.slice(at.start, at.end) === block ? "ok" : "stale";
-}
-
-// Remove the marked block, keeping every byte outside the markers (uninstall's inverse of
-// upsertBlock). "missing": there was no block. "stale": the markers are malformed — the text
-// comes back untouched.
+// Remove the marked block, keeping every byte outside the markers. "missing": there was no block.
+// "stale": the markers are malformed, and the text comes back untouched.
 export function stripBlock(fileText: string): { text: string; state: "ok" | "stale" | "missing" } {
 	let at: { start: number; end: number } | null;
 	try {

@@ -19,7 +19,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { appendFileSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import type { Decision } from "../../core/adapter.ts";
-import { AGENTS_TEMPLATE } from "../../core/agents-md.ts";
+import { AGENTS_TEMPLATE, renderBlock } from "../../core/agents-md.ts";
 import { chatGo, chatTier, type Tier } from "../../core/autonomy.ts";
 import { burdenRule, repoRules, rulesChanged } from "../../core/repo-rules.ts";
 import { loadConfig, type Config } from "../../core/config.ts";
@@ -552,6 +552,8 @@ export function deliverOwnerInbox(pi: ExtensionHost, cfg: Config): void {
 export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	// The queue library resolves its paths from env snapshots; point them at this config first.
 	applyQueueEnv(cfg);
+	// Main's rules ride its system prompt each turn; they are never written into the owner's AGENTS.md.
+	const mainRules = renderBlock(cfg);
 
 	let callsSinceStop = 0;
 	let idleStops = 0;
@@ -795,7 +797,9 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 			if (r && rulesChanged(cfg, asString(c.id) || "main", r.path, r.text)) rules.push(`Repo rules (${r.path}):\n${r.text}`);
 		}
 		pendingRules.clear();
+		const hostPrompt = asRecord(event).systemPrompt;
 		return {
+			systemPrompt: [...(Array.isArray(hostPrompt) ? hostPrompt : []), mainRules],
 			message: {
 				customType: "main-guard.queue",
 				content: [d.inject, notice, ...rules].filter(Boolean).join("\n\n"),

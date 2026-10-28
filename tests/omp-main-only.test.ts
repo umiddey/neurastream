@@ -9,6 +9,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import ompExtension, { type ExtensionHost } from "../src/adapters/omp/index.ts";
+import { renderBlock } from "../src/core/agents-md.ts";
+import { loadConfig } from "../src/core/config.ts";
 
 const MAIN_ONLY_ENV = "NEURASTREAM_MAIN_LAUNCHER";
 
@@ -114,6 +116,26 @@ test("a child without the env registers nothing", () => {
 		const r = spawnSync(process.execPath, ["-e", code], { env: { ...process.env }, encoding: "utf8" });
 		expect(r.status).toBe(0);
 		expect(JSON.parse(r.stdout.trim())).toEqual({ events: 0, commands: 0 });
+	} finally {
+		if (before === undefined) delete process.env[MAIN_ONLY_ENV];
+		else process.env[MAIN_ONLY_ENV] = before;
+	}
+});
+
+test("Main mode: the Main rules join the systemPrompt once, after the host's parts; subagents get none", async () => {
+	const before = process.env[MAIN_ONLY_ENV];
+	process.env[MAIN_ONLY_ENV] = "1";
+	try {
+		const host = recordingHost();
+		ompExtension(host);
+		const [onStart] = host.events.get("before_agent_start") ?? [];
+		if (!onStart) throw new Error("no before_agent_start handler registered");
+		const main = { agent: { kind: "main", id: "main" }, cwd: TMP };
+		const result = (await onStart({ prompt: "hello", systemPrompt: ["host rules"] }, main)) as { systemPrompt?: string[] };
+		expect(result.systemPrompt).toEqual(["host rules", renderBlock(loadConfig({ home: TMP }))]);
+		const sub = { agent: { kind: "sub", id: "s1" }, cwd: TMP };
+		const subResult = (await onStart({ prompt: "brief", systemPrompt: ["host rules"] }, sub)) as { systemPrompt?: string[] } | undefined;
+		expect(subResult?.systemPrompt).toBeUndefined();
 	} finally {
 		if (before === undefined) delete process.env[MAIN_ONLY_ENV];
 		else process.env[MAIN_ONLY_ENV] = before;
