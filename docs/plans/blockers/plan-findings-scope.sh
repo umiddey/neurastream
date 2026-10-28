@@ -8,7 +8,7 @@ fi
 WT=/home/ukd/Work/neurastream-plan-findings
 [ -d "$WT" ] || { echo "plan-findings-scope: no worktree"; exit 0; }
 cd "$WT" || exit 1
-ALLOWED='^(src/core/(guards|incidents|adapter|config)\.ts|src/cli/incident\.ts|src/adapters/omp/index\.ts|templates/config\.yml|tests/[^/]+\.test\.ts|README\.md|CHANGELOG\.md|docs/(config|adapter)\.md)$'
+ALLOWED='^(src/core/(guards|incidents|adapter|config)\.ts|src/cli/(incident|guard)\.ts|src/adapters/omp/index\.ts|templates/config\.yml|tests/[^/]+\.test\.ts|README\.md|CHANGELOG\.md|docs/(config|adapter)\.md)$'
 BASE=$(git merge-base origin/main HEAD 2>/dev/null || echo origin/main)
 FILES=$( { git diff --name-only "$BASE"; git ls-files --others --exclude-standard; } 2>/dev/null | sort -u)
 rc=0
