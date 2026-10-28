@@ -66,6 +66,14 @@ metrics:
   report_days: 7
   correction_patterns: ['\bno\b', 'wrong', 'why did', 'properly', 'not what', 'stop', 'bullshit', 'fuck']
   ci_pipelines_cmd: ""   # run in the repo dir with {mr} replaced (shell-quoted); stdout must be a JSON array; tries = its length; "" = not set
+  product_cmds: {}       # {<repo path>: {<name>: shell command printing one number}}, run in that repo after every `metrics ci` merge
+  # product_cmds:
+  #   /opt/myapp:
+  #     dist_mb: "du -sm frontend/dist | cut -f1"
+  # Each merge then appends {type: "product", repo, name, value, ts} to metrics.jsonl; a command
+  # that fails, times out (10 s) or prints anything but one number is skipped with a stderr line
+  # and never fails the ci record. `neurastream metrics releases` shows each number's last value
+  # before vs first value after every release.
 
 incidents:
   contradiction_grace_min: 3   # minutes after a finished task-result before a RUNNING/WAITING ledger row is a contradiction (detector D1)
@@ -358,6 +366,7 @@ The loader rejects:
 - `autonomy.go_phrase` that is not a non-empty string
 - a `paths.*` value that is not a string
 - `metrics.report_days` below 1, or a `metrics.correction_patterns` entry that does not compile as a case-insensitive regex
+- a `metrics.product_cmds` that is not `{<repo path>: {<name>: non-empty shell command}}`
 - `ui.port` outside 1..65535
 - `pages.keep_days` below 1, or not an integer
 - `knowledge.roots` that is not a non-empty list of non-empty paths, or `knowledge.max_age_s` below 1 or not an integer

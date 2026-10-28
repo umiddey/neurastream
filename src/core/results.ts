@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import type { Run } from "./adapter.ts";
 import type { Config } from "./config.ts";
+import type { Ev } from "./metrics.ts";
 import { applyQueueEnv } from "./queue/env.ts";
 import { parsePlan } from "./queue/lib.ts";
 import { repoRoots, walkMd } from "./queue-finished.ts";
@@ -220,10 +221,9 @@ export interface FeaturesReport {
 
 const KINDS = ["product", "neurastream"] as const;
 
-/** One row per finished chain closed in the window, plus a per-kind summary. A closed chain with no dated Progress entry has no place in a window and is left out. */
-export function featuresReport(runs: Run[], plans: PlanNode[], selfRepo: string | null, days: number, now: number): FeaturesReport {
-	const to = now;
-	const from = now - days * DAY;
+/** One row per finished chain closed in [from, to), plus a per-kind summary. A closed chain with no dated Progress entry has no place in a window and is left out. */
+export function featuresReport(runs: Run[], plans: PlanNode[], selfRepo: string | null, from: number, to: number): FeaturesReport {
+	const days = (to - from) / DAY;
 	const all = chains(plans, selfRepo);
 	const att = attributeCosts(runs, all.flatMap(c => c.stems), from, to);
 	const chainCost = (c: Chain) => c.stems.reduce((sum, s) => sum + (att.byPlan.get(s) ?? 0), 0);
@@ -257,4 +257,119 @@ export function featuresReport(runs: Run[], plans: PlanNode[], selfRepo: string 
 		};
 	});
 	return { days, from, to, rows, summaries };
+}
+
+// ---- P3: releases ----
+
+export interface ReleaseTag {
+	name: string;
+	ts: number;
+}
+
+export interface ProductValue {
+	repo: string;
+	name: string;
+	/** null = this side has no recorded value for the number yet. */
+	value: number | null;
+}
+
+export interface ReleaseSideStats {
+	perFeature: number | null;
+	featuresPerDay: number | null;
+	/** Main calls in the window per finished feature of the release's kind. */
+	callsPerFeature: number | null;
+	/** Tokens per call over every run written in the window. */
+	tokensPerCall: number | null;
+	fixPlansPerFeature: number | null;
+	products: ProductValue[];
+}
+
+export interface ReleaseRow {
+	name: string;
+	kind: "product" | "neurastream";
+	repo: string;
+	ts: number;
+	/** True until `days` have passed since the release: the after side is still filling. */
+	measuring: boolean;
+	before: ReleaseSideStats;
+	after: ReleaseSideStats;
+}
+
+export interface ReleasesReport {
+	days: number;
+	rows: ReleaseRow[];
+}
+
+/** The ledger metrics for one side of a release's window [from, to), same source as `metrics features`. */
+function releaseSide(kind: Chain["kind"], runs: Run[], plans: PlanNode[], selfRepo: string | null, from: number, to: number): Omit<ReleaseSideStats, "products"> {
+	const rep = featuresReport(runs, plans, selfRepo, from, to);
+	const mine = rep.rows.filter(r => r.kind === kind);
+	let mainCalls = 0;
+	let tokens = 0;
+	let calls = 0;
+	for (const r of runs) {
+		if (r.lastWriteAt < from || r.lastWriteAt >= to) continue;
+		if (r.kind === "main") mainCalls += r.calls;
+		tokens += r.tokens;
+		calls += r.calls;
+	}
+	return {
+		perFeature: rep.summaries.find(s => s.kind === kind)!.perFeature,
+		featuresPerDay: rep.summaries.find(s => s.kind === kind)!.perDay,
+		callsPerFeature: mine.length > 0 ? mainCalls / mine.length : null,
+		tokensPerCall: calls > 0 ? tokens / calls : null,
+		fixPlansPerFeature: mine.length > 0 ? mine.reduce((sum, r) => sum + r.fixPlans, 0) / mine.length : null,
+	};
+}
+
+interface ProductRow {
+	repo: string;
+	name: string;
+	value: number;
+	ts: number;
+}
+
+/**
+ * One row per release: the same N-day ledger metrics before vs after it. A release is a `v*` tag
+ * of the self repo (kind neurastream) or a `metrics ci` merge of another repo (kind product); a
+ * ci merge of the self repo is not a release — its tag already is. Each product number recorded
+ * in metrics.jsonl shows its last value before vs its first value after the release.
+ */
+export function releasesReport(runs: Run[], plans: PlanNode[], selfRepo: string | null, days: number, now: number, tags: ReleaseTag[], events: Ev[]): ReleasesReport {
+	const span = days * DAY;
+	const products: ProductRow[] = [];
+	const merges: { repo: string; mr: string; ts: number }[] = [];
+	for (const e of events) {
+		if (e.type === "product" && typeof e.repo === "string" && typeof e.name === "string" && typeof e.value === "number" && typeof e.ts === "number") {
+			products.push({ repo: e.repo, name: e.name, value: e.value, ts: e.ts });
+		} else if (e.type === "ci" && typeof e.repo === "string" && typeof e.ts === "number" && e.repo !== selfRepo) {
+			merges.push({ repo: e.repo, mr: String(e.mr), ts: e.ts });
+		}
+	}
+	const keys = [...new Set(products.map(p => `${p.repo}|${p.name}`))].sort();
+	const releases = [
+		...tags.map(t => ({ name: t.name, kind: "neurastream" as const, repo: selfRepo ?? "", ts: t.ts })),
+		...merges.map(m => ({ name: `${path.basename(m.repo)}#${m.mr}`, kind: "product" as const, repo: m.repo, ts: m.ts })),
+	].sort((a, b) => a.ts - b.ts);
+	const rows = releases.map((r) => {
+		const productValues = (before: boolean): ProductValue[] =>
+			keys.map((k) => {
+				const [repo, name] = k.split("|") as [string, string];
+				const mine = products.filter(p => p.repo === repo && p.name === name).sort((a, b) => a.ts - b.ts);
+				const hit = before ? (mine.filter(p => p.ts < r.ts).at(-1) ?? null) : (mine.find(p => p.ts >= r.ts) ?? null);
+				return { repo, name, value: hit?.value ?? null };
+			});
+		const before = releaseSide(r.kind, runs, plans, selfRepo, r.ts - span, r.ts);
+		const after = releaseSide(r.kind, runs, plans, selfRepo, r.ts, r.ts + span);
+		return {
+			name: r.name,
+			kind: r.kind,
+			repo: r.repo,
+			ts: r.ts,
+			measuring: r.ts + span > now,
+			before: { ...before, products: productValues(true) },
+			after: { ...after, products: productValues(false) },
+		};
+	});
+	return { days, rows };
 }

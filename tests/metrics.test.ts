@@ -360,3 +360,43 @@ test("M6 counts the window's incident stories and the median hours from open to 
 	// An empty window reads zeros with no median, and the numbers land in the report text.
 	expect(m6([], w)).toEqual({ opened: 0, planned: 0, dismissed: 0, fixed: 0, medianHours: null });
 });
+
+// --- P3: product numbers on every merge, and product_cmds validation ---
+
+test("metrics ci runs the repo's product_cmds once and appends one product row per number; a failing or non-numeric number is skipped with a stderr line", () => {
+	const repo = join(TMP, "prod-repo");
+	mkdirSync(repo, { recursive: true });
+	const cfg = cfgWith(join(TMP, "home-prod"), "printf '[1]'");
+	cfg.metrics.product_cmds = { [repo]: { seven: "printf '7'", words: "printf 'nope'", boom: "exit 3" } };
+	const errs: string[] = [];
+	const orig = console.error;
+	console.error = (m?: unknown) => errs.push(String(m));
+	let status: number;
+	try {
+		status = recordCi(cfg, repo, "9", NOW);
+	} finally {
+		console.error = orig;
+	}
+	expect(status).toBe(0);
+	expect(readMetricEvents(cfg)).toEqual([
+		{ type: "ci", mr: "9", repo, tries: 1, ts: NOW },
+		{ type: "product", repo, name: "seven", value: 7, ts: NOW },
+	]);
+	expect(errs.some(l => l.includes("words"))).toBe(true);
+	expect(errs.some(l => l.includes("boom"))).toBe(true);
+});
+
+test("metrics.product_cmds validates shape; the template default is {}", () => {
+	const home = join(TMP, "home-pc");
+	mkdirSync(home, { recursive: true });
+	expect(loadConfig({ home }).metrics.product_cmds).toEqual({});
+	const file = join(home, "user.yml");
+	writeFileSync(file, "metrics:\n  product_cmds: nope\n");
+	expect(() => loadConfig({ home, file })).toThrow(/product_cmds/);
+	writeFileSync(file, "metrics:\n  product_cmds:\n    /repo: printf 1\n");
+	expect(() => loadConfig({ home, file })).toThrow(/product_cmds\.\/repo/);
+	writeFileSync(file, "metrics:\n  product_cmds:\n    /repo:\n      dist_mb: \"\"\n");
+	expect(() => loadConfig({ home, file })).toThrow(/product_cmds\.\/repo\.dist_mb/);
+	writeFileSync(file, "metrics:\n  product_cmds:\n    /repo:\n      dist_mb: \"du -sm frontend/dist | cut -f1\"\n");
+	expect(loadConfig({ home, file }).metrics.product_cmds).toEqual({ "/repo": { dist_mb: "du -sm frontend/dist | cut -f1" } });
+});

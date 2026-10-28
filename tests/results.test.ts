@@ -11,7 +11,9 @@ import { join } from "node:path";
 import { ompRunSource } from "../src/adapters/omp/sessions.ts";
 import type { Run, RunMessage } from "../src/core/adapter.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
-import { chains, closeTime, featuresReport, loadPlans } from "../src/core/results.ts";
+import { chains, closeTime, featuresReport, loadPlans, releasesReport } from "../src/core/results.ts";
+import { gatherTags } from "../src/cli/metrics.ts";
+import { appendMetric, type Ev } from "../src/core/metrics.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "ns-results-"));
 const HOME = join(TMP, "home");
@@ -91,6 +93,7 @@ function planText(title: string, goal: string[], status: "open" | "complete" | "
 const ALPHA = "20261025_0900_alpha";
 const FIX = "20261026_1112_fix_alpha";
 const GAMMA = "20261027_1213_gamma";
+const NS2 = "20261024_1414_ns2";
 const OLD = "20261020_0800_old";
 const NS = "20261022_1010_ns";
 
@@ -212,6 +215,7 @@ function fakeRun(id: string, kind: Run["kind"], cost: number, messages: RunMessa
 
 const NOW = Date.UTC(2026, 9, 30, 12) / 1000;
 const DAYS = 7;
+const DAY = 86400;
 const H1 = Date.UTC(2026, 9, 26, 8, 10) / 1000;
 const H2 = Date.UTC(2026, 9, 26, 9, 10) / 1000;
 const H3 = Date.UTC(2026, 9, 26, 15, 10) / 1000;
@@ -230,7 +234,7 @@ const RUNS: Run[] = [
 ];
 
 test("feature rows and the per-kind summary price finished chains", () => {
-	const report = featuresReport(RUNS, loadPlans(CFG), NSREPO, DAYS, NOW);
+	const report = featuresReport(RUNS, loadPlans(CFG), NSREPO, NOW - DAYS * DAY, NOW);
 	// The Main hour naming two plans splits 50/50: alpha and fix get 1 each of the 2.
 	// The hour naming none is overhead, as is the sub naming none.
 	const row = report.rows.find(r => r.stem === ALPHA)!;
@@ -285,4 +289,142 @@ test("metrics features prints the table through the real CLI on fixture data", (
 	expect(r.stdout).toContain("Results: last 7 days");
 	expect(r.stdout).toContain(ALPHA);
 	expect(r.stdout).toContain("2.04"); // alpha 1 + fix 1 + sub 0.04
+});
+
+// --- P3: releases ---
+
+/** Runs git in `cwd`; tag dates are pinned through the committer/author date env (a lightweight tag dates as its commit). */
+function git(args: string[], cwd: string, dates?: [string, string]): void {
+	const env: NodeJS.ProcessEnv = { ...process.env };
+	if (dates) {
+		env.GIT_AUTHOR_DATE = dates[0];
+		env.GIT_COMMITTER_DATE = dates[1];
+	}
+	spawnSync("git", args, { cwd, env, encoding: "utf8" });
+}
+
+test("gatherTags lists the v* tags of a repo with their tag dates; none outside a git repo", () => {
+	git(["init", "-q"], REPO);
+	const who = ["-c", "user.email=t@t", "-c", "user.name=t"];
+	git([...who, "commit", "-q", "--allow-empty", "-m", "one"], REPO, ["2026-10-15T00:00:00Z", "2026-10-15T00:00:00Z"]);
+	git(["tag", "v1.0.0"], REPO);
+	git([...who, "commit", "-q", "--allow-empty", "-m", "two"], REPO, ["2026-10-20T12:00:00Z", "2026-10-20T12:00:00Z"]);
+	git(["tag", "v1.1.0"], REPO);
+	const tags = gatherTags(REPO);
+	expect(tags.map(t => t.name)).toEqual(["v1.0.0", "v1.1.0"]);
+	expect(tags[0]!.ts).toBe(Date.UTC(2026, 9, 15) / 1000);
+	expect(tags[1]!.ts).toBe(Date.UTC(2026, 9, 20, 12) / 1000);
+	expect(gatherTags(join(TMP, "no-repo-here"))).toEqual([]);
+});
+
+test("releases: a 10-day-old tag shows both sides, a 2-day-old tag is measuring, product values are picked per repo", () => {
+	// A second neurastream chain closing inside v1.0.0's after window. Written here so the P2
+	// tests above keep their exact fixture.
+	writeFileSync(join(NSREPO, "docs/plans", `${NS2}.md`), planText("Ns2", ["engine work two"], "complete", ["- 2026-10-26 15:00 CEST Main: ns2 done. Findings: none"]));
+	const cmsg = (cost: number, ts: number, text: string): RunMessage => ({ role: "assistant", cost, text, ts });
+	const runs: Run[] = [
+		// The cmsg runs carry only $: calls/tokens stay 0 so the tokens-per-call windows below
+		// read from the relc runs alone.
+		{ ...fakeRun("relm1", "main", 3, [cmsg(3, Date.UTC(2026, 9, 19, 9, 10) / 1000, `work on ${NS}`)]), calls: 0, tokens: 0 },
+		{ ...fakeRun("relm2", "main", 5, [cmsg(5, Date.UTC(2026, 9, 26, 14, 10) / 1000, `work on ${NS2}`)]), calls: 0, tokens: 0 },
+		{ ...fakeRun("relm3", "main", 2, [cmsg(2, Date.UTC(2026, 9, 26, 10, 10) / 1000, `work on ${ALPHA}`)]), calls: 0, tokens: 0 },
+		{ ...fakeRun("relm4", "main", 4, [cmsg(4, Date.UTC(2026, 9, 20, 9, 10) / 1000, `work on ${OLD}`)]), calls: 0, tokens: 0 },
+		{ ...fakeRun("relc1", "main", 0, []), calls: 10, tokens: 2000, lastWriteAt: NOW - 11 * DAY },
+		{ ...fakeRun("relc2", "sub", 0, []), calls: 5, tokens: 500, lastWriteAt: NOW - 11 * DAY + 60 },
+		{ ...fakeRun("relc3", "main", 0, []), calls: 4, tokens: 800, lastWriteAt: NOW - 9 * DAY },
+	];
+	const tags = [
+		{ name: "v1.0.0", ts: NOW - 10 * DAY },
+		{ name: "v1.1.0", ts: NOW - 2 * DAY },
+	];
+	const events: Ev[] = [
+		{ type: "ci", mr: "77", repo: REPO, tries: 1, ts: NOW - 7.5 * DAY },
+		{ type: "ci", mr: "88", repo: NSREPO, tries: 1, ts: NOW - 3 * DAY }, // a self merge is its tag, not a second release
+		{ type: "product", repo: REPO, name: "dist_mb", value: 10, ts: NOW - 11 * DAY },
+		{ type: "product", repo: REPO, name: "dist_mb", value: 12, ts: NOW - 4 * DAY },
+		{ type: "product", repo: NSREPO, name: "dist_mb", value: 3, ts: NOW - 9 * DAY },
+	];
+	const report = releasesReport(runs, loadPlans(CFG), NSREPO, DAYS, NOW, tags, events);
+	expect(report.rows.map(r => r.name)).toEqual(["v1.0.0", "proj#77", "v1.1.0"]);
+	// v1.0.0, 10 days old: both windows are complete.
+	const old = report.rows[0]!;
+	expect(old.kind).toBe("neurastream");
+	expect(old.measuring).toBe(false);
+	expect(old.before.perFeature).toBeCloseTo(3);
+	expect(old.before.featuresPerDay).toBeCloseTo(1 / DAYS);
+	expect(old.before.callsPerFeature).toBeCloseTo(10);
+	expect(old.before.tokensPerCall).toBeCloseTo(2500 / 15);
+	expect(old.before.fixPlansPerFeature).toBeCloseTo(0);
+	expect(old.after.perFeature).toBeCloseTo(5);
+	expect(old.after.callsPerFeature).toBeCloseTo(4);
+	expect(old.after.tokensPerCall).toBeCloseTo(200);
+	// Product numbers are picked per repo: nsrepo recorded nothing before v1.0.0.
+	expect(old.before.products).toEqual([
+		{ repo: NSREPO, name: "dist_mb", value: null },
+		{ repo: REPO, name: "dist_mb", value: 10 },
+	]);
+	expect(old.after.products).toEqual([
+		{ repo: NSREPO, name: "dist_mb", value: 3 },
+		{ repo: REPO, name: "dist_mb", value: 12 },
+	]);
+	// proj#77 is a product merge: priced from the product chains only.
+	const merge = report.rows[1]!;
+	expect(merge.kind).toBe("product");
+	expect(merge.measuring).toBe(false);
+	expect(merge.before.perFeature).toBeCloseTo(4);
+	expect(merge.after.perFeature).toBeCloseTo(2);
+	expect(merge.after.fixPlansPerFeature).toBeCloseTo(1); // alpha's chain carries its fix plan
+	expect(merge.before.products).toEqual([
+		{ repo: NSREPO, name: "dist_mb", value: 3 },
+		{ repo: REPO, name: "dist_mb", value: 10 },
+	]);
+	expect(merge.after.products).toEqual([
+		{ repo: NSREPO, name: "dist_mb", value: null },
+		{ repo: REPO, name: "dist_mb", value: 12 },
+	]);
+	// v1.1.0, 2 days old: the after window is still measuring.
+	const fresh = report.rows[2]!;
+	expect(fresh.measuring).toBe(true);
+	expect(fresh.before.perFeature).toBeCloseTo(5);
+	expect(fresh.after.perFeature).toBeNull();
+	expect(fresh.after.callsPerFeature).toBeNull();
+	expect(fresh.after.tokensPerCall).toBeNull();
+	expect(fresh.before.products).toEqual([
+		{ repo: NSREPO, name: "dist_mb", value: 3 },
+		{ repo: REPO, name: "dist_mb", value: 12 },
+	]);
+	expect(fresh.after.products).toEqual([
+		{ repo: NSREPO, name: "dist_mb", value: null },
+		{ repo: REPO, name: "dist_mb", value: null },
+	]);
+});
+
+test("metrics releases prints one row per release with before and after through the real CLI", () => {
+	// Fixed dates (not relative to the wall clock) so they line up with the fixture sessions
+	// above: #77 sits before the fixture work (Oct 26 08:00-09:30Z) and before alpha's close
+	// (Oct 27 11:00Z), so both land in its after window. Like the features CLI test, the value
+	// assertions hold while the machine clock is before 2026-11-01 (then they leave the windows).
+	appendMetric(CFG, { type: "ci", mr: "77", repo: REPO, tries: 1, ts: Date.UTC(2026, 9, 25, 12) / 1000 });
+	appendMetric(CFG, { type: "product", repo: REPO, name: "dist_mb", value: 10, ts: Date.UTC(2026, 9, 24, 12) / 1000 });
+	appendMetric(CFG, { type: "product", repo: REPO, name: "dist_mb", value: 12, ts: Date.UTC(2026, 9, 26, 12) / 1000 });
+	const env: NodeJS.ProcessEnv = { ...process.env };
+	for (const k of Object.keys(env)) if (k.startsWith("QUEUE_")) delete env[k];
+	env.HOME = HOME;
+	const r = spawnSync(process.execPath, ["src/cli/main.ts", "metrics", "releases", "--days", "7"], {
+		cwd: join(import.meta.dir, ".."),
+		env,
+		encoding: "utf8",
+	});
+	expect(r.status).toBe(0);
+	expect(r.stdout).toContain("Releases:");
+	expect(r.stdout).toContain("proj#77");
+	expect(r.stdout).toContain("measuring");
+	expect(r.stdout).toContain("dist_mb 10→12");
+	expect(r.stdout).toContain("1.02"); // after #77: (alpha 2.04 + ns2 0.00) / 2 finished product chains
+	// One row per release: the self repo's v* tags plus the one product merge.
+	const vtags = spawnSync("git", ["for-each-ref", "refs/tags/v*", "--format=%(refname:short)"], {
+		cwd: join(import.meta.dir, ".."),
+		encoding: "utf8",
+	}).stdout.split("\n").filter(Boolean).length;
+	expect(r.stdout.split("\n").filter(l => l.includes("→")).length).toBe(vtags + 1);
 });

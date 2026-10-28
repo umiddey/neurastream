@@ -179,7 +179,7 @@ export interface Config {
 	/** Repo-local HTML explainers under docs/knowledge/ (owner page Knowledge tab). */
 	knowledge: { roots: string[]; max_age_s: number };
 	rollover: { enabled: boolean; max_session_mb: number; exit_grace_s: number };
-	metrics: { report_days: number; correction_patterns: string[]; ci_pipelines_cmd: string };
+	metrics: { report_days: number; correction_patterns: string[]; ci_pipelines_cmd: string; product_cmds: Record<string, Record<string, string>> };
 	/** Incident detectors (src/core/incident-detectors.ts): when a sighting becomes an incident. */
 	incidents: {
 		/** Minutes after a finished task-result before a RUNNING/WAITING ledger row contradicts it. */
@@ -554,6 +554,15 @@ function check(cfg: Config): void {
 			new RegExp(p, "i");
 		} catch {
 			throw new ConfigError(`metrics.correction_patterns: not a valid regex: ${p}`);
+		}
+	}
+	if (typeof cfg.metrics.product_cmds !== "object" || cfg.metrics.product_cmds === null || Array.isArray(cfg.metrics.product_cmds))
+		throw new ConfigError("metrics.product_cmds must map a repo path to {name: command}");
+	for (const [repo, cmds] of Object.entries(cfg.metrics.product_cmds)) {
+		if (typeof cmds !== "object" || cmds === null || Array.isArray(cmds)) throw new ConfigError(`metrics.product_cmds.${repo} must map a name to a command`);
+		for (const [name, cmd] of Object.entries(cmds)) {
+			if (name === "") throw new ConfigError(`metrics.product_cmds.${repo}: command names must be non-empty`);
+			if (typeof cmd !== "string" || cmd.trim() === "") throw new ConfigError(`metrics.product_cmds.${repo}.${name} must be a non-empty shell command`);
 		}
 	}
 	for (const [provider, pattern] of Object.entries(cfg.traces.provider.id_patterns)) {
