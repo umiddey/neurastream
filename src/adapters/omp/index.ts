@@ -37,7 +37,7 @@ import { mainStartText, runDailyCheck } from "../../core/main-start.ts";
 import { readBlocks } from "../../core/metrics.ts";
 import { buildHandoff, holdsBlock, notePath, noteRequest, OWNER_AWAY, ownerText, relaunchPath, rolloverState, spawnRefusal, type RolloverState } from "../../core/rollover.ts";
 import { defaultCompletedResults, defaultRunSource, runIdOf } from "./sessions.ts";
-import { adapterLog } from "./launch.ts";
+import { adapterLog, MAIN_ENV } from "./launch.ts";
 import { parseTraceFile } from "./traces.ts";
 import { packageJsonPath, packageVersion } from "./package-root.ts";
 import * as q from "../../core/queue/lib.ts";
@@ -992,9 +992,8 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 			}
 			if (snap.state === "ready" || snap.state === "wait-jobs") {
 				adapterLog(cfg, `ALLOW stop: rollover ${snap.state}`);
-				// Under the launcher a ready rollover starts now (not a hand-back to the owner);
-				// plain omp waits for the owner's next message.
-				const handsToOwner = !(snap.state === "ready" && process.env.NEURASTREAM_MAIN_LAUNCHER === "1" && requestRelaunch(rc, notePath(rc.sessionId)));
+				// Under the launcher a ready rollover starts now (not a hand-back to the owner).
+				const handsToOwner = !(snap.state === "ready" && requestRelaunch(rc, notePath(rc.sessionId)));
 				if (handsToOwner) notifyHandback(reply, "allowed session_stop");
 				else adapterLog(cfg, "notify: skipped (relaunch requested)");
 				return undefined;
@@ -1058,7 +1057,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	// The note request for a state. A stale install names both versions in place of the size line.
 	const noteRequestFor = (c: RolloverCtx, snap: { stale: boolean; liveVersion: string | null }): string => {
 		const reason = snap.stale ? `neurastream on disk is ${snap.liveVersion ?? "unknown"}, this session runs ${loadedVersion ?? "unknown"}` : undefined;
-		return noteRequest(notePath(c.sessionId), process.env.NEURASTREAM_MAIN_LAUNCHER === "1", reason);
+		return noteRequest(notePath(c.sessionId), true, reason);
 	};
 
 	let relaunched = false;
@@ -1081,12 +1080,13 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		};
 	};
 
-	// One /main-rollover at a time: while one waits for idle, a second call adds its text to the owner message.
+	// One in-process rollover at a time: while it waits for idle, the size check must not start
+	// a relaunch over it.
 	let flight: string[] | null = null;
 
-	// The one in-process rollover, shared by /main-rollover and the exit-grace fallback: gather the
-	// generated state, wait for idle, then start a fresh session whose first message is the handoff.
-	// A state change during the wait sends the owner's text to this session as an ordinary message.
+	// The one in-process rollover, the exit-grace fallback: gather the generated state, wait for
+	// idle, then start a fresh session whose first message is the handoff. A state change during
+	// the wait sends the owner's text to this session as an ordinary message.
 	const rolloverInProcess = async (c: RolloverCtx, owner: string[], notice: string): Promise<void> => {
 		const previous = c.sessionFile;
 		const path = notePath(c.sessionId);
@@ -1186,8 +1186,8 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 				{ customType: "main-guard.rollover", content: noteRequestFor(c, snap), display: false },
 				{ triggerTurn: true, deliverAs: "nextTurn" },
 			);
-		} else if (terminal && snap.state === "ready" && process.env.NEURASTREAM_MAIN_LAUNCHER === "1" && !relaunched && flight === null) {
-			// flight !== null: an in-process rollover (fallback or /main-rollover) owns this session's end.
+		} else if (terminal && snap.state === "ready" && !relaunched && flight === null) {
+			// flight !== null: an in-process rollover (the fallback) owns this session's end.
 			requestRelaunch(c, notePath(c.sessionId));
 		} else if (terminal && relaunched) {
 			// A tool result mid-run never restarts the session (I-20261024-4), and omp's interactive
@@ -1401,67 +1401,43 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		return changed ? { messages: mapped } : undefined;
 	});
 
-	// Under the launcher the relaunch is the only rollover path: a plain interactive message in the ready
-	// state requests it, and every such message joins the pending request's draft, in order. Plain omp keeps
-	// `/main-rollover <text>`: the message becomes the owner's first message of the new session.
+	// The relaunch is the only rollover path: a plain interactive message in the ready state
+	// requests it, and every such message joins the pending request's draft, in order.
 	pi.on("input", (event, ctx) => {
 		const e = asRecord(event);
 		const c = asRolloverCtx(ctx);
 		const text = asString(e.text);
 		if (!cfg.rollover.enabled || !c || !isMain(ctx)) return undefined;
 		if (asString(e.source) !== "interactive" || text === "" || text.startsWith("/")) return undefined;
-		if (process.env.NEURASTREAM_MAIN_LAUNCHER === "1") {
-			if (!relaunched) {
-				if (rolloverSnapshot(c).state !== "ready") return undefined;
-				// The message is the request's first owner text, so the editor draft is not carried.
-				if (!requestRelaunch(c, notePath(c.sessionId), "")) return undefined;
-			}
-			if (appendToRelaunch(text)) c.notify("rollover in progress: your message goes to the new session");
-			else c.notify("rollover in progress: your message could not be saved and was not sent; send it again after the rollover");
-			// omp re-checks its deferred exit only when shutdown() is called again: re-arm per message.
-			c.shutdown();
-			return { handled: true };
+		if (!relaunched) {
+			if (rolloverSnapshot(c).state !== "ready") return undefined;
+			// The message is the request's first owner text, so the editor draft is not carried.
+			if (!requestRelaunch(c, notePath(c.sessionId), "")) return undefined;
 		}
-		if (rolloverSnapshot(c).state !== "ready") return undefined;
-		return { text: `/main-rollover ${text}` };
+		if (appendToRelaunch(text)) c.notify("rollover in progress: your message goes to the new session");
+		else c.notify("rollover in progress: your message could not be saved and was not sent; send it again after the rollover");
+		// omp re-checks its deferred exit only when shutdown() is called again: re-arm per message.
+		c.shutdown();
+		return { handled: true };
 	});
 
-	// One /main-rollover at a time: while one waits for idle, a second call adds its text to the owner message.
+	// The rollover starts on its own (size + idle), and the owner's next message joins the
+	// pending relaunch; the command only says so.
 	pi.registerCommand("main-rollover", {
 		description: "Start a fresh session from Main's handoff note; the rest of the message is the owner's first message",
-		handler: async (args: unknown, ctx: unknown) => {
+		handler: async (_args: unknown, ctx: unknown) => {
 			const c = asRolloverCtx(ctx);
 			if (!c) return;
-			const text = asString(args);
-			if (process.env.NEURASTREAM_MAIN_LAUNCHER === "1") {
-				c.notify("main-rollover: under neurastream main the rollover starts from your next message, not from this command.");
-				return;
-			}
-			if (flight) {
-				flight.push(text);
-				c.notify("main-rollover: a rollover is already in progress; your message is added to its handoff.");
-				return;
-			}
-			const path = notePath(c.sessionId);
-			const state = rolloverSnapshot(c).state;
-			if (state === "below") {
-				c.notify("main-rollover: this session is below rollover.max_session_mb; nothing to roll over.");
-				return;
-			}
-			if (state === "need-note") {
-				c.notify(`main-rollover: no fresh handoff note at ${path}; Main must write it first.`);
-				return;
-			}
-			if (state === "wait-jobs") {
-				c.notify(`main-rollover: own jobs are still running (${c.runningJobs().join(", ")}); a rollover would cancel them.`);
-				return;
-			}
-			await rolloverInProcess(c, [text], "main-rollover: collecting main-start state for the handoff (this can take a minute)…");
+			c.notify("main-rollover: under neurastream main the rollover starts from your next message, not from this command.");
 		},
 	});
 }
 
 /** package.json omp.extensions entry. */
 export default function ompExtension(pi: ExtensionHost): void {
+	// The one switch (MAIN_ENV): plain `omp` runs nothing of neurastream — no hook, no command,
+	// no config read. `neurastream main` sets it for its child (launch.ts), so anything the Main
+	// session spawns inherits it and stays guarded.
+	if (process.env[MAIN_ENV] !== "1") return;
 	createOmpAdapter(pi, loadConfig());
 }
