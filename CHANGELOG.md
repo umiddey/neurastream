@@ -1,4 +1,7 @@
 # Changelog
+## 0.2.45
+### Added
+- Write-time checks (plan 20261028_1228, P1–P3): with `write_check.enabled` on, an edit that adds a lint finding or a suppression comment to a linted file is undone and the call returns an error naming each new rule; `applies_to: sub` (default) checks subagents only, `all` checks Main too. Only findings the edit adds count, so old lint debt never blocks a file; a missing, crashed or timed-out linter allows the edit and logs a note. The template ships ruff (Python, incl. security rules `S`) and oxlint (TS/JS) entries, off by default.
 ## 0.2.44
 ### Added
 - The owner's own Main-only lines: `MAIN.md` in `paths.agent_dir` (`~/.omp/agent/MAIN.md` with the omp layout) is appended, trimmed, after the managed rules block in Main's prompt; a missing or blank file leaves the block unchanged (plan 20261027_1215_main_only P6).

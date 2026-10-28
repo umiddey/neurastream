@@ -17,12 +17,13 @@
 
 import { execFileSync, spawn } from "node:child_process";
 import { appendFileSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, extname, join, resolve } from "node:path";
 import type { Decision } from "../../core/adapter.ts";
 import { AGENTS_TEMPLATE, renderBlock } from "../../core/agents-md.ts";
 import { chatGo, chatTier, type Tier } from "../../core/autonomy.ts";
 import { burdenRule, repoRules, rulesChanged } from "../../core/repo-rules.ts";
 import { loadConfig, type Config } from "../../core/config.ts";
+import { checkWrite, type WriteCheckConfig } from "../../core/write-check.ts";
 import { nowSec, strftime } from "../../core/clock.ts";
 import { runDetectors, runDetectorsGated, type DetectorInput } from "../../core/incident-detectors.ts";
 import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, newProgressEntries, planReadNote, recordMainResult, revertMainEdit, rekeySpawnFile } from "../../core/guards.ts";
@@ -247,6 +248,22 @@ function ledgerText(cfg: Config): string {
 		if (err && typeof err === "object" && "stdout" in err && typeof err.stdout === "string") return err.stdout;
 		return "";
 	}
+}
+
+// Write-time checks (plan 20261028_1228): the text of each file a call names that a configured linter
+// covers, read before the call runs; null when the file does not exist yet.
+function writeCheckSnapshot(tool: string, input: Record<string, unknown>, cwd: string, wc: WriteCheckConfig): Map<string, string | null> {
+	const exts = wc.linters.flatMap((l) => l.ext);
+	const snap = new Map<string, string | null>();
+	for (const file of q.writeTargets(tool, input, cwd)) {
+		if (!exts.includes(extname(file))) continue;
+		try {
+			snap.set(file, readFileSync(file, "utf8"));
+		} catch (err) {
+			if (err instanceof Error && "code" in err && err.code === "ENOENT") snap.set(file, null);
+		}
+	}
+	return snap;
 }
 
 // Plan files a subagent write/edit may touch: snapshot before the call so tool_result can verify
@@ -561,6 +578,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	let inboxTimer: unknown;
 	const calls = new Map<string, number>(); // subagent call budget, by agent id
 	const pending = new Map<string, Map<string, string>>(); // toolCallId -> plan snapshots
+	const pendingWrite = new Map<string, Map<string, string | null>>(); // toolCallId -> write-check snapshots; null: the file did not exist
 	const pendingRules = new Set<string>(); // repos Main worked in, rules to hand over at the next prompt
 	// Chat notify (plans 20261024_2155, 20261025_0130): the text a hand-back already posted
 	// (attempted) — one post per distinct text, never a retry loop. The reply itself comes from
@@ -862,6 +880,11 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 			return { block: true, reason: d.reason };
 		}
 		if (snap.size) pending.set(asString(e.toolCallId), snap);
+		const wc = cfg.write_check;
+		if (wc.enabled && (wc.applies_to === "all" || isSub)) {
+			const ws = writeCheckSnapshot(tool, input, cwd, wc);
+			if (ws.size) pendingWrite.set(asString(e.toolCallId), ws);
+		}
 		// An allowed Main call inside a repo queues that repo's rules for the next prompt (P3).
 		if (!isSub) for (const repo of touchedRepos(tool, input, cwd)) pendingRules.add(repo);
 		// The originals return nothing on a clean call; only warn injects carry an object.
@@ -883,6 +906,8 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		const c = asCtx(ctx);
 		const id = asString(e.toolCallId);
 		const snap = pending.get(id);
+		const wsnap = pendingWrite.get(id);
+		pendingWrite.delete(id);
 		// Redact first: everything below (plan checks, detectors, the returned content, the model,
 		// the chat and the session log) then works on text that holds markers, never values.
 		const redacted = redactToolResult(Array.isArray(e.content) ? e.content : [], cfg);
@@ -926,6 +951,28 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 				// Live D6+D7 over the sub's own session as soon as it reports into the plan (P6).
 				if (d.allow && c.kind === "sub") subActionDetectors(cfg, ctx, file, before, after);
 			}
+		}
+		// Write-time checks (plan 20261028_1228): a lint finding the call added is undone here, file by file.
+		if (wsnap && !e.isError) {
+			const refusals: string[] = [];
+			for (const [file, before] of wsnap) {
+				let after: string | null = null;
+				try {
+					after = readFileSync(file, "utf8");
+				} catch {}
+				const r = checkWrite(file, before, after, cfg.write_check);
+				if (r.allow) {
+					if (r.note) adapterLog(cfg, r.note);
+					continue;
+				}
+				try {
+					if (before === null) rmSync(file, { force: true });
+					else writeFileSync(file, before);
+				} catch {}
+				adapterLog(cfg, `WRITE-CHECK refused ${file}`);
+				refusals.push(r.reason);
+			}
+			if (refusals.length > 0) return { isError: true, content: [{ type: "text", text: refusals.join("\n\n") }] };
 		}
 		if ((!c.hasAgent || c.kind === "main") && asString(e.toolName) === "bash" && !e.isError) {
 			if (PUSH_MERGE.test(asString(asRecord(e.input).command))) autoClose(cfg);
