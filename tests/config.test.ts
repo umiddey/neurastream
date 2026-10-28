@@ -123,31 +123,18 @@ describe("core has no harness name", () => {
 	test("src/core matches none of the forbidden tokens", () => {
 		const root = join(import.meta.dir, "../src/core");
 		const hits: string[] = [];
-		// Same six tokens as the plan grep, substring match: a harness token such as ".omp" or
-		// "OMP_" or "cursorX" must fail the scan. The only allowed carriers are the exact words
-		// "complete" and "prompt" (required protocol words that contain the letters omp).
-		const rx = /omp|oh-my-pi|claude|opencode|codex|cursor/gi;
-		const CARRIERS: Record<string, true> = { complete: true, prompt: true };
-		const forbiddenHits = (text: string): boolean => {
-			for (const m of text.matchAll(rx)) {
-				const at = m.index ?? 0;
-				let a = at;
-				let b = at + m[0].length;
-				while (a > 0 && /[A-Za-z0-9]/.test(text[a - 1] ?? "")) a--;
-				while (b < text.length && /[A-Za-z0-9]/.test(text[b] ?? "")) b++;
-				const word = text.slice(a, b).toLowerCase();
-				if (!CARRIERS[word]) return true;
-			}
-			return false;
-		};
+		// Same six tokens as the plan grep, matched as whole words (I-20261028-136): word edges are
+		// alphanumeric, so ".omp", "OMP_DATA" and "oh-my-pi" in quotes still count, while ordinary
+		// English that merely contains the letters — "comparable", "complete", "prompt" — does not.
+		const rx = /(?<![A-Za-z0-9])(?:omp|oh-my-pi|claude|opencode|codex|cursor)(?![A-Za-z0-9])/i;
+		const forbiddenHits = (text: string): boolean => rx.test(text);
 		for (const file of filesUnder(root)) {
 			if (forbiddenHits(readFileSync(file, "utf8"))) hits.push(file.slice(root.length + 1));
 		}
 		expect(hits).toEqual([]);
-		// The scan is substring-based: these must each be caught, word boundaries would miss them.
 		expect(forbiddenHits('const x = process.env.OMP_DATA;')).toBe(true);
-		expect(forbiddenHits("cursorX.forEach()")).toBe(true);
-		expect(forbiddenHits('status === "complete" || /every prompt,/')).toBe(false);
+		expect(forbiddenHits('import { x } from "oh-my-pi/adapters";')).toBe(true);
+		expect(forbiddenHits("the comparable interface and every prompt")).toBe(false);
 		expect(readFileSync(TEMPLATE_PATH, "utf8").length).toBeGreaterThan(100);
 	});
 });

@@ -10,6 +10,7 @@ import { checkPlanEdit, checkSpawn } from "../src/core/guards.ts";
 import type { CommandRunner } from "../src/core/mr-sweep.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { parsePlan, queueProblems, type Plan } from "../src/core/queue/lib.ts";
+import { fixturePlan } from "./fixtures/plan.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "plan-review-"));
 const REPO = join(TMP, "repo");
@@ -26,42 +27,9 @@ chmodSync(join(BLOCKERS, "ok.sh"), 0o755);
 
 const REUSE_OK = "## Reuse\n- new: none — checked: src/a.ts:1 — reuse: the existing helper\n\n";
 
-function planText(stamp: string, reuse = REUSE_OK): string {
-	return `# Toy plan
-
-Worktree: -
-Branch: feat/toy
-
-## Goal
-- Reuse-line toy.
-
-## Forbidden
-- Never skip tests.
-
-## Blockers
-- ok.sh
-
-## Phases
-- [ ] P1 do the thing — verify: \`test -f src/a.ts\`
-
-## Code read by Main
-- \`src/a.ts\`
-
-## Reuse-placeholder
-
-## Done check
-\`test -f src/a.ts\`
-
-## Progress
-Status: open
-
-- Started.
-`.replace("## Reuse-placeholder", reuse);
-}
-
 function planFile(stamp: string, reuse?: string): string {
 	const file = join(REPO, "docs/plans", `${stamp}_toy.md`);
-	writeFileSync(file, planText(stamp, reuse));
+	writeFileSync(file, fixturePlan({ reuse: reuse ?? REUSE_OK }));
 	return file;
 }
 
@@ -123,7 +91,7 @@ mkdirSync(join(GHOME, ".config/neurastream"), { recursive: true });
 writeFileSync(join(GAGENT, "INDEX.md"), `${LOCKED}\n`);
 writeFileSync(join(GAGENT, "notes/subagents.md"), "## Allowed\n\n- `worker`\n- `reviewer`\n");
 writeFileSync(join(GAGENT, "CANCELLED.md"), "");
-writeFileSync(LOCKED, planText("20261030_0100"));
+writeFileSync(LOCKED, fixturePlan());
 writeFileSync(
 	join(GHOME, ".config/neurastream/config.yml"),
 	`paths:

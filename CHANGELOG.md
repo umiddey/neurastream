@@ -1,4 +1,7 @@
 # Changelog
+## Unreleased
+### Added
+- Plan review gate (plan 20261028_1600): a plan's `## Reuse` section (one checked line per new thing) is a queue problem when missing; a spawn on a plan needs a current reviewer PASS — recorded by plan-guard only from a read-only reviewer subagent's `PLAN REVIEW:` Progress edit (`review.agents`, `templates/plan-review-brief.md`), expired when the plan text changes — and is refused while the plan holds done-but-not-merged work (open MRs of its repo, branches with commits off main) that the brief does not name with an `MR !N:` / `Branch <name>:` line. brief-lint gained the matching brief rules: an MR named in prose without the line, a plan named only under a worktree path instead of its main checkout, and `src/tests` paths the plan's blocker `ALLOWED` regex rejects. Plans stamped before `review.since` are exempt until audited.
 ## 0.2.47
 ### Fixed
 - The bare `queue-finished` command is installed again (INCIDENT I-20261028-119): it was the only queue script without a `bin/` wrapper and package.json `bin` row, so the rules table's `queue-finished` failed with "command not found" while `neurastream queue-finished` worked.

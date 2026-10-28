@@ -273,3 +273,47 @@ test("a plain brief without Phases is still checked whole", () => {
 	expect(rc).toBe(1);
 	expect(out).toContain(GONE);
 });
+
+// --- P4/P4b (plan 20261028_1600): MR naming, main-checkout plan paths, blocker scope ---
+
+test("a brief naming an MR in prose is refused; the MR !N: line passes", () => {
+	const prose = captureLint([
+		brief("20261028_1500_mr_prose.md", null, false, cfg, ["Finish the work pushed as MR !211 first."]),
+	]);
+	expect(prose.rc).toBe(1);
+	expect(prose.out).toContain("MR !211 is named in prose");
+	const line = brief("20261028_1501_mr_line.md", null, false, cfg, [
+		"MR !211: the e2 classification half — this task: only the export half",
+	]);
+	expect(briefLint([line], cfg)).toBe(0);
+});
+
+test("a plan (Progress section) may mention an MR in prose", () => {
+	const p = join(TMP, "20261028_1502_plan_mr.md");
+	writeFileSync(
+		p,
+		[
+			"# 20261028_1502_plan_mr",
+			"",
+			"## Goal",
+			"- Never redo work already pushed as MR !211. Stop and report within ~60 calls.",
+			"",
+			"## Forbidden",
+			"- never push",
+			"",
+			"## Phases",
+			"- [ ] P1 gate — verify: `true`",
+			"",
+			"## Done check",
+			"`true`",
+			"",
+			"## Progress",
+			"Status: open",
+			"",
+		].join("\n"),
+	);
+	expect(briefLint([p], cfg)).toBe(0);
+});
+
+// --- P4/P4b (plan 20261028_1600): MR naming; main-checkout plan paths and blocker scope land with P4b ---
+

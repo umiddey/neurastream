@@ -1,11 +1,11 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import type { Config } from "./config.ts";
-import { briefBudget } from "./guards.ts";
+import { briefBudget, briefNamesPending } from "./guards.ts";
 import { exitText, helpDoc, printText } from "./help.ts";
 import { sections } from "./queue/lib.ts";
 
-const OUTPUT_HINT = /(report|progress|review|handoff|log|brief)[\w\-]*\.(md|log|txt|json)$|\.log$/;
+const OUTPUT_HINT = /(report|progress|review|handoff|log|brief)[\w-]*\.(md|log|txt|json)$|\.log$/;
 const TICKED_PHASE = /^\s*[-*]\s+\[[xX]\]/;
 
 // A plan's paths are live work only in the header lines, Goal, Forbidden, Blockers, unticked phase
@@ -33,6 +33,9 @@ function liveText(text: string): string {
 function escapeReg(s: string): string {
 	return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
+
+/** A scanned path without its trailing sentence punctuation (the path loop's cleaning). */
+const clean = (raw: string): string => raw.replace(/[.,)]+$/, "");
 
 function lint(path: string, cfg: Config): { errs: string[]; warns: string[] } {
 	const text = readFileSync(path, "utf8");
@@ -71,8 +74,8 @@ function lint(path: string, cfg: Config): { errs: string[]; warns: string[] } {
 		const re = new RegExp(`(${escapeReg(prefix)}[\\w./\\-]+)`, "g");
 		for (const hit of scan.matchAll(re)) paths.add(hit[1]!);
 	}
-	for (const raw of [...paths].sort()) {
-		let p = raw.replace(/[.,)]+$/, "");
+	for (const raw of [...paths].toSorted()) {
+		const p = clean(raw);
 		if (p.endsWith("-") || p.endsWith("_")) continue;
 		if (existsSync(p) || OUTPUT_HINT.test(p)) continue;
 		const parent = dirname(p);
@@ -80,6 +83,21 @@ function lint(path: string, cfg: Config): { errs: string[]; warns: string[] } {
 			warns.push(`path not found (new file?): ${p}`);
 		} else {
 			errs.push(`path does not exist: ${p}`);
+		}
+	}
+
+	// P4 (plan 20261028_1600): a spawn brief naming an open MR/PR in prose must carry the pending-work
+	// line for it, else the prose alone redoes the MR's work (INCIDENT I-20261028-125). Plans are
+	// exempt: the spawn-side gate (guards pendingWorkProblem) matches the brief's line against the
+	// plan's own MRs and branches instead.
+	if (!sections(text).has("progress")) {
+		const toks = new Set<string>();
+		for (const m of text.matchAll(/[!#]\d+/g)) toks.add(m[0]);
+		for (const tok of toks) {
+			need(
+				briefNamesPending(text, "MR", tok),
+				`MR ${tok} is named in prose; a spawn on its plan must carry the line "MR ${tok}: <what it holds> — this task: <why not overlapping>"`,
+			);
 		}
 	}
 
@@ -101,7 +119,7 @@ function lint(path: string, cfg: Config): { errs: string[]; warns: string[] } {
 		const re = new RegExp(`(${escapeReg(prefix)}[\\w./\\-]*keys[\\w.\\-]*\\.txt)`, "g");
 		for (const hit of text.matchAll(re)) keys.add(hit[1]!);
 	}
-	for (const p of [...keys].sort()) {
+	for (const p of [...keys].toSorted()) {
 		if (!existsSync(p)) continue;
 		const n = readFileSync(p, "utf8").split(/\r?\n/).filter(l => l.trim()).length;
 		if (n > cfg.brief.max_keys) {

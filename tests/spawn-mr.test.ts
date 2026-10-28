@@ -15,6 +15,7 @@ import { checkPlanEdit, checkSpawn, pendingWorkProblem, spawnProblem } from "../
 import { listOpenMrs, type CommandResult, type CommandRunner } from "../src/core/mr-sweep.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { unlandedRows } from "../src/core/wip-check.ts";
+import { fixturePlan } from "./fixtures/plan.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "spawn-mr-"));
 const HOME = join(TMP, "home");
@@ -38,37 +39,12 @@ const queueEnvBefore = Object.fromEntries(Object.entries(process.env).filter(([k
 for (const k of Object.keys(queueEnvBefore)) delete process.env[k];
 
 function planText(): string {
-	return `# Toy gate plan
-
-Worktree: -
-Branch: feat/gate
-
-## Goal
-- Never redo work already pushed as MR !211.
-
-## Forbidden
-- Never skip tests.
-
-## Blockers
-- no-push
-
-## Phases
-- [ ] P1 do the thing — verify: \`test -f src/a.ts\`
-
-## Code read by Main
-- \`src/a.ts\`
-
-## Reuse
-- new: pending-work gate — checked: src/a.ts:1 — reuse: mr-sweep's lister and mentioned
-
-## Done check
-\`test -f src/a.ts\`
-
-## Progress
-Status: open
-
-- Started.
-`;
+	return fixturePlan({
+		branch: "feat/gate",
+		blocker: "no-push",
+		goal: "- Never redo work already pushed as MR !211.",
+		reuse: "## Reuse\n- new: pending-work gate — checked: src/a.ts:1 — reuse: mr-sweep's lister and mentioned\n\n",
+	});
 }
 
 // A repo whose git answers but has no origin: the whole pending-work check degrades off it.

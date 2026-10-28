@@ -556,7 +556,7 @@ function priorityGate(named: string[], runningJobs: string[] | undefined, brief:
 }
 
 /** The brief names pending work the P3 way: `MR !N: <what it holds> — this task: <why not overlapping>` (GitHub `#N`), `Branch <name>: …`. */
-function briefNamesPending(brief: string, prefix: "MR" | "Branch", token: string): boolean {
+export function briefNamesPending(brief: string, prefix: "MR" | "Branch", token: string): boolean {
 	const esc = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 	return new RegExp(`^[ \\t]*(?:[-*][ \\t]+)?${prefix} ${esc}:[^\\n]*this task:`, "im").test(brief);
 }
