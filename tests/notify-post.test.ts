@@ -15,7 +15,7 @@ import { dirname, join } from "node:path";
 import { createOmpAdapter } from "../src/adapters/omp/index.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { postReply } from "../src/core/notify.ts";
-import { notePath } from "../src/core/rollover.ts";
+import { notePath, relaunchPath } from "../src/core/rollover.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
 
 const REPO = dirname(dirname(import.meta.path));
@@ -298,7 +298,7 @@ test("an allowed stop posts the text to each configured provider once, with the 
 	expect(slackHits[0]).toEqual({ key: "text", text: REPLY });
 });
 
-test("the rollover-ready allow path posts too", async () => {
+test("the rollover-ready path relaunches and posts nothing", async () => {
 	reset();
 	writeSession(REPLY, true);
 	// Any session size crosses this threshold; the fresh note makes the state ready.
@@ -311,8 +311,11 @@ test("the rollover-ready allow path posts too", async () => {
 	const later = (Date.now() + 5_000) / 1000;
 	utimesSync(notePath(SESSION_ID), later, later);
 	expect(await host.emit("session_stop", stopEvent(REPLY), ctx)).toEqual([]);
-	await until(() => discordHits.length === 1 && slackHits.length === 1);
-	expect(notifyLogLines().filter(l => l.includes("notify: posted (allowed session_stop)")).length).toBe(1);
+	// The relaunch owns the session's end: the reply is not posted as a hand-back, and the
+	// request file is written for the launcher.
+	expect(discordHits.length).toBe(0);
+	expect(slackHits.length).toBe(0);
+	expect(existsSync(relaunchPath())).toBe(true);
 });
 
 test("a 4500-char reply is 3 discord and 2 slack chunks, in order, nothing lost", async () => {

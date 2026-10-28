@@ -156,13 +156,12 @@ describe("noteRequest", () => {
 		expect(text).toContain("Write a handoff note to /s/n.md (overwrite it).");
 		expect(text).toContain("Do not list holds or owner blockers in the note; they come from the plans' WAITING on owner lines.");
 	});
-	test("auto mode says the note starts a relaunch instead of waiting for the owner", () => {
-		const text = noteRequest("/s/n.md", true);
-		expect(text).toContain("As soon as this note is written and no own jobs run, this session restarts into a fresh one that starts from this note verbatim plus the generated main-start state.");
-		expect(text).not.toContain("When the owner's next message arrives");
+	test("the note says it starts a relaunch instead of waiting for the owner", () => {
+		const text = noteRequest("/s/n.md");
+		expect(text).toContain("As soon as this note is written and none of its own jobs are running, this session restarts into a fresh one that starts from this note verbatim plus the generated main-start state.");
 	});
 	test("a stale install names both versions and does not claim the size limit", () => {
-		const text = noteRequest("/s/n.md", false, "neurastream on disk is 0.2.0, this session runs 0.1.13");
+		const text = noteRequest("/s/n.md", "neurastream on disk is 0.2.0, this session runs 0.1.13");
 		expect(text).toContain("Session rollover: a new neurastream version is installed (neurastream on disk is 0.2.0, this session runs 0.1.13).");
 		expect(text).not.toContain("max_session_mb");
 		expect(text).toContain("Write a handoff note to /s/n.md (overwrite it).");
@@ -230,7 +229,7 @@ describe("ownerText", () => {
 		buildHandoff({ generated: "=== generated state", note, previousSessionFile: "/x/previous.jsonl", ownerMessage: owner });
 
 	test("the rollover note request gives no D4 finding and is not an owner message", () => {
-		const note = noteRequest("/x/rollover/s.md", false, "neurastream on disk is 0.1.21, this session runs 0.1.19");
+		const note = noteRequest("/x/rollover/s.md", "neurastream on disk is 0.1.21, this session runs 0.1.19");
 		expect(ownerText(note)).toBeUndefined();
 		expect(ownerCorrection(note, PATTERNS, NOW)).toBeNull();
 	});

@@ -7,7 +7,7 @@ import { chmodSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync }
 import { join } from "node:path";
 import { installOmp } from "../src/adapters/omp/install.ts";
 import { adapterLiveFiles } from "../src/adapters/omp/doctor.ts";
-import { BEGIN_MARK, END_MARK, blockState, renderBlock, upsertBlock } from "../src/core/agents-md.ts";
+import { BEGIN_MARK, END_MARK, renderBlock } from "../src/core/agents-md.ts";
 import { loadConfig } from "../src/core/config.ts";
 import { initHome } from "../src/cli/init.ts";
 import { checkInject } from "../src/core/guards.ts";
@@ -56,35 +56,6 @@ test("renderBlock fills in the agent dir and wraps the rules in the markers", ()
 	expect(block).not.toContain("{{AGENT_DIR}}");
 });
 
-test("upsertBlock appends to a file without markers and keeps the personal text byte-identical", () => {
-	expect(upsertBlock(PERSONAL, block)).toBe(`${PERSONAL}\n${block}\n`);
-	expect(upsertBlock("", block)).toBe(`${block}\n`);
-});
-
-test("upsertBlock replaces an old block in place and keeps the text above and below it", () => {
-	const file = `${PERSONAL}\n${BEGIN_MARK}\nold rules\n${END_MARK}\nmy footer\n`;
-	expect(upsertBlock(file, block)).toBe(`${PERSONAL}\n${block}\nmy footer\n`);
-});
-
-test("upsertBlock is idempotent: a second run gives the same bytes", () => {
-	const once = upsertBlock(PERSONAL, block);
-	expect(upsertBlock(once, block)).toBe(once);
-});
-
-test("upsertBlock throws on a begin marker without an end, and on two begin markers", () => {
-	expect(() => upsertBlock(`${BEGIN_MARK}\nx\n`, block)).toThrow();
-	expect(() => upsertBlock(`${BEGIN_MARK}\n${END_MARK}\n${BEGIN_MARK}\n${END_MARK}\n`, block)).toThrow();
-});
-
-test("blockState: missing without markers, ok for the rendered block, stale after an edit inside it, ok after an edit outside", () => {
-	expect(blockState(PERSONAL, block)).toBe("missing");
-	const installed = upsertBlock(PERSONAL, block);
-	expect(blockState(installed, block)).toBe("ok");
-	expect(blockState(installed.replace("Be kind.", "Be kind, always."), block)).toBe("ok");
-	expect(blockState(installed.replace("You are Main", "You are Bob"), block)).toBe("stale");
-	expect(blockState(`${BEGIN_MARK}\nno end\n`, block)).toBe("stale");
-});
-
 test("the template holds only the neurastream rules: no owner-personal, provider, project or edit-limit text", () => {
 	const tpl = readFileSync(join(REPO, "templates/AGENTS.md"), "utf8");
 	for (const word of [
@@ -107,17 +78,19 @@ test("the template holds only the neurastream rules: no owner-personal, provider
 	expect(tpl).toContain("{{AGENT_DIR}}/INDEX.md");
 });
 
-test("install keeps the owner's AGENTS.md text, adds the block once, and a second install changes nothing", () => {
+test("install never writes the block; it strips one an older install left, keeping the owner's bytes", () => {
 	const first = freshInstall(PERSONAL);
-	expect(first.agentsMd).toBe("written");
+	expect(first.agentsMd).toBe("unchanged");
+	expect(readFileSync(AGENTS, "utf8")).toBe(PERSONAL);
+	writeFileSync(AGENTS, `${PERSONAL}\n${block}\n- tail\n`);
+	const removed = installOmp(SANDBOX);
+	expect(removed.agentsMd).toBe("removed");
 	const text = readFileSync(AGENTS, "utf8");
-	expect(text.startsWith(PERSONAL)).toBe(true);
-	expect(text).toContain(`${BEGIN_MARK}\n`);
-	expect(text).toContain(`\n${END_MARK}`);
-	const second = installOmp(SANDBOX);
-	expect(second.agentsMd).toBe("unchanged");
+	expect(text).toBe(`${PERSONAL}\n\n- tail\n`);
+	expect(text).not.toContain(BEGIN_MARK);
+	expect(installOmp(SANDBOX).agentsMd).toBe("unchanged");
 	expect(readFileSync(AGENTS, "utf8")).toBe(text);
-});
+}, 60_000);
 
 test("a clean install passes doctor", () => {
 	freshInstall(PERSONAL);
@@ -126,11 +99,11 @@ test("a clean install passes doctor", () => {
 	expect(ran.status).toBe(0);
 });
 
-test("an edit inside the block is reported as stale", () => {
+test("a neurastream block left in the owner's AGENTS.md is reported stale", () => {
 	freshInstall(PERSONAL);
-	writeFileSync(AGENTS, readFileSync(AGENTS, "utf8").replace("You are Main", "You are Bob"));
+	writeFileSync(AGENTS, `${PERSONAL}\n${block}\n`);
 	const ran = runDoctor();
-	expect(ran.stdout).toContain(`stale: ${AGENTS} neurastream block`);
+	expect(ran.stdout).toContain(`stale: neurastream block still in ${AGENTS}`);
 	expect(ran.status).toBe(1);
 });
 

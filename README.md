@@ -31,8 +31,17 @@ flowchart LR
 | Brief lint (`brief-lint`) | Refuses a helper brief that misses a required rule (acceptance, stop condition, no push, call budget). |
 | Machine health (`machine-guard`, `main-start`, `heavy-run`) | Load, free memory, disk and `/tmp` limits; one heavy test run at a time. |
 | Unlanded work (`wip-check`, `wip-snapshot`, `wip-backup`) | Lists branches on no remote and dirty worktrees; snapshots them as hidden commits; can push them to a backup repo. |
-| Session rollover | When the main session file passes 5 MB, or the installed neurastream version differs from the running plugin, Main writes a handoff note; under `neurastream main` a fresh session starts on its own, under plain omp the next owner message starts it. |
+| Session rollover | When the main session file passes 5 MB, or the installed neurastream version differs from the running plugin, Main writes a handoff note; a fresh session then starts on its own under `neurastream main`. |
 | Owner page (`neurastream ui`) | One phone-sized page over Tailscale (`ui.*` config): the plans waiting on the owner with answer buttons, the guard unlock, running agents, the queue, recent merges/CI, open incidents, agent scores, machine health. Serves only a tailnet peer whose `tailscale whois` login equals `ui.owner_login`, only with a Host header naming the tailnet address or the MagicDNS name — DNS rebinding and every other visitor get a 403. Answers land in the owner inbox and reach Main once each; agents cannot start the page or write the inbox. |
+
+## Main vs plain omp
+
+neurastream runs only under `neurastream main`. That launcher sets `NEURASTREAM_MAIN_LAUNCHER=1` for the omp it starts, and only then does the adapter register its hooks and commands. Plain `omp` runs with no guard, queue summary, rules or rollover, as if neurastream were not installed.
+
+```sh
+neurastream main          # Main: guards, queue, rules, rollover
+omp -p "say hi"           # plain omp: no neurastream hook, no guard-log line
+```
 
 ## Requirements
 
@@ -139,7 +148,6 @@ Main's session file grows with every turn. When it reaches `rollover.max_session
 There are two modes:
 
 - Under `neurastream main` (the launcher) the rollover is automatic. Once the note is written and no own jobs (subagents included) are still running, omp writes `relaunch.json` and exits. The launcher starts a fresh omp whose first message is the handoff: the note verbatim, the generated `main-start` state (including the owner holds), the owner's unsent draft if there is one, and a line that the owner is away. Nobody types anything. A handoff over 100000 bytes goes to `<queue_state>/rollover/<session id>.handoff.md`, and the first message points at that file.
-- Under plain `omp` the switch is never automatic. The owner's next plain message closes the session and starts a fresh one; the fresh session opens with the note verbatim, the generated state, and then the owner's message.
 
 A relaunch keeps the flags of the first run (`--model`, `--session-dir`, …) and drops only the first message and the session-picking and one-shot flags (`-r`, `-c`, `--restore`, `--goal`, `-p`, …), so the fresh omp stays on the same model and session directory.
 
@@ -153,7 +161,7 @@ In both modes:
 - While a rollover is pending (no fresh note, own jobs still running, or the handoff is ready and waiting for idle), Main cannot start new subagents: a `task` call is refused until the running jobs finish and the session rolls over.
 - While own jobs (subagents included) are still running, the switch waits: a rollover would cancel them.
 - While a rollover is pending, the stop guard does not apply: Main may stop in `ready` or `wait-jobs`, and in `need-note` the stop is blocked only by the note request.
-- `/main-rollover <message>` does the same by hand. It refuses below the threshold, without a fresh note, or while jobs run. Under neurastream main it is refused and the owner's next message starts the rollover; in plain omp a second call while one waits adds its text to the same handoff.
+- `/main-rollover <message>` does the same by hand. It refuses below the threshold, without a fresh note, or while jobs run. Under neurastream main it is refused and the owner's next message starts the rollover.
 - `/main-rollover` shows a notice at once and gathers `main-start` in the background, so omp keeps repainting and reading keys until the new session opens.
 - The previous session file stays where it is.
 - `rollover.enabled: false` turns the feature off.
@@ -365,11 +373,10 @@ Live copies are never hand-edited. `neurastream doctor` names each hand-edited i
 
 ## AGENTS.md block
 
-`adapter install omp` writes the neurastream orchestrator rules into `~/.omp/agent/AGENTS.md`, between the markers `<!-- neurastream:begin (managed by neurastream; edit the package, not this block) -->` and `<!-- neurastream:end -->`. The rules come from `templates/AGENTS.md`; the agent dir comes from your config.
+Main's rules are not written into `~/.omp/agent/AGENTS.md`. Under `neurastream main` they ride Main's system prompt on each turn, built from `templates/AGENTS.md` with the agent dir from your config. Install strips a block an older install left between the markers `<!-- neurastream:begin (managed by neurastream; edit the package, not this block) -->` and `<!-- neurastream:end -->`.
 
-- Managed: the text between the markers. Install replaces it. A second install changes nothing.
-- Yours: every line outside the markers. Install keeps it byte for byte. A file with no markers gets the block appended.
-- Drift: `neurastream doctor` reports `stale:` when the text between the markers differs from the package's block, and `missing:` when the markers are absent. Edits outside the markers are never reported.
+- Yours: every line outside the markers. Install keeps it byte for byte; a file the strip leaves empty is removed.
+- Leftover: markers still in the file, malformed ones included. Install leaves them alone; `neurastream doctor` reports `stale: neurastream block still in <file>`.
 - Edit limit: the project-file changes Main gets per window come from the config, not from the block text: `guards.main_edit_limit` per `guards.main_window_min` in tier `opinionated`, `autonomy.strict_edit_limit` in tier `strict`, no cap in tier `full`.
 
 ## Project rules

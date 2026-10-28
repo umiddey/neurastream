@@ -9,7 +9,7 @@ import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSyn
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { blockState, renderBlock } from "../../core/agents-md.ts";
+import { stripBlock } from "../../core/agents-md.ts";
 import { loadConfig } from "../../core/config.ts";
 import { notifyFindings } from "../../core/notify.ts";
 import { loadKnownSecrets, proxyOnPath } from "../../core/secret-redact.ts";
@@ -211,9 +211,9 @@ export function doctorReport(home: string, env: NodeJS.ProcessEnv = process.env,
 		: [];
 	if (repoDirs.length)
 		problems.push(`${idx} still lists ${repoDirs.length} repo director${repoDirs.length === 1 ? "y" : "ies"} (${repoDirs.join(", ")}); run neurastream queue migrate`);
-	const state = blockState(text, renderBlock(cfg));
-	if (state === "ok") ok.push(`${agents} neurastream block`);
-	else problems.push(`${state}: ${agents} neurastream block`);
+	// The block is no longer written here: markers left in the owner's file are stale.
+	if (stripBlock(text).state === "missing") ok.push(`${agents} no neurastream block`);
+	else problems.push(`stale: neurastream block still in ${agents}`);
 	const warnings: string[] = [];
 	const notify = notifyFindings(cfg);
 	problems.push(...notify.problems);

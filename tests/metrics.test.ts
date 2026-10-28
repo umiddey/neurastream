@@ -156,7 +156,7 @@ test("M4 counts owner messages, corrections and Main's trailing-? questions from
 
 test("M4 does not count the rollover note request or a handoff's note as owner corrections; the owner's own words count", () => {
 	const machine = [
-		noteRequest("/x/rollover/s.md", false, "neurastream on disk is 0.1.21, this session runs 0.1.19"),
+		noteRequest("/x/rollover/s.md", "neurastream on disk is 0.1.21, this session runs 0.1.19"),
 		buildHandoff({ generated: "=== generated state", note: "Do not stop; no holds.", previousSessionFile: "/x/previous.jsonl", ownerMessage: "continue" }),
 		buildHandoff({ generated: "=== generated state", note: "Do not stop; no holds.", previousSessionFile: "/x/previous.jsonl", ownerMessage: "no, that is wrong" }),
 	];

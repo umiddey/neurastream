@@ -1,7 +1,7 @@
 // Session rollover through the omp adapter, in-process with a fake extension host: the size check
-// and the one-time note instruction, the input rewrite to /main-rollover, and the command's refusals
-// and handoff. The session file is a temp file; the note is written under the queue state dir for
-// a unique session id and removed afterwards.
+// and the one-time note instruction, the relaunch request and its draft, the in-process exit-grace
+// fallback, and the command that points at the next-message path. The session file is a temp file;
+// the note is written under the queue state dir for a unique session id and removed afterwards.
 
 import { afterAll, expect, test, vi } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
@@ -338,21 +338,21 @@ test("a subagent's task call is never drained", async () => {
 	expect(r).toEqual([]); // no block, and no rollover-pending refusal
 });
 
-async function withLauncher(value: string | undefined, fn: () => Promise<void>): Promise<void> {
-	const before = process.env.NEURASTREAM_MAIN_LAUNCHER;
-	if (value === undefined) delete process.env.NEURASTREAM_MAIN_LAUNCHER;
-	else process.env.NEURASTREAM_MAIN_LAUNCHER = value;
-	try {
-		await fn();
-	} finally {
-		if (before === undefined) delete process.env.NEURASTREAM_MAIN_LAUNCHER;
-		else process.env.NEURASTREAM_MAIN_LAUNCHER = before;
-	}
-}
-
 /** A config over the rollover threshold with a short exit grace, so the timer fires inside the test. */
 function graceCfg(): Config {
 	return { ...baseCfg, rollover: { enabled: true, max_session_mb: 0.000001, exit_grace_s: 0.05 } };
+}
+
+/** Resolves when the adapter sends the handoff (its last step), so tests await a real signal
+ *  instead of racing the microtask that follows newSession. */
+function handoffSignal(host: FakeHost): Promise<void> {
+	const { promise, resolve } = Promise.withResolvers<void>();
+	const sent = host.sendUserMessage.bind(host);
+	host.sendUserMessage = (content: string): void => {
+		sent(content);
+		resolve();
+	};
+	return promise;
 }
 
 /** A main ctx whose newSession resolves `opened` when the rollover reaches it (the awaited real signal). */
@@ -369,17 +369,15 @@ function ctxAwaitingOpen(over: Partial<MainCtx> = {}): { ctx: MainCtx; opened: P
 	return { ctx, opened: promise };
 }
 
-test("launcher set, ready: relaunch.json has the three fields, omp shuts down and re-arms at the next run end", async () => {
+test("ready: relaunch.json has the three fields, omp shuts down and re-arms at the next run end", async () => {
 	resetState();
 	draft = "half-typed";
 	const host = fakeHost();
 	createOmpAdapter(host, overCfg);
 	const ctx = mainCtx();
-	await withLauncher("1", async () => {
-		await armReady(host, ctx, "## In progress\nstep");
-		await host.emit("agent_end", {}, ctx);
-		await host.emit("agent_end", {}, ctx);
-	});
+	await armReady(host, ctx, "## In progress\nstep");
+	await host.emit("agent_end", {}, ctx);
+	await host.emit("agent_end", {}, ctx);
 	// omp 18.11.1 re-runs its deferred exit check only when shutdown() is called again: the second
 	// terminal run end re-arms the exit instead of leaving the request to a dead UI.
 	expect(shutdowns).toBe(2);
@@ -390,43 +388,41 @@ test("launcher set, ready: relaunch.json has the three fields, omp shuts down an
 	});
 });
 
-test("launcher set: the relaunch is requested only at a real run end and re-armed at later ones", async () => {
+test("the relaunch is requested only at a real run end and re-armed at later ones", async () => {
 	resetState();
 	const host = fakeHost();
 	createOmpAdapter(host, overCfg);
 	const ctx = mainCtx();
-	await withLauncher("1", async () => {
-		await armReady(host, ctx, "## In progress\nstep");
-		// A tool result mid-run (the live incident: a wait result) never requests the relaunch.
-		await host.emit("tool_result", { toolName: "read", toolCallId: "t1" }, ctx);
-		expect(shutdowns).toBe(0);
-		expect(existsSync(relaunchPath())).toBe(false);
-		// A non-terminal run end (omp 18.11.1 sets willContinue) does not either.
-		await host.emit("agent_end", { willContinue: true }, ctx);
-		expect(shutdowns).toBe(0);
-		expect(existsSync(relaunchPath())).toBe(false);
-		// The run's real end requests the relaunch once.
-		await host.emit("agent_end", {}, ctx);
-		expect(shutdowns).toBe(1);
-		expect(existsSync(relaunchPath())).toBe(true);
-		// Every later terminal run end re-arms the exit.
-		await host.emit("agent_end", {}, ctx);
-		expect(shutdowns).toBe(2);
-	});
+	await armReady(host, ctx, "## In progress\nstep");
+	// A tool result mid-run (the live incident: a wait result) never requests the relaunch.
+	await host.emit("tool_result", { toolName: "read", toolCallId: "t1" }, ctx);
+	expect(shutdowns).toBe(0);
+	expect(existsSync(relaunchPath())).toBe(false);
+	// A non-terminal run end (omp 18.11.1 sets willContinue) does not either.
+	await host.emit("agent_end", { willContinue: true }, ctx);
+	expect(shutdowns).toBe(0);
+	expect(existsSync(relaunchPath())).toBe(false);
+	// The run's real end requests the relaunch once.
+	await host.emit("agent_end", {}, ctx);
+	expect(shutdowns).toBe(1);
+	expect(existsSync(relaunchPath())).toBe(true);
+	// Every later terminal run end re-arms the exit.
+	await host.emit("agent_end", {}, ctx);
+	expect(shutdowns).toBe(2);
 });
 
-test("launcher: omp still running past exit_grace_s rolls over in-process with the owner's typed message", async () => {
+test("omp still running past exit_grace_s rolls over in-process with the owner's typed message", async () => {
 	resetState();
 	const host = fakeHost();
 	createOmpAdapter(host, graceCfg());
+	const handedOff = handoffSignal(host);
 	const { ctx, opened } = ctxAwaitingOpen();
-	await withLauncher("1", async () => {
-		await armReady(host, ctx, "## In progress\nstep");
-		await host.emit("agent_end", {}, ctx); // the relaunch is requested; omp does not exit here
-		expect(shutdowns).toBe(1);
-		await host.emit("input", { text: "a", source: "interactive" }, ctx);
-		await opened; // the fallback reached newSession: its own real signal, no guessed duration
-	});
+	await armReady(host, ctx, "## In progress\nstep");
+	await host.emit("agent_end", {}, ctx); // the relaunch is requested; omp does not exit here
+	expect(shutdowns).toBe(1);
+	await host.emit("input", { text: "a", source: "interactive" }, ctx);
+	await opened; // the fallback reached newSession: its own real signal, no guessed duration
+	await handedOff; // the handoff is sent
 	expect(newSessions).toEqual([{ parentSession: SESSION_FILE }]);
 	expect(host.sent.length).toBe(1);
 	expect(host.sent[0]?.endsWith("Owner's message:\na")).toBe(true);
@@ -435,35 +431,33 @@ test("launcher: omp still running past exit_grace_s rolls over in-process with t
 	expect(notes.some(n => n.includes("omp did not restart"))).toBe(true);
 }, 60_000);
 
-test("launcher: the in-process fallback without an owner message carries the owner-away text", async () => {
+test("the in-process fallback without an owner message carries the owner-away text", async () => {
 	resetState();
 	const host = fakeHost();
 	createOmpAdapter(host, graceCfg());
+	const handedOff = handoffSignal(host);
 	const { ctx, opened } = ctxAwaitingOpen();
-	await withLauncher("1", async () => {
-		await armReady(host, ctx, "## In progress\nstep");
-		await host.emit("agent_end", {}, ctx);
-		await opened;
-	});
+	await armReady(host, ctx, "## In progress\nstep");
+	await host.emit("agent_end", {}, ctx);
+	await opened;
+	await handedOff;
 	expect(host.sent.length).toBe(1);
 	expect(host.sent[0]?.endsWith(
 		"Owner's message:\nOwner away (automatic rollover). Continue the work in the note and the queue; the owner reads results later.",
 	)).toBe(true);
 }, 60_000);
 
-test("launcher: omp really shutting down (session_shutdown) cancels the in-process fallback", async () => {
+test("omp really shutting down (session_shutdown) cancels the in-process fallback", async () => {
 	resetState();
 	const host = fakeHost();
 	createOmpAdapter(host, graceCfg());
 	const ctx = mainCtx();
 	vi.useFakeTimers();
 	try {
-		await withLauncher("1", async () => {
-			await armReady(host, ctx, "## In progress\nstep");
-			await host.emit("agent_end", {}, ctx); // arms the grace timer (now fake)
-			await host.emit("session_shutdown", {}, ctx); // omp is really exiting: must clear it
-			vi.advanceTimersByTime(60_000); // the grace and far beyond, without real waiting
-		});
+		await armReady(host, ctx, "## In progress\nstep");
+		await host.emit("agent_end", {}, ctx); // arms the grace timer (now fake)
+		await host.emit("session_shutdown", {}, ctx); // omp is really exiting: must clear it
+		vi.advanceTimersByTime(60_000); // the grace and far beyond, without real waiting
 	} finally {
 		vi.useRealTimers();
 	}
@@ -473,10 +467,34 @@ test("launcher: omp really shutting down (session_shutdown) cancels the in-proce
 	expect(existsSync(relaunchPath())).toBe(true);
 });
 
-test("launcher: a terminal run end during the in-process rollover does not request a new relaunch", async () => {
+test("the exit-grace fallback still fires after the hook returns: the event loop keeps running", async () => {
 	resetState();
 	const host = fakeHost();
 	createOmpAdapter(host, graceCfg());
+	const { ctx, opened } = ctxAwaitingOpen();
+	const handedOff = handoffSignal(host);
+	vi.useFakeTimers();
+	try {
+		await armReady(host, ctx, "## In progress\nstep");
+		await host.emit("agent_end", {}, ctx); // the hook returns here; the grace timer is now pending
+		expect(existsSync(relaunchPath())).toBe(true);
+		// Nothing in the hook runs the fallback: only the timer loop can fire it after the hook returned.
+		vi.advanceTimersByTime(60_000);
+	} finally {
+		vi.useRealTimers();
+	}
+	// A fired fallback deletes the request synchronously; the rollover then runs to its real end.
+	expect(existsSync(relaunchPath())).toBe(false);
+	await opened;
+	await handedOff;
+	expect(newSessions).toEqual([{ parentSession: SESSION_FILE }]);
+}, 60_000);
+
+test("a terminal run end during the in-process rollover does not request a new relaunch", async () => {
+	resetState();
+	const host = fakeHost();
+	createOmpAdapter(host, graceCfg());
+	const handedOff = handoffSignal(host);
 	const { promise: idling, resolve: atIdle } = Promise.withResolvers<void>();
 	const { promise: idleGate, resolve: releaseIdle } = Promise.withResolvers<void>();
 	const { ctx, opened } = ctxAwaitingOpen({
@@ -485,65 +503,35 @@ test("launcher: a terminal run end during the in-process rollover does not reque
 			return idleGate;
 		},
 	});
-	await withLauncher("1", async () => {
-		await armReady(host, ctx, "## In progress\nstep");
-		await host.emit("agent_end", {}, ctx); // the relaunch is requested; omp does not exit
-		await idling; // the fallback's in-process rollover is waiting for idle
-		// A terminal run end now must not start a second relaunch: it would abort the running
-		// rollover, re-arm the grace and loop every exit_grace_s.
-		await host.emit("agent_end", {}, ctx);
-		expect(shutdowns).toBe(1);
-		expect(existsSync(relaunchPath())).toBe(false);
-		releaseIdle();
-		await opened;
-	});
+	await armReady(host, ctx, "## In progress\nstep");
+	await host.emit("agent_end", {}, ctx); // the relaunch is requested; omp does not exit
+	await idling; // the fallback's in-process rollover is waiting for idle
+	// A terminal run end now must not start a second relaunch: it would abort the running
+	// rollover, re-arm the grace and loop every exit_grace_s.
+	await host.emit("agent_end", {}, ctx);
+	expect(shutdowns).toBe(1);
+	expect(existsSync(relaunchPath())).toBe(false);
+	releaseIdle();
+	await opened;
+	await handedOff;
 	expect(newSessions).toEqual([{ parentSession: SESSION_FILE }]);
 	expect(host.sent.length).toBe(1);
 }, 60_000);
 
-test("launcher unset, ready: no shutdown and no relaunch.json", async () => {
-	resetState();
-	const host = fakeHost();
-	createOmpAdapter(host, overCfg);
-	const ctx = mainCtx();
-	await withLauncher(undefined, async () => {
-		await armReady(host, ctx, "## In progress\nstep");
-		await host.emit("agent_end", {}, ctx);
-	});
-	expect(shutdowns).toBe(0);
-	expect(existsSync(relaunchPath())).toBe(false);
-});
-
-test("launcher set, own job running: no relaunch; once the job is gone the next turn end relaunches", async () => {
+test("own job running: no relaunch; once the job is gone the next turn end relaunches", async () => {
 	resetState();
 	jobs = [{ label: "sub-1" }];
 	const host = fakeHost();
 	createOmpAdapter(host, overCfg);
 	const ctx = mainCtx();
-	await withLauncher("1", async () => {
-		await armReady(host, ctx, "## In progress\nstep");
-		await host.emit("agent_end", {}, ctx);
-	});
+	await armReady(host, ctx, "## In progress\nstep");
+	await host.emit("agent_end", {}, ctx);
 	expect(shutdowns).toBe(0);
 	expect(existsSync(relaunchPath())).toBe(false);
 	jobs = [];
-	await withLauncher("1", async () => {
-		await host.emit("agent_end", {}, ctx);
-	});
+	await host.emit("agent_end", {}, ctx);
 	expect(shutdowns).toBe(1);
 	expect(existsSync(relaunchPath())).toBe(true);
-});
-
-test("ready: an interactive plain message becomes /main-rollover <text>", async () => {
-	await withLauncher(undefined, async () => {
-		resetState();
-		const host = fakeHost();
-		createOmpAdapter(host, overCfg);
-		const ctx = mainCtx();
-		await armReady(host, ctx, "## In progress\nstep");
-		const results = await host.emit("input", { text: "hello", source: "interactive" }, ctx);
-		expect(results).toEqual([{ text: "/main-rollover hello" }]);
-	});
 });
 
 test("slash commands and non-interactive input are left alone", async () => {
@@ -556,76 +544,17 @@ test("slash commands and non-interactive input are left alone", async () => {
 	expect(await host.emit("input", { text: "hello", source: "rpc" }, ctx)).toEqual([]);
 });
 
-test("running own job: the command refuses and does not start a session", async () => {
-	resetState();
-	const host = fakeHost();
-	createOmpAdapter(host, overCfg);
-	const ctx = mainCtx({ getAsyncJobSnapshot: () => ({ running: [{ label: "sub-1" }], recent: [], delivery: {} }) });
-	await armReady(host, ctx, "## In progress\nstep");
-	const run = host.commands.get("main-rollover");
-	expect(run).toBeDefined();
-	await run?.("owner msg", ctx);
-	expect(newSessions.length).toBe(0);
-	expect(host.sent.length).toBe(0);
-	expect(notes.some(n => n.includes("running"))).toBe(true);
-});
-
-test("no note: the command refuses", async () => {
-	resetState();
-	const host = fakeHost();
-	createOmpAdapter(host, overCfg);
-	const ctx = mainCtx();
-	writeFileSync(SESSION_FILE, BIG);
-	await host.emit("agent_end", {}, ctx);
-	await host.commands.get("main-rollover")?.("owner msg", ctx);
-	expect(newSessions.length).toBe(0);
-	expect(host.sent.length).toBe(0);
-	expect(notes.some(n => n.includes("note"))).toBe(true);
-});
-
-test("ready: new session with the session as parent; handoff carries note and owner message", async () => {
+test("main-rollover: the command only points at the next-message path; it never starts a session", async () => {
 	resetState();
 	const host = fakeHost();
 	createOmpAdapter(host, overCfg);
 	const ctx = mainCtx();
 	await armReady(host, ctx, "## In progress\nstep");
 	await host.commands.get("main-rollover")?.("owner msg", ctx);
-	expect(newSessions).toEqual([{ parentSession: SESSION_FILE }]);
-	expect(host.sent.length).toBe(1);
-	const handoff = host.sent[0] ?? "";
-	expect(handoff).toContain("## Main's handoff note (verbatim)\n## In progress\nstep");
-	expect(handoff.endsWith("Owner's message:\nowner msg")).toBe(true);
-}, 60_000);
-
-test("main-rollover keeps the event loop running while main-start gathers state", async () => {
-	resetState();
-	const bin = join(TMP, "home", ".local", "bin");
-	mkdirSync(bin, { recursive: true });
-	const guard = join(bin, "machine-guard");
-	writeFileSync(guard, "#!/bin/sh\nsleep 2\necho OK\n");
-	chmodSync(guard, 0o755);
-	const host = fakeHost();
-	createOmpAdapter(host, overCfg);
-	const ctx = mainCtx();
-	await armReady(host, ctx, "## In progress\nstep");
-	// Real-clock exception: the claim under test is that the event loop keeps turning while a child
-	// runs. A blocking spawn starves this interval; fake timers cannot observe that.
-	let ticks = 0;
-	const timer = setInterval(() => {
-		ticks++;
-	}, 50);
-	try {
-		await host.commands.get("main-rollover")?.("owner msg", ctx);
-	} finally {
-		clearInterval(timer);
-	}
-	expect(ticks).toBeGreaterThanOrEqual(10);
-	expect(notes.some(n => n.includes("collecting main-start state"))).toBe(true);
-	expect(newSessions).toEqual([{ parentSession: SESSION_FILE }]);
-	const handoff = host.sent[0] ?? "";
-	expect(handoff).toContain("## Main's handoff note (verbatim)\n## In progress\nstep");
-	expect(handoff.endsWith("Owner's message:\nowner msg")).toBe(true);
-}, 60_000);
+	expect(newSessions.length).toBe(0);
+	expect(host.sent.length).toBe(0);
+	expect(notes.some(n => n.includes("neurastream main"))).toBe(true);
+});
 
 test("agent host: a child's stderr is appended to the handoff text, right after its stdout", async () => {
 	resetState();
@@ -635,24 +564,25 @@ test("agent host: a child's stderr is appended to the handoff text, right after 
 	writeFileSync(check, "#!/bin/sh\necho QC-OUT\necho QC-ERR 1>&2\n");
 	chmodSync(check, 0o755);
 	const host = fakeHost();
-	createOmpAdapter(host, overCfg);
-	const ctx = mainCtx();
+	createOmpAdapter(host, graceCfg());
+	const handedOff = handoffSignal(host);
+	const { ctx, opened } = ctxAwaitingOpen();
 	await armReady(host, ctx, "## In progress\nstep");
-	await host.commands.get("main-rollover")?.("owner msg", ctx);
+	await host.emit("agent_end", {}, ctx); // the relaunch is requested; omp does not exit
+	await opened; // the fallback ran main-start with the fixture child
+	await handedOff;
 	const handoff = host.sent[0] ?? "";
 	expect(handoff).toContain("QC-ERR");
 	expect(handoff.indexOf("QC-OUT")).toBeLessThan(handoff.indexOf("QC-ERR"));
 }, 60_000);
 
-test("launcher set: a non-main session never relaunches", async () => {
+test("a non-main session never relaunches", async () => {
 	resetState();
 	const host = fakeHost();
 	createOmpAdapter(host, overCfg);
 	const ctx = mainCtx({ agent: { kind: "sub", id: "w1" } });
-	await withLauncher("1", async () => {
-		await armReady(host, ctx, "## In progress\nstep");
-		await host.emit("agent_end", {}, ctx);
-	});
+	await armReady(host, ctx, "## In progress\nstep");
+	await host.emit("agent_end", {}, ctx);
 	expect(shutdowns).toBe(0);
 	expect(existsSync(relaunchPath())).toBe(false);
 });
@@ -692,17 +622,15 @@ test -f src/a.ts
 Status: open
 `;
 
-test("launcher: a relaunch requested with an open plan lets session_stop through", async () => {
+test("a relaunch requested with an open plan lets session_stop through", async () => {
 	resetState();
 	const cleanup = openPlanFixture();
 	try {
 		const host = fakeHost();
 		createOmpAdapter(host, stopCfg);
 		const ctx = mainCtx();
-		await withLauncher("1", async () => {
-			await armReady(host, ctx, "## In progress\nstep");
-			await host.emit("agent_end", {}, ctx);
-		});
+		await armReady(host, ctx, "## In progress\nstep");
+		await host.emit("agent_end", {}, ctx);
 		expect(shutdowns).toBe(1);
 		expect(await host.emit("session_stop", {}, ctx)).toEqual([]);
 	} finally {
@@ -732,26 +660,7 @@ function guardLog(): string {
 	}
 }
 
-test("ready under the launcher: session_stop requests the relaunch and allows the stop, with an open plan", async () => {
-	resetState();
-	const cleanup = openPlanFixture();
-	try {
-		const host = fakeHost();
-		createOmpAdapter(host, stopCfg);
-		const ctx = mainCtx();
-		await withLauncher("1", async () => {
-			await armReady(host, ctx, "## In progress\nstep");
-			expect(await host.emit("session_stop", {}, ctx)).toEqual([]);
-		});
-		expect(shutdowns).toBe(1);
-		expect(existsSync(relaunchPath())).toBe(true);
-		expect(guardLog()).toContain("ALLOW stop: rollover ready");
-	} finally {
-		cleanup();
-	}
-});
-
-test("ready in plain omp: session_stop allows the stop with an open plan and shuts nothing down", async () => {
+test("ready: session_stop requests the relaunch and allows the stop, with an open plan", async () => {
 	resetState();
 	const cleanup = openPlanFixture();
 	try {
@@ -760,7 +669,8 @@ test("ready in plain omp: session_stop allows the stop with an open plan and shu
 		const ctx = mainCtx();
 		await armReady(host, ctx, "## In progress\nstep");
 		expect(await host.emit("session_stop", {}, ctx)).toEqual([]);
-		expect(shutdowns).toBe(0);
+		expect(shutdowns).toBe(1);
+		expect(existsSync(relaunchPath())).toBe(true);
 		expect(guardLog()).toContain("ALLOW stop: rollover ready");
 	} finally {
 		cleanup();
@@ -819,31 +729,27 @@ test("need-note with an open plan: session_stop blocks with the note request onl
 	}
 });
 
-test("launcher: owner messages during a pending relaunch join its draft, in order, and none becomes /main-rollover", async () => {
+test("owner messages during a pending relaunch join its draft, in order", async () => {
 	resetState();
 	const host = fakeHost();
 	createOmpAdapter(host, overCfg);
 	const ctx = mainCtx();
-	await withLauncher("1", async () => {
-		await armReady(host, ctx, "## In progress\nstep");
-		await host.emit("agent_end", {}, ctx);
-		expect(shutdowns).toBe(1);
-		expect(await host.emit("input", { text: "first", source: "interactive" }, ctx)).toEqual([{ handled: true }]);
-		expect(await host.emit("input", { text: "second", source: "interactive" }, ctx)).toEqual([{ handled: true }]);
-	});
+	await armReady(host, ctx, "## In progress\nstep");
+	await host.emit("agent_end", {}, ctx);
+	expect(shutdowns).toBe(1);
+	expect(await host.emit("input", { text: "first", source: "interactive" }, ctx)).toEqual([{ handled: true }]);
+	expect(await host.emit("input", { text: "second", source: "interactive" }, ctx)).toEqual([{ handled: true }]);
 	expect(JSON.parse(readFileSync(relaunchPath(), "utf8")).draft).toBe("first\nsecond");
 	expect(notes.filter(n => n.includes("rollover in progress")).length).toBe(2);
 });
 
-test("launcher: the first owner message in the ready state starts the relaunch, its text in the draft once", async () => {
+test("the first owner message in the ready state starts the relaunch, its text in the draft once", async () => {
 	resetState();
 	const host = fakeHost();
 	createOmpAdapter(host, overCfg);
 	const ctx = mainCtx();
-	await withLauncher("1", async () => {
-		await armReady(host, ctx, "## In progress\nstep");
-		expect(await host.emit("input", { text: "hello", source: "interactive" }, ctx)).toEqual([{ handled: true }]);
-	});
+	await armReady(host, ctx, "## In progress\nstep");
+	expect(await host.emit("input", { text: "hello", source: "interactive" }, ctx)).toEqual([{ handled: true }]);
 	// The request's shutdown plus the message's re-arm: omp re-checks only when shutdown() is called again.
 	expect(shutdowns).toBe(2);
 	expect(JSON.parse(readFileSync(relaunchPath(), "utf8"))).toEqual({
@@ -853,59 +759,47 @@ test("launcher: the first owner message in the ready state starts the relaunch, 
 	});
 });
 
-test("single-flight: a second /main-rollover during the first's wait adds its text; one new session, one handoff with both", async () => {
+test("a state change during the fallback's wait stops the rollover before the new session", async () => {
 	resetState();
 	const host = fakeHost();
-	createOmpAdapter(host, overCfg);
-	let release: () => void = () => {};
-	const gate = new Promise<void>(resolve => {
-		release = resolve;
+	createOmpAdapter(host, graceCfg());
+	const { promise: idling, resolve: atIdle } = Promise.withResolvers<void>();
+	const { promise: idleGate, resolve: releaseIdle } = Promise.withResolvers<void>();
+	const { promise: aborted, resolve: atAbort } = Promise.withResolvers<void>();
+	const ctx = mainCtx({
+		waitForIdle: () => {
+			atIdle();
+			return idleGate;
+		},
+		ui: {
+			notify: message => {
+				notes.push(message);
+				if (message.includes("no new session")) atAbort();
+			},
+			getEditorText: () => draft,
+		},
 	});
-	const ctx = mainCtx({ waitForIdle: () => gate });
+	draft = "half-typed";
 	await armReady(host, ctx, "## In progress\nstep");
-	const run = host.commands.get("main-rollover");
-	const first = run?.("first msg", ctx);
-	const second = run?.("second msg", ctx);
-	release();
-	await Promise.all([first, second]);
-	expect(newSessions).toEqual([{ parentSession: SESSION_FILE }]);
-	expect(host.sent.length).toBe(1);
-	expect(host.sent[0]?.endsWith("Owner's message:\nfirst msg\nsecond msg")).toBe(true);
-}, 60_000);
-
-test("single-flight: a state change during the wait (a job starts) stops the rollover before the new session", async () => {
-	resetState();
-	const host = fakeHost();
-	createOmpAdapter(host, overCfg);
-	let release: () => void = () => {};
-	const gate = new Promise<void>(resolve => {
-		release = resolve;
-	});
-	const ctx = mainCtx({ waitForIdle: () => gate });
-	await armReady(host, ctx, "## In progress\nstep");
-	const run = host.commands.get("main-rollover")?.("owner msg", ctx);
-	try {
-		jobs = [{ label: "sub-1" }];
-		release();
-		await run;
-	} finally {
-		jobs = [];
-	}
+	await host.emit("agent_end", {}, ctx); // the relaunch is requested; omp does not exit
+	await idling; // the fallback's in-process rollover is waiting for idle
+	jobs = [{ label: "sub-1" }];
+	releaseIdle();
+	await aborted; // the abort's own notice: the real signal, no guessed duration
+	jobs = [];
 	expect(newSessions.length).toBe(0);
 	// The owner's text is not dropped: after an abort it goes to this session as an ordinary message.
-	expect(host.sent).toEqual(["owner msg"]);
+	expect(host.sent).toEqual(["half-typed"]);
 	expect(notes.some(n => n.includes("no new session"))).toBe(true);
 }, 60_000);
 
-test("launcher: /main-rollover is refused; the launcher's relaunch is the only rollover path", async () => {
+test("main-rollover is refused; the launcher's relaunch is the only rollover path", async () => {
 	resetState();
 	const host = fakeHost();
 	createOmpAdapter(host, overCfg);
 	const ctx = mainCtx();
-	await withLauncher("1", async () => {
-		await armReady(host, ctx, "## In progress\nstep");
-		await host.commands.get("main-rollover")?.("owner msg", ctx);
-	});
+	await armReady(host, ctx, "## In progress\nstep");
+	await host.commands.get("main-rollover")?.("owner msg", ctx);
 	expect(newSessions.length).toBe(0);
 	expect(host.sent.length).toBe(0);
 	expect(notes.some(n => n.includes("neurastream main"))).toBe(true);

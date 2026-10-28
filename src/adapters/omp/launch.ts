@@ -26,6 +26,13 @@ export function adapterLog(cfg: Config, line: string): void {
 /** The harness the launcher runs. Tests pass another path through LaunchOptions. */
 export const OMP_BIN = "omp";
 
+/**
+ * The one main-only switch, and why an env var and not a flag or config key: children inherit
+ * the environment, so a tool starting `omp` from inside a Main session stays guarded — a flag
+ * would not travel. The adapter is dead without it (ompExtension in ./index.ts).
+ */
+export const MAIN_ENV = "NEURASTREAM_MAIN_LAUNCHER";
+
 export interface ProxyPlan {
 	/** The command to spawn. */
 	cmd: string;
@@ -171,7 +178,8 @@ export async function runMainLauncher(args: string[], cfg: Config, opts: LaunchO
 	}
 	for (;;) {
 		const started = Date.now();
-		const code = await runChild(proxy.cmd, [...proxy.prefix, ...runArgs], { ...process.env, NEURASTREAM_MAIN_LAUNCHER: "1" });
+		// The env, not a flag: the child inherits it, so an omp started from inside Main stays guarded.
+		const code = await runChild(proxy.cmd, [...proxy.prefix, ...runArgs], { ...process.env, [MAIN_ENV]: "1" });
 		const req = readRequest(started, cfg);
 		if (req === null) return code;
 		const installed = packageVersion(packageJsonPath());

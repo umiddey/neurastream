@@ -1,4 +1,10 @@
 # Changelog
+## 0.2.42
+### Changed
+- Plain `omp` no longer runs neurastream: no hook, no command, no guard. Start Main with `neurastream main`, which sets `NEURASTREAM_MAIN_LAUNCHER=1` for its omp; child harnesses inherit it.
+- Main's rules ride its system prompt each turn instead of the owner's `~/.omp/agent/AGENTS.md`. Install strips an old block there (bytes outside the markers stay); doctor reports a leftover as `stale:`.
+### Fixed
+- The relaunch note no longer says "no own jobs run": the bare "no" read as an owner correction; `noteRequest` lost its dead `auto` parameter (plan 20261027_1215 P4b).
 ## 0.2.41
 ### Added
 - Main's own plan Findings become incidents (plan 20261028_0900 P1, INCIDENT I-20261028-64): the Findings items of a Main plan edit open incidents (kind `main-finding`) exactly like a subagent's (`agent-finding`), so a bug Main writes down blocks the stop; the plan the entry is written in does not count as planning it — planning is `neurastream incident plan`.
