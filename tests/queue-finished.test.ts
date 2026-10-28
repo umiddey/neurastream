@@ -181,6 +181,51 @@ test("--dedupe drops a repeated entry for the same repo and plan file, keeping t
 	expect(text).not.toContain(`Plan: ${NEW}`);
 });
 
+test("an archived plan under archive/<YYYYMM> reports the repo dir, not the month folder", () => {
+	rmSync(FINISHED, { force: true });
+	rmSync(TOY, { recursive: true, force: true });
+	rmSync(join(ROOT, "toy-wt"), { recursive: true, force: true });
+	const cfg = seed();
+	const ARCHIVED = join(ROOT, "plain/docs/plans/archive/202610/20261015_1200_month.md");
+	mkdirSync(join(ARCHIVED, ".."), { recursive: true });
+	writeFileSync(ARCHIVED, plan("Month folder plan", "complete"));
+
+	const run = logged(() => queueFinished(["--backfill"], cfg));
+	expect(run.out).toContain("added 1");
+	const text = readFileSync(FINISHED, "utf8");
+	expect(headings(text)).toEqual(["## 2026-10-15 · plain · Month folder plan"]);
+	expect(text).toContain(`Plan: ${ARCHIVED}`);
+});
+
+test("a plan archived only in a linked worktree gets an entry, and a rerun adds none", () => {
+	rmSync(FINISHED, { force: true });
+	rmSync(TOY, { recursive: true, force: true });
+	rmSync(join(ROOT, "toy-wt"), { recursive: true, force: true });
+	rmSync(join(ROOT, "plain"), { recursive: true, force: true });
+	const cfg = seed();
+	const git = ["-C", TOY, "-c", "user.name=t", "-c", "user.email=t@example.test"];
+	spawnSync("git", [...git, "commit", "-q", "--allow-empty", "-m", "init"]);
+	const WT = join(ROOT, "toy-wt");
+	spawnSync("git", [...git, "worktree", "add", "-q", "--detach", WT]);
+	const WT_ARCHIVE = join(WT, "docs/plans/archive/202610");
+	mkdirSync(WT_ARCHIVE, { recursive: true });
+	const MAIN_ONLY = join(ARCHIVE, "20261018_1200_main.md");
+	const WT_ONLY = join(WT_ARCHIVE, "20261022_1200_wtonly.md");
+	writeFileSync(MAIN_ONLY, plan("Main archive plan", "complete"));
+	writeFileSync(WT_ONLY, plan("Worktree archive plan", "complete"));
+
+	const first = logged(() => queueFinished(["--backfill"], cfg));
+	expect(first.out).toContain("added 2");
+	const text = readFileSync(FINISHED, "utf8");
+	expect(headings(text)).toHaveLength(2);
+	for (const head of headings(text)) expect(head).toContain("· toy ·");
+	expect(text).toContain(`Plan: ${MAIN_ONLY}`);
+	expect(text).toContain(`Plan: ${WT_ONLY}`);
+	const second = logged(() => queueFinished(["--backfill"], cfg));
+	expect(second.out).toContain("added 0");
+	expect(readFileSync(FINISHED, "utf8")).toBe(text);
+});
+
 afterAll(() => {
 	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
 	for (const [k, v] of Object.entries(queueEnvBefore)) if (v !== undefined) process.env[k] = v;
