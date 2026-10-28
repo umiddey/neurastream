@@ -122,6 +122,7 @@ guards:
   chat_unlock: false   # the owner's whole chat message "unlock"/"unlock N"/"lock" moves the guard unlock file
   plan_read_max_hours: 24
   idle_stops: 3
+  plan_offer: 'want me to (write|make) a plan|should i plan|shall i plan|if you want, i(''ll)? plan|plan it or'   # a Main stop reply matching this (case-insensitive) is refused: don't offer it — write the plan and index it
   rate_limit:
     patterns: ["429", "rate_limit", "rate limit", "overloaded", "529"]   # error-text substrings (case-insensitive) that mark a provider rate limit
     default_wait_s: 300    # wait when the error text names no retry-after

@@ -135,6 +135,8 @@ export interface StopEvent {
 	callsSinceStop: number;
 	idleStops: number;
 	ledgerText: string;
+	/** The reply text Main is stopping with, when the harness has it (20261028_0900 P2: a reply that offers to plan instead of planning refuses the stop). */
+	reply?: string;
 }
 
 export const GUARD_EVENTS = ["pre-tool", "inject", "spawn", "plan-edit", "stop"] as const;

@@ -28,7 +28,7 @@ import type { Decision, InjectEvent, PlanEditEvent, SpawnEvent, StopEvent, ToolE
 import { currentTier, takeGo, type Tier } from "./autonomy.ts";
 import { approvalProblem } from "./plan-approval.ts";
 import type { Config } from "./config.ts";
-import { addIncident, openIncidents, type IncidentView } from "./incidents.ts";
+import { addIncident, openIncidents, ownerMessagesFile, ownerSaid, readOwnerMessages, type IncidentView, type OwnerMessage } from "./incidents.ts";
 import { notifyProtectedPaths, notifySecretReadHit } from "./notify.ts";
 import * as q from "./queue/lib.ts";
 import type { Plan } from "./queue/lib.ts";
@@ -103,29 +103,8 @@ function staffingFile(): string {
 	return path.join(q.STATE_DIR, "staffing.json");
 }
 
-export interface OwnerMessage {
-	at: number;
-	text: string;
-}
-
-function ownerMessagesFile(): string {
-	return path.join(q.STATE_DIR, "owner-messages.jsonl");
-}
-
-function readOwnerMessages(): OwnerMessage[] {
-	try {
-		return readFileSync(ownerMessagesFile(), "utf8").split("\n").filter(Boolean)
-			.map(line => JSON.parse(line) as OwnerMessage);
-	} catch {
-		return [];
-	}
-}
-
-export function ownerSaid(words: string, messages: OwnerMessage[], now: number): boolean {
-	const quote = words.toLowerCase().replace(/\s+/g, " ").trim();
-	if (quote.split(" ").length < 4) return false;
-	return messages.some(m => now - m.at >= 0 && now - m.at <= 86400 && m.text.toLowerCase().replace(/\s+/g, " ").includes(quote));
-}
+// The owner-message store (owner-messages.jsonl) and its matcher live in src/core/incidents.ts
+// (20261028_0900 P3): dismissIncident needs them too, and guards already imports incidents.
 
 function recordOwnerMessage(text: string, cfg: Config): void {
 	if (text.trimStart().startsWith("main-guard:") || text.trimStart().startsWith("<system-notice>") || text.includes("<task-result")) return;
@@ -1126,18 +1105,20 @@ export function checkPlanEdit(e: PlanEditEvent, cfg: Config): PlanEditDecision {
 }
 
 /**
- * Each finding item of an allowed subagent edit becomes an incident (source "findings", kind
- * "agent-finding", evidence = plan path + agent; the default fingerprint dedupes the same item
- * text). A store failure is logged and swallowed: it must not break the verified edit.
+ * Each finding item of an allowed plan edit becomes an incident (source "findings", evidence =
+ * plan path + agent; the default fingerprint dedupes the same item text). A subagent's items are
+ * kind "agent-finding"; Main's own are kind "main-finding" (20261028_0900 P1: a bug Main writes
+ * down must block the stop like a subagent's). A store failure is logged and swallowed: it must
+ * not break the verified edit.
  */
-function recordFindings(e: PlanEditEvent, cfg: Config): void {
+function recordFindings(e: PlanEditEvent, cfg: Config, kind: "agent-finding" | "main-finding" = "agent-finding"): void {
 	try {
 		const evidence = `${e.path} (${e.agent})`;
 		for (const block of newProgressEntries(e.before, e.after)) {
 			const value = findingsValue(block);
 			if (!value || /^none\.?$/i.test(value)) continue;
 			for (const item of value.split(";")) {
-				if (item.trim()) addIncident(cfg, { source: "findings", kind: "agent-finding", summary: item.trim(), evidence });
+				if (item.trim()) addIncident(cfg, { source: "findings", kind, summary: item.trim(), evidence });
 			}
 		}
 	} catch (err) {
@@ -1181,7 +1162,10 @@ export function findingsValue(block: string): string | null {
 // Main's plan text outside "## Progress" must rest on files Main read itself (planReadProblems).
 // An empty `before` means the plan file did not exist yet; a refusal then deletes it.
 function checkMainPlan(e: PlanEditEvent, cfg: Config): PlanEditDecision {
-	if (q.outsideProgress(e.after) === q.outsideProgress(e.before)) return ALLOW;
+	if (q.outsideProgress(e.after) === q.outsideProgress(e.before)) {
+		recordFindings(e, cfg, "main-finding");
+		return ALLOW;
+	}
 	// A cited file Main did read lands in the list instead of the refusal (I-20261025-208): fix the
 	// text first, then judge the fixed text like any other edit.
 	const fix = autoListReads(e.after, e.path, cfg);
@@ -1191,6 +1175,7 @@ function checkMainPlan(e: PlanEditEvent, cfg: Config): PlanEditDecision {
 	const known = new Set(e.before ? planReadProblems(e.before, e.path, cfg) : []);
 	const problems = planReadProblems(fixed, e.path, cfg).filter(p => p === NO_SECTION || !known.has(p));
 	if (!problems.length) {
+		recordFindings(e, cfg, "main-finding");
 		if (!fix) return ALLOW;
 		const list = fix.paths.join(", ");
 		log(cfg.paths.plan_guard_log, `AUTO-LIST ${e.path}: ${list}`);
@@ -1373,6 +1358,12 @@ export function liveSubagents(ledgerOut: string): string[] {
 export function checkStop(e: StopEvent, cfg: Config): Decision {
 	if (e.agent !== "main") return ALLOW;
 	const state = { callsSinceStop: e.callsSinceStop, idleStops: e.idleStops };
+	// 20261028_0900 P2: a reply that offers to plan instead of planning is refused for the offer
+	// itself; the two-empty-stops valves below never release this block.
+	if (e.reply && new RegExp(cfg.guards.plan_offer, "i").test(e.reply)) {
+		log(cfg.paths.guard_log, "BLOCK stop: reply offers to plan instead of planning it");
+		return { allow: false, reason: "main-guard: don't offer it — write the plan and index it", state };
+	}
 	let open: string[];
 	try {
 		open = openQueue();

@@ -195,14 +195,55 @@ export function planIncident(cfg: Config, id: string, planPath: string): string 
 	return null;
 }
 
-/** Records why an incident is not a bug (or not worth fixing); an empty why is refused. */
-export function dismissIncident(cfg: Config, id: string, why: string): string | null {
+// The owner's own words, as the inject hook saw them (<queue_state>/owner-messages.jsonl, last
+// 50 messages). Guards match quotes against them (priority skip, autonomy go); incidents dismiss
+// a finding only with them (20261028_0900 P3).
+
+/** The kinds plan-guard's recordFindings writes; only the owner's own words dismiss them. */
+const FINDING_KINDS: Record<string, true> = { "agent-finding": true, "main-finding": true };
+
+export interface OwnerMessage {
+	at: number;
+	text: string;
+}
+
+export function ownerMessagesFile(): string {
+	return join(q.STATE_DIR, "owner-messages.jsonl");
+}
+
+export function readOwnerMessages(): OwnerMessage[] {
+	try {
+		return readFileSync(ownerMessagesFile(), "utf8").split("\n").filter(Boolean)
+			.map(line => JSON.parse(line) as OwnerMessage);
+	} catch {
+		return [];
+	}
+}
+
+export function ownerSaid(words: string, messages: OwnerMessage[], now: number): boolean {
+	const quote = words.toLowerCase().replace(/\s+/g, " ").trim();
+	if (quote.split(" ").length < 4) return false;
+	return messages.some(m => now - m.at >= 0 && now - m.at <= 86400 && m.text.toLowerCase().replace(/\s+/g, " ").includes(quote));
+}
+
+/** Records why an incident is not a bug (or not worth fixing); an empty why is refused. A finding
+ *  incident (kind "agent-finding"/"main-finding") is dismissed only with `owner` — a quote
+ *  `ownerSaid` matches against the owner's own messages of the last 24 h (20261028_0900 P3: the
+ *  agent that found the bug cannot also wave it away). */
+export function dismissIncident(cfg: Config, id: string, why: string, owner?: string): string | null {
 	const file = incidentsFile(cfg);
 	const store = readStore(file);
-	if (!store.incidents.some(i => i.id === id)) return `unknown incident ${id}`;
+	const rec = store.incidents.find(i => i.id === id);
+	if (!rec) return `unknown incident ${id}`;
 	const res = store.resolutions.filter(r => r.id === id).at(-1);
 	if (res) return `incident ${id} already has a ${res.type} record`;
 	if (!why.trim()) return "refused: an empty --why would hide the incident without a recorded reason";
+	if (FINDING_KINDS[rec.kind]) {
+		if (owner === undefined)
+			return `refused: a ${rec.kind} is dismissed only with the owner's words: --owner "<quote>" (part of an owner message of the last 24 h)`;
+		if (!ownerSaid(owner, readOwnerMessages(), nowSec()))
+			return "refused: the --owner quote is not part of an owner message of the last 24 h";
+	}
 	mkdirSync(dirname(file), { recursive: true });
 	appendFileSync(file, `${JSON.stringify({ type: "dismiss", id, why })}\n`);
 	return null;

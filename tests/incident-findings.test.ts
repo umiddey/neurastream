@@ -131,11 +131,8 @@ test("the same finding text again dedupes into the open incident", () => {
 	expect(open[0]?.summary).toBe(`${FINDING}.`);
 });
 
-test("a refused edit records no incidents; a Main edit with Findings neither", () => {
+test("a refused edit records no incidents", () => {
 	fresh();
 	expect(checkPlanEdit({ path: PLAN, before: BEFORE, after: entry("- 2026-10-24 15:40 (w1): did the thing."), agent: "sub" }, cfg).allow).toBe(false);
-	expect(openIncidents(cfg)).toHaveLength(0);
-	const mainAfter = BEFORE.replace(OLD, `${OLD}\n- 2026-10-24 15:40 (Main): noted. Findings: src/a.ts:1 looks odd.`);
-	expect(checkPlanEdit({ path: PLAN, before: BEFORE, after: mainAfter, agent: "main" }, cfg).allow).toBe(true);
 	expect(openIncidents(cfg)).toHaveLength(0);
 });
