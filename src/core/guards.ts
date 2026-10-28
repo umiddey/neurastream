@@ -547,7 +547,8 @@ function runBlockers(plan: Plan, hit: string[], e: ToolEvent, cfg: Config): stri
 	// A caller staffed on a different plan (staffing.json holds the task names, keyed by agentId)
 	// only grazes this plan (I-20261028-111): its path blockers must judge the covered paths,
 	// not every path the command names.
-	const foreign = Object.entries(readStaffing()).some(([f, names]) => f !== plan.file && names.includes(e.agentId));
+	const staffing = readStaffing();
+	const foreign = !(staffing[plan.file] ?? []).includes(e.agentId) && Object.entries(staffing).some(([f, names]) => f !== plan.file && names.includes(e.agentId));
 	for (const b of plan.blockers) {
 		try {
 			execFileSync(b.script, b.args, {
