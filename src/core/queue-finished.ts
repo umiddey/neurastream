@@ -64,13 +64,18 @@ function stampDate(file: string): string {
 function archivedPlans(roots: string[]): string[] {
 	const files: string[] = [];
 	const seen = new Set<string>();
-	// Main checkouts sort first, so a repo's archived plans are read from its main checkout, not a linked worktree.
+	// Main checkouts sort first; a linked worktree adds only plan file names the main checkout lacks.
 	const dirs = repoRoots(roots).map(dir => ({ dir, repo: repoRoot(dir) ?? dir }));
 	dirs.sort((a, b) => Number(b.repo === b.dir) - Number(a.repo === a.dir));
-	for (const { dir, repo } of dirs) {
-		if (seen.has(repo)) continue;
-		seen.add(repo);
-		walkMd(path.join(dir, "docs/plans/archive"), files);
+	for (const { dir } of dirs) {
+		const found: string[] = [];
+		walkMd(path.join(dir, "docs/plans/archive"), found);
+		for (const file of found) {
+			const name = path.basename(file);
+			if (seen.has(name)) continue;
+			seen.add(name);
+			files.push(file);
+		}
 	}
 	return files;
 }

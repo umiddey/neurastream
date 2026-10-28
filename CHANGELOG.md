@@ -1,4 +1,7 @@
 # Changelog
+## Unreleased
+### Fixed
+- `queue-finished --backfill` writes the repo dir, never the month folder, into FINISHED.md headers even when the archived plan's checkout has no `.git` up-tree, and also reads a linked worktree's archive for plan files the main checkout lacks, so those entries exist too.
 ## 0.2.47
 ### Fixed
 - The bare `queue-finished` command is installed again (INCIDENT I-20261028-119): it was the only queue script without a `bin/` wrapper and package.json `bin` row, so the rules table's `queue-finished` failed with "command not found" while `neurastream queue-finished` worked.

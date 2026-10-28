@@ -295,9 +295,13 @@ export function parsePlan(repo: string, file: string, text: string | null, block
 	};
 }
 
-/** A plan's repo: the main checkout holding the plan file; a linked worktree resolves to its main repo. */
+/** A plan's repo: the main checkout holding the plan file; a linked worktree resolves to its main repo; without git, an archived plan reports the repo dir above docs/plans/archive/<YYYYMM>, never the month folder. */
 export function planRepo(file: string): string {
-	return repoRoot(file) ?? path.dirname(file);
+	const root = repoRoot(file);
+	if (root) return root;
+	const dir = path.dirname(file);
+	const m = /^(.*\/)docs\/plans\/archive\/\d{6}$/.exec(dir);
+	return m?.[1] ? m[1].replace(/\/$/, "") : dir;
 }
 
 export function readPlans(files: string[], blockersDir = blockersDirPath()): Plan[] {
