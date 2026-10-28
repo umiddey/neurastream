@@ -46,6 +46,7 @@
     "queue-check": "bin/queue-check",
     "queue-trim": "bin/queue-trim",
     "queue-close": "bin/queue-close",
+    "queue-finished": "bin/queue-finished",
     "queue-cancel": "bin/queue-cancel",
     "main-start": "bin/main-start",
     "machine-guard": "bin/machine-guard",

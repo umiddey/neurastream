@@ -1,4 +1,7 @@
 # Changelog
+## Unreleased
+### Fixed
+- The bare `queue-finished` command is installed again (INCIDENT I-20261028-119): it was the only queue script without a `bin/` wrapper and package.json `bin` row, so the rules table's `queue-finished` failed with "command not found" while `neurastream queue-finished` worked.
 ## 0.2.46
 ### Fixed
 - A plan's deny-path no longer judges paths beyond the ones that made its blockers run when the caller is staffed on a different plan (INCIDENT I-20261028-111): `runBlockers` marks such a call `foreign` (staffing.json, keyed by the task name in `agentId`) and `denyPath` keeps only targets in `paths`, so a subagent of another plan may run a command that merely names paths outside this plan. An agent staffed on the plan itself, Main and unstaffed agents are unchanged.
