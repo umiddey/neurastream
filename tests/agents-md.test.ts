@@ -27,6 +27,7 @@ const INSTALLED = JSON.parse(readFileSync(join(REPO, "package.json"), "utf8")).v
 
 afterAll(() => {
 	rmSync(SANDBOX, { recursive: true, force: true });
+	rmSync(P6_DIR, { recursive: true, force: true });
 });
 
 function freshInstall(personal?: string) {
@@ -144,4 +145,29 @@ test("the main prompt states the tier and the edit limit from config", () => {
 test("a stop continuation does not repeat the tier line", () => {
 	const d = checkInject({ inject: "main-guard: keep going", agent: "main" }, tuned);
 	expect(d.inject).not.toContain("autonomy: opinionated");
+});
+
+// P6: the owner's own Main-only lines come from MAIN.md in the agent dir and follow the template body.
+const P6_DIR = "/tmp/neurastream-home-agentsmd-p6";
+rmSync(P6_DIR, { recursive: true, force: true });
+mkdirSync(P6_DIR, { recursive: true });
+const p6Cfg = { ...cfg, paths: { ...cfg.paths, agent_dir: P6_DIR } };
+const P6_TEMPLATE = "# Rules\n\nTalk short.\n";
+const P6_TEMPLATE_ONLY = `${BEGIN_MARK}\n# Rules\n\nTalk short.\n${END_MARK}`;
+
+test("MAIN.md text lands after the template body, inside the markers", () => {
+	writeFileSync(join(P6_DIR, "MAIN.md"), "- pipelines rule: one combined merge request at a time\n");
+	expect(renderBlock(p6Cfg, P6_TEMPLATE)).toBe(
+		`${BEGIN_MARK}\n# Rules\n\nTalk short.\n\n- pipelines rule: one combined merge request at a time\n${END_MARK}`,
+	);
+});
+
+test("no MAIN.md: the block is the template alone", () => {
+	rmSync(join(P6_DIR, "MAIN.md"), { force: true });
+	expect(renderBlock(p6Cfg, P6_TEMPLATE)).toBe(P6_TEMPLATE_ONLY);
+});
+
+test("an empty or blank MAIN.md renders the same as a missing one", () => {
+	writeFileSync(join(P6_DIR, "MAIN.md"), "\n  \n");
+	expect(renderBlock(p6Cfg, P6_TEMPLATE)).toBe(P6_TEMPLATE_ONLY);
 });

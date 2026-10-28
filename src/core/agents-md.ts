@@ -2,7 +2,7 @@
 // between two markers. Main puts them in its system prompt; install only strips an old copy from
 // the owner's AGENTS.md, and everything outside the markers stays the owner's.
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Config } from "./config.ts";
@@ -14,7 +14,15 @@ export const END_MARK = "<!-- neurastream:end -->";
 
 export function renderBlock(cfg: Config, template: string = readFileSync(AGENTS_TEMPLATE, "utf8")): string {
 	const body = template.trimEnd().split("{{AGENT_DIR}}").join(cfg.paths.agent_dir);
-	return `${BEGIN_MARK}\n${body}\n${END_MARK}`;
+	const own = ownMainRules(cfg.paths.agent_dir);
+	const tail = own === "" ? "" : `\n\n${own}`;
+	return `${BEGIN_MARK}\n${body}${tail}\n${END_MARK}`;
+}
+
+// The owner's own Main-only lines: MAIN.md in the agent dir, trimmed. "" when the file is missing or blank.
+function ownMainRules(agentDir: string): string {
+	const file = join(agentDir, "MAIN.md");
+	return existsSync(file) ? readFileSync(file, "utf8").trim() : "";
 }
 
 function occurrences(text: string, mark: string): number[] {

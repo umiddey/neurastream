@@ -38,6 +38,8 @@ flowchart LR
 
 neurastream runs only under `neurastream main`. That launcher sets `NEURASTREAM_MAIN_LAUNCHER=1` for the omp it starts, and only then does the adapter register its hooks and commands. Plain `omp` runs with no guard, queue summary, rules or rollover, as if neurastream were not installed.
 
+Your own Main-only lines go in `MAIN.md` in `paths.agent_dir` (for example `~/.omp/agent/MAIN.md`); Main gets them after its managed rules.
+
 ```sh
 neurastream main          # Main: guards, queue, rules, rollover
 omp -p "say hi"           # plain omp: no neurastream hook, no guard-log line
