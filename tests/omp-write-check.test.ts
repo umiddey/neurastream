@@ -1,0 +1,159 @@
+// Write-time checks in the omp adapter: a subagent's write or edit that adds a lint finding or a
+// suppression comment is put back and the call returns an error. Main's edits are left alone
+// under applies_to "sub"; a new file with a finding is removed. The linter is the fixture stand-in.
+
+import { afterAll, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createOmpAdapter } from "../src/adapters/omp/index.ts";
+import { loadConfig, type Config } from "../src/core/config.ts";
+
+type Handler = (event: unknown, ctx: unknown) => unknown;
+
+interface FakeHost {
+	on(event: string, cb: Handler): void;
+	registerCommand(name: string, opts: { description?: string; handler: (args: unknown, ctx: unknown) => unknown }): void;
+	sendUserMessage(content: string): void;
+	sendMessage(message: unknown, options: unknown): void;
+	emit(event: string, payload: unknown, ctx: unknown): Promise<unknown[]>;
+}
+
+function fakeHost(): FakeHost {
+	const handlers = new Map<string, Handler[]>();
+	return {
+		on(event, cb) {
+			handlers.set(event, [...(handlers.get(event) ?? []), cb]);
+		},
+		registerCommand() {},
+		sendUserMessage() {},
+		sendMessage() {},
+		async emit(event, payload, ctx) {
+			const out: unknown[] = [];
+			for (const cb of handlers.get(event) ?? []) {
+				const r = await cb(payload, ctx);
+				if (r !== undefined) out.push(r);
+			}
+			return out;
+		},
+	};
+}
+
+const TMP = mkdtempSync(join(tmpdir(), "write-check-"));
+// The caller's shell may export live QUEUE_* (omp's plugin does); save and delete them so every
+// path resolves under the sandbox home, as the chat-unlock test does.
+const queueEnvBefore = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("QUEUE_")));
+for (const k of Object.keys(queueEnvBefore)) delete process.env[k];
+afterAll(() => {
+	rmSync(TMP, { recursive: true, force: true });
+	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
+	Object.assign(process.env, queueEnvBefore);
+});
+
+const FAKE = join(import.meta.dir, "fixtures/write-check/fake-linter.ts");
+const base = loadConfig({ home: join(TMP, "home") });
+
+function cfgWith(wc: Partial<Config["write_check"]> = {}): Config {
+	return {
+		...base,
+		write_check: {
+			...base.write_check,
+			enabled: true,
+			applies_to: "sub",
+			timeout_ms: 5000,
+			suppress: "noqa",
+			linters: [{ ext: [".txt"], argv: [process.execPath, FAKE, "{file}"], pattern: "^.+?:\\d+:\\d+: (?<rule>\\S+) " }],
+			...wc,
+		},
+	};
+}
+
+const SUB = { agent: { kind: "sub", id: "sub-1" }, cwd: TMP };
+const MAIN = { agent: { kind: "main", id: "main" }, cwd: TMP };
+let seq = 0;
+
+interface Refusal {
+	isError: true;
+	content: Array<{ type: string; text: string }>;
+}
+
+function isRefusal(r: unknown): r is Refusal {
+	return typeof r === "object" && r !== null && "isError" in r && r.isError === true;
+}
+
+function isBlock(r: unknown): boolean {
+	return typeof r === "object" && r !== null && "block" in r && r.block === true;
+}
+
+// One tool call the way the host runs it: the pre-call hook, the write lands, the post-call hook.
+async function run(host: FakeHost, ctx: unknown, toolName: string, input: Record<string, unknown>, text: string): Promise<unknown[]> {
+	const toolCallId = `call-${++seq}`;
+	const pre = await host.emit("tool_call", { toolName, toolCallId, input }, ctx);
+	expect(pre.some(isBlock)).toBe(false);
+	writeFileSync(String(input.path), text);
+	return host.emit("tool_result", { toolName, toolCallId, input, content: [{ type: "text", text: "done" }], isError: false }, ctx);
+}
+
+test("a subagent write that adds a lint finding is refused and the file is put back", async () => {
+	const file = join(TMP, "refused.txt");
+	writeFileSync(file, "ok\n");
+	const host = fakeHost();
+	createOmpAdapter(host as never, cfgWith());
+	const results = await run(host, SUB, "write", { path: file }, "ok\nlint:no-eval\n");
+	const refused = results.filter(isRefusal);
+	expect(refused.length).toBe(1);
+	expect(refused[0]?.content[0]?.text).toContain("write-check: this edit adds lint problems to");
+	expect(refused[0]?.content[0]?.text).toContain("no-eval");
+	expect(readFileSync(file, "utf8")).toBe("ok\n");
+});
+
+test("a clean subagent edit is kept", async () => {
+	const file = join(TMP, "clean.txt");
+	writeFileSync(file, "ok\n");
+	const host = fakeHost();
+	createOmpAdapter(host as never, cfgWith());
+	const results = await run(host, SUB, "write", { path: file }, "ok\nfine\n");
+	expect(results.filter(isRefusal)).toEqual([]);
+	expect(readFileSync(file, "utf8")).toBe("ok\nfine\n");
+});
+
+test("a subagent edit that adds a suppression comment is refused", async () => {
+	const file = join(TMP, "suppress.txt");
+	writeFileSync(file, "ok\n");
+	const host = fakeHost();
+	createOmpAdapter(host as never, cfgWith());
+	const results = await run(host, SUB, "write", { path: file }, "ok\nnoqa\n");
+	const refused = results.filter(isRefusal);
+	expect(refused.length).toBe(1);
+	expect(refused[0]?.content[0]?.text).toContain("suppression");
+	expect(readFileSync(file, "utf8")).toBe("ok\n");
+});
+
+test("a new file with a lint finding is removed", async () => {
+	const file = join(TMP, "new.txt");
+	const host = fakeHost();
+	createOmpAdapter(host as never, cfgWith());
+	const results = await run(host, SUB, "write", { path: file }, "lint:no-eval\n");
+	expect(results.filter(isRefusal).length).toBe(1);
+	expect(existsSync(file)).toBe(false);
+});
+
+test("applies_to sub leaves a Main edit alone", async () => {
+	const file = join(TMP, "main.txt");
+	writeFileSync(file, "ok\n");
+	const host = fakeHost();
+	createOmpAdapter(host as never, cfgWith());
+	const results = await run(host, MAIN, "write", { path: file }, "lint:no-eval\n");
+	expect(results.filter(isRefusal)).toEqual([]);
+	expect(readFileSync(file, "utf8")).toBe("lint:no-eval\n");
+});
+
+test("enabled false leaves a subagent edit alone", async () => {
+	const file = join(TMP, "off.txt");
+	writeFileSync(file, "ok\n");
+	const host = fakeHost();
+	createOmpAdapter(host as never, cfgWith({ enabled: false }));
+	const results = await run(host, SUB, "write", { path: file }, "lint:no-eval\n");
+	expect(results.filter(isRefusal)).toEqual([]);
+	expect(readFileSync(file, "utf8")).toBe("lint:no-eval\n");
+});

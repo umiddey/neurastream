@@ -29,6 +29,7 @@ flowchart LR
 | Ledger (`agent-ledger`) | Tokens, cost, state and exit reason per agent; `--cap` refuses a spawn when a provider already runs `ledger.max_running_per_provider` (default 2), when a run is `OVER-BUDGET` (unless `--incident <id>`), or when a priority plan has no running agent (unless `--priority`). |
 | Scoring (`agent-score`) | Points only for work Main accepted by commit, times the phase difficulty. Ranked per dollar and per hour. |
 | Brief lint (`brief-lint`) | Refuses a helper brief that misses a required rule (acceptance, stop condition, no push, call budget). |
+| Write-time checks (`write_check`) | With `write_check.enabled` on, a subagent's write or edit to a file a configured linter covers is linted before and after the call. If the call adds a lint finding or a suppression comment (`noqa` and similar), the file is put back and the call returns an error. Main is left alone unless `applies_to: all`. Off by default. |
 | Machine health (`machine-guard`, `main-start`, `heavy-run`) | Load, free memory, disk and `/tmp` limits; one heavy test run at a time. |
 | Unlanded work (`wip-check`, `wip-snapshot`, `wip-backup`) | Lists branches on no remote and dirty worktrees; snapshots them as hidden commits; can push them to a backup repo. |
 | Session rollover | When the main session file passes 5 MB, or the installed neurastream version differs from the running plugin, Main writes a handoff note; a fresh session then starts on its own under `neurastream main`. |

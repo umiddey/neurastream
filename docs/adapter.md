@@ -116,6 +116,7 @@ export interface StopEvent {
 | Function | Event | Today |
 |---|---|---|
 | `checkTool(e: ToolEvent)` | pre-tool | plan-guard `checkCall` plus the main edit limit and spawn-via-tool |
+| Write-time checks (plan 20261028_1228) | post-tool | a subagent write/edit that adds a lint finding or a suppression comment is put back and the call returns an error; runs only when `write_check.enabled` is on |
 | `checkSpawn(e: SpawnEvent)` | spawn | allow-list, task-only, plan gate |
 | `checkInject(e: InjectEvent)` | prompt-inject | queue summary + cancel flag; `{ allow: true, inject }`; resets Main's edit window and the stop counters (returned in `state`) |
 | `checkPlanEdit(e: PlanEditEvent)` | plan-edit | outside `## Progress`, a Main-only line changed, or a subagent entry added without a `Findings:` line: `allow: false` and `restore`; each finding item of an allowed entry becomes a `findings` incident |
