@@ -25,11 +25,13 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Decision, InjectEvent, PlanEditEvent, SpawnEvent, StopEvent, ToolEvent } from "./adapter.ts";
-import { currentTier, takeGo, type Tier } from "./autonomy.ts";
+import { currentTier, takeGo } from "./autonomy.ts";
 import { approvalProblem } from "./plan-approval.ts";
 import type { Config } from "./config.ts";
 import { addIncident, openIncidents, ownerMessagesFile, ownerSaid, readOwnerMessages, type IncidentView, type OwnerMessage } from "./incidents.ts";
 import { notifyProtectedPaths, notifySecretReadHit } from "./notify.ts";
+import { defaultRunner, listOpenMrs, mentioned, type CommandRunner, type OpenMr } from "./mr-sweep.ts";
+import { unlandedRows } from "./wip-check.ts";
 import * as q from "./queue/lib.ts";
 import type { Plan } from "./queue/lib.ts";
 
@@ -93,6 +95,119 @@ export function writeWindow(w: EditWindow): void {
 	} catch (err) {
 		log(`${q.STATE_DIR}/../main-guard.log`, `cannot write ${windowFile()}: ${err}`);
 	}
+}
+
+// --- plan review gate state (plan 20261028_1600): the open-MR cache beside the edit window ---
+
+interface MrCache {
+	at: number;
+	repos: Record<string, OpenMr[]>;
+}
+
+function mrCacheFile(): string {
+	return path.join(q.STATE_DIR, "mr-cache.json");
+}
+
+function readMrCache(): MrCache {
+	try {
+		const c = JSON.parse(readFileSync(mrCacheFile(), "utf8")) as MrCache;
+		if (typeof c.at === "number" && c.repos && typeof c.repos === "object") return c;
+	} catch {}
+	return { at: 0, repos: {} };
+}
+
+function writeMrCache(c: MrCache, cfg: Config): void {
+	try {
+		mkdirSync(q.STATE_DIR, { recursive: true });
+		writeFileSync(mrCacheFile(), JSON.stringify(c, null, 1));
+	} catch (err) {
+		log(cfg.paths.guard_log, `cannot write ${mrCacheFile()}: ${err}`);
+	}
+}
+
+// --- plan review gate state (plan 20261028_1600): the reviewer PASS record beside the edit window ---
+
+interface PlanReview {
+	verdict: "PASS" | "FAIL";
+	hash: string;
+	finding: string;
+	at: number;
+}
+
+function planReviewsFile(): string {
+	return path.join(q.STATE_DIR, "plan-reviews.json");
+}
+
+function readPlanReviews(): Record<string, PlanReview> {
+	try {
+		const r = JSON.parse(readFileSync(planReviewsFile(), "utf8")) as { reviews?: Record<string, PlanReview> };
+		if (r.reviews && typeof r.reviews === "object") return r.reviews;
+	} catch {}
+	return {};
+}
+
+function writePlanReviews(reviews: Record<string, PlanReview>, cfg: Config): void {
+	try {
+		mkdirSync(q.STATE_DIR, { recursive: true });
+		writeFileSync(planReviewsFile(), JSON.stringify({ reviews }, null, 1));
+	} catch (err) {
+		log(cfg.paths.plan_guard_log, `cannot write ${planReviewsFile()}: ${err}`);
+	}
+}
+
+/** What a PASS covers: the plan text outside "## Progress" without the Main-only lines, so progress notes never expire a review. */
+export function reviewHash(text: string): string {
+	return q.sha(
+		q
+			.outsideProgress(text)
+			.split("\n")
+			.filter(l => !MAIN_ONLY_LINE.test(l))
+			.join("\n"),
+	);
+}
+
+/** The progress entry that records a review; only a subagent's edit can carry one. */
+const REVIEW_LINE = /^- PLAN REVIEW: (PASS|FAIL)/;
+
+/**
+ * P2 (plan 20261028_1600): a spawn on a plan needs a recorded reviewer PASS whose hash still
+ * matches the plan text — progress-only edits keep a PASS valid, any other change expires it,
+ * a FAIL is denied with its first finding. A review spawn itself — an agent from review.agents
+ * whose brief has the `Plan review: <plan>` line — is exempt.
+ */
+export function reviewPassProblem(named: string[], brief: string, agent: string, cfg: Config): string | null {
+	const reviews = readPlanReviews();
+	const reviewLines = brief.split("\n").filter(l => l.startsWith("Plan review:"));
+	for (const file of named) {
+		if (cfg.review.agents.includes(agent) && reviewLines.some(l => l.slice("Plan review:".length).trim() === file)) continue;
+		const rec = reviews[file];
+		if (!rec) return `plan ${file} has no current reviewer PASS. Spawn a reviewer with templates/plan-review-brief.md.`;
+		if (rec.verdict === "FAIL")
+			return `plan ${file} has no current reviewer PASS (FAIL: ${rec.finding || "no finding recorded"}). Spawn a reviewer with templates/plan-review-brief.md.`;
+		let text = "";
+		try {
+			text = readFileSync(file, "utf8");
+		} catch {}
+		if (rec.hash !== reviewHash(text))
+			return `plan ${file} has no current reviewer PASS (changed since review). Spawn a reviewer with templates/plan-review-brief.md.`;
+	}
+	return null;
+}
+
+/** A subagent's `PLAN REVIEW: PASS|FAIL` entry records the review of the plan it edited; Main's edit path never reaches this. */
+function recordReviews(e: PlanEditEvent, cfg: Config): void {
+	const entries = newProgressEntries(e.before, e.after).filter(b => REVIEW_LINE.test(b));
+	if (!entries.length) return;
+	const reviews = readPlanReviews();
+	for (const block of entries) {
+		reviews[e.path] = {
+			verdict: block.startsWith("- PLAN REVIEW: PASS") ? "PASS" : "FAIL",
+			hash: reviewHash(e.after),
+			finding: findingsValue(block) ?? "",
+			at: nowSec(),
+		};
+	}
+	writePlanReviews(reviews, cfg);
 }
 
 function spawnsFile(): string {
@@ -316,7 +431,7 @@ function unticked(p: Plan): string[] {
 
 // Plans an implementer brief may run on; returns [reason, null] or [null, plan files].
 export function planGate(text: string, label: string, cfg?: Config): [string | null, string[]] {
-	const plans = q.activePlans();
+	const plans = q.activePlans(undefined, undefined, cfg?.review.since ?? "");
 	const unclosed = plans.filter(p => (p.status === "complete" || p.status === "cancelled") && !q.awaitingMerge(p));
 	if (unclosed.length)
 		return [
@@ -440,6 +555,70 @@ function priorityGate(named: string[], runningJobs: string[] | undefined, brief:
 	return outcome?.problem ? `${label}: ${outcome.problem}` : null;
 }
 
+/** The brief names pending work the P3 way: `MR !N: <what it holds> — this task: <why not overlapping>` (GitHub `#N`), `Branch <name>: …`. */
+export function briefNamesPending(brief: string, prefix: "MR" | "Branch", token: string): boolean {
+	const esc = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	return new RegExp(`^[ \\t]*(?:[-*][ \\t]+)?${prefix} ${esc}:[^\\n]*this task:`, "im").test(brief);
+}
+
+/** The branch a linked worktree has checked out, or null. */
+function worktreeBranch(wt: string | null, run: CommandRunner): string | null {
+	if (!wt) return null;
+	const r = run(["git", "-C", wt, "rev-parse", "--abbrev-ref", "HEAD"], {});
+	return r.code === 0 ? r.stdout.trim() || null : null;
+}
+
+/**
+ * P3 (plan 20261028_1600): done-but-not-merged work must be named by the brief before a spawn
+ * runs on its plan. (a) open MRs of the plan's repo that the plan mentions (mr-sweep's lister and
+ * `mentioned`; the list is cached `review.mr_cache_minutes`); (b) the plan's `Branch:` line or its
+ * worktree's checked-out branch when wip-check reports it UNLANDED — still enforced when the forge
+ * is unreachable, whose degrade skips only (a), like the sweep. A repo with no origin remote has
+ * no merge target: both checks skip it with one guard-log line.
+ */
+export function pendingWorkProblem(named: string[], brief: string, cfg: Config, run: CommandRunner = defaultRunner): string | null {
+	const plans = q.activePlans().filter(p => named.includes(p.file));
+	if (!plans.length) return null;
+	const cache = readMrCache();
+	const fresh = nowSec() - cache.at < cfg.review.mr_cache_minutes * 60;
+	const openMrs = new Map<string, OpenMr[]>();
+	const hasOrigin = new Set<string>();
+	let cacheDirty = false;
+	for (const repo of new Set(plans.map(p => p.repo))) {
+		if (fresh && cache.repos[repo]) {
+			openMrs.set(repo, cache.repos[repo]);
+			hasOrigin.add(repo);
+			continue;
+		}
+		const listed = listOpenMrs(repo, run);
+		if (!listed.ok) {
+			log(cfg.paths.guard_log, `pending-work: ${repo}: ${listed.why}; the open-MR check is skipped`);
+			if (listed.why !== "no origin remote") hasOrigin.add(repo); // forge down still enforces (b)
+			continue;
+		}
+		openMrs.set(repo, listed.mrs);
+		hasOrigin.add(repo);
+		cache.repos[repo] = listed.mrs;
+		cacheDirty = true;
+	}
+	if (cacheDirty) writeMrCache({ at: nowSec(), repos: cache.repos }, cfg);
+	const unlanded = hasOrigin.size ? new Set(unlandedRows(run(["wip-check"], {}).stdout).map(r => r.branch)) : null;
+	for (const p of plans) {
+		// (a) only MRs the plan itself mentions are pending work here: the sweep already flags
+		// unmentioned open MRs as UNTRACKED for the whole queue.
+		for (const mr of openMrs.get(p.repo) ?? []) {
+			if (!mentioned(mr.token, mr.branch, [p.text]) || briefNamesPending(brief, "MR", mr.token)) continue;
+			return `plan ${p.file} has pending work MR ${mr.token} not merged; say in the brief what it already holds and why this task does not redo it ("MR ${mr.token}: <what it holds> — this task: <why not overlapping>").`;
+		}
+		if (!unlanded || !hasOrigin.has(p.repo)) continue;
+		for (const b of [p.branch, worktreeBranch(p.worktree, run)]) {
+			if (!b || !unlanded.has(b) || briefNamesPending(brief, "Branch", b)) continue;
+			return `plan ${p.file} has pending work branch ${b} not merged; say in the brief what it already holds and why this task does not redo it ("Branch ${b}: <what it holds> — this task: <why not overlapping>").`;
+		}
+	}
+	return null;
+}
+
 /**
  * The owner's pick order (plan 20261025_1700 P3): refuse a later `ledger.prefer` agent while an
  * earlier one is free and under its provider cap, unless the brief carries "Pick note: <why>".
@@ -480,8 +659,8 @@ export function providerClaimProblem(text: string, cfg: Config): string | null {
 		if (free(provider) && !names.has(agent) && provider !== null) names.set(agent, provider);
 	}
 	if (!names.size || !/\bis\b/i.test(text)) return null;
-	const esc = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-	const m = new RegExp(`\\b(${[...names.keys()].map(esc).join("|")})\\b[^.\\n]{0,80}?\\b(?:is|are)\\s+(?:still\\s+|now\\s+)?(?:rate[ -]?limited|rate limiting|throttled|out until|limited)`, "i").exec(text);
+	
+	const m = new RegExp(`\\b(${[...names.keys()].map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b[^.\\n]{0,80}?\\b(?:is|are)\\s+(?:still\\s+|now\\s+)?(?:rate[ -]?limited|rate limiting|throttled|out until|limited)`, "i").exec(text);
 	if (!m) return null;
 	const hit = [...names.entries()].find(([n]) => n.toLowerCase() === (m[1] ?? "").toLowerCase());
 	if (hit === undefined) return null;
@@ -497,6 +676,7 @@ export function spawnProblem(
 	budgets: Record<string, number | null> = {},
 	staffing: Record<string, string[]> = {},
 	runningJobs?: string[],
+	runner: CommandRunner = defaultRunner,
 ): string | null {
 	const tasks = Array.isArray(input?.tasks) ? input.tasks : [];
 	const context = String(input?.context ?? "");
@@ -509,7 +689,13 @@ export function spawnProblem(
 		if (!allowed.has(agent)) return `${label}: agent "${agent}" is not in "## Allowed" of ${q.SUBAGENTS_MD} (no expensive or unpinned models).`;
 		const [why, plans] = planGate(`${context}\n${String(t?.task ?? "")}`, label, cfg);
 		if (why) return why;
+		// P3 (plan 20261028_1600): the task tool is the live spawn path; every task carries its own
+		// pending-work check, before the call-wide gates below.
+		const pending = pendingWorkProblem(plans, `${context}\n${String(t?.task ?? "")}`, cfg, runner);
+		if (pending) return `${label}: ${pending}`;
 		// The task's own `Call budget:` line wins over the shared context's.
+				const review = reviewPassProblem(plans, `${context}\n${String(t?.task ?? "")}`, String(t?.agent ?? ""), cfg);
+		if (review) return `${label}: ${review}`;
 		const budget = briefBudget(String(t?.task ?? "")) ?? shared;
 		if (budget !== null) {
 			if (!t?.name) return `${label}: "Call budget: ${budget}" needs a task name (the budget is keyed by it).`;
@@ -628,9 +814,9 @@ const PLACEHOLDER = "[REDACTED:";
 const PLACEHOLDER_FILES = [/\/src\/core\/secret-redact\.ts$/, /\/tests\/secret-redact[^/]*\.test\.ts$/];
 /** What a write/edit/ast_edit call would add: every text argument but the targets and the replaced text. */
 function addedText(input: Record<string, unknown>): string {
-	const skip = ["path", "file", "cwd", "old_string", "old", "oldText", "i"];
+	const skip = new Set(["path", "file", "cwd", "old_string", "old", "oldText", "i"]);
 	return Object.entries(input)
-		.filter(([key, value]) => typeof value === "string" && !skip.includes(key))
+		.filter(([key, value]) => typeof value === "string" && !skip.has(key))
 		.map(([, value]) => value as string)
 		.join("\n");
 }
@@ -974,7 +1160,7 @@ export function planReadNote(tool: string, input: Record<string, unknown>, cwd: 
  * spawn: the allow-list, task-only and open-plan gates for one implementer launch. Covers both
  * original paths (the extension spawn event and a `task` tool call); the brief names the plan.
  */
-export function checkSpawn(e: SpawnEvent, cfg: Config): Decision {
+export function checkSpawn(e: SpawnEvent, cfg: Config, runner: CommandRunner = defaultRunner): Decision {
 	const pending = q.cancelPending();
 	if (pending) {
 		log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: cancel pending (${pending.words})`);
@@ -994,6 +1180,16 @@ export function checkSpawn(e: SpawnEvent, cfg: Config): Decision {
 	if (gate) {
 		log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${gate}`);
 		return deny(`main-guard: ${gate}`);
+	}
+	const pendingWork = pendingWorkProblem(named, e.brief, cfg, runner);
+	if (pendingWork) {
+	log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${pendingWork}`)
+	return deny(`main-guard: ${pendingWork}`)
+}
+		const review = reviewPassProblem(named, e.brief, e.agent, cfg);
+	if (review) {
+		log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${review}`);
+		return deny(`main-guard: ${review}`);
 	}
 	const inc = incidentSpawnProblem(`spawn ${e.agent}`, e.brief, named, cfg);
 	if (inc) return deny(`main-guard: ${inc}`);
@@ -1048,7 +1244,7 @@ export function checkInject(e: InjectEvent, cfg: Config): Decision {
 	recordOwnerMessage(e.inject, cfg);
 	let summary: string;
 	try {
-		summary = q.queueSummary();
+		summary = q.queueSummary(undefined, cfg.review.since);
 	} catch (err) {
 		summary = `Queue unreadable (${q.INDEX}): ${err}`;
 	}
@@ -1106,6 +1302,7 @@ export function checkPlanEdit(e: PlanEditEvent, cfg: Config): PlanEditDecision {
 		};
 	}
 	recordFindings(e, cfg);
+	recordReviews(e, cfg);
 	return ALLOW;
 }
 
@@ -1137,7 +1334,7 @@ function progressEntries(text: string): string[] {
 	const lines = q.progressBody(text).split("\n");
 	for (let i = 0; i < lines.length; i++) {
 		const head = lines[i];
-		if (head === undefined || !/^- /.test(head) || MAIN_ONLY_LINE.test(head)) continue;
+		if (head === undefined || !head.startsWith("- ") || MAIN_ONLY_LINE.test(head)) continue;
 		const block = [head];
 		while (i + 1 < lines.length) {
 			const cont = lines[i + 1];
@@ -1331,12 +1528,12 @@ function readMainReads(): Record<string, string> {
 }
 
 // Plans still responsible for: open plans (parked "WAITING on owner" excluded) plus queue problems.
-export function openQueue(): string[] {
+export function openQueue(reviewSince = ""): string[] {
 	const open = q
 		.activePlans()
 		.filter(p => !p.waiting && !q.awaitingMerge(p))
 		.map(p => p.file);
-	for (const prob of q.queueProblems()) open.push(`${prob.where}: ${prob.problem}`);
+	for (const prob of q.queueProblems(undefined, undefined, reviewSince)) open.push(`${prob.where}: ${prob.problem}`);
 	const unique: string[] = [];
 	for (const item of open) if (!unique.includes(item)) unique.push(item);
 	return unique;
@@ -1371,7 +1568,7 @@ export function checkStop(e: StopEvent, cfg: Config): Decision {
 	}
 	let open: string[];
 	try {
-		open = openQueue();
+		open = openQueue(cfg.review.since);
 	} catch (err) {
 		log(cfg.paths.guard_log, `BLOCK stop: cannot read queue: ${err}`);
 		open = [`queue unreadable (${q.INDEX}): ${err}`];

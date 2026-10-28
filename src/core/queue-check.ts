@@ -12,9 +12,9 @@ export function queueCheck(args: string[], cfg: Config): number {
 		for (const p of activePlans()) if (p.priorityId && !p.waiting && p.status === "open") console.log(p.priorityId);
 		return 0;
 	}
-	console.log(queueSummary());
+	console.log(queueSummary(undefined, cfg.review.since));
 	// main-start prints the sweep itself and passes this so the child bin does not print it twice.
-	let fail = queueProblems().length > 0;
+	let fail = queueProblems(undefined, undefined, cfg.review.since).length > 0;
 	if (!args.includes("--no-mr-sweep")) {
 		try {
 			const sweep = mrSweep();

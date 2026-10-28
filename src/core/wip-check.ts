@@ -76,3 +76,20 @@ export function wipCheck(args: string[], cfg: Config): number {
 	}
 	return 0;
 }
+
+/** One UNLANDED row of wip-check output: `  <repo-name> <branch> <sha> +<n> <age>h old` (the wipCheck printer owns this format). */
+export function unlandedRows(output: string): { name: string; branch: string }[] {
+	const rows: { name: string; branch: string }[] = [];
+	let inBlock = false;
+	for (const line of output.split("\n")) {
+		if (line.startsWith("UNLANDED")) {
+			inBlock = true;
+			continue;
+		}
+		if (!inBlock) continue;
+		if (!line.startsWith("  ")) break; // the next summary line (DIRTY…) ends the block
+		const [name = "", branch = ""] = line.trim().split(/\s+/);
+		if (name && branch) rows.push({ name, branch });
+	}
+	return rows;
+}

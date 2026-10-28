@@ -231,7 +231,33 @@ function headerField(text: string, name: string): string | null {
 	return v ? v.replace(/`/g, "").trim() || null : null;
 }
 
-export function parsePlan(repo: string, file: string, text: string | null, blockersDir = blockersDirPath()): Plan {
+/** A plan filename stamp (YYYYMMDD_HHMM) as an ISO-ish string ("2026-10-29T01:00") that sorts lexically; "" when unstamped. */
+export function stampIso(file: string): string {
+	const m = /^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})/.exec(path.basename(file));
+	return m ? `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}` : "";
+}
+
+/**
+ * P1 (plan 20261028_1600): every new thing a plan adds carries a reuse line with a checked
+ * `path:line` citation that exists relative to the plan's repo. A bare date `since` counts as
+ * midnight; plans stamped before `since` are exempt, `since` "" switches the check off.
+ */
+function reuseProblems(repo: string, file: string, secs: Map<string, string>, since: string): string[] {
+	const cutover = since.length === 10 ? `${since}T00:00` : since;
+	if (!cutover || stampIso(file) < cutover) return [];
+	const lines = items(secs.get("reuse") ?? "");
+	if (!lines.length)
+		return [`missing or empty "## Reuse" section (one line per new thing: - new: <thing> — checked: <path>:<line> — reuse: <how, or why not>; "- new: none — ..." when nothing is new)`];
+	const probs: string[] = [];
+	for (const line of lines) {
+		const m = /checked:\s*`?([^`\s—]+):(\d+)(?:-\d+)?`?/.exec(line);
+		if (!m) probs.push(`reuse line without "checked: <path>:<line>": ${line.slice(0, 80)}`);
+		else if (!existsSync(path.resolve(repo, m[1]!))) probs.push(`reuse citation does not exist: ${m[1]}`);
+	}
+	return probs;
+}
+
+export function parsePlan(repo: string, file: string, text: string | null, blockersDir = blockersDirPath(), reviewSince = ""): Plan {
 	const empty = { repo, file, text: "", status: null, blockers: [], doneCheck: null, worktree: null, branch: null, appliesTo: [], waiting: false, waitingLine: null, waitingAsk: null, waitingBlocked: null, waitingWhy: null, waitsOn: [], priorityId: null, title: path.basename(file), goal: [], summary: null, phases: { done: 0, total: 0 }, started: false };
 	if (text === null) return { ...empty, errors: ["plan file listed in the index does not exist"] };
 	const errors: string[] = [];
@@ -243,7 +269,8 @@ export function parsePlan(repo: string, file: string, text: string | null, block
 	const stamp = /^(\d{8}_\d{4})/.exec(path.basename(file))?.[1] ?? "";
 	if (stamp >= READ_CUTOVER && !items(secs.get("code read by main") ?? "").length)
 		errors.push(`missing or empty "## Code read by Main" section (plans stamped ${READ_CUTOVER} or later list each file they cite)`);
-	const known = new Set([...REQUIRED, "applies to", "background", "code read by main"]);
+	for (const problem of reuseProblems(repo, file, secs, reviewSince)) errors.push(problem);
+	const known = new Set([...REQUIRED, "applies to", "background", "code read by main", "reuse"]);
 	for (const s of secs.keys()) if (!known.has(s)) errors.push(`unknown section "## ${s}" (allowed: ${[...known].join(", ")})`);
 	const status = statusOf(text);
 	if (!status) errors.push('"## Progress" must start with a line "Status: open", "Status: complete" or "Status: cancelled"');
@@ -304,18 +331,18 @@ export function planRepo(file: string): string {
 	return m?.[1] ? m[1].replace(/\/$/, "") : dir;
 }
 
-export function readPlans(files: string[], blockersDir = blockersDirPath()): Plan[] {
+export function readPlans(files: string[], blockersDir = blockersDirPath(), reviewSince = ""): Plan[] {
 	return files.map(file => {
 		let text: string | null = null;
 		try {
 			text = readFileSync(file, "utf8");
 		} catch {}
-		return parsePlan(planRepo(file), file, text, blockersDir);
+		return parsePlan(planRepo(file), file, text, blockersDir, reviewSince);
 	});
 }
 
-export function activePlans(index = indexPath(), blockersDir = blockersDirPath()): Plan[] {
-	return readPlans(readIndex(index), blockersDir);
+export function activePlans(index = indexPath(), blockersDir = blockersDirPath(), reviewSince = ""): Plan[] {
+	return readPlans(readIndex(index), blockersDir, reviewSince);
 }
 
 /** Owner holds: one line per plan with a WAITING on owner line. The only real holds; the summary, the rollover context and the handoff all read them here. */
@@ -932,10 +959,10 @@ export interface QueueProblem {
 	problem: string;
 }
 
-export function queueProblems(index = INDEX, blockersDir = BLOCKERS_DIR): QueueProblem[] {
+export function queueProblems(index = INDEX, blockersDir = BLOCKERS_DIR, reviewSince = ""): QueueProblem[] {
 	const probs: QueueProblem[] = [];
 	if (!existsSync(index)) probs.push({ where: index, problem: "main index missing: create it (empty = no open work)" });
-	const plans = readPlans(readIndex(index), blockersDir);
+	const plans = readPlans(readIndex(index), blockersDir, reviewSince);
 	const byWorktree = new Map<string, Plan[]>();
 	for (const p of plans) {
 		for (const e of p.errors) probs.push({ where: p.file, problem: e });
@@ -962,7 +989,7 @@ export function queueProblems(index = INDEX, blockersDir = BLOCKERS_DIR): QueueP
 	return probs;
 }
 
-export function queueSummary(index = INDEX): string {
+export function queueSummary(index = INDEX, reviewSince = ""): string {
 	// Index order IS priority (20261025_0215_index_priority): the list is flat and ranked,
 	// rank 1 = the index's top line; repos only surface through each plan's own path.
 	const plans = activePlans(index);
@@ -986,7 +1013,7 @@ export function queueSummary(index = INDEX): string {
 	});
 	const nCancelled = repos.reduce((n, repo) => n + readCancelled(repo).length, 0);
 	if (nCancelled) lines.push(`Cancelled rules: ${nCancelled}`);
-	const probs = queueProblems(index);
+	const probs = queueProblems(index, BLOCKERS_DIR, reviewSince);
 	if (probs.length) lines.push(`Problems (fix first):`, ...probs.map(q => `  - ${q.where}: ${q.problem}`));
 	return lines.join("\n");
 }

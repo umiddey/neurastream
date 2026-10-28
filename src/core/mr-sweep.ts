@@ -198,6 +198,38 @@ function skip(repo: string, why: string): string {
 	return `mr-sweep: skipped ${repo} (${why})`;
 }
 
+export interface OpenMr {
+	forge: Forge;
+	number: number;
+	token: string;
+	branch: string;
+}
+
+/** `{ ok: false, why }` is the sweep's degrade: the caller logs it and never treats it as "no MRs". */
+export type OpenMrs = { ok: true; mrs: OpenMr[] } | { ok: false; why: string };
+
+/**
+ * Open MRs of one repo (the sweep's lister, single-repo): `!N` / `#N` token plus source branch.
+ * Everything — origin lookup included — goes through the runner, so callers can inject it.
+ */
+export function listOpenMrs(repo: string, run: CommandRunner = defaultRunner, env?: NodeJS.ProcessEnv): OpenMrs {
+	const remote = run(["git", "-C", repo, "remote", "get-url", "origin"], { env });
+	const url = remote.code === 0 ? remote.stdout.trim() : "";
+	if (!url) return { ok: false, why: "no origin remote" };
+	const host = remoteHost(url);
+	const forge = host ? forgeOf(host) : null;
+	if (!forge) return { ok: false, why: "unknown forge" };
+	const listed = forge === "gitlab" ? listGitlab(repo, run, env) : listGithub(repo, run, env);
+	if (listed.missing) return { ok: false, why: "no forge CLI" };
+	if (listed.fail) return { ok: false, why: "forge unreachable" };
+	return {
+		ok: true,
+		mrs: listed.items
+			.map(item => ({ forge, number: item.number, token: forge === "gitlab" ? `!${item.number}` : `#${item.number}`, branch: item.branch }))
+			.toSorted((a, b) => a.number - b.number),
+	};
+}
+
 /**
  * Open MRs of every repo in the index, marked tracked when an open plan of that repo contains
  * the `!N` / `#N` token (including `MR !N: ignored`) or the source branch name.
