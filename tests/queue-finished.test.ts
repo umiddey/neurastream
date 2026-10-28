@@ -226,6 +226,26 @@ test("a plan archived only in a linked worktree gets an entry, and a rerun adds 
 	expect(readFileSync(FINISHED, "utf8")).toBe(text);
 });
 
+test("two repos with the same archived plan file name both get an entry", () => {
+	rmSync(FINISHED, { force: true });
+	for (const name of ["toy", "toy-wt", "plain", "other"]) {
+		rmSync(join(ROOT, name), { recursive: true, force: true });
+	}
+	const cfg = seed();
+	for (const repo of ["plain", "other"]) {
+		const dir = join(ROOT, repo, "docs/plans/archive/202610");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "20261016_1200_same.md"), plan(`${repo} plan`, "complete"));
+	}
+
+	const run = logged(() => queueFinished(["--backfill"], cfg));
+	expect(run.out).toContain("added 2");
+	const text = readFileSync(FINISHED, "utf8");
+	expect(headings(text)).toHaveLength(2);
+	expect(text).toContain("## 2026-10-16 · plain · plain plan");
+	expect(text).toContain("## 2026-10-16 · other · other plan");
+});
+
 afterAll(() => {
 	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
 	for (const [k, v] of Object.entries(queueEnvBefore)) if (v !== undefined) process.env[k] = v;
