@@ -21,7 +21,7 @@ Stop and report within ~20 tool calls.
 ## Report
 Append one entry to the plan's `## Progress` — the PASS is recorded by plan-guard from that subagent edit only (Main can never write it), and it expires when the plan text changes:
 
-PLAN REVIEW: PASS|FAIL — redundant: <finding or none, file:line> — inefficient: <finding or none, file:line> — insecure: <finding or none, file:line> — MRs: <finding or none, file:line>
+- <date> <time> <YourName>: PLAN REVIEW: PASS|FAIL — redundant: <finding or none, file:line> — inefficient: <finding or none, file:line> — insecure: <finding or none, file:line> — MRs: <finding or none, file:line>
 
 ending with a `Findings:` line — `Findings: none`, or one item per finding with `file:line` evidence (a FAIL finding opens an incident like any other).
 

@@ -169,8 +169,10 @@ export function reviewHash(text: string): string {
 	);
 }
 
-/** The progress entry that records a review; only a subagent's edit can carry one. */
-const REVIEW_LINE = /^- PLAN REVIEW: (PASS|FAIL)/;
+/** The progress entry that records a review; only a subagent's edit can carry one. The verdict is the match, never a substring. */
+const REVIEW_LINE = /^- (?:\d{4}-\d{2}-\d{2} \d{2}:\d{2} [^\s:]+: )?PLAN REVIEW: (PASS|FAIL)\b/;
+/** Any entry that opens like a review line; one that REVIEW_LINE does not match is restored, not recorded. */
+const REVIEW_LOOKALIKE = /^- (?:\d{4}-\d{2}-\d{2} \d{2}:\d{2} [^\s:]+: )?PLAN REVIEW\b/;
 
 /**
  * P2 (plan 20261028_1600): a spawn on a plan needs a recorded reviewer PASS whose hash still
@@ -206,7 +208,7 @@ function recordReviews(e: PlanEditEvent, cfg: Config): void {
 	const reviews = readPlanReviews();
 	for (const block of entries) {
 		reviews[e.path] = {
-			verdict: block.startsWith("- PLAN REVIEW: PASS") ? "PASS" : "FAIL",
+			verdict: REVIEW_LINE.exec(block)![1] === "PASS" ? "PASS" : "FAIL",
 			hash: reviewHash(e.after),
 			finding: findingsValue(block) ?? "",
 			at: nowSec(),
@@ -1351,6 +1353,15 @@ export function checkPlanEdit(e: PlanEditEvent, cfg: Config): PlanEditDecision {
 		return {
 			allow: false,
 			reason: `plan-guard: ${missing.length === 1 ? "your new entry in" : `${missing.length} of your new entries in`} ${e.path} ${missing.length === 1 ? "has" : "have"} no "Findings:" line. End every new "## Progress" entry with "Findings: none", or "Findings: <one item per finding (bug, workaround, improvement — any repo), each with file:line evidence>", items separated by ";". The file was restored.`,
+			restore: { path: e.path, text: e.before },
+		};
+	}
+	const loose = newProgressEntries(e.before, e.after).filter(b => REVIEW_LOOKALIKE.test(b) && !REVIEW_LINE.test(b));
+	if (loose.length) {
+		log(cfg.paths.plan_guard_log, `RESTORE ${e.path} (review line)`);
+		return {
+			allow: false,
+			reason: `plan-guard: a PLAN REVIEW line in ${e.path} does not match "- [<date> <time> <name>: ]PLAN REVIEW: PASS|FAIL — …". The file was restored.`,
 			restore: { path: e.path, text: e.before },
 		};
 	}
