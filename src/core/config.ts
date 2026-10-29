@@ -164,7 +164,7 @@ export interface Config {
 		go_phrase: string;
 	};
 	/** The owner's phone page (`neurastream ui`): binds the tailnet address only. */
-	ui: { enabled: boolean; port: number; owner_login: string };
+	ui: { enabled: boolean; port: number; owner_login: string; allow_this_machine: boolean };
 	/** Plan review gate (plan 20261028_1600): reuse lines and, from P2 on, the reviewer PASS lock. */
 	review: {
 		/** Agents a review spawn may run under: the PASS exemption needs one of these plus the brief's `Plan review: <plan>` line. An empty list turns both review gates off (P5c). */

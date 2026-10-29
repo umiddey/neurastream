@@ -187,6 +187,8 @@ ui:
   port: 7787            # `neurastream ui on --port N` writes it here
   owner_login: ""       # the tailscale login that may open the page; empty = the page refuses to start;
                         # `neurastream ui on --login <email>` sets it (kept on `ui off`)
+  allow_this_machine: false   # admit this machine (loopback and its own tailnet IP) as the owner,
+                        # GET and POST; any local process can then press the buttons
 
 
 pages:

@@ -79,7 +79,7 @@ const CFG: Config = {
 		ranking_board: join(TMP, "board.md"),
 	},
 	guards: { ...baseCfg.guards, chat_unlock: true },
-	ui: { enabled: true, port: 7787, owner_login: OWNER },
+	ui: { enabled: true, port: 7787, owner_login: OWNER, allow_this_machine: false },
 };
 applyQueueEnv(CFG);
 
@@ -409,6 +409,25 @@ test("a silent tailscale refuses to start on the default hostname", () => {
 test("a real loopback request (no peer injection) gets 403", async () => {
 	const svc = ui({ peerOf: undefined });
 	expect((await get(svc)).status).toBe(403);
+});
+
+// --- ui.allow_this_machine: this machine (loopback and its own tailnet IP) may press the buttons ---
+
+test("ui.allow_this_machine on: this machine's own tailnet address and loopback are served as the owner", async () => {
+	const on = { ...CFG, ui: { ...CFG.ui, allow_this_machine: true } };
+	expect((await get(ui({ cfg: on, peerOf: () => OWN_IP }))).status).toBe(200);
+	expect((await get(ui({ cfg: on, peerOf: undefined }))).status).toBe(200); // real loopback
+});
+
+test("ui.allow_this_machine on: this machine can POST an answer; other peers keep today's treatment", async () => {
+	const on = { ...CFG, ui: { ...CFG.ui, allow_this_machine: true } };
+	const svc = ui({ cfg: on, peerOf: () => OWN_IP });
+	const res = await post(svc, "/answer", { plan: PLAN_W, answer: "yes" });
+	expect(res.status).toBe(303);
+	expect(inboxRecords()[0]).toMatchObject({ plan: PLAN_W, answer: "yes", login: OWNER });
+	// a foreign tailnet login still gets 403 and the owner's phone still gets the page
+	expect((await get(ui({ cfg: on, peerOf: () => "100.95.10.7" }))).status).toBe(403);
+	expect((await get(ui({ cfg: on, peerOf: () => PEER }))).status).toBe(200);
 });
 
 // --- origin: a POST from another page is refused ---

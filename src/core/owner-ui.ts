@@ -80,9 +80,10 @@ export function isTailnet(peer: string): boolean {
 	return TAILNET6.test(peer);
 }
 
-/** Serve only the owner's phone: a tailnet peer that is not this machine and not loopback, whose tailscale whois login equals ui.owner_login. Everything else is a 403. */
+/** Serve only the owner's phone: a tailnet peer that is not this machine and not loopback, whose tailscale whois login equals ui.owner_login. Everything else is a 403. With `ui.allow_this_machine`, this machine itself (loopback and its own tailnet IP) is served as the owner too — any local process can then press the buttons. */
 export function authenticate(cfg: Config, tailscale: Tailscale, peer: string): Auth {
 	if (!cfg.ui.owner_login) return { ok: false, why: "ui.owner_login is empty" };
+	if (cfg.ui.allow_this_machine && (isLoopback(peer) || peer === tailscale.ip4())) return { ok: true, login: cfg.ui.owner_login };
 	if (isLoopback(peer)) return { ok: false, why: "loopback peer" };
 	if (!isTailnet(peer)) return { ok: false, why: "peer is not a tailnet address" };
 	if (peer === tailscale.ip4()) return { ok: false, why: "this machine's own tailnet address" };
