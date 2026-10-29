@@ -116,6 +116,9 @@ guards:
   sub_warn_calls: 90
   sub_max_calls: 100
   sub_max_calls_cap: 200
+  main_warn_calls: 12      # Main tool calls per turn that draw the wrap-up warning
+  main_max_calls: 15       # Main tool calls per turn before refusal; 0 = off
+  main_call_exempt_tools: [task, todo, ask, wait]   # never counted, never refused at the cap: delegating, tracking and asking stay open
   main_edit_limit: 5
   main_window_min: 15
   unlock_minutes: 30
