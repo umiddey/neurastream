@@ -1214,8 +1214,8 @@ export function resetMainCalls(): void {
 	writeWindow(w);
 }
 
-/** A live plan file (archived plans excluded); Main's plan-text checks run on these. */
-export const MAIN_PLAN_FILE = /\/docs\/plans\/(?!archive\/)[^/]+\.md$/;
+/** A live plan file (archived plans excluded); Main's plan-text checks run on these. Subfolders like docs/plans/immediate/ hold live plans too. */
+export const MAIN_PLAN_FILE = /\/docs\/plans\/(?!archive\/)(?:[^/]+\/)*[^/]+\.md$/;
 
 /**
  * pre-tool: plan-guard checkCall for subs (protected files, budget, plan-edit rules, blockers)
@@ -1708,10 +1708,11 @@ function planFile(p: string, planPath: string, text: string): string {
 	return path.join(root, home);
 }
 
-/** The roots a plan-relative path resolves against: the plan's Worktree (when set), then its repo (dirname³ of the plan file). */
+/** The roots a plan-relative path resolves against: the plan's Worktree (when set), then its repo (the text before /docs/plans/, so a docs/plans/<subdir>/ plan still resolves repo-relative paths against <repo>). */
 function planRoots(planPath: string, text: string): string[] {
 	const wt = /^Worktree:\s*(\S+)/m.exec(text)?.[1];
-	const repo = path.dirname(path.dirname(path.dirname(planPath)));
+	const cut = planPath.indexOf("/docs/plans/");
+	const repo = cut >= 0 ? planPath.slice(0, cut) : path.dirname(path.dirname(path.dirname(planPath)));
 	return wt && wt !== "-" ? [wt, repo] : [repo];
 }
 

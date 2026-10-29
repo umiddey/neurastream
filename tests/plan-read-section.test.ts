@@ -217,6 +217,26 @@ test("a file Main read in neither checkout is still refused with the was-not-rea
 	expect(d.reason).toContain("src/a.ts was not read by Main within");
 });
 
+// P2 (plan 20261029_1530): a plan kept in docs/plans/<subdir>/ resolves its repo as the text before
+// /docs/plans/ — dirname³ would give <repo>/docs, so the twin read in the main checkout would miss.
+const SUB_TMP = mkdtempSync(join(tmpdir(), "plan-read-twin-sub-"));
+const SUB_REPO = join(SUB_TMP, "repo");
+const SUB_WT = join(SUB_TMP, "wt");
+const SUB_PLAN = join(SUB_REPO, "docs/plans/immediate/20261029_1545_twin.md");
+mkdirSync(join(SUB_REPO, "docs/plans/immediate"), { recursive: true });
+mkdirSync(join(SUB_REPO, "src"), { recursive: true });
+mkdirSync(join(SUB_WT, "src"), { recursive: true });
+writeFileSync(join(SUB_REPO, "src/a.ts"), "export const v = 1;\n");
+writeFileSync(join(SUB_WT, "src/a.ts"), "export const v = 1;\n");
+
+test("a subdir plan's listed path resolves against its repo, not <repo>/docs (the main-checkout twin read covers)", () => {
+	readLogWith({ [join(SUB_REPO, "src/a.ts")]: new Date().toISOString() });
+	// A clean before: the read list is new in this edit, so a wrong-root miss would be refused.
+	const before = twinPlan(SUB_WT, "src/a.ts").replace("\n## Code read by Main\n- `src/a.ts`\n", "\n");
+	const after = twinPlan(SUB_WT, "src/a.ts");
+	expect(checkPlanEdit({ path: SUB_PLAN, before, after, agent: "main" }, GUARD_CFG).allow).toBe(true);
+});
+
 // P2: a cited file Main did read lands in the list instead of the refusal.
 test("a cited file Main has read is auto-listed: allowed, the rewrite text gains the entry, the note names it", () => {
 	readLogWith({ [LISTED]: HOURS_30_AGO, [NEW_CITE]: new Date().toISOString() });

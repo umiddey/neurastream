@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import type { Config } from "./config.ts";
-import { briefBudget, briefNamesPending } from "./guards.ts";
+import { briefBudget, briefNamesPending, MAIN_PLAN_FILE } from "./guards.ts";
 import { exitText, helpDoc, printText } from "./help.ts";
 import { readIndex, sections } from "./queue/lib.ts";
 
@@ -112,7 +112,7 @@ function lint(path: string, cfg: Config): { errs: string[]; warns: string[] } {
 	if (/\bplans?\b/i.test(text)) {
 		const indexed = readIndex(cfg.paths.queue_index);
 		const noPlanLine = "no line names the plan's absolute path in its main checkout (paths.queue_index)";
-		const planPaths = [...paths].map(clean).filter(p => /\/docs\/plans\/[\w.-]+\.md$/.test(p));
+		const planPaths = [...paths].map(clean).filter(p => MAIN_PLAN_FILE.test(p));
 		const named = planPaths.filter(p => indexed.includes(p));
 		if (indexed.length && !named.length) {
 			const copy = planPaths[0];
