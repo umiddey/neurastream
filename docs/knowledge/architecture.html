@@ -124,18 +124,18 @@ kids:[
   {id:"kbase",nm:"Knowledge base",role:"the Base tab: repo → its pages",st:"built",at:[1,2],atM:[1,3],what:"One phone tab (/?tab=knowledge): a card per repo name — every git repo directly under knowledge.roots that keeps docs/knowledge/*.html, plus the pages published from it, newest first. Worktree copies fold into the main checkout’s name (origin remote basename, else the dir name); linked worktrees never list. Topic bytes are served at /knowledge/<repo>/<topic> behind the same login; the manifest is cached in knowledge.json and rebuilt when older than knowledge.max_age_s (300 s). A convention, not a registry: drop a file in, it appears.",files:"src/core/knowledge.ts (repoKey :54) · owner-ui.ts knowledgeHtml :927"}]},
 
 {id:"agent",nm:"Main + helpers",role:"the AIs doing the work",st:"built",at:[2,1],atM:[.5,3],c:"#3b6fd8",
- g:[3,2],flows:[["mainx","spawnx","task"],["spawnx","subs","allowed"],["subs","guardsx","every action"],["guardsx","tools","if allowed"],["guardsx","mainx","warnings · stop"]],
+ g:[3,2],flows:[["mainx","spawnx","asks to start a helper"],["spawnx","subs","allowed through"],["subs","guardsx","every action"],["guardsx","tools","if allowed"],["guardsx","mainx","warnings · stop"]],
  kids:[
-  {id:"mainx",nm:"Main",role:"plans, reviews, merges",st:"built",at:[0,0],
-   what:"The boss AI. It writes plans, picks helpers, reviews their work and merges it.",
+  {id:"mainx",nm:"Main",role:"1 write · 2 gate · 3 land",st:"built",at:[0,0],
+   what:"The boss AI, in a fixed order: it WRITES the plan, then stops — it cannot start a helper itself. The spawn gates decide, and gate 4 means a read-only reviewer helper must PASS the plan first. Only then an implementer helper writes the code. Main reviews that helper's work and merges only after your “go push”.",
    g:[4,1],flows:[["planw","review","helper done"],["review","land","accepted"],["land","handback","merged"]],
    kids:[
     {id:"planw",nm:"Write plan",role:"reads the code first",st:"built",at:[0,0],what:"Main must read every file a plan mentions, or the plan is refused — reads count from any checkout of the same repo, and a cited file that was read is auto-added instead of the edit being lost. Plan edits by relative path are refused, so the plan-guard can never miss the file.",files:"src/core/guards.ts · released in v0.2.30 / v0.2.50"},
-    {id:"review",nm:"Review",role:"accept or send back",st:"built",at:[1,0],what:"Main checks the commits and tests itself, then scores the helper.",files:"src/core/agent-score.ts"},
+    {id:"review",nm:"Review",role:"helper's work, after",st:"built",at:[1,0],what:"After the implementer reports, Main checks its commits and tests itself, then scores it. This is step 3 — it never replaces the reviewer PASS at the gate below.",files:"src/core/agent-score.ts"},
     {id:"land",nm:"Merge",role:"merge → close plan",st:"built",at:[2,0],what:"A plan closes only when its branch is really in main on the remote — the MR sweep’s forge data, never handoff memory."},
     {id:"handback",nm:"Reply to you",role:"final answer → Discord",st:"built",at:[3,0],what:"Main's last message goes to you on Discord."}]},
-  {id:"spawnx",nm:"Spawn checks",role:"5 gates before a helper starts",st:"built",at:[1,0],
-   what:"Before any helper is started, five checks must pass — a subagent's own spawn passes the same gates.",
+  {id:"spawnx",nm:"Spawn checks",role:"gates between Main and EVERY helper",st:"built",at:[1,0],
+   what:"Main cannot start any helper directly: every spawn call passes these five gates first, and any gate can refuse it. So the real order is: Main writes the plan → gate 4 sends a reviewer helper to PASS it → only then may the implementer helper start. The gates sit BETWEEN Main and the helpers — not a later step after the work.",
    g:[5,1],flows:[["prio","allow","ok"],["allow","blint","ok"],["blint","prvg","PASS first"],["prvg","caps","ok"]],
    kids:[
     {id:"prio",nm:"Priority",role:"top plan first",st:"built",at:[0,0],what:"Plans run in the order of the index. Skipping only with ‘Priority skip: <plan> — owner: “<your words>”’ — the quoted words must appear in your last 24 h of messages; the full autonomy tier accepts Main's own reason."},
