@@ -284,6 +284,7 @@ const data: PageData = {
 	results,
 	// The preview carries no knowledge manifest: the Base tab renders its unavailable note.
 	knowledge: null,
+	pages: [],
 	messages: [{ id: "1792953589-a1b2c3", ts: ts - 7200, text: "Please check this photo from the site visit.", images: ["1.jpg"] }],
 	lockMinutesLeft: 12,
 };

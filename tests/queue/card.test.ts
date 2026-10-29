@@ -117,6 +117,7 @@ test("queue card HTML clamps the summary to two lines and keeps the drag control
 		machine: null,
 		knowledge: null,
 		stats: null,
+	pages: null,
 		messages: [],
 		lockMinutesLeft: null,
 	};

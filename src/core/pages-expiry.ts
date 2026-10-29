@@ -1,5 +1,6 @@
 import { lstatSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { byText } from "./knowledge.ts";
 
 export interface ExpiryRecord { published: string; expires: string | null; repo?: string }
 export type ExpiryMap = Record<string, ExpiryRecord>;
@@ -54,6 +55,33 @@ export function recordPublish(dir: string, name: string, keep: boolean, keepDays
  map[name] = rec;
  writeExpiry(dir, map);
  return rec;
+}
+
+/** A live published page with its repo (plan 20261029_1436 P2): what the Base tab lists. */
+export interface PublishedPage { name: string; repo: string; published: string }
+
+/**
+ * The published pages that carry a repo and have not expired, newest first (ties by name). Pages
+ * published before the repo tag have no repo in their meta and stay out of the Base list; the
+ * sweep, not this reader, deletes expired files — here they are just hidden.
+ */
+export function publishedPages(dir: string, now: Date): PublishedPage[] {
+ let names: string[] = [];
+ try {
+  names = readdirSync(dir, { withFileTypes: true }).filter(e => e.isFile() && !e.name.startsWith(".")).map(e => e.name);
+ } catch {
+  return [];
+ }
+ const map = readExpiry(dir);
+ const out: PublishedPage[] = [];
+ for (const name of names) {
+  const rec = map[name];
+  if (typeof rec?.repo !== "string" || rec.repo === "") continue;
+  const at = rec.expires == null ? null : Date.parse(rec.expires);
+  if (typeof at === "number" && Number.isFinite(at) && at < now.getTime()) continue;
+  out.push({ name, repo: rec.repo, published: rec.published });
+ }
+ return out.toSorted((a, b) => (a.published === b.published ? byText(a.name, b.name) : a.published < b.published ? 1 : -1));
 }
 
 export function sweepPages(dir: string, keepDays: number, now: Date): { removed: string[] } {
