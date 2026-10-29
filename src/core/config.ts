@@ -322,7 +322,7 @@ export function configFile(home = homedir()): string {
 /**
  * The config as of now. Each call stats `file`; when its mtime changed it calls `load()`.
  * A failed reload keeps the last good config and reports one line through `onError`, so a
- * broken edit never fails open or crashes a running guard. Used by the omp adapter per guarded call.
+ * broken edit never fails open or crashes a running guard. Used by a harness adapter per guarded call.
  */
 export function reloadingConfig(
 	initial: Config,

@@ -335,7 +335,8 @@ test("a subagent's task call is never drained", async () => {
 	writeFileSync(SESSION_FILE, BIG);
 	await host.emit("agent_end", {}, ctx);
 	const r = (await host.emit("tool_call", TASK_CALL, ctx)) as Array<{ block?: boolean; reason?: string }>;
-	expect(r).toEqual([]); // no block, and no rollover-pending refusal
+	// P4i: the sub's spawn still meets the spawn gates (here the Allowed list), but never a rollover-pending refusal.
+	expect(r.map(d => d.reason ?? "").join("\n")).not.toContain("rollover pending");
 });
 
 /** A config over the rollover threshold with a short exit grace, so the timer fires inside the test. */
