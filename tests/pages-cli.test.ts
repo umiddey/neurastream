@@ -72,11 +72,47 @@ test("publish without keep lists an expiry date, and --keep on a republish flips
  const published = await logged(() => runPages(["publish", src], { home, tailscale, clock }));
  expect(published.code).toBe(0);
  expect(published.lines).toEqual(["http://machine.example:7788/source.html", "expires 2026-11-09"]);
- expect((await logged(() => runPages(["list"], { home, tailscale, clock }))).lines).toEqual(["source.html  expires 2026-11-09"]);
+ expect((await logged(() => runPages(["list"], { home, tailscale, clock }))).lines).toEqual(["source.html  other  expires 2026-11-09"]);
  const kept = await logged(() => runPages(["publish", src, "--keep"], { home, tailscale, clock }));
  expect(kept.lines[1]).toBe("kept");
- expect((await logged(() => runPages(["list"], { home, tailscale, clock }))).lines).toEqual(["source.html  kept"]);
+ expect((await logged(() => runPages(["list"], { home, tailscale, clock }))).lines).toEqual(["source.html  other  kept"]);
 });
+// P1 (plan 20261029_1436): every publish records the page's repo in the pages meta — the file's
+// repo resolved to its main checkout (a linked worktree's page belongs to the main checkout's
+// name, never the worktree dir name), "other" outside any repo, --repo wins.
+function git(args: string[], cwd: string): void {
+	const r = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+	if (r.exitCode !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr.toString()}`);
+}
+
+test("publish records the repo: main checkout name, worktree maps to it, no repo is other, --repo wins", async () => {
+	const home = mkdtempSync(join(tmpdir(), "pages-cli-repo-"));
+	const main = mkdtempSync(join(tmpdir(), "pages-main-checkout-"));
+	git(["init", "-q"], main);
+	git(["remote", "add", "origin", "https://example.com/acme/widgets.git"], main);
+	git(["-c", "user.email=t@example.test", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"], main);
+	const wtParent = mkdtempSync(join(tmpdir(), "pages-wt-parent-"));
+	const wt = join(wtParent, "neighbor-wt"); // deliberately not named widgets
+	git(["worktree", "add", "-q", wt, "HEAD"], main);
+	const now = new Date("2026-10-29T12:00:00.000Z");
+	const clock = () => now;
+	writeFileSync(join(main, "a.html"), "<h1>a</h1>");
+	expect(await runPages(["publish", join(main, "a.html")], { home, tailscale, clock })).toBe(0);
+	writeFileSync(join(wt, "b.html"), "<h1>b</h1>");
+	expect(await runPages(["publish", join(wt, "b.html")], { home, tailscale, clock })).toBe(0);
+	const bare = mkdtempSync(join(tmpdir(), "pages-no-repo-"));
+	writeFileSync(join(bare, "c.html"), "<h1>c</h1>");
+	expect(await runPages(["publish", join(bare, "c.html")], { home, tailscale, clock })).toBe(0);
+	expect(await runPages(["publish", join(main, "a.html"), "--repo", "acme-override", "--force"], { home, tailscale, clock })).toBe(0);
+	expect(await runPages(["publish", join(main, "a.html"), "--repo", ""], { home, tailscale, clock })).toBe(2);
+	const lines = (await logged(() => runPages(["list"], { home, tailscale, clock }))).lines.toSorted();
+	expect(lines).toEqual([
+		"a.html  acme-override  expires 2026-11-13",
+		"b.html  widgets  expires 2026-11-13",
+		"c.html  other  expires 2026-11-13",
+	]);
+});
+
 test("list removes an expired page and the server answers 404", async () => {
  const home = mkdtempSync(join(tmpdir(), "pages-cli-gone-"));
  DIRS.push(home);

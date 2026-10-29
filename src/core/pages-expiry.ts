@@ -1,7 +1,7 @@
 import { lstatSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-export interface ExpiryRecord { published: string; expires: string | null }
+export interface ExpiryRecord { published: string; expires: string | null; repo?: string }
 export type ExpiryMap = Record<string, ExpiryRecord>;
 
 const RECORD = ".expiry.json";
@@ -13,7 +13,10 @@ function expiryRecord(value: unknown): ExpiryRecord | null {
  const expires = "expires" in value ? value.expires : undefined;
  if (typeof published !== "string") return null;
  if (expires !== null && typeof expires !== "string") return null;
- return { published, expires };
+ const rec: ExpiryRecord = { published, expires };
+ const repo = "repo" in value ? value.repo : undefined;
+ if (typeof repo === "string" && repo) rec.repo = repo;
+ return rec;
 }
 
 export function readExpiry(dir: string): ExpiryMap {
@@ -39,12 +42,14 @@ function writeExpiry(dir: string, map: ExpiryMap): void {
  renameSync(tmp, join(dir, RECORD));
 }
 
-export function recordPublish(dir: string, name: string, keep: boolean, keepDays: number, now: Date): ExpiryRecord {
+export function recordPublish(dir: string, name: string, keep: boolean, keepDays: number, now: Date, repo?: string): ExpiryRecord {
  const map = readExpiry(dir);
  const existing = map[name];
  const rec: ExpiryRecord = {
   published: now.toISOString(),
   expires: keep || existing?.expires === null ? null : new Date(now.getTime() + keepDays * DAY_MS).toISOString(),
+  // An explicit repo replaces the old one (--repo wins); without one a republish keeps its repo.
+  repo: repo ?? existing?.repo,
  };
  map[name] = rec;
  writeExpiry(dir, map);
