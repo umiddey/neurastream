@@ -117,6 +117,7 @@ export function loadPlans(cfg: Config): PlanNode[] {
 
 /** Connected chains: B joins A when B's Goal names A's stem; the root is the oldest member. */
 export function chains(plans: PlanNode[], selfRepo: string | null): Chain[] {
+	if (selfRepo !== null) selfRepo = realRepo(selfRepo);
 	const up = new Map<string, string>();
 	const find = (s: string): string => {
 		let root = s;
@@ -367,6 +368,7 @@ interface ProductRow {
  * in metrics.jsonl shows its last value before vs its first value after the release.
  */
 export function releasesReport(runs: Run[], plans: PlanNode[], selfRepo: string | null, days: number, now: number, tags: ReleaseTag[], events: Ev[]): ReleasesReport {
+	if (selfRepo !== null) selfRepo = realRepo(selfRepo);
 	const span = days * DAY;
 	const products: ProductRow[] = [];
 	const merges: { repo: string; mr: string; ts: number }[] = [];
