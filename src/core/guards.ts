@@ -638,9 +638,12 @@ function priorityIdle(p: Plan, plans: Plan[]): boolean {
  * Proof is either the higher plan's own `Waits on: <plan>` line for a plan still open in the index
  * (then it is not idle at all) or a `Priority skip: <path> — owner: "<words>"` line whose quoted
  * words (≥ 4, normalised) appear in one of `messages` (the owner's recorded words of the last
- * 24 h; `now` is the current unix seconds). In tier full (`cfg`) a `Priority skip: <path> —
- * Main: "<reason>"` line with ≥ 4 words is proof too; without `cfg` the refusal behaviour is the
- * pre-tier one. Any other skip line is refused.
+ * 24 h; `now` is the current unix seconds). A higher plan whose branch carries an open MR in the
+ * cached forge list (fresh within `review.mr_cache_minutes`; the one list the main-start sweep
+ * and pendingWorkProblem maintain — never queried here) is landing, not idle: no proof needed.
+ * A stale cache proves nothing, so the refusal stands (I-20261029-435). In tier full (`cfg`) a
+ * `Priority skip: <path> — Main: "<reason>"` line with ≥ 4 words is proof too; without `cfg` the
+ * refusal behaviour is the pre-tier one. Any other skip line is refused.
  * `staffed === undefined` means the caller had no running-job info (CLI spawn without it): never
  * refuse. Plans already named by this call never block it.
  */
@@ -657,9 +660,12 @@ export function priorityProblem(plans: Plan[], named: string[], staffed: string[
 		if (plan && why) skipLines[plan] = why;
 	}
 	const skips: PrioritySkip[] = [];
+	const cache = readMrCache();
+	const fresh = cfg ? now - cache.at < cfg.review.mr_cache_minutes * 60 : false;
 	for (let i = 0; i < higher.length; i++) {
 		const p = higher[i]!;
 		if (!priorityIdle(p, plans) || staffed.includes(p.file)) continue;
+		if (fresh && p.branch && (cache.repos[p.repo] ?? []).some(mr => mr.branch === p.branch)) continue;
 		const why = skipLines[p.file];
 		// Tier full (20261025_1940 P2): Main's own >= 4-word reason is proof enough; every other
 		// tier refuses it exactly as before — only the owner's recorded words let a skip through.
