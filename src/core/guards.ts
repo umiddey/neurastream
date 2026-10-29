@@ -193,9 +193,8 @@ export type Spawner = "main" | "sub";
  */
 export function reviewPassProblem(named: string[], brief: string, agent: string, cfg: Config, spawner: Spawner): string | null {
 	const reviews = readPlanReviews();
-	const reviewLines = brief.split("\n").filter(l => l.startsWith("Plan review:"));
 	for (const file of named) {
-		if (spawner === "main" && cfg.review.agents.includes(agent) && reviewLines.some(l => l.slice("Plan review:".length).trim() === file)) continue;
+		if (isReviewSpawn(file, brief, agent, cfg, spawner)) continue;
 		if (!q.reviewApplies(file, cfg.review.since)) continue;
 		const rec = reviews[file];
 		if (!rec) return `plan ${file} has no current reviewer PASS. Spawn a reviewer with templates/plan-review-brief.md.`;
@@ -225,6 +224,75 @@ function recordReviews(e: PlanEditEvent, cfg: Config): void {
 		};
 	}
 	writePlanReviews(reviews, cfg);
+}
+
+/** P4f: a `Plan review: <plan>` brief from Main, by a configured review agent (the exemption from the plan gate). */
+function isReviewSpawn(file: string, brief: string, agent: string, cfg: Config, spawner: Spawner): boolean {
+	const reviewLines = brief.split("\n").filter(l => l.startsWith("Plan review:"));
+	return spawner === "main" && cfg.review.agents.includes(agent) && reviewLines.some(l => l.slice("Plan review:".length).trim() === file);
+}
+
+/** P4f: the review role of one task: the plan it reviews (null for other spawns). A review spawn needs a name, the name keys its lock, and it reviews one plan. */
+function reviewRole(name: string | undefined, named: string[], brief: string, agent: string, cfg: Config, spawner: Spawner): { plan: string | null; problem: string | null } {
+	const reviewed = named.filter(f => isReviewSpawn(f, brief, agent, cfg, spawner));
+	if (reviewed.length > 1) return { plan: null, problem: "a review spawn reviews one plan; split the spawn." };
+	if (reviewed.length && !name) return { plan: null, problem: "a review spawn needs a name (the task name keys its review lock)." };
+	return { plan: reviewed[0] ?? null, problem: null };
+}
+
+/** P4f: the named review spawns, spawn name → the plan it reviews (review-spawns.json in the state dir). */
+function reviewSpawnsFile(): string {
+	return path.join(q.STATE_DIR, "review-spawns.json");
+}
+
+function readReviewSpawns(): Record<string, string> {
+	try {
+		const parsed = JSON.parse(readFileSync(reviewSpawnsFile(), "utf8"));
+		return parsed && typeof parsed === "object" ? parsed : {};
+	} catch {
+		return {};
+	}
+}
+
+/** Set (plan) or drop (null) a named spawn's review role; a non-review spawn under the same name drops it. */
+function recordReviewSpawn(name: string, plan: string | null): void {
+	const spawns = readReviewSpawns();
+	if (plan) spawns[name] = plan;
+	else delete spawns[name];
+	mkdirSync(q.STATE_DIR, { recursive: true });
+	writeFileSync(reviewSpawnsFile(), `${JSON.stringify(spawns, null, 2)}\n`);
+}
+
+/** The plan a review spawn (by agentId) is locked to, or null when the caller is not a named review spawn. */
+function reviewSpawnPlan(agentId: string): string | null {
+	const plan = readReviewSpawns()[agentId];
+	return typeof plan === "string" ? plan : null;
+}
+
+/** P4f: the secret-read deny: credential dirs under home, and env files. */
+function secretPath(p: string, cfg: Config, cwd: string): boolean {
+	const home = cfg.paths.home;
+	const abs = path.resolve(cwd, p.startsWith("~/") ? path.join(home, p.slice(2)) : p);
+	const base = path.basename(abs);
+	const inCredDir = [".config", ".ssh", ".gnupg", ".aws"].some(d => abs.startsWith(path.join(home, d) + path.sep));
+	return inCredDir || base.startsWith(".env") || base.endsWith(".env");
+}
+
+/** P4f: a named review spawn may read, use todo, and edit only its own plan. Shell, spawn, cancel and MCP tools are denied; so are secret reads. */
+function reviewLockProblem(e: ToolEvent, cfg: Config): string | null {
+	const plan = reviewSpawnPlan(e.agentId ?? "");
+	if (!plan) return null;
+	const input = e.input ?? {};
+	if (cfg.guards.write_tools.includes(e.tool)) {
+		const writes = [...(e.writes ?? []), ...q.writeTargets(e.tool, input, e.cwd, [])];
+		if (writes.length && writes.every(w => path.resolve(e.cwd, w) === path.resolve(plan))) return null;
+		return `review spawn ${e.agentId} may edit only its plan ${plan}.`;
+	}
+	if (cfg.guards.read_tools.includes(e.tool) || e.tool === "todo") {
+		const reads = [...(e.paths ?? []), ...q.touchedPaths(e.tool, input, e.cwd)];
+		return reads.some(p => secretPath(p, cfg, e.cwd)) ? `review spawn ${e.agentId} may not read credentials or env files.` : null;
+	}
+	return `review spawn ${e.agentId} may only read, use todo, and edit its plan; ${e.tool} is denied.`;
 }
 
 function spawnsFile(): string {
@@ -696,6 +764,7 @@ export function spawnProblem(
 	runner: CommandRunner = defaultRunner,
 	spawner: Spawner = "main",
 ): string | null {
+	const roles: Record<string, string | null> = {};
 	const tasks = Array.isArray(input?.tasks) ? input.tasks : [];
 	const context = String(input?.context ?? "");
 	const allowed = q.allowedAgents();
@@ -712,6 +781,9 @@ export function spawnProblem(
 		const pending = pendingWorkProblem(plans, `${context}\n${String(t?.task ?? "")}`, cfg, runner);
 		if (pending) return `${label}: ${pending}`;
 		// The task's own `Call budget:` line wins over the shared context's.
+		const role = reviewRole(t?.name, plans, `${context}\n${String(t?.task ?? "")}`, String(t?.agent ?? ""), cfg, spawner);
+		if (role.problem) return `${label}: ${role.problem}`;
+		if (t?.name) roles[label] = role.plan;
 		const review = reviewPassProblem(plans, `${context}\n${String(t?.task ?? "")}`, String(t?.agent ?? ""), cfg, spawner);
 		if (review) return `${label}: ${review}`;
 		const budget = briefBudget(String(t?.task ?? "")) ?? shared;
@@ -744,7 +816,9 @@ export function spawnProblem(
 		cfg,
 		String((tasks[0] && (tasks[0].name ?? tasks[0].agent)) ?? "task"),
 	);
-	return gate;
+	if (gate) return gate;
+	for (const [name, plan] of Object.entries(roles)) recordReviewSpawn(name, plan);
+	return null;
 }
 
 function runBlockers(plan: Plan, hit: string[], e: ToolEvent, cfg: Config): string | null {
@@ -787,13 +861,14 @@ function runsCloser(input: Record<string, unknown>): boolean {
 	});
 }
 
+const bin = (w: string | undefined) => (w ?? "").replace(/^["']+|["']+$/g, "").split("/").pop() ?? "";
+
 // True when a command segment starts the owner page (plan 20261024_2230 P3c): `neurastream ui`
 // serves it and `systemctl --user start/restart/enable` of neurastream-ui relaunches it — the
 // owner's systemd moves, never an agent's, unlocked or not. Segment splitting and launcher
 // skipping match runsCloser, so `sh -c "neurastream ui"` and `sudo systemctl --user ...` are seen.
 function startsOwnerUi(input: Record<string, unknown>): boolean {
 	const text = Object.values(input).filter((v): v is string => typeof v === "string").join("\n");
-	const bin = (w: string | undefined) => (w ?? "").replace(/^["']+|["']+$/g, "").split("/").pop() ?? "";
 	return text.split(/&&|\|\||;|\||\n|\$\(|`/).some(seg => {
 		const words = seg.trim().split(/\s+/).filter(Boolean).map(w => w.replace(/^["'(]+|["')]+$/g, ""));
 		let i = 0;
@@ -1086,6 +1161,11 @@ export const MAIN_PLAN_FILE = /\/docs\/plans\/(?!archive\/)[^/]+\.md$/;
  * plus, for Main, the spawn gates and the project-file edit window.
  */
 export function checkTool(e: ToolEvent, cfg: Config): Decision {
+	const lock = e.agent === "sub" ? reviewLockProblem(e, cfg) : null;
+	if (lock) {
+		log(cfg.paths.plan_guard_log, `BLOCK ${e.agent}:${e.agentId} tool=${e.tool} review lock: ${lock}`);
+		return deny(`plan-guard: ${lock}`);
+	}
 	if (cfg.guards.skip_tools.includes(e.tool)) return ALLOW;
 	const input = e.input ?? {};
 	// Starting the owner page (plan 20261024_2230 P3c) is the owner's systemd move, never an
@@ -1292,6 +1372,11 @@ export function checkSpawn(e: SpawnEvent, cfg: Config, runner: CommandRunner = d
 	log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${pendingWork}`)
 	return deny(`main-guard: ${pendingWork}`)
 }
+	const role = reviewRole(e.name, named, e.brief, e.agent, cfg, "main");
+	if (role.problem) {
+		log(cfg.paths.plan_guard_log, `BLOCK ${e.agent} ${e.name ?? "(unnamed)"} review spawn: ${role.problem}`);
+		return deny(`main-guard: ${role.problem}`);
+	}
 	const review = reviewPassProblem(named, e.brief, e.agent, cfg, "main");
 	if (review) {
 		log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${review}`);
@@ -1313,6 +1398,7 @@ export function checkSpawn(e: SpawnEvent, cfg: Config, runner: CommandRunner = d
 	const staffing: Record<string, string[]> = {};
 	for (const f of named) staffing[f] = [e.agent];
 	recordSpawns(named, staffing);
+	if (e.name) recordReviewSpawn(e.name, role.plan);
 	return ALLOW;
 }
 
@@ -1415,6 +1501,10 @@ export function checkPlanEdit(e: PlanEditEvent, cfg: Config): PlanEditDecision {
 			reason: `plan-guard: a PLAN REVIEW line in ${e.path} does not match "- [<date> <time> <name>: ]PLAN REVIEW: PASS|FAIL — …". The file was restored.`,
 			restore: { path: e.path, text: e.before },
 		};
+	}
+	if (e.agent === "sub" && newProgressEntries(e.before, e.after).some(b => REVIEW_LINE.test(b)) && reviewSpawnPlan(e.agentId ?? "") !== e.path) {
+		log(cfg.paths.plan_guard_log, `RESTORE ${e.path} review line from a spawn that is not its named review spawn`);
+		return { allow: false, reason: `plan-guard: a PLAN REVIEW line counts only from the named review spawn of ${e.path}; the file was restored.`, restore: { path: e.path, text: e.before } };
 	}
 	recordFindings(e, cfg);
 	recordReviews(e, cfg);

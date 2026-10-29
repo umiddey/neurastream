@@ -65,11 +65,18 @@ function decide(event: string, p: Record<string, unknown>, cfg: Config): Decisio
 				invocationKind: asString(p.invocationKind, "task"),
 				brief: asString(p.brief ?? p.context ?? p.task),
 				...(p.runningJobs === undefined ? {} : { runningJobs: asStringList(p.runningJobs) }),
+				...(p.name === undefined ? {} : { name: asString(p.name) }),
 			};
 			return checkSpawn(e, cfg);
 		}
 		case "plan-edit": {
-			const e: PlanEditEvent = { path: asString(p.path), before: asString(p.before), after: asString(p.after), agent: asAgent(p.agent) };
+			const e: PlanEditEvent = {
+				path: asString(p.path),
+				before: asString(p.before),
+				after: asString(p.after),
+				agent: asAgent(p.agent),
+				...(p.agentId === undefined ? {} : { agentId: asString(p.agentId) }),
+			};
 			return checkPlanEdit(e, cfg);
 		}
 		case "stop": {

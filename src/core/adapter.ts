@@ -116,6 +116,8 @@ export interface SpawnEvent {
 	brief: string;
 	/** Labels of the harness's own running background jobs; undefined when the caller has no job info. */
 	runningJobs?: string[];
+	/** The spawn's name (its task name); keys the review lock of a named review spawn (P4f). */
+	name?: string;
 }
 
 export interface InjectEvent {
@@ -128,6 +130,8 @@ export interface PlanEditEvent {
 	before: string;
 	after: string;
 	agent: "main" | "sub";
+	/** The sub's agent id; a review spawn's PLAN REVIEW line counts only from its own id (P4f). */
+	agentId?: string;
 }
 
 export interface StopEvent {

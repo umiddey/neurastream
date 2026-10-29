@@ -2,7 +2,7 @@
 // Everything runs in-process against temp dirs; no live state dir, no real forge.
 
 import { afterAll, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolEvent } from "../src/core/adapter.ts";
@@ -120,8 +120,8 @@ applyQueueEnv(gcfg);
 const gRunner: CommandRunner = args =>
 	args[0] === "git" ? { code: 1, stdout: "", stderr: "no origin", missing: false } : { code: 127, stdout: "", stderr: "", missing: true };
 
-function gspawn(brief: string, agent = "worker", cfg = gcfg) {
-	return checkSpawn({ agent, invocationKind: "task", brief }, cfg, gRunner);
+function gspawn(brief: string, agent = "worker", cfg = gcfg, name?: string) {
+	return checkSpawn({ agent, invocationKind: "task", brief, ...(name === undefined ? {} : { name }) }, cfg, gRunner);
 }
 
 /** A fresh Progress entry so the plan's progress hash is spendable again. */
@@ -129,10 +129,17 @@ function freshProgress(): void {
 	writeFileSync(LOCKED, `${readFileSync(LOCKED, "utf8")}- more progress\n`);
 }
 
-/** A subagent edit adding `entry` (the guard's record path); returns the decision. */
-function reviewerEdit(entry: string) {
+/** The named reviewer registry entry for LOCKED (P4f): written directly, so no spawn state is touched; idempotent. */
+function registerReviewer(): void {
+	mkdirSync(GSTATE, { recursive: true });
+	writeFileSync(REVIEW_SPAWNS, JSON.stringify({ rev1: LOCKED }));
+}
+
+/** A subagent edit adding `entry` as spawn `agentId`'s plan edit (the guard's record path); returns the decision. */
+function reviewerEdit(entry: string, agentId = "rev1") {
+	registerReviewer();
 	const before = readFileSync(LOCKED, "utf8");
-	return checkPlanEdit({ path: LOCKED, before, after: before + entry, agent: "sub" }, gcfg);
+	return checkPlanEdit({ path: LOCKED, before, after: before + entry, agent: "sub", agentId }, gcfg);
 }
 
 const PASS_ENTRY = "\n- PLAN REVIEW: PASS — redundant: none — inefficient: none — insecure: none — MRs: none\n  Findings: none\n";
@@ -193,7 +200,7 @@ test("a review spawn is exempt without a record", () => {
 	rmSync(REVIEWS, { force: true });
 	rmSync(join(GSTATE, "incidents.jsonl"), { force: true }); // the FAIL test's finding is an open incident; this test is about the PASS gate
 	freshProgress();
-	expect(gspawn(`Plan review: ${LOCKED}\nReview P1 against its phases.`, "reviewer")).toMatchObject({ allow: true });
+	expect(gspawn(`Plan review: ${LOCKED}\nReview P1 against its phases.`, "reviewer", gcfg, "rev1")).toMatchObject({ allow: true });
 });
 
 // --- P4c: the PASS gate honours review.since (plans stamped before the cutover are exempt) ---
@@ -481,3 +488,99 @@ test("Main's shell launch of a bypass agent naming an unreviewed plan is denied"
 });
 
 afterAll(() => rmSync(TMP, { recursive: true, force: true }));
+
+// P4f (plan 20261028_1600): a PASS counts only from the plan's named review spawn, and that spawn
+// is locked to reading, todo, and editing its own plan. The registry is review-spawns.json.
+const REVIEW_SPAWNS = join(GSTATE, "review-spawns.json");
+const reviewSpawns = (): Record<string, string> => (existsSync(REVIEW_SPAWNS) ? JSON.parse(readFileSync(REVIEW_SPAWNS, "utf8")) : {});
+const reviewsNow = (): Record<string, { verdict: string }> => (existsSync(REVIEWS) ? JSON.parse(readFileSync(REVIEWS, "utf8")).reviews : {});
+const spawnedAs = (tool: string, input: Record<string, unknown>, agentId: string, extra: Record<string, unknown> = {}): ToolEvent =>
+	({ tool, input, cwd: REPO, agent: "sub", agentId, calls: 0, paths: [], writes: [], command: String(input.command ?? ""), ...extra }) as ToolEvent;
+
+test("a named review spawn of its plan is registered and exempt", () => {
+	rmSync(REVIEW_SPAWNS, { force: true });
+	freshProgress();
+	expect(gspawn(`Plan review: ${LOCKED}\nReview P1 of ${LOCKED}.`, "reviewer", gcfg, "rev1")).toMatchObject({ allow: true });
+	expect(reviewSpawns()).toEqual({ rev1: LOCKED });
+});
+
+test("a review spawn with no name is denied", () => {
+	freshProgress();
+	expect(gspawn(`Plan review: ${LOCKED}\nReview P1 of ${LOCKED}.`, "reviewer")).toMatchObject({
+		allow: false,
+		reason: expect.stringContaining("needs a name"),
+	});
+});
+
+test("a PASS from a spawn that is not the plan's review spawn is restored and not recorded", () => {
+	rmSync(REVIEWS, { force: true });
+	const before = readFileSync(LOCKED, "utf8");
+	const d = checkPlanEdit({ path: LOCKED, before, after: before + PASS_ENTRY, agent: "sub", agentId: "rev2" }, gcfg);
+	expect(d).toMatchObject({ allow: false, restore: { path: LOCKED, text: before } });
+	expect(reviewsNow()[LOCKED]).toBeUndefined();
+});
+
+test("the named review spawn's PASS records", () => {
+	rmSync(REVIEWS, { force: true });
+	freshProgress();
+	registerReviewer();
+	const before = readFileSync(LOCKED, "utf8");
+	expect(checkPlanEdit({ path: LOCKED, before, after: before + PASS_ENTRY, agent: "sub", agentId: "rev1" }, gcfg)).toMatchObject({ allow: true });
+	expect(reviewsNow()[LOCKED]).toMatchObject({ verdict: "PASS" });
+});
+
+test("a non-review spawn reusing the review name drops the entry and its lock", () => {
+	registerReviewer();
+	freshProgress();
+	expect(gspawn(`Work ${LOCKED} on P1`, "worker", gcfg, "rev1")).toMatchObject({ allow: true });
+	expect(reviewSpawns()).toEqual({});
+	expect(checkTool(spawnedAs("bash", { command: "echo hi" }, "rev1"), gcfg)).toMatchObject({ allow: true });
+});
+
+test("a review spawn's shell, spawn, cancel and MCP tools are denied", () => {
+	for (const [tool, input] of [
+		["bash", { command: "echo hi" }],
+		["eval", { code: "1" }],
+		["node_repl", { code: "1" }],
+		["task", { tasks: [] }],
+		["cancel_job", {}],
+		["mcp__x_y", {}],
+	] as const) {
+		registerReviewer();
+		const d = checkTool(spawnedAs(tool, { ...input }, "rev1"), gcfg);
+		expect(`${tool}: ${d.allow}`).toBe(`${tool}: false`);
+		expect(d.reason).toMatch(/review spawn/);
+	}
+});
+
+test("a review spawn may edit only its own plan", () => {
+	registerReviewer();
+	expect(checkTool(spawnedAs("edit", {}, "rev1"), gcfg).reason).toMatch(/review spawn/);
+	expect(checkTool(spawnedAs("edit", {}, "rev1", { writes: [join(REPO, "src/x.ts")] }), gcfg).reason).toMatch(/review spawn/);
+	expect(checkTool(spawnedAs("write", {}, "rev1", { writes: [join(REPO, "docs/plans/20261030_0200_other.md")] }), gcfg).reason).toMatch(/review spawn/);
+	expect(checkTool(spawnedAs("edit", {}, "rev1", { writes: [LOCKED] }), gcfg).reason).not.toMatch(/review spawn/);
+});
+
+test("a review spawn's read, grep and todo calls are allowed", () => {
+	registerReviewer();
+	const src = join(REPO, "src/a.ts");
+	for (const tool of ["read", "grep", "glob", "find", "todo"]) {
+		const d = checkTool(spawnedAs(tool, { path: src }, "rev1", { paths: [src] }), gcfg);
+		expect(`${tool}: ${d.reason}`).not.toMatch(/review spawn/);
+	}
+});
+
+test("a review spawn may not read credentials or env files", () => {
+	registerReviewer();
+	for (const p of [join(GHOME, ".config/gateforge/x/pin.env"), join(GHOME, ".ssh/id_ed25519"), join(REPO, ".env.local")]) {
+		const d = checkTool(spawnedAs("read", { path: p }, "rev1", { paths: [p] }), gcfg);
+		expect(`${p}: ${d.allow}`).toBe(`${p}: false`);
+		expect(d.reason).toMatch(/review spawn/);
+	}
+});
+
+test("review reads count toward the sub call budget", () => {
+	registerReviewer();
+	const src = join(REPO, "src/a.ts");
+	expect(checkTool(spawnedAs("read", { path: src }, "rev1", { paths: [src], calls: gcfg.guards.sub_max_calls }), gcfg).allow).toBe(false);
+});

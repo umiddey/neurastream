@@ -935,7 +935,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 				try {
 					after = readFileSync(file, "utf8");
 				} catch {}
-				const d = checkPlanEdit({ path: file, before, after, agent: c.kind === "sub" ? "sub" : "main" }, cfg);
+				const d = checkPlanEdit({ path: file, before, after, agent: c.kind === "sub" ? "sub" : "main", agentId: id }, cfg);
 				if (!d.allow && d.restore) {
 					try {
 						if (d.restore.text === null) rmSync(d.restore.path, { force: true });
