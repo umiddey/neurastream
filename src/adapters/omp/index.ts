@@ -937,7 +937,10 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 				try {
 					after = readFileSync(file, "utf8");
 				} catch {}
-				const d = checkPlanEdit({ path: file, before, after, agent: c.kind === "sub" ? "sub" : "main", agentId: id }, cfg);
+				// agentId must be the agent identity (ctx.agent.id = spawn name for subs), not the
+				// tool-call id: matchReviewSpawn compares it with the registered review spawn name,
+				// and a toolCallId there made every named reviewer's verdict restore (2026-10-29).
+				const d = checkPlanEdit({ path: file, before, after, agent: c.kind === "sub" ? "sub" : "main", agentId: c.id ?? "main" }, cfg);
 				if (!d.allow && d.restore) {
 					try {
 						if (d.restore.text === null) rmSync(d.restore.path, { force: true });
