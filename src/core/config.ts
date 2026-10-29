@@ -107,6 +107,10 @@ export interface Config {
 		auto_close_min: number;
 		repo_index: string;
 		cancelled_rel: string;
+		/** How long a hold's `still true if` result is reused (src/core/waiting-check.ts). */
+		waiting_check_ttl_sec: number;
+		/** One hold check may run this long; a timeout is "unknown", never "stale". */
+		waiting_check_timeout_sec: number;
 	};
 	guards: {
 		sub_warn_calls: number;
