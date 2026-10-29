@@ -579,6 +579,22 @@ test("a review spawn may not read credentials or env files", () => {
 	}
 });
 
+test("a review spawn's suffixed sub agent id (rev1-2) keeps the review lock", () => {
+	registerReviewer();
+	const d = checkTool(spawnedAs("bash", { command: "echo hi" }, "rev1-2"), gcfg);
+	expect(d).toMatchObject({ allow: false });
+	expect(d.reason).toMatch(/review spawn/);
+});
+
+test("a review spawn may not read a configured notify secret outside the credential dirs", () => {
+	registerReviewer();
+	const hook = join(TMP, "hooks/discord-webhook");
+	const ncfg = { ...gcfg, notify: { ...gcfg.notify, discord_webhook_file: hook } };
+	const d = checkTool(spawnedAs("read", { path: hook }, "rev1", { paths: [hook] }), ncfg);
+	expect(d).toMatchObject({ allow: false });
+	expect(d.reason).toContain(hook);
+});
+
 test("review reads count toward the sub call budget", () => {
 	registerReviewer();
 	const src = join(REPO, "src/a.ts");

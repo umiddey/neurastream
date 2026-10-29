@@ -265,7 +265,9 @@ function recordReviewSpawn(name: string, plan: string | null): void {
 
 /** The plan a review spawn (by agentId) is locked to, or null when the caller is not a named review spawn. */
 function reviewSpawnPlan(agentId: string): string | null {
-	const plan = readReviewSpawns()[agentId];
+	const spawns = readReviewSpawns();
+	// A sub agent's id is its spawn name plus a -<digits> suffix (plan P4f gap): the shape staffedPlans already matches.
+	const plan = spawns[agentId] ?? spawns[agentId.replace(/-\d+$/, "")];
 	return typeof plan === "string" ? plan : null;
 }
 
