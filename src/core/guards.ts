@@ -141,6 +141,7 @@ interface PlanReview {
 	hash: string;
 	finding: string;
 	at: number;
+	by?: string;
 }
 
 function planReviewsFile(): string {
@@ -214,16 +215,35 @@ export function reviewPassProblem(named: string[], brief: string, agent: string,
 function recordReviews(e: PlanEditEvent, cfg: Config): void {
 	const entries = newProgressEntries(e.before, e.after).filter(b => REVIEW_LINE.test(b));
 	if (!entries.length) return;
+	const spawns = readReviewSpawns();
+	const found = matchReviewSpawn(spawns, e.agentId ?? "");
+	if (!found) return;
+	const { name, spawn } = found;
 	const reviews = readPlanReviews();
 	for (const block of entries) {
-		reviews[e.path] = {
-			verdict: REVIEW_LINE.exec(block)![1] === "PASS" ? "PASS" : "FAIL",
-			hash: reviewHash(e.after),
-			finding: findingsValue(block) ?? "",
-			at: nowSec(),
-		};
+		const repeat = spawn.verdicts > 0;
+		spawn.verdicts++;
+		const at = nowSec();
+		// Judged against the plan as the spawn first saw it (P4k): a plan that moved during the review cannot pass.
+		if (repeat) reviews[e.path] = { verdict: "FAIL", hash: spawn.hash, finding: "review spawn wrote 2 verdicts", at, by: name };
+		else if (reviewHash(e.after) !== spawn.hash) reviews[e.path] = { verdict: "FAIL", hash: spawn.hash, finding: "plan changed during review", at, by: name };
+		else reviews[e.path] = { verdict: REVIEW_LINE.exec(block)![1] === "PASS" ? "PASS" : "FAIL", hash: spawn.hash, finding: findingsValue(block) ?? "", at, by: name };
 	}
 	writePlanReviews(reviews, cfg);
+	writeReviewSpawns(spawns);
+}
+
+/** P4k backstop, at a sub agent's end: a named review spawn whose PLAN REVIEW line reached no edit (a path the write targets miss) is recorded here. Returns Main's note when the spawn wrote no verdict at all. */
+export function reviewSpawnEnd(agentId: string, cfg: Config): string | null {
+	const found = matchReviewSpawn(readReviewSpawns(), agentId);
+	if (!found || found.spawn.verdicts > 0) return null;
+	const { name, spawn } = found;
+	const after = readPlanText(spawn.plan);
+	if (newProgressEntries(spawn.text, after).some(b => REVIEW_LINE.test(b))) {
+		recordReviews({ path: spawn.plan, before: spawn.text, after, agent: "sub", agentId: name }, cfg);
+		return null;
+	}
+	return `${name} wrote no verdict on ${spawn.plan}.`;
 }
 
 /** P4f: a `Plan review: <plan>` brief from Main, by a configured review agent (the exemption from the plan gate). */
@@ -240,12 +260,19 @@ function reviewRole(name: string | undefined, named: string[], brief: string, ag
 	return { plan: reviewed[0] ?? null, problem: null };
 }
 
-/** P4f: the named review spawns, spawn name → the plan it reviews (review-spawns.json in the state dir). */
+/** P4f/P4k: the named review spawns, spawn name → its review role: the plan, the plan text and hash as the spawn first saw them, and the verdicts it wrote (review-spawns.json in the state dir). */
+interface ReviewSpawn {
+	plan: string;
+	text: string;
+	hash: string;
+	verdicts: number;
+}
+
 function reviewSpawnsFile(): string {
 	return path.join(q.STATE_DIR, "review-spawns.json");
 }
 
-function readReviewSpawns(): Record<string, string> {
+function readReviewSpawns(): Record<string, ReviewSpawn> {
 	try {
 		const parsed = JSON.parse(readFileSync(reviewSpawnsFile(), "utf8"));
 		return parsed && typeof parsed === "object" ? parsed : {};
@@ -254,21 +281,36 @@ function readReviewSpawns(): Record<string, string> {
 	}
 }
 
-/** Set (plan) or drop (null) a named spawn's review role; a non-review spawn under the same name drops it. */
-function recordReviewSpawn(name: string, plan: string | null): void {
-	const spawns = readReviewSpawns();
-	if (plan) spawns[name] = plan;
-	else delete spawns[name];
+function writeReviewSpawns(spawns: Record<string, ReviewSpawn>): void {
 	mkdirSync(q.STATE_DIR, { recursive: true });
 	writeFileSync(reviewSpawnsFile(), `${JSON.stringify(spawns, null, 2)}\n`);
 }
 
-/** The plan a review spawn (by agentId) is locked to, or null when the caller is not a named review spawn. */
-function reviewSpawnPlan(agentId: string): string | null {
+function readPlanText(file: string): string {
+	try {
+		return readFileSync(file, "utf8");
+	} catch {
+		return "";
+	}
+}
+
+/** Set (plan) or drop (null) a named spawn's review role; a non-review spawn under the same name drops it. */
+function recordReviewSpawn(name: string, plan: string | null): void {
 	const spawns = readReviewSpawns();
-	// A sub agent's id is its spawn name plus a -<digits> suffix (plan P4f gap): the shape staffedPlans already matches.
-	const plan = spawns[agentId] ?? spawns[agentId.replace(/-\d+$/, "")];
-	return typeof plan === "string" ? plan : null;
+	if (plan) {
+		const text = readPlanText(plan);
+		spawns[name] = { plan, text, hash: reviewHash(text), verdicts: 0 };
+	} else delete spawns[name];
+	writeReviewSpawns(spawns);
+}
+
+/** The review role an agent id belongs to: its spawn name, or the name without a -<digits> suffix (a sub agent's id, plan P4f gap). */
+function matchReviewSpawn(spawns: Record<string, ReviewSpawn>, agentId: string): { name: string; spawn: ReviewSpawn } | null {
+	for (const name of [agentId, agentId.replace(/-\d+$/, "")]) {
+		const spawn = Object.hasOwn(spawns, name) ? spawns[name] : undefined;
+		if (spawn && typeof spawn.plan === "string") return { name, spawn };
+	}
+	return null;
 }
 
 /** P4f: the secret-read deny: credential dirs under home, and env files. */
@@ -282,7 +324,7 @@ function secretPath(p: string, cfg: Config, cwd: string): boolean {
 
 /** P4f: a named review spawn may read, use todo, and edit only its own plan. Shell, spawn, cancel and MCP tools are denied; so are secret reads. */
 function reviewLockProblem(e: ToolEvent, cfg: Config): string | null {
-	const plan = reviewSpawnPlan(e.agentId ?? "");
+	const plan = matchReviewSpawn(readReviewSpawns(), e.agentId ?? "")?.spawn.plan ?? null;
 	if (!plan) return null;
 	const input = e.input ?? {};
 	if (cfg.guards.write_tools.includes(e.tool)) {
@@ -1504,7 +1546,7 @@ export function checkPlanEdit(e: PlanEditEvent, cfg: Config): PlanEditDecision {
 			restore: { path: e.path, text: e.before },
 		};
 	}
-	if (e.agent === "sub" && newProgressEntries(e.before, e.after).some(b => REVIEW_LINE.test(b)) && reviewSpawnPlan(e.agentId ?? "") !== e.path) {
+	if (e.agent === "sub" && newProgressEntries(e.before, e.after).some(b => REVIEW_LINE.test(b)) && matchReviewSpawn(readReviewSpawns(), e.agentId ?? "")?.spawn.plan !== e.path) {
 		log(cfg.paths.plan_guard_log, `RESTORE ${e.path} review line from a spawn that is not its named review spawn`);
 		return { allow: false, reason: `plan-guard: a PLAN REVIEW line counts only from the named review spawn of ${e.path}; the file was restored.`, restore: { path: e.path, text: e.before } };
 	}
@@ -1571,6 +1613,15 @@ export function findingsValue(block: string): string | null {
 // Main's plan text outside "## Progress" must rest on files Main read itself (planReadProblems).
 // An empty `before` means the plan file did not exist yet; a refusal then deletes it.
 function checkMainPlan(e: PlanEditEvent, cfg: Config): PlanEditDecision {
+	// A PLAN REVIEW line is a review spawn's verdict (P4k): Main writes none, so its edit is restored.
+	if (newProgressEntries(e.before, e.after).some(b => REVIEW_LINE.test(b))) {
+		log(cfg.paths.plan_guard_log, `RESTORE ${e.path} (Main wrote a review line)`);
+		return {
+			allow: false,
+			reason: `plan-guard: a PLAN REVIEW line is written only by the named review spawn of ${e.path}, never by Main. The file was restored.`,
+			restore: { path: e.path, text: e.before || null },
+		};
+	}
 	if (q.outsideProgress(e.after) === q.outsideProgress(e.before)) {
 		recordFindings(e, cfg, "main-finding");
 		return ALLOW;

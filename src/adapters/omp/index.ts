@@ -26,7 +26,7 @@ import { configFile, loadConfig, reloadingConfig, type Config } from "../../core
 import { checkWrite, deferSteer, type WriteCheckConfig } from "../../core/write-check.ts";
 import { nowSec, strftime } from "../../core/clock.ts";
 import { runDetectors, runDetectorsGated, type DetectorInput } from "../../core/incident-detectors.ts";
-import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, newProgressEntries, planReadNote, recordMainResult, resetMainCalls, revertMainEdit, rekeySpawnFile } from "../../core/guards.ts";
+import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, newProgressEntries, planReadNote, recordMainResult, resetMainCalls, revertMainEdit, rekeySpawnFile, reviewSpawnEnd } from "../../core/guards.ts";
 import { rateLimitWait } from "../../core/rate-limit.ts";
 import { notifyProviders, postReply } from "../../core/notify.ts";
 import { loadKnownSecrets, redactSecrets, redactSummary } from "../../core/secret-redact.ts";
@@ -582,6 +582,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 	const pendingWrite = new Map<string, Map<string, string | null>>(); // toolCallId -> write-check snapshots; null: the file did not exist
 	const deferredWrite = new Map<string, Map<string, string | null>>(); // agent id -> files that added deferred findings this turn -> text before the first one (null: new file); judged at that session's own agent_end
 	const pendingRules = new Set<string>(); // repos Main worked in, rules to hand over at the next prompt
+	const pendingReviewNotes: string[] = []; // P4k: review spawns that ended with no verdict; Main hears at its next prompt
 	// Chat notify (plans 20261024_2155, 20261025_0130): the text a hand-back already posted
 	// (attempted) — one post per distinct text, never a retry loop. The reply itself comes from
 	// the stop/agent_end event, never the session file (session_stop fires BEFORE agent_end, and
@@ -817,12 +818,13 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 			if (r && rulesChanged(cfg, asString(c.id) || "main", r.path, r.text)) rules.push(`Repo rules (${r.path}):\n${r.text}`);
 		}
 		pendingRules.clear();
+		const reviewNotes = isMain(ctx) ? pendingReviewNotes.splice(0) : [];
 		const hostPrompt = asRecord(event).systemPrompt;
 		return {
 			systemPrompt: [...(Array.isArray(hostPrompt) ? hostPrompt : []), mainRules],
 			message: {
 				customType: "main-guard.queue",
-				content: [d.inject, notice, ...rules].filter(Boolean).join("\n\n"),
+				content: [d.inject, notice, ...reviewNotes, ...rules].filter(Boolean).join("\n\n"),
 				display: false,
 			},
 		};
@@ -1355,6 +1357,13 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		if (!isMain(ctx)) return;
 		if (asRecord(e).willContinue === true) return;
 		resetMainCalls();
+	});
+	// P4k backstop (plan 20261028_1600): a named review spawn that ends with no verdict recorded at its edit is judged here, from its own plan file; the note tells Main at its next prompt.
+	pi.on("agent_end", (_e, ctx) => {
+		const c = asCtx(ctx);
+		if (c.kind !== "sub" || !c.id) return;
+		const note = reviewSpawnEnd(c.id, cfg);
+		if (note) pendingReviewNotes.push(note);
 	});
 
 	// omp is really shutting down: the exit-grace fallback must not fire.

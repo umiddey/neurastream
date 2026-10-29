@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolEvent } from "../src/core/adapter.ts";
 import { loadConfig, reloadingConfig } from "../src/core/config.ts";
-import { checkPlanEdit, checkSpawn, checkTool, reviewHash } from "../src/core/guards.ts";
+import { checkPlanEdit, checkSpawn, checkTool, reviewHash, reviewSpawnEnd } from "../src/core/guards.ts";
 import type { CommandRunner } from "../src/core/mr-sweep.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { parsePlan, queueProblems, queueSummary, reviewAgentsProblem, type Plan } from "../src/core/queue/lib.ts";
@@ -132,7 +132,8 @@ function freshProgress(): void {
 /** The named reviewer registry entry for LOCKED (P4f): written directly, so no spawn state is touched; idempotent. */
 function registerReviewer(): void {
 	mkdirSync(GSTATE, { recursive: true });
-	writeFileSync(REVIEW_SPAWNS, JSON.stringify({ rev1: LOCKED }));
+	const text = readFileSync(LOCKED, "utf8");
+	writeFileSync(REVIEW_SPAWNS, JSON.stringify({ rev1: { plan: LOCKED, text, hash: reviewHash(text), verdicts: 0 } }));
 }
 
 /** A subagent edit adding `entry` as spawn `agentId`'s plan edit (the guard's record path); returns the decision. */
@@ -186,10 +187,10 @@ test("a recorded FAIL denies with the finding", () => {
 	});
 });
 
-test("Main writing the PASS line records nothing", () => {
+test("Main writing the PASS line is refused and records nothing", () => {
 	rmSync(REVIEWS, { force: true });
 	const before = readFileSync(LOCKED, "utf8");
-	expect(checkPlanEdit({ path: LOCKED, before, after: before + PASS_ENTRY, agent: "main" }, gcfg).allow).toBe(true);
+	expect(checkPlanEdit({ path: LOCKED, before, after: before + PASS_ENTRY, agent: "main" }, gcfg)).toMatchObject({ allow: false, restore: { path: LOCKED, text: before } });
 	expect(gspawn(`Work ${LOCKED} on P1`)).toMatchObject({
 		allow: false,
 		reason: expect.stringContaining("no current reviewer PASS"),
@@ -492,7 +493,7 @@ afterAll(() => rmSync(TMP, { recursive: true, force: true }));
 // P4f (plan 20261028_1600): a PASS counts only from the plan's named review spawn, and that spawn
 // is locked to reading, todo, and editing its own plan. The registry is review-spawns.json.
 const REVIEW_SPAWNS = join(GSTATE, "review-spawns.json");
-const reviewSpawns = (): Record<string, string> => (existsSync(REVIEW_SPAWNS) ? JSON.parse(readFileSync(REVIEW_SPAWNS, "utf8")) : {});
+const reviewSpawns = (): Record<string, { plan: string; verdicts: number }> => (existsSync(REVIEW_SPAWNS) ? JSON.parse(readFileSync(REVIEW_SPAWNS, "utf8")) : {});
 const reviewsNow = (): Record<string, { verdict: string }> => (existsSync(REVIEWS) ? JSON.parse(readFileSync(REVIEWS, "utf8")).reviews : {});
 const spawnedAs = (tool: string, input: Record<string, unknown>, agentId: string, extra: Record<string, unknown> = {}): ToolEvent =>
 	({ tool, input, cwd: REPO, agent: "sub", agentId, calls: 0, paths: [], writes: [], command: String(input.command ?? ""), ...extra }) as ToolEvent;
@@ -501,7 +502,7 @@ test("a named review spawn of its plan is registered and exempt", () => {
 	rmSync(REVIEW_SPAWNS, { force: true });
 	freshProgress();
 	expect(gspawn(`Plan review: ${LOCKED}\nReview P1 of ${LOCKED}.`, "reviewer", gcfg, "rev1")).toMatchObject({ allow: true });
-	expect(reviewSpawns()).toEqual({ rev1: LOCKED });
+	expect(reviewSpawns()).toMatchObject({ rev1: { plan: LOCKED, verdicts: 0 } });
 });
 
 test("a review spawn with no name is denied", () => {
@@ -599,4 +600,64 @@ test("review reads count toward the sub call budget", () => {
 	registerReviewer();
 	const src = join(REPO, "src/a.ts");
 	expect(checkTool(spawnedAs("read", { path: src }, "rev1", { paths: [src], calls: gcfg.guards.sub_max_calls }), gcfg).allow).toBe(false);
+});
+
+test("a review spawn that writes PASS then FAIL has two verdicts: the record is FAIL", () => {
+	rmSync(REVIEWS, { force: true });
+	registerReviewer();
+	const before = readFileSync(LOCKED, "utf8");
+	expect(checkPlanEdit({ path: LOCKED, before, after: before + PASS_ENTRY, agent: "sub", agentId: "rev1" }, gcfg)).toMatchObject({ allow: true });
+	const after = before + PASS_ENTRY;
+	expect(checkPlanEdit({ path: LOCKED, before: after, after: after + FAIL_ENTRY, agent: "sub", agentId: "rev1" }, gcfg)).toMatchObject({ allow: true });
+	expect(JSON.parse(readFileSync(REVIEWS, "utf8")).reviews[LOCKED]).toMatchObject({ verdict: "FAIL", finding: "review spawn wrote 2 verdicts", by: "rev1" });
+});
+
+test("a plan changed during review: the review spawn's PASS is recorded as FAIL", () => {
+	rmSync(REVIEWS, { force: true });
+	registerReviewer();
+	const original = readFileSync(LOCKED, "utf8");
+	const changed = `Edited during review.\n${original}`;
+	writeFileSync(LOCKED, changed);
+	expect(checkPlanEdit({ path: LOCKED, before: changed, after: changed + PASS_ENTRY, agent: "sub", agentId: "rev1" }, gcfg)).toMatchObject({ allow: true });
+	expect(JSON.parse(readFileSync(REVIEWS, "utf8")).reviews[LOCKED]).toMatchObject({ verdict: "FAIL", finding: "plan changed during review" });
+	writeFileSync(LOCKED, original);
+});
+
+test("Main may not add a PLAN REVIEW line: the edit is refused and restored", () => {
+	rmSync(REVIEWS, { force: true });
+	const before = readFileSync(LOCKED, "utf8");
+	expect(checkPlanEdit({ path: LOCKED, before, after: before + PASS_ENTRY, agent: "main" }, gcfg)).toMatchObject({
+		allow: false,
+		restore: { path: LOCKED, text: before },
+	});
+	expect(reviewsNow()[LOCKED]).toBeUndefined();
+});
+
+test("a review spawn's PASS that never reached an edit is recorded at its agent_end", () => {
+	rmSync(REVIEWS, { force: true });
+	registerReviewer();
+	const before = readFileSync(LOCKED, "utf8");
+	writeFileSync(LOCKED, before + PASS_ENTRY);
+	expect(reviewSpawnEnd("rev1", gcfg)).toBeNull();
+	expect(reviewsNow()[LOCKED]).toMatchObject({ verdict: "PASS", by: "rev1" });
+	writeFileSync(LOCKED, before);
+});
+
+test("a review spawn whose PASS was recorded at its edit gets nothing more at agent_end", () => {
+	rmSync(REVIEWS, { force: true });
+	registerReviewer();
+	const before = readFileSync(LOCKED, "utf8");
+	expect(checkPlanEdit({ path: LOCKED, before, after: before + PASS_ENTRY, agent: "sub", agentId: "rev1" }, gcfg)).toMatchObject({ allow: true });
+	const recorded = readFileSync(REVIEWS, "utf8");
+	expect(reviewSpawnEnd("rev1", gcfg)).toBeNull();
+	expect(readFileSync(REVIEWS, "utf8")).toBe(recorded);
+});
+
+test("a review spawn that ends with no verdict tells Main and records nothing", () => {
+	rmSync(REVIEWS, { force: true });
+	registerReviewer();
+	expect(reviewSpawnEnd("rev1", gcfg)).toBe(`rev1 wrote no verdict on ${LOCKED}.`);
+	expect(reviewSpawnEnd("rev1-2", gcfg)).toBe(`rev1 wrote no verdict on ${LOCKED}.`);
+	expect(reviewsNow()[LOCKED]).toBeUndefined();
+	expect(reviewSpawnEnd("worker-1", gcfg)).toBeNull();
 });
