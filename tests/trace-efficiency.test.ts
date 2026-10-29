@@ -327,6 +327,7 @@ describe("callId pairing", () => {
 
 describe("efficiencyRules maps the config", () => {
 	const home = mkdtempSync(join(tmpdir(), "ns-eff-cfg-"));
+	afterAll(() => rmSync(home, { recursive: true, force: true }));
 	mkdirSync(join(home, ".config/neurastream"), { recursive: true });
 	writeFileSync(join(home, ".config/neurastream/config.yml"), "traces:\n  efficiency:\n    repeat_read_min: 4\n");
 
@@ -345,6 +346,7 @@ describe("efficiencyRules maps the config", () => {
 		expect(() => loadConfig({ home, env: {}, }) ).not.toThrow();
 		const bad = (extra: string): string => {
 			const h = mkdtempSync(join(tmpdir(), "ns-eff-bad-"));
+			P2ROOTS.push(h);
 			mkdirSync(join(h, ".config/neurastream"), { recursive: true });
 			writeFileSync(join(h, ".config/neurastream/config.yml"), `traces:\n  efficiency:\n${extra}`);
 			try {

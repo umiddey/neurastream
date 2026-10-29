@@ -2,7 +2,7 @@
 // note id has no answer, `pages publish` refuses the page until then, and a publish that goes
 // through shows each answer by its note and closes the old ones.
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, type Config } from "../src/core/config.ts";
@@ -10,12 +10,15 @@ import { appendPageNotes, notesAnswersPath, pageNotesGate, readNotes } from "../
 import { publishPage } from "../src/core/pages-setup.ts";
 import { runNotes } from "../src/cli/notes.ts";
 
+const dirs: string[] = [];
 afterEach(() => {
+	for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 	delete process.env.QUEUE_STATE;
 });
 
 function setup(): { dir: string; cfg: Config } {
 	const dir = mkdtempSync(join(tmpdir(), "notes-check-"));
+	dirs.push(dir);
 	process.env.QUEUE_STATE = dir;
 	const cfg = loadConfig({ file: join(dir, "missing.yml"), home: dir, env: {} });
 	cfg.paths.queue_state = dir;

@@ -279,10 +279,23 @@ beforeAll(() => {
 	bothCfg();
 });
 
-afterAll(() => {
+// The stop path posts fire-and-forget (postReply().then chains append guard.log/metrics/incidents
+// after the await points), and postReply serializes through a module-level FIFO queue. Another
+// file's real timers (rate-limit-omp's resume waits) keep this process's loop turning past this
+// file's afterAll, so a chain landing after the rmSync would recreate the sandbox. Awaiting one
+// more enqueued post drains the FIFO: every earlier chain, its retry waits and its .then tails
+// have landed once the sentinel resolves. The sentinel targets the stopped fakes, so it returns
+// fast once the queue is empty.
+const compileCacheBefore = process.env.NODE_COMPILE_CACHE;
+process.env.NODE_COMPILE_CACHE = join(TMP, "compile-cache");
+
+afterAll(async () => {
 	discord.stop(true);
 	slack.stop(true);
+	await postReply("settle", bothCfg());
 	rmSync(TMP, { recursive: true, force: true });
+	if (compileCacheBefore === undefined) delete process.env.NODE_COMPILE_CACHE;
+	else process.env.NODE_COMPILE_CACHE = compileCacheBefore;
 	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
 	Object.assign(process.env, queueEnvBefore);
 });

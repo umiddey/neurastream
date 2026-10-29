@@ -16,8 +16,10 @@ import { startPagesServer } from "../src/core/pages.ts";
 const REPO = dirname(dirname(import.meta.path));
 const LOOPBACK = [127, 0, 0, 1].join(".");
 const servers: { stop(): void }[] = [];
+const dirs: string[] = [];
 afterEach(() => {
 	for (const s of servers.splice(0)) s.stop();
+	for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 	delete process.env.QUEUE_STATE;
 });
 
@@ -36,6 +38,7 @@ test("the line: replace what is there, otherwise add it above the first section"
 
 test("approvalProblem: only a plan with a page in Base is gated", () => {
 	const dir = mkdtempSync(join(tmpdir(), "plan-approval-meta-"));
+	dirs.push(dir);
 	const pages = join(dir, "pages");
 	mkdirSync(pages, { recursive: true });
 	const plan = join(dir, "20261027_toy.md");
@@ -53,6 +56,7 @@ test("approvalProblem: only a plan with a page in Base is gated", () => {
 
 function setup(): { dir: string; cfg: Config; pages: string } {
 	const dir = mkdtempSync(join(tmpdir(), "plan-approval-"));
+	dirs.push(dir);
 	process.env.QUEUE_STATE = join(dir, "state");
 	const cfg = loadConfig({ file: join(dir, "missing.yml"), home: dir, env: {} });
 	cfg.review.agents = [];
@@ -116,6 +120,7 @@ test("server: approve is refused while a note is open, then it records the line 
 
 test("main-guard: a spawn is refused on an unapproved plan page and passes on the line or the self line", () => {
 	const home = mkdtempSync(join(tmpdir(), "plan-approval-guard-"));
+	dirs.push(home);
 	const agent = join(home, ".omp/agent");
 	const toy = join(home, "projects/toy");
 	const state = join(home, ".local/state/queue");
@@ -172,5 +177,4 @@ review:
 	expect(ask().code).toBe(0);
 	writeFileSync(plan, `${body}\nApproval: self \u2014 owner: "do it on your own"\n`);
 	expect(ask().code).toBe(0);
-	rmSync(home, { recursive: true, force: true });
 });

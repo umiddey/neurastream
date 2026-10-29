@@ -1,15 +1,22 @@
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const TEMPLATE = join(import.meta.dir, "..", "templates", "tmp-snapshot.sh");
 
+// A full `bun test` must leave nothing under os.tmpdir() (plan 20261029_1530 P3).
+const DIRS: string[] = [];
+afterAll(() => {
+	for (const d of DIRS) rmSync(d, { recursive: true, force: true });
+});
+
 // macOS ships no ionice and its date has no -I: the snapshot must still exit 0 with empty stderr.
 // A stub rsync first on PATH stands in for the real copy.
 test.skipIf(process.platform !== "darwin")("tmp-snapshot runs on macOS: exit 0, empty stderr, ISO stamp with colon offset", () => {
   const dir = mkdtempSync(join(tmpdir(), "tmp-snap-darwin-"));
+  DIRS.push(dir);
   const bin = join(dir, "bin");
   mkdirSync(bin);
   writeFileSync(join(bin, "rsync"), "#!/bin/sh\nexit 0\n");

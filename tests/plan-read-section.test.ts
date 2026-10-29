@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/core/config.ts";
@@ -63,6 +63,8 @@ const QUEUE_ENV_BEFORE = Object.fromEntries(Object.entries(process.env).filter((
 afterAll(() => {
 	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
 	Object.assign(process.env, QUEUE_ENV_BEFORE);
+	// A full `bun test` must leave nothing under os.tmpdir() (plan 20261029_1530 P3).
+	for (const d of [BLOCKERS, GUARD_TMP, WT_TMP, SUB_TMP]) rmSync(d, { recursive: true, force: true });
 });
 const GUARD_TMP = mkdtempSync(join(tmpdir(), "plan-read-guard-"));
 const REPO = join(GUARD_TMP, "repo");

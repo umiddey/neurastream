@@ -1,9 +1,14 @@
-import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { afterAll, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/core/config.ts";
 import { checkWrite, deferSteer, type WriteCheckConfig, type WriteCheckResult } from "../src/core/write-check.ts";
+
+const DIRS: string[] = [];
+afterAll(() => {
+	for (const d of DIRS) rmSync(d, { recursive: true, force: true });
+});
 
 test("the template's suppress regex needs a comment marker (I-20261028-113)", () => {
 	// Probes are assembled from pieces: this file must not hold text the suppress regex counts.
@@ -41,7 +46,9 @@ function wc(over: Partial<WriteCheckConfig> = {}): WriteCheckConfig {
 
 // The adapter calls checkWrite after the edit landed, so `after` is written to disk first.
 function run(before: string | null, after: string | null, over: Partial<WriteCheckConfig> = {}, name = "a.ts"): WriteCheckResult {
-	const file = join(mkdtempSync(join(tmpdir(), "neurastream-wc-")), name);
+	const dir = mkdtempSync(join(tmpdir(), "neurastream-wc-"));
+	DIRS.push(dir);
+	const file = join(dir, name);
 	if (after !== null) writeFileSync(file, after);
 	return checkWrite(file, before, after, wc(over));
 }
@@ -153,6 +160,7 @@ describe("checkWrite", () => {
 
 	test("leaves no scratch file behind", () => {
 		const d = mkdtempSync(join(tmpdir(), "neurastream-wc-"));
+		DIRS.push(d);
 		const file = join(d, "a.ts");
 		writeFileSync(file, "lint:E1\nlint:E2 lint:E3\n");
 		checkWrite(file, "lint:E1\nlint:E2\n", "lint:E1\nlint:E2 lint:E3\n", wc());
@@ -160,6 +168,7 @@ describe("checkWrite", () => {
 	});
 	test("a linter with only_with_config is skipped when no config file is in the walk-up (P10)", () => {
 		const dir = mkdtempSync(join(tmpdir(), "neurastream-wc-"));
+		DIRS.push(dir);
 		const file = join(dir, "a.ts");
 		writeFileSync(file, "lint:E1\n");
 		const r = checkWrite(file, "clean\n", "lint:E1\n", wc({
@@ -170,6 +179,7 @@ describe("checkWrite", () => {
 
 	test("a linter with only_with_config runs when its config file is found (P10)", () => {
 		const dir = mkdtempSync(join(tmpdir(), "neurastream-wc-"));
+		DIRS.push(dir);
 		const file = join(dir, "a.ts");
 		writeFileSync(join(dir, "ruff.toml"), "# repo config");
 		writeFileSync(file, "lint:E1\n");
@@ -183,6 +193,7 @@ describe("checkWrite", () => {
 
 	test("only_with_config stops at the git top: a config above it does not count (P10, I-20261031-89)", () => {
 		const outer = mkdtempSync(join(tmpdir(), "neurastream-wc-"));
+		DIRS.push(outer);
 		const repo = join(outer, "repo");
 		mkdirSync(join(repo, ".git"), { recursive: true });
 		const sub = join(repo, "sub");
@@ -198,6 +209,7 @@ describe("checkWrite", () => {
 
 	test("only_with_config finds a config at the git top itself (the usual repo-root pyproject/oxlintrc)", () => {
 		const repo = mkdtempSync(join(tmpdir(), "neurastream-wc-"));
+		DIRS.push(repo);
 		mkdirSync(join(repo, ".git"));
 		writeFileSync(join(repo, "ruff.toml"), "# repo root config");
 		const sub = join(repo, "sub");
@@ -222,6 +234,7 @@ describe("checkWrite", () => {
 describe("deferSteer", () => {
 	test("lists deferred findings still present at turn end (I-20261028-166)", () => {
 		const d = mkdtempSync(join(tmpdir(), "neurastream-wc-"));
+		DIRS.push(d);
 		const file = join(d, "a.ts");
 		const before = "const a = 1\n";
 		const after = "const a = 1\nlint:F401: unused helper\n";
@@ -234,6 +247,7 @@ describe("deferSteer", () => {
 
 	test("a finding fixed later in the turn steers nothing (I-20261028-166)", () => {
 		const d = mkdtempSync(join(tmpdir(), "neurastream-wc-"));
+		DIRS.push(d);
 		const file = join(d, "a.ts");
 		const before = "const a = 1\n";
 		const fixed = "const a = 1\nhelper used\n";
@@ -243,6 +257,7 @@ describe("deferSteer", () => {
 
 	test("deferred debt the file already had steers nothing (I-20261028-166)", () => {
 		const d = mkdtempSync(join(tmpdir(), "neurastream-wc-"));
+		DIRS.push(d);
 		const file = join(d, "a.ts");
 		const text = "lint:F401 old debt\n";
 		writeFileSync(file, text);
@@ -251,6 +266,7 @@ describe("deferSteer", () => {
 
 	test("a deleted file, an empty defer_rules list or a failed linter steers nothing", () => {
 		const d = mkdtempSync(join(tmpdir(), "neurastream-wc-"));
+		DIRS.push(d);
 		const file = join(d, "a.ts");
 		writeFileSync(file, "lint:F401 x\n");
 		expect(deferSteer(file, "a\n", null, wc({ defer_rules: ["F401"] }))).toBeNull();

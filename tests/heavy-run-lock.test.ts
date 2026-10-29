@@ -1,5 +1,5 @@
-import { expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { afterAll, expect, test } from "bun:test";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -8,6 +8,12 @@ const ROOT = join(import.meta.dir, "..");
 const HEAVY_MODULE = process.env.NS_HEAVY_RUN_MODULE ?? join(ROOT, "src", "core", "heavy-run.ts");
 const TMP_SNAPSHOT_MODULE = join(ROOT, "src", "core", "tmp-snapshot.ts");
 const HOME = "/tmp/neurastream-home-p3";
+// A full `bun test` must leave nothing under os.tmpdir() (plan 20261029_1530 P3): every sandbox
+// dir and the fixed HOME above go away when the file's tests are done.
+const DIRS: string[] = [];
+afterAll(() => {
+	for (const d of [...DIRS, HOME]) rmSync(d, { recursive: true, force: true });
+});
 
 type Env = Record<string, string | undefined>;
 interface Sandbox {
@@ -20,6 +26,7 @@ interface Sandbox {
 function sandbox(): Sandbox {
   mkdirSync(HOME, { recursive: true });
   const dir = mkdtempSync(join(tmpdir(), "heavy-lock-"));
+  DIRS.push(dir);
   const bin = join(dir, "bin");
   mkdirSync(bin);
   for (const name of ["sh", "date", "sleep"]) {

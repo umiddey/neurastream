@@ -1,15 +1,22 @@
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const FILE_LOCK = join(import.meta.dir, "..", "src", "core", "file-lock.ts");
 
+// A full `bun test` must leave nothing under os.tmpdir() (plan 20261029_1530 P3).
+const DIRS: string[] = [];
+afterAll(() => {
+	for (const d of DIRS) rmSync(d, { recursive: true, force: true });
+});
+
 // Import file-lock as if on the other platform: that libc cannot load on this host. A load at import
 // time throws before anything runs; a lazy load throws only on first lock use, naming the library tried.
 test("file-lock loads libc lazily and names the library it tried when that fails", () => {
   const dir = mkdtempSync(join(tmpdir(), "file-lock-"));
+  DIRS.push(dir);
   const other = process.platform === "darwin" ? "linux" : "darwin";
   const lib = other === "darwin" ? "libc.dylib" : "libc.so.6";
   const script = `

@@ -208,6 +208,11 @@ function adapterWith(cfg: Config): Host {
 // The parent shell may export live QUEUE_* (omp's plugin does); save, strip, restore.
 const queueEnvBefore = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("QUEUE_")));
 for (const k of Object.keys(queueEnvBefore)) delete process.env[k];
+// The adapter's rollover/launcher paths spawn bun children that spill their transpile cache into
+// $TMPDIR/node-compile-cache; point that inside TMP so the afterAll rmSync takes it with the
+// sandbox.
+const compileCacheBefore = process.env.NODE_COMPILE_CACHE;
+process.env.NODE_COMPILE_CACHE = join(TMP, "compile-cache");
 
 const OPEN_PLAN = `# Open fixture plan
 
@@ -249,6 +254,8 @@ beforeAll(() => {
 
 afterAll(() => {
 	discord.stop(true);
+	if (compileCacheBefore === undefined) delete process.env.NODE_COMPILE_CACHE;
+	else process.env.NODE_COMPILE_CACHE = compileCacheBefore;
 	rmSync(TMP, { recursive: true, force: true });
 	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
 	Object.assign(process.env, queueEnvBefore);

@@ -107,6 +107,14 @@ for (const k of Object.keys(queueEnvBefore)) delete process.env[k];
 // and every live repo, and the note would land in the live queue state dir.
 const baseCfg: Config = loadConfig({ home: join(TMP, "home") });
 applyQueueEnv(baseCfg);
+// autoClose (same run-end handler) must spawn no real `bin/queue-close` child: the detached bun
+// child outlives this file and writes its close log under TMP after the afterAll cleanup (and
+// spills its transpile cache into TMPDIR); "true" is the no-op stub, as in owner-ui.test.ts.
+process.env.QUEUE_CLOSE_BIN = "true";
+// Spawned bun children spill their transpile cache into $TMPDIR/node-compile-cache; point that
+// inside TMP so the afterAll rmSync takes it with the sandbox.
+const compileCacheBefore = process.env.NODE_COMPILE_CACHE;
+process.env.NODE_COMPILE_CACHE = join(TMP, "compile-cache");
 const overCfg: Config = { ...baseCfg, rollover: { enabled: true, max_session_mb: 0.000001, exit_grace_s: 20 } };
 const belowCfg: Config = { ...baseCfg, rollover: { enabled: true, max_session_mb: 1024, exit_grace_s: 20 } };
 // session_stop reads guards.ledger_command. The live ledger may show a running subagent, which would let the
@@ -126,6 +134,8 @@ let shutdowns = 0;
 afterAll(() => {
 	rmSync(TMP, { recursive: true, force: true });
 	rmSync(NOTE, { force: true });
+	if (compileCacheBefore === undefined) delete process.env.NODE_COMPILE_CACHE;
+	else process.env.NODE_COMPILE_CACHE = compileCacheBefore;
 	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
 	Object.assign(process.env, queueEnvBefore);
 });
