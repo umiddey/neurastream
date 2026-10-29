@@ -181,18 +181,21 @@ const REVIEW_LINE = /^- (?:\d{4}-\d{2}-\d{2} \d{2}:\d{2} [^\s:]+: )?PLAN REVIEW:
 /** Any entry that opens like a review line; one that REVIEW_LINE does not match is restored, not recorded. */
 const REVIEW_LOOKALIKE = /^- (?:\d{4}-\d{2}-\d{2} \d{2}:\d{2} [^\s:]+: )?PLAN REVIEW\b/;
 
+/** Who launches an agent: Main's launch may use a plan review's exemption, a sub's never may (plan 20261028_1600 P4i). */
+export type Spawner = "main" | "sub";
+
 /**
  * P2 (plan 20261028_1600): a spawn on a plan needs a recorded reviewer PASS whose hash still
  * matches the plan text — progress-only edits keep a PASS valid, any other change expires it,
  * a FAIL is denied with its first finding. A review spawn itself — an agent from review.agents
- * whose brief has the `Plan review: <plan>` line — is exempt, and so is any plan stamped
+ * whose brief has the `Plan review: <plan>` line — is exempt when Main launches it, and so is any plan stamped
  * before `review.since` (P4c: same cutover as the reuse-line gate).
  */
-export function reviewPassProblem(named: string[], brief: string, agent: string, cfg: Config): string | null {
+export function reviewPassProblem(named: string[], brief: string, agent: string, cfg: Config, spawner: Spawner): string | null {
 	const reviews = readPlanReviews();
 	const reviewLines = brief.split("\n").filter(l => l.startsWith("Plan review:"));
 	for (const file of named) {
-		if (cfg.review.agents.includes(agent) && reviewLines.some(l => l.slice("Plan review:".length).trim() === file)) continue;
+		if (spawner === "main" && cfg.review.agents.includes(agent) && reviewLines.some(l => l.slice("Plan review:".length).trim() === file)) continue;
 		if (!q.reviewApplies(file, cfg.review.since)) continue;
 		const rec = reviews[file];
 		if (!rec) return `plan ${file} has no current reviewer PASS. Spawn a reviewer with templates/plan-review-brief.md.`;
@@ -691,6 +694,7 @@ export function spawnProblem(
 	staffing: Record<string, string[]> = {},
 	runningJobs?: string[],
 	runner: CommandRunner = defaultRunner,
+	spawner: Spawner = "main",
 ): string | null {
 	const tasks = Array.isArray(input?.tasks) ? input.tasks : [];
 	const context = String(input?.context ?? "");
@@ -708,7 +712,7 @@ export function spawnProblem(
 		const pending = pendingWorkProblem(plans, `${context}\n${String(t?.task ?? "")}`, cfg, runner);
 		if (pending) return `${label}: ${pending}`;
 		// The task's own `Call budget:` line wins over the shared context's.
-				const review = reviewPassProblem(plans, `${context}\n${String(t?.task ?? "")}`, String(t?.agent ?? ""), cfg);
+		const review = reviewPassProblem(plans, `${context}\n${String(t?.task ?? "")}`, String(t?.agent ?? ""), cfg, spawner);
 		if (review) return `${label}: ${review}`;
 		const budget = briefBudget(String(t?.task ?? "")) ?? shared;
 		if (budget !== null) {
@@ -958,26 +962,64 @@ function incidentSpawnProblem(label: string, brief: string, namedPlans: string[]
 	);
 }
 
-function mainTool(e: ToolEvent, input: Record<string, unknown>, cfg: Config): Decision {
-	if (e.tool === "task") {
+/**
+ * A `task` launch: the cancel check, the spawn gates, then the records. Main's and a sub's launch
+ * both come through here (plan 20261028_1600 P4i). Returns the refusal, or null.
+ */
+function taskLaunch(input: Record<string, unknown>, cfg: Config, runningJobs: string[] | undefined, spawner: Spawner): string | null {
+	const pending = q.cancelPending();
+	if (pending) {
+		log(cfg.paths.guard_log, `BLOCK spawn: cancel pending (${pending.words})`);
+		return `${CANCEL_TODO} Flagged: "${pending.words}"`;
+	}
+	const files: string[] = [];
+	const budgets: Record<string, number | null> = {};
+	const staffing: Record<string, string[]> = {};
+	const why = spawnProblem(input, cfg, files, budgets, staffing, runningJobs, defaultRunner, spawner);
+	if (why) {
+		log(cfg.paths.guard_log, `BLOCK spawn: ${why}`);
+		return why;
+	}
+	const inc = incidentSpawnProblem("spawn", JSON.stringify(input), files, cfg);
+	if (inc) return inc;
+	recordSpawns(files, staffing);
+	recordBudgets(budgets);
+	return null;
+}
+
+/**
+ * A shell launch of a bypass_spawn agent: the cancel check, the plan gate, the review PASS, the
+ * incidents, then the record. Main's and a sub's launch both come through here (plan 20261028_1600 P4i).
+ */
+function bypassLaunch(command: string, cfg: Config, spawner: Spawner): string | null {
+	for (const entry of cfg.guards.bypass_spawn) {
+		if (!bypassRegExp(entry).test(command)) continue;
 		const pending = q.cancelPending();
 		if (pending) {
-			log(cfg.paths.guard_log, `BLOCK spawn: cancel pending (${pending.words})`);
-			return deny(`main-guard: ${CANCEL_TODO} Flagged: "${pending.words}"`);
+			log(cfg.paths.guard_log, `BLOCK bypass launch: cancel pending (${pending.words})`);
+			return `${CANCEL_TODO} Flagged: "${pending.words}"`;
 		}
-		const files: string[] = [];
-		const budgets: Record<string, number | null> = {};
-		const staffing: Record<string, string[]> = {};
-		const why = spawnProblem(input, cfg, files, budgets, staffing, e.runningJobs);
+		const [why, named] = planGate(command, entry, cfg);
 		if (why) {
-			log(cfg.paths.guard_log, `BLOCK spawn: ${why}`);
-			return deny(`main-guard: ${why}`);
+			log(cfg.paths.guard_log, `BLOCK bypass launch: ${why}`);
+			return why;
 		}
-		const inc = incidentSpawnProblem("spawn", JSON.stringify(input), files, cfg);
-		if (inc) return deny(`main-guard: ${inc}`);
-		recordSpawns(files, staffing);
-		recordBudgets(budgets);
-		return ALLOW;
+		const review = reviewPassProblem(named, command, "", cfg, spawner);
+		if (review) {
+			log(cfg.paths.guard_log, `BLOCK bypass launch: ${review}`);
+			return review;
+		}
+		const inc = incidentSpawnProblem("bypass launch", command, named, cfg);
+		if (inc) return inc;
+		if (named.length) recordSpawns(named);
+	}
+	return null;
+}
+
+function mainTool(e: ToolEvent, input: Record<string, unknown>, cfg: Config): Decision {
+	if (e.tool === "task") {
+		const why = taskLaunch(input, cfg, e.runningJobs, "main");
+		return why ? deny(`main-guard: ${why}`) : ALLOW;
 	}
 	if (cfg.guards.shell_tools.includes(e.tool)) {
 		// Strict landing gate (20261025_1940 P2, P5): in tier strict every push/merge waits for the
@@ -989,22 +1031,8 @@ function mainTool(e: ToolEvent, input: Record<string, unknown>, cfg: Config): De
 			return deny(`main-guard: tier strict — type "${cfg.autonomy.go_phrase}" to approve one push/merge`);
 		}
 		const command = String(input?.command ?? input?.code ?? "");
-		for (const entry of cfg.guards.bypass_spawn) {
-			if (!bypassRegExp(entry).test(command)) continue;
-			const pending = q.cancelPending();
-			if (pending) {
-				log(cfg.paths.guard_log, `BLOCK bypass launch: cancel pending (${pending.words})`);
-				return deny(`main-guard: ${CANCEL_TODO} Flagged: "${pending.words}"`);
-			}
-			const [why, named] = planGate(command, entry, cfg);
-			if (why) {
-				log(cfg.paths.guard_log, `BLOCK bypass launch: ${why}`);
-				return deny(`main-guard: ${why}`);
-			}
-			const inc = incidentSpawnProblem("bypass launch", command, named, cfg);
-			if (inc) return deny(`main-guard: ${inc}`);
-			if (named.length) recordSpawns(named);
-		}
+		const why = bypassLaunch(command, cfg, "main");
+		if (why) return deny(`main-guard: ${why}`);
 	}
 	return editWindow(e, input, cfg);
 }
@@ -1131,6 +1159,14 @@ export function checkTool(e: ToolEvent, cfg: Config): Decision {
 		log(cfg.paths.plan_guard_log, `BLOCK sub:${e.agentId} tool=${e.tool} ${why}`);
 		return deny(`plan-guard: ${why}`);
 	}
+	// A sub's own launch passes the same spawn gates as Main's (plan 20261028_1600 P4i).
+	let launch: string | null = null;
+	if (e.tool === "task") launch = taskLaunch(input, cfg, e.runningJobs, "sub");
+	else if (cfg.guards.shell_tools.includes(e.tool)) launch = bypassLaunch(String(input?.command ?? input?.code ?? ""), cfg, "sub");
+	if (launch) {
+		log(cfg.paths.plan_guard_log, `BLOCK ${e.agent}:${e.agentId} tool=${e.tool} ${launch}`);
+		return deny(`plan-guard: ${launch}`);
+	}
 	const n = e.calls + 1;
 	// The warn band has the global width (sub_max_calls - sub_warn_calls) ending at the cap;
 	// unbudgeted subs keep sub_warn_calls exactly.
@@ -1256,7 +1292,7 @@ export function checkSpawn(e: SpawnEvent, cfg: Config, runner: CommandRunner = d
 	log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${pendingWork}`)
 	return deny(`main-guard: ${pendingWork}`)
 }
-		const review = reviewPassProblem(named, e.brief, e.agent, cfg);
+	const review = reviewPassProblem(named, e.brief, e.agent, cfg, "main");
 	if (review) {
 		log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${review}`);
 		return deny(`main-guard: ${review}`);

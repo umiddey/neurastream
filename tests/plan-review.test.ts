@@ -411,4 +411,73 @@ test("an invalid config.yml keeps the last good config and logs one line", () =>
 	expect(logged[0]).toContain("keeping the last good config");
 });
 
+// --- P4i: a sub's own spawn passes the same gates as Main's (Allowed, plan review, shell bypass) ---
+
+const subEvent = (tool: string, input: Record<string, unknown>) => ({
+	tool,
+	input,
+	cwd: REPO,
+	agent: "sub" as const,
+	agentId: "s1",
+	calls: 0,
+	paths: [],
+	writes: [],
+	command: "",
+});
+const bypassCfg = { ...gcfg, guards: { ...gcfg.guards, bypass_spawn: ["opencode run"] } };
+
+test("a sub task naming an agent outside Allowed is denied", () => {
+	const d = checkTool(subEvent("task", { context: "", tasks: [{ agent: "rogue", name: "t1", task: "x" }] }), gcfg);
+	expect(d).toMatchObject({ allow: false, reason: expect.stringContaining("not in") });
+});
+
+test("a sub task naming a plan with no reviewer PASS is denied", () => {
+	rmSync(REVIEWS, { force: true });
+	const input = { tasks: [{ agent: "worker", name: "t1", task: `Work ${LOCKED} on P1` }] };
+	expect(checkTool(subEvent("task", input), gcfg)).toMatchObject({
+		allow: false,
+		reason: expect.stringContaining("no current reviewer PASS"),
+	});
+});
+
+test("a sub task naming a plan with a current PASS and an Allowed agent is allowed", () => {
+	expect(reviewerEdit(PASS_ENTRY).allow).toBe(true);
+	freshProgress();
+	rmSync(join(GSTATE, "incidents.jsonl"), { force: true });
+	const input = { tasks: [{ agent: "worker", name: "t1", task: `Work ${LOCKED} on P1` }] };
+	expect(checkTool(subEvent("task", input), gcfg)).toMatchObject({ allow: true });
+});
+
+test("a sub cannot spawn a plan review: the review exemption is Main's only", () => {
+	rmSync(REVIEWS, { force: true });
+	freshProgress();
+	const input = { tasks: [{ agent: "reviewer", name: "r1", task: `Plan review: ${LOCKED}\nReview P1 against its phases.` }] };
+	expect(checkTool(subEvent("task", input), gcfg)).toMatchObject({
+		allow: false,
+		reason: expect.stringContaining("no current reviewer PASS"),
+	});
+});
+
+test("a sub's shell launch of a bypass agent naming an unreviewed plan is denied", () => {
+	rmSync(REVIEWS, { force: true });
+	freshProgress();
+	const input = { command: `opencode run "Work ${LOCKED} on P1"` };
+	expect(checkTool(subEvent("bash", input), bypassCfg)).toMatchObject({
+		allow: false,
+		reason: expect.stringContaining("no current reviewer PASS"),
+	});
+});
+
+test("Main's shell launch of a bypass agent naming an unreviewed plan is denied", () => {
+	rmSync(REVIEWS, { force: true });
+	rmSync(join(GSTATE, "incidents.jsonl"), { force: true });
+	freshProgress();
+	const input = { command: `opencode run "Work ${LOCKED} on P1"` };
+	const main = { tool: "bash", input, cwd: REPO, agent: "main" as const, agentId: "m1", calls: 0, paths: [], writes: [], command: "" };
+	expect(checkTool(main, bypassCfg)).toMatchObject({
+		allow: false,
+		reason: expect.stringContaining("no current reviewer PASS"),
+	});
+});
+
 afterAll(() => rmSync(TMP, { recursive: true, force: true }));

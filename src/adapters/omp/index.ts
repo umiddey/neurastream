@@ -577,7 +577,6 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 	let callsSinceStop = 0;
 	let idleStops = 0;
 	let timer: unknown;
-	let inboxTimer: unknown;
 	const calls = new Map<string, number>(); // subagent call budget, by agent id
 	const pending = new Map<string, Map<string, string>>(); // toolCallId -> plan snapshots
 	const pendingWrite = new Map<string, Map<string, string | null>>(); // toolCallId -> write-check snapshots; null: the file did not exist
@@ -749,7 +748,6 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 			? c.setInterval(() => deliverOwnerInbox(pi, cfg), OWNER_INBOX_POLL_MS)
 			: setInterval(() => deliverOwnerInbox(pi, cfg), OWNER_INBOX_POLL_MS);
 		if (it && typeof it === "object" && "unref" in it && typeof it.unref === "function") it.unref();
-		inboxTimer = it;
 	});
 
 	// What a subagent is still missing (plan 20261027_1530 P2): the rules of the repo its plan is
@@ -834,7 +832,6 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 	// behaviour); here only the allow-list and the task-only rule apply, with the original texts.
 	pi.on("before_subagent_spawn", (event, ctx) => {
 		cfg = freshConfig();
-		if (asCtx(ctx).kind === "sub") return;
 		const agent = asString(asRecord(event).agent);
 		const kind = asString(asRecord(event).invocationKind);
 		if (!q.allowedAgents().has(agent))
@@ -843,6 +840,8 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 			return { block: true, reason: "main-guard: spawn implementers with the task tool (the plan gate checks its brief)." };
 		return undefined;
 	});
+
+	let lastMainRc: RolloverCtx | null = null;
 
 	pi.on("tool_call", (event, ctx) => {
 		cfg = freshConfig();
@@ -864,8 +863,10 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		// running ones finish first. Subagents' own tool calls are unaffected. Main's task calls
 		// also carry the running job labels for the priority gate (20261025_0215 P2).
 		let runningJobs: string[] | undefined;
-		if (!isSub && tool === "task") {
-			const rc = asRolloverCtx(ctx);
+		if (!isSub) lastMainRc = asRolloverCtx(ctx);
+		if (tool === "task") {
+			// A subagent's task call drains and labels by Main's rollover context: its own ctx has none.
+			const rc = lastMainRc;
 			runningJobs = rc?.runningJobs();
 			if (cfg.rollover.enabled && rc) {
 				const why = spawnRefusal(rolloverSnapshot(rc).state, runningJobs ?? []);
