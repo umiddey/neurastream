@@ -67,6 +67,21 @@ describe("loadConfig", () => {
 		expect(() => loadConfig({ file, home, env: {} })).toThrow(/sub_warn_calls/);
 	});
 
+	test("main call-cap defaults load (plan 20261028_1545 P1)", () => {
+		const cfg = loadConfig({ file: "/tmp/neurastream-home-config/missing.yml", home, env: {} });
+		expect(cfg.guards.main_warn_calls).toBe(12);
+		expect(cfg.guards.main_max_calls).toBe(15);
+		expect(cfg.guards.main_call_exempt_tools).toEqual(["task", "todo", "ask", "wait"]);
+	});
+
+	test("main warn above max is rejected; max 0 (off) loads with the default warn", () => {
+		const file = withFile("guards:\n  main_warn_calls: 20\n  main_max_calls: 15\n");
+		expect(() => loadConfig({ file, home, env: {} })).toThrow(/guards.main_warn_calls must be <= guards.main_max_calls/);
+		const off = loadConfig({ file: withFile("guards:\n  main_max_calls: 0\n"), home, env: {} });
+		expect(off.guards.main_max_calls).toBe(0);
+		expect(off.guards.main_warn_calls).toBe(12);
+	});
+
 	test("env overrides win over the file", () => {
 		const file = withFile("wip:\n  limit: 3\n");
 		const cfg = loadConfig({ file, home, env: { WIP_LIMIT: "9", QUEUE_INDEX: "~/q.md" } });

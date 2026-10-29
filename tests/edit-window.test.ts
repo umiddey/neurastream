@@ -61,7 +61,7 @@ guards:
   Object.assign(env, { HOME: root });
   cfg = loadConfig({ home: root, env });
   applyQueueEnv(cfg);
-  writeWindow({ used: [], windowStart: 0 });
+  writeWindow({ used: [], windowStart: 0, mainCalls: 0 });
 });
 
 const mainEvent = (tool: string, input: Record<string, unknown>) => ({

@@ -147,6 +147,9 @@ guards:
   sub_warn_calls: 90
   sub_max_calls: 100
   sub_max_calls_cap: 200
+  main_warn_calls: 12      # Main tool calls per turn that draw the wrap-up warning
+  main_max_calls: 15       # Main tool calls per turn before refusal; 0 = off
+  main_call_exempt_tools: [task, todo, ask, wait]   # never counted, never refused at the cap: delegating, tracking and asking stay open
   main_edit_limit: 5
   main_window_min: 15
   unlock_minutes: 30
@@ -346,6 +349,7 @@ The loader rejects:
 - a threshold that is not a number where this table says a number
 - `ledger.max_slots` below 1
 - `guards.sub_warn_calls` greater than `guards.sub_max_calls`
+- `guards.main_warn_calls` greater than `guards.main_max_calls` (only when `guards.main_max_calls` is above 0; 0 = off)
 - `guards.sub_max_calls_cap` below `guards.sub_max_calls`
 - `autonomy.tier` that is not `strict`, `opinionated` or `full`
 - `autonomy.strict_edit_limit` or `autonomy.go_minutes` that is not an integer >= 1

@@ -74,6 +74,8 @@ export const CANCEL_TODO =
 interface EditWindow {
 	used: string[];
 	windowStart: number;
+	/** Main tool calls since the last owner prompt or terminal hand-back (main_call_exempt_tools never count). */
+	mainCalls: number;
 }
 
 function windowFile(): string {
@@ -82,10 +84,11 @@ function windowFile(): string {
 
 export function readWindow(): EditWindow {
 	try {
-		const w = JSON.parse(readFileSync(windowFile(), "utf8")) as EditWindow;
-		if (Array.isArray(w.used) && typeof w.windowStart === "number") return w;
+		const w = JSON.parse(readFileSync(windowFile(), "utf8")) as Partial<EditWindow>;
+		if (Array.isArray(w.used) && typeof w.windowStart === "number")
+			return { used: w.used, windowStart: w.windowStart, mainCalls: typeof w.mainCalls === "number" ? w.mainCalls : 0 };
 	} catch {}
-	return { used: [], windowStart: 0 };
+	return { used: [], windowStart: 0, mainCalls: 0 };
 }
 
 export function writeWindow(w: EditWindow): void {
@@ -997,6 +1000,47 @@ function mainTool(e: ToolEvent, input: Record<string, unknown>, cfg: Config): De
 	return editWindow(e, input, cfg);
 }
 
+// Main's per-turn call cap (plan 20261028_1545 P2): the sub call-cap shape — warn at
+// main_warn_calls, hard stop at main_max_calls — over calls counted in the window state file
+// since the last real owner prompt or Main's terminal hand-back. The file, not the adapter's
+// session memory, is the counter: one-shot CLI calls and a reloaded plugin must see the same
+// count, and the reset points (checkInject here, the adapter's terminal agent_end) already write
+// this file. Off in tier full (same gate as editWindow) and at main_max_calls 0.
+
+/** The per-turn call cap applies to this call: on, not tier full, and the tool is not exempt. */
+function mainCallApplies(e: ToolEvent, cfg: Config): boolean {
+	return cfg.guards.main_max_calls > 0 && currentTier(cfg) !== "full" && !cfg.guards.main_call_exempt_tools.includes(e.tool);
+}
+
+/** Refusal once this turn has spent main_max_calls, or null. */
+function mainCallStop(e: ToolEvent, cfg: Config): string | null {
+	if (!mainCallApplies(e, cfg)) return null;
+	const w = readWindow();
+	if (w.mainCalls >= cfg.guards.main_max_calls)
+		return `main-guard: call ${w.mainCalls}/${cfg.guards.main_max_calls} since the owner's last message or your last hand-back (guards.main_max_calls). End your turn with the answer, or spawn an implementer.`;
+	return null;
+}
+
+/** Count one allowed, non-exempt call; returns the warn-band inject at main_warn_calls, "" below it. */
+function mainCallWarn(e: ToolEvent, cfg: Config): string {
+	if (!mainCallApplies(e, cfg)) return "";
+	const w = readWindow();
+	w.mainCalls += 1;
+	writeWindow(w);
+	if (w.mainCalls >= cfg.guards.main_warn_calls)
+		return `main-guard: call ${w.mainCalls}/${cfg.guards.main_max_calls} this turn (guards.main_warn_calls). End your turn with the answer, or spawn an implementer.`;
+	return "";
+}
+
+/** Main's terminal hand-back (the adapter's agent_end without willContinue): the turn is over, so
+ * the next one starts at 0 calls. The edit window keeps its own reset rules. */
+export function resetMainCalls(): void {
+	const w = readWindow();
+	if (w.mainCalls === 0) return;
+	w.mainCalls = 0;
+	writeWindow(w);
+}
+
 /** A live plan file (archived plans excluded); Main's plan-text checks run on these. */
 export const MAIN_PLAN_FILE = /\/docs\/plans\/(?!archive\/)[^/]+\.md$/;
 
@@ -1052,10 +1096,17 @@ export function checkTool(e: ToolEvent, cfg: Config): Decision {
 			log(cfg.paths.plan_guard_log, `BLOCK main tool=${e.tool} shell write to plan ${shellPlan}`);
 			return deny(`plan-guard: ${shellPlan} is a plan file: change it with the edit or write tool (close or cancel it with queue-close / queue-cancel).`);
 		}
+		const stop = mainCallStop(e, cfg);
+		if (stop) {
+			log(cfg.paths.guard_log, `BLOCK tool=${e.tool} after ${readWindow().mainCalls} calls this turn`);
+			return deny(stop);
+		}
 		const d = mainTool(e, input, cfg);
+		if (!d.allow) return d;
+		const warn = mainCallWarn(e, cfg);
 		// A task brief names paths it does not read; only the other tools' paths count as reads.
-		if (d.allow && e.tool !== "task") recordMainReads(paths.filter(p => !writes.includes(p)));
-		return d;
+		if (e.tool !== "task") recordMainReads(paths.filter(p => !writes.includes(p)));
+		return warn ? { ...d, inject: d.inject ? `${d.inject}\n${warn}` : warn } : d;
 	}
 	const cap = subCallCap(e.agentId, cfg);
 	const why = subRules(e, input, paths, writes, cfg, cap);
@@ -1242,7 +1293,7 @@ export function flagCancel(text: string, cfg: Config): string {
 export function checkInject(e: InjectEvent, cfg: Config): Decision {
 	if (e.agent !== "main") return ALLOW;
 	const continuation = e.inject.trimStart().startsWith("main-guard:");
-	if (!continuation) writeWindow({ used: [], windowStart: 0 });
+	if (!continuation) writeWindow({ used: [], windowStart: 0, mainCalls: 0 });
 	recordOwnerMessage(e.inject, cfg);
 	let summary: string;
 	try {

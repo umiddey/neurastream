@@ -113,6 +113,12 @@ export interface Config {
 		sub_max_calls: number;
 		/** Highest per-spawn `Call budget: <N>` a task brief may set. */
 		sub_max_calls_cap: number;
+		/** Main tool calls per turn that draw the wrap-up warning (plan 20261028_1545 P1). */
+		main_warn_calls: number;
+		/** Main tool calls per turn before refusal; 0 = off. */
+		main_max_calls: number;
+		/** Tools the per-turn call cap never counts and never refuses: the ways out of a turn. */
+		main_call_exempt_tools: string[];
 		main_edit_limit: number;
 		main_window_min: number;
 		unlock_minutes: number;
@@ -445,6 +451,10 @@ function check(cfg: Config): void {
 		throw new ConfigError("ledger.prefer must be a list of agent names in pick order (may be empty)");
 	if (cfg.guards.sub_warn_calls > cfg.guards.sub_max_calls) {
 		throw new ConfigError("guards.sub_warn_calls must be <= guards.sub_max_calls");
+	}
+	// 0 = off: the warn band has no cap to stay under, so the default warn loads untouched.
+	if (cfg.guards.main_max_calls > 0 && cfg.guards.main_warn_calls > cfg.guards.main_max_calls) {
+		throw new ConfigError("guards.main_warn_calls must be <= guards.main_max_calls");
 	}
 	if (cfg.guards.sub_max_calls_cap < cfg.guards.sub_max_calls) {
 		throw new ConfigError("guards.sub_max_calls_cap must be >= guards.sub_max_calls");

@@ -26,7 +26,7 @@ import { loadConfig, type Config } from "../../core/config.ts";
 import { checkWrite, deferSteer, type WriteCheckConfig } from "../../core/write-check.ts";
 import { nowSec, strftime } from "../../core/clock.ts";
 import { runDetectors, runDetectorsGated, type DetectorInput } from "../../core/incident-detectors.ts";
-import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, newProgressEntries, planReadNote, recordMainResult, revertMainEdit, rekeySpawnFile } from "../../core/guards.ts";
+import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, newProgressEntries, planReadNote, recordMainResult, resetMainCalls, revertMainEdit, rekeySpawnFile } from "../../core/guards.ts";
 import { rateLimitWait } from "../../core/rate-limit.ts";
 import { notifyProviders, postReply } from "../../core/notify.ts";
 import { loadKnownSecrets, redactSecrets, redactSummary } from "../../core/secret-redact.ts";
@@ -1338,6 +1338,15 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		if (steers.length === 0) return;
 		if (!c.hasAgent || c.kind === "main") pi.sendUserMessage(steers.join("\n"));
 		else adapterLog(cfg, `WRITE-CHECK deferred still present: ${steers.join(" | ")}`);
+	});
+
+	// Terminal hand-back (plan 20261028_1545 P2): a willContinue agent_end keeps the turn going
+	// (blocked stop, todo/plan-mode continuation, deferred hand-back), so only its absence ends
+	// the turn — the per-turn call budget resets for the next one.
+	pi.on("agent_end", (e, ctx) => {
+		if (!isMain(ctx)) return;
+		if (asRecord(e).willContinue === true) return;
+		resetMainCalls();
 	});
 
 	// omp is really shutting down: the exit-grace fallback must not fire.
