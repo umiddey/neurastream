@@ -22,7 +22,7 @@ import type { Decision } from "../../core/adapter.ts";
 import { AGENTS_TEMPLATE, renderBlock } from "../../core/agents-md.ts";
 import { chatGo, chatTier, type Tier } from "../../core/autonomy.ts";
 import { burdenRule, repoRules, rulesChanged } from "../../core/repo-rules.ts";
-import { loadConfig, type Config } from "../../core/config.ts";
+import { configFile, loadConfig, reloadingConfig, type Config } from "../../core/config.ts";
 import { checkWrite, deferSteer, type WriteCheckConfig } from "../../core/write-check.ts";
 import { nowSec, strftime } from "../../core/clock.ts";
 import { runDetectors, runDetectorsGated, type DetectorInput } from "../../core/incident-detectors.ts";
@@ -565,8 +565,10 @@ export function deliverOwnerInbox(pi: ExtensionHost, cfg: Config): void {
 	adapterLog(cfg, `owner inbox: delivered ${delivered} answer(s) (cursor ${cursor} → ${next})`);
 }
 
-/** Register the guard handlers on one extension host. `cfg` is injectable for tests. */
-export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
+/** Register the guard handlers on one extension host. `initial` is injectable for tests; `freshConfig` re-reads the config per guarded call. */
+export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig: () => Config = () => initial): void {
+	// Guarded handlers take `cfg = freshConfig()` first, so an edited config.yml reaches the next call (P4e).
+	let cfg = initial;
 	// The queue library resolves its paths from env snapshots; point them at this config first.
 	applyQueueEnv(cfg);
 	// Main's rules ride its system prompt each turn; they are never written into the owner's AGENTS.md.
@@ -786,6 +788,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	};
 
 	pi.on("before_agent_start", (event, ctx) => {
+		cfg = freshConfig();
 		const c = asCtx(ctx);
 		const prompt = asString(asRecord(event).prompt);
 		if (c.kind !== "main") {
@@ -830,6 +833,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	// The spawn event carries no brief, so the plan gate runs at the task tool call (original
 	// behaviour); here only the allow-list and the task-only rule apply, with the original texts.
 	pi.on("before_subagent_spawn", (event, ctx) => {
+		cfg = freshConfig();
 		if (asCtx(ctx).kind === "sub") return;
 		const agent = asString(asRecord(event).agent);
 		const kind = asString(asRecord(event).invocationKind);
@@ -841,6 +845,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	});
 
 	pi.on("tool_call", (event, ctx) => {
+		cfg = freshConfig();
 		const c = asCtx(ctx);
 		const e = asRecord(event);
 		const tool = asString(e.toolName);
@@ -902,6 +907,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	};
 
 	pi.on("tool_result", (event, ctx) => {
+		cfg = freshConfig();
 		onSizeCheck("tool_result", event, ctx);
 		const e = asRecord(event);
 		const c = asCtx(ctx);
@@ -1012,6 +1018,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	});
 
 	pi.on("session_stop", (e, ctx) => {
+		cfg = freshConfig();
 		const c = asCtx(ctx);
 		if (c.hasAgent && c.kind !== "main") return;
 		// A relaunch is requested: omp shuts down at the next idle, so the stop must not be continued.
@@ -1535,5 +1542,6 @@ export default function ompExtension(pi: ExtensionHost): void {
 	// no config read. `neurastream main` sets it for its child (launch.ts), so anything the Main
 	// session spawns inherits it and stays guarded.
 	if (process.env[MAIN_ENV] !== "1") return;
-	createOmpAdapter(pi, loadConfig());
+	const initial = loadConfig();
+	createOmpAdapter(pi, initial, reloadingConfig(initial, configFile(), () => loadConfig(), line => adapterLog(initial, line)));
 }

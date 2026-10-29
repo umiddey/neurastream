@@ -2,11 +2,11 @@
 // Everything runs in-process against temp dirs; no live state dir, no real forge.
 
 import { afterAll, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolEvent } from "../src/core/adapter.ts";
-import { loadConfig } from "../src/core/config.ts";
+import { loadConfig, reloadingConfig } from "../src/core/config.ts";
 import { checkPlanEdit, checkSpawn, checkTool, reviewHash } from "../src/core/guards.ts";
 import type { CommandRunner } from "../src/core/mr-sweep.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
@@ -366,6 +366,49 @@ test("an edit to the absolute plan path is not refused by this rule", () => {
 test("relative edits outside plan paths are unchanged", () => {
 	expect(checkTool(editEvent("sub", { path: "src/a.ts" }), gcfg).allow).toBe(true);
 	expect(checkTool(editEvent("sub", { path: "notes.md" }), gcfg).allow).toBe(true);
+});
+
+// --- P4e: the guard re-reads config.yml when its mtime changes; a broken edit keeps the last good config ---
+
+const RHOME = join(TMP, "rhome");
+const RCFG = join(RHOME, ".config/neurastream/config.yml");
+mkdirSync(join(RHOME, ".config/neurastream"), { recursive: true });
+
+/** Writes the config and pins its mtime, so two writes in one test always differ. */
+function writeRConfig(text: string, mtimeSec: number): void {
+	writeFileSync(RCFG, text);
+	utimesSync(RCFG, mtimeSec, mtimeSec);
+}
+
+test("a config.yml edit is seen by the next guard call", () => {
+	writeRConfig(`review:\n  agents: ["reviewer"]\n`, 1_800_000_000);
+	const logged: string[] = [];
+	const current = reloadingConfig(
+		loadConfig({ home: RHOME, env: {} }),
+		RCFG,
+		() => loadConfig({ home: RHOME, env: {} }),
+		line => logged.push(line),
+	);
+	expect(current().review.agents).toEqual(["reviewer"]);
+	writeRConfig(`review:\n  agents: ["worker"]\n`, 1_800_000_100);
+	expect(current().review.agents).toEqual(["worker"]);
+	expect(logged).toEqual([]);
+});
+
+test("an invalid config.yml keeps the last good config and logs one line", () => {
+	writeRConfig(`review:\n  agents: ["worker"]\n`, 1_800_000_200);
+	const logged: string[] = [];
+	const current = reloadingConfig(
+		loadConfig({ home: RHOME, env: {} }),
+		RCFG,
+		() => loadConfig({ home: RHOME, env: {} }),
+		line => logged.push(line),
+	);
+	writeRConfig(`review:\n  agents: ["worker"\n`, 1_800_000_300);
+	expect(current().review.agents).toEqual(["worker"]);
+	expect(current().review.agents).toEqual(["worker"]);
+	expect(logged).toHaveLength(1);
+	expect(logged[0]).toContain("keeping the last good config");
 });
 
 afterAll(() => rmSync(TMP, { recursive: true, force: true }));
