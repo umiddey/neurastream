@@ -331,6 +331,12 @@ test("review.agents with an allowed and a not-allowed entry warns naming the oth
 	expect(r.warnings.join("\n")).toContain("reviewer");
 });
 
+test("a fresh install (no Allowed agent yet) is not a problem: the review.agents entry only warns", () => {
+	const r = reviewAgentsProblem(withAgents(["reviewer"]), new Set());
+	expect(r.problem).toBeNull();
+	expect(r.warnings.join("\n")).toContain("reviewer");
+});
+
 // --- P4j: a relative plan target is refused for every agent (the sub edit lands on a missing file, so the plan gate never sees it) ---
 
 function editEvent(agent: "main" | "sub", input: Record<string, unknown>, tool = "edit"): ToolEvent {
