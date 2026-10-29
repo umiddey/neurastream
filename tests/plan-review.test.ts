@@ -5,8 +5,9 @@ import { afterAll, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { ToolEvent } from "../src/core/adapter.ts";
 import { loadConfig } from "../src/core/config.ts";
-import { checkPlanEdit, checkSpawn, reviewHash } from "../src/core/guards.ts";
+import { checkPlanEdit, checkSpawn, checkTool, reviewHash } from "../src/core/guards.ts";
 import type { CommandRunner } from "../src/core/mr-sweep.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { parsePlan, queueProblems, queueSummary, reviewAgentsProblem, type Plan } from "../src/core/queue/lib.ts";
@@ -320,6 +321,51 @@ test("review.agents with an allowed and a not-allowed entry warns naming the oth
 	const r = reviewAgentsProblem(withAgents(["glm", "reviewer"]), new Set(["glm"]));
 	expect(r.problem).toBeNull();
 	expect(r.warnings.join("\n")).toContain("reviewer");
+});
+
+// --- P4j: a relative plan target is refused for every agent (the sub edit lands on a missing file, so the plan gate never sees it) ---
+
+function editEvent(agent: "main" | "sub", input: Record<string, unknown>, tool = "edit"): ToolEvent {
+	return { tool, input, cwd: REPO, agent, agentId: "p4j", calls: 1, paths: [], writes: [], command: "" };
+}
+
+const PLAN_NAME = "20261030_0100_locked.md";
+
+test("a sub edit whose [path#TAG] header is a relative plan path is denied", () => {
+	expect(checkTool(editEvent("sub", { input: `[docs/plans/${PLAN_NAME}#ABCD]\nPUT 1.=1:\n+x` }), gcfg)).toMatchObject({
+		allow: false,
+		reason: expect.stringContaining("absolute plan path"),
+	});
+});
+
+test("a main write to a relative docs/plans path is denied", () => {
+	expect(checkTool(editEvent("main", { path: `docs/plans/${PLAN_NAME}`, content: "x" }, "write"), gcfg)).toMatchObject({
+		allow: false,
+		reason: expect.stringContaining("absolute plan path"),
+	});
+});
+
+test("a ~/ plan path is denied (it is not absolute)", () => {
+	expect(checkTool(editEvent("sub", { path: `~/x/docs/plans/${PLAN_NAME}` }), gcfg)).toMatchObject({
+		allow: false,
+		reason: expect.stringContaining("absolute plan path"),
+	});
+});
+
+test("a bare relative plan file name in a header is denied", () => {
+	expect(checkTool(editEvent("sub", { input: `[${PLAN_NAME}#ABCD]\nPUT 1.=1:\n+x` }), gcfg)).toMatchObject({
+		allow: false,
+		reason: expect.stringContaining("absolute plan path"),
+	});
+});
+
+test("an edit to the absolute plan path is not refused by this rule", () => {
+	expect(checkTool(editEvent("sub", { input: `[${LOCKED}#ABCD]\nPUT 1.=1:\n+x` }), gcfg).allow).toBe(true);
+});
+
+test("relative edits outside plan paths are unchanged", () => {
+	expect(checkTool(editEvent("sub", { path: "src/a.ts" }), gcfg).allow).toBe(true);
+	expect(checkTool(editEvent("sub", { path: "notes.md" }), gcfg).allow).toBe(true);
 });
 
 afterAll(() => rmSync(TMP, { recursive: true, force: true }));

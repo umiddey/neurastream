@@ -55,6 +55,12 @@ function deny(reason: string): Decision {
 	return { allow: false, reason };
 }
 
+/** A raw target that names a plan: under a docs/plans/ directory, or a plan file name (YYYYMMDD_HHMM_*.md). */
+function isPlanName(raw: string): boolean {
+	return /(^|\/)docs\/plans\//.test(raw) || /^\d{8}_\d{4}_[^/]*\.md$/.test(raw.split("/").pop() ?? "");
+}
+const PLAN_WRITE_TOOLS: Record<string, true> = { edit: true, write: true, ast_edit: true };
+
 /** Guard-log line, `<ISO UTC> <line>`; a failed append is swallowed. */
 export function log(file: string, line: string): void {
 	try {
@@ -1066,7 +1072,15 @@ export function checkTool(e: ToolEvent, cfg: Config): Decision {
 	const paths: string[] = [];
 	for (const p of [...(e.paths ?? []), ...q.touchedPaths(e.tool, input, e.cwd)]) if (!paths.includes(p)) paths.push(p);
 	const writes: string[] = [];
-	for (const p of [...(e.writes ?? []), ...q.writeTargets(e.tool, input, e.cwd)]) if (!writes.includes(p)) writes.push(p);
+	const relative: string[] = [];
+	for (const p of [...(e.writes ?? []), ...q.writeTargets(e.tool, input, e.cwd, relative)]) if (!writes.includes(p)) writes.push(p);
+	// A relative plan path resolves against cwd to a file that does not exist, so the plan gate never
+	// sees the edit (plan 20261028_1600 P4j). A plan is named by its absolute path, for every agent.
+	const relPlan = PLAN_WRITE_TOOLS[e.tool] ? relative.find(isPlanName) : undefined;
+	if (relPlan) {
+		log(cfg.paths.plan_guard_log, `BLOCK ${e.agent}:${e.agentId} tool=${e.tool} relative plan path: ${relPlan}`);
+		return deny(`plan-guard: use the absolute plan path, not ${relPlan}. The plan gate cannot see a relative one.`);
+	}
 	// Notify secrets: no agent, main or sub, reads a webhook URL — with or without the unlock.
 	// A call that changes a secret is not a read: its target goes through the protected-write
 	// rule above, so the owner's unlock covers it like any guard file.

@@ -572,11 +572,13 @@ function subagentsOpWrites(code: string): boolean {
 	return false;
 }
 
-export function writeTargets(toolName: string, input: Record<string, unknown>, cwd: string): string[] {
+export function writeTargets(toolName: string, input: Record<string, unknown>, cwd: string, relative?: string[]): string[] {
 	const out = new Set<string>();
 	const add = (raw: string, from: string) => {
-		const s = expandHome(String(raw).trim().replace(/^["']|["']$/g, ""));
+		const typed = String(raw).trim().replace(/^["']|["']$/g, "");
+		const s = expandHome(typed);
 		if (!s || s.includes("://") || s.startsWith("$") || s === "/dev/null" || s.startsWith("/dev/")) return;
+		if (relative && !typed.startsWith("/")) relative.push(typed);
 		out.add(path.resolve(from, s));
 	};
 	if (toolName === "write") {
