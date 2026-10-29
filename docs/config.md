@@ -313,6 +313,8 @@ traces:
 
 `review.agents` (default `["reviewer"]`) lists the agents a review spawn may run under: the reviewer-PASS gate exempts a spawn whose agent is on this list and whose brief carries the `Plan review: <plan>` line naming the plan. Everyone else needs the recorded PASS, and only a subagent's `PLAN REVIEW: PASS|FAIL` progress entry can record one (`<queue_state>/plan-reviews.json`; Main's plan edits never record).
 
+Doctor and `queue-check` fail when no `review.agents` entry is in `## Allowed` of `notes/subagents.md` (`neurastream agents allow <name>`), and warn for each entry that is not, since such an entry can never run a review spawn.
+
 `score.default_branch` has no default. It is config, not a core literal: set it here or pass `--branch`; with `score.default_repo` empty, `accept` / `check` require `--repo` and `--branch`.
 
 `score.waste_weight` must be between 0 and 1. It scales each model's points-per-dollar ranking by its wasted-call fraction; the default 0 leaves the existing ranking unchanged.

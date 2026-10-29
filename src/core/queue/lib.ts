@@ -785,6 +785,20 @@ export function allowedAgents(file = subagentsPath()): Set<string> {
 	return new Set([...body.matchAll(/^\s*[-*]\s+`([a-z0-9-]+)`/gm)].map(m => m[1] ?? ""));
 }
 
+// P4d (plan 20261028_1600): a review spawn runs under a review.agents entry that Main may spawn
+// (## Allowed of the subagents file). None allowed is a problem: every review spawn is refused.
+// An entry not allowed is a warning: it can never run a review spawn.
+export function reviewAgentsProblem(cfg: Config, allowed: Set<string>): { problem: string | null; warnings: string[] } {
+	const agents = cfg.review.agents;
+	const warnings = agents
+		.filter(a => !allowed.has(a))
+		.map(a => `review.agents lists "${a}", which is not in "## Allowed" of ${cfg.paths.subagents}; it cannot run a review spawn`);
+	const problem = agents.some(a => allowed.has(a))
+		? null
+		: `no review.agents entry is in "## Allowed" of ${cfg.paths.subagents}: set review.agents to an allowed agent in config.yml`;
+	return { problem, warnings };
+}
+
 export const CANCELLED_REL = "docs/plans/CANCELLED.md";
 export function globalCancelledPath(): string {
 	return process.env.QUEUE_CANCELLED ?? `${agentDir()}/CANCELLED.md`;

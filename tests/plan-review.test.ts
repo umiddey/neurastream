@@ -9,7 +9,7 @@ import { loadConfig } from "../src/core/config.ts";
 import { checkPlanEdit, checkSpawn, reviewHash } from "../src/core/guards.ts";
 import type { CommandRunner } from "../src/core/mr-sweep.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
-import { parsePlan, queueProblems, queueSummary, type Plan } from "../src/core/queue/lib.ts";
+import { parsePlan, queueProblems, queueSummary, reviewAgentsProblem, type Plan } from "../src/core/queue/lib.ts";
 import { fixturePlan } from "./fixtures/plan.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "plan-review-"));
@@ -299,6 +299,27 @@ test("ticking a phase box does not change the review hash", () => {
 test("editing a phase's text changes the review hash", () => {
 	const text = fixturePlan();
 	expect(reviewHash(text.replace("P1 do the thing", "P1 do it differently"))).not.toBe(reviewHash(text));
+});
+
+// --- P4d: a review spawn needs a review.agents entry that Main may spawn (## Allowed) ---
+
+const withAgents = (agents: string[]) => ({ ...gcfg, review: { ...gcfg.review, agents } });
+
+test("review.agents with no entry in Allowed is a problem naming review.agents", () => {
+	const r = reviewAgentsProblem(withAgents(["reviewer"]), new Set(["glm"]));
+	expect(r.problem).toContain("review.agents");
+});
+
+test("review.agents of an allowed agent alone is clean", () => {
+	const r = reviewAgentsProblem(withAgents(["glm"]), new Set(["glm"]));
+	expect(r.problem).toBeNull();
+	expect(r.warnings).toEqual([]);
+});
+
+test("review.agents with an allowed and a not-allowed entry warns naming the other, exit stays clean", () => {
+	const r = reviewAgentsProblem(withAgents(["glm", "reviewer"]), new Set(["glm"]));
+	expect(r.problem).toBeNull();
+	expect(r.warnings.join("\n")).toContain("reviewer");
 });
 
 afterAll(() => rmSync(TMP, { recursive: true, force: true }));

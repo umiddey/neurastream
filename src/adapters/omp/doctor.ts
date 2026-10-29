@@ -13,7 +13,7 @@ import { stripBlock } from "../../core/agents-md.ts";
 import { loadConfig } from "../../core/config.ts";
 import { notifyFindings } from "../../core/notify.ts";
 import { loadKnownSecrets, proxyOnPath } from "../../core/secret-redact.ts";
-import { readIndex } from "../../core/queue/lib.ts";
+import { allowedAgents, readIndex, reviewAgentsProblem } from "../../core/queue/lib.ts";
 import { realTailscale, type Tailscale } from "../../core/tailscale.ts";
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -218,6 +218,10 @@ export function doctorReport(home: string, env: NodeJS.ProcessEnv = process.env,
 	const notify = notifyFindings(cfg);
 	problems.push(...notify.problems);
 	warnings.push(...notify.warnings);
+	// P4d (plan 20261028_1600): a review spawn needs a review.agents entry that Main may spawn.
+	const review = reviewAgentsProblem(cfg, allowedAgents(cfg.paths.subagents));
+	if (review.problem) problems.push(review.problem);
+	warnings.push(...review.warnings);
 	// Secrets (plan 20261025_2204): the redactor's state and the second net, count only — doctor
 	// never prints a value. A missing proxy binary is a warning, never a problem: the launch path
 	// falls back to a plain harness start.

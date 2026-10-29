@@ -68,6 +68,12 @@ function shim(dir: string, name: string, body: string): void {
 const JSON_SHIM = "#!/bin/sh\nprintf '%s\\n' \"$MR_SWEEP_JSON\"\n";
 const AUTH_SHIM = "#!/bin/sh\necho '401 Unauthorized' >&2\nexit 1\n";
 
+// queue-check now needs an allowed review agent (P4d): the default review.agents is ["reviewer"].
+function allowSubagents(home: string): void {
+	mkdirSync(path.join(home, ".config/neurastream/notes"), { recursive: true });
+	writeFileSync(path.join(home, ".config/neurastream/notes/subagents.md"), "## Allowed\n\n- `reviewer`\n");
+}
+
 function plant(name: string, extra = "", origin: string | null = "https://gitlab.example/group/pm.git"): { cfg: Config; repo: string; home: string } {
 	const home = path.join(TMP, name);
 	const repo = path.join(home, "pm");
@@ -83,6 +89,7 @@ function plant(name: string, extra = "", origin: string | null = "https://gitlab
 	const index = path.join(home, "INDEX.md");
 	writeFileSync(index, `${file}\n`);
 	mkdirSync(path.join(home, ".config/neurastream"), { recursive: true });
+	allowSubagents(home);
 	const cfgFile = path.join(home, ".config/neurastream/config.yml");
 	writeFileSync(cfgFile, `paths:\n  queue_index: "${index}"\n  blockers: "${BLOCKERS}"\n`);
 	return { cfg: loadConfig({ home, file: cfgFile, env: {} }), repo, home };
@@ -183,6 +190,7 @@ test("an empty index exits 0", () => {
 	mkdirSync(home, { recursive: true });
 	writeFileSync(index, "");
 	mkdirSync(path.join(home, ".config/neurastream"), { recursive: true });
+	allowSubagents(home);
 	const cfgFile = path.join(home, ".config/neurastream/config.yml");
 	writeFileSync(cfgFile, `paths:\n  queue_index: "${index}"\n  blockers: "${BLOCKERS}"\n`);
 	const cfg = loadConfig({ home, file: cfgFile, env: {} });
