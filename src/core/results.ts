@@ -3,7 +3,7 @@
 // discovery reuses the queue's walkers (no new path config); all functions here are pure over
 // their arguments — the CLI passes the run source, the window and the self repo.
 
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import type { Run } from "./adapter.ts";
 import type { Config } from "./config.ts";
@@ -54,6 +54,15 @@ export function closeTime(text: string): number | null {
 	return best;
 }
 
+/** git writes a worktree's gitdir through symlinks resolved (macOS /var → /private/var), so a repo path is compared in its real form. */
+function realRepo(p: string): string {
+	try {
+		return realpathSync(p);
+	} catch {
+		return p;
+	}
+}
+
 /** Every dated plan under docs/plans/** of each repo the queue knows (work_roots plus one level of children). A git worktree carries a copy of docs/plans and gitTop maps it to the main checkout, so one node per (canonical repo, stem) survives: an archived or closed copy beats an open one, else the newest mtime wins. */
 export function loadPlans(cfg: Config): PlanNode[] {
 	applyQueueEnv(cfg);
@@ -80,7 +89,7 @@ export function loadPlans(cfg: Config): PlanNode[] {
 			const node: PlanNode = {
 				stem: base.slice(0, -3),
 				file,
-				repo: gitTop(file)?.repo ?? repo,
+				repo: realRepo(gitTop(file)?.repo ?? repo),
 				parents: [],
 				archived,
 				closed: archived || status === "complete" || status === "cancelled",

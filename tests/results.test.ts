@@ -5,7 +5,7 @@
 
 import { afterAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ompRunSource } from "../src/adapters/omp/sessions.ts";
@@ -207,8 +207,9 @@ const WT_CFG: Config = loadConfig({ home: WTHOME, env: {} });
 
 test("a linked worktree's plan copy collapses onto the main checkout (one chain, self kind)", () => {
 	const who = ["-c", "user.email=t@t", "-c", "user.name=t"];
-	const mainRepo = join(WTROOT, "mainrepo");
-	mkdirSync(join(mainRepo, "docs/plans"), { recursive: true });
+	mkdirSync(join(WTROOT, "mainrepo", "docs/plans"), { recursive: true });
+	// macOS tmpdir is a symlink (/var → /private/var); loadPlans reports the real path.
+	const mainRepo = realpathSync(join(WTROOT, "mainrepo"));
 	writeFileSync(join(mainRepo, "docs/plans", `${WT}.md`), planText("Wt", ["worktree copy of the plan"], "open", ["- 2026-10-25 10:00 CEST Main: started. Findings: none"]));
 	git(["init", "-q"], mainRepo);
 	git([...who, "add", "-A"], mainRepo);
