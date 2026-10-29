@@ -10,7 +10,7 @@ import { chmodSync, cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } fro
 import { dirname, join } from "node:path";
 import { helpText } from "../src/cli/dispatch.ts";
 import type { ToolEvent } from "../src/core/adapter.ts";
-import { CANCEL_TODO } from "../src/core/guards.ts";
+import { CANCEL_TODO, MAIN_PLAN_FILE } from "../src/core/guards.ts";
 import { touchedPaths } from "../src/core/queue/lib.ts";
 
 const REPO = dirname(dirname(import.meta.path));
@@ -605,5 +605,15 @@ describe("foreign deny-path (20261028_1228 P6, I-20261028-111)", () => {
 		expect(d.code).toBe(2);
 		expect(d.d.reason).toContain(`deny-path ${join(HOME, ".local/bin")}/**`);
 	});
+});
+
+// P1 (plan 20261029_1530): which files count as live plans — plans kept one level under
+// docs/plans/ (immediate/) match at any depth; docs/plans/archive/ never does.
+test("MAIN_PLAN_FILE matches plans under docs/plans subdirs but never archive", () => {
+	expect(MAIN_PLAN_FILE.test("/r/docs/plans/20261029_1200_x.md")).toBe(true);
+	expect(MAIN_PLAN_FILE.test("/r/docs/plans/immediate/20261029_1200_x.md")).toBe(true);
+	expect(MAIN_PLAN_FILE.test("/r/docs/plans/immediate/deeper/20261029_1200_x.md")).toBe(true);
+	expect(MAIN_PLAN_FILE.test("/r/docs/plans/archive/202610/20261029_1200_x.md")).toBe(false);
+	expect(MAIN_PLAN_FILE.test("/r/docs/plans/archive/20261029_1200_x.md")).toBe(false);
 });
 
