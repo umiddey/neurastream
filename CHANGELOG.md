@@ -12,6 +12,7 @@
 - `queue-finished --backfill` writes the repo dir, never the month folder, into FINISHED.md headers even when the archived plan's checkout has no `.git` up-tree, and also reads a linked worktree's archive for plan files the main checkout lacks, so those entries exist too.
 - `queue-finished --backfill` lists each archived plan once per repo, not once per worktree copy (INCIDENT I-20261028-126, I-20261028-127); `queue-finished --dedupe` removes existing duplicates from FINISHED.md.
 - `neurastream doctor` names the fix for a missing file: `missing: <path> — run: neurastream adapter install omp` (INCIDENT I-20261028-129).
+- Plan review gate (plan 20261028_1600, P4g/P4h): a reviewer's verdict is read only from the form `- [<date> <time> <name>: ]PLAN REVIEW: PASS|FAIL …`; any other `PLAN REVIEW` line in a subagent's Progress edit is restored with a reason, and a verdict word inside a line no longer sets the verdict. Ticking a phase box no longer expires a PASS, and the queue summary shows `N/M done` per plan. One-time: a PASS recorded before this change on a plan whose phase boxes were already ticked expires once and needs one fresh review.
 ## 0.2.47
 ### Fixed
 - The bare `queue-finished` command is installed again (INCIDENT I-20261028-119): it was the only queue script without a `bin/` wrapper and package.json `bin` row, so the rules table's `queue-finished` failed with "command not found" while `neurastream queue-finished` worked.

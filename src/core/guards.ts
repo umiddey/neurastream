@@ -165,6 +165,7 @@ export function reviewHash(text: string): string {
 			.outsideProgress(text)
 			.split("\n")
 			.filter(l => !MAIN_ONLY_LINE.test(l))
+			.map(l => l.replace(/^(\s*[-*]\s+)\[[xX]\]/, "$1[ ]")) // a ticked phase box hashes as unticked: ticking never expires a PASS
 			.join("\n"),
 	);
 }

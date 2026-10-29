@@ -6,10 +6,10 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/core/config.ts";
-import { checkPlanEdit, checkSpawn } from "../src/core/guards.ts";
+import { checkPlanEdit, checkSpawn, reviewHash } from "../src/core/guards.ts";
 import type { CommandRunner } from "../src/core/mr-sweep.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
-import { parsePlan, queueProblems, type Plan } from "../src/core/queue/lib.ts";
+import { parsePlan, queueProblems, queueSummary, type Plan } from "../src/core/queue/lib.ts";
 import { fixturePlan } from "./fixtures/plan.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "plan-review-"));
@@ -274,6 +274,31 @@ test("a PLAN REVIEW line outside the exact form is restored with a reason", () =
 		allow: false,
 		reason: expect.stringContaining("no current reviewer PASS"),
 	});
+});
+
+// --- P4h: the queue summary counts done phases; ticking a phase box does not expire a PASS ---
+
+const THREE_PHASES = fixturePlan().replace(
+	"- [ ] P1 do the thing — verify: `test -f src/a.ts`",
+	"- [x] P1 do the thing — verify: `test -f src/a.ts`\n- [x] P2 do the next thing — verify: `test -f src/a.ts`\n- [ ] P3 do the last thing — verify: `test -f src/a.ts`",
+);
+
+test("the queue summary shows N/M done for a plan's phases", () => {
+	const file = join(REPO, "docs/plans/20261029_0110_threephase.md");
+	writeFileSync(file, THREE_PHASES);
+	const index = join(TMP, "INDEX3.md");
+	writeFileSync(index, `${file}\n`);
+	expect(queueSummary(index, SINCE)).toMatch(/\[open, 2\/3 done\]/);
+});
+
+test("ticking a phase box does not change the review hash", () => {
+	const text = fixturePlan();
+	expect(reviewHash(text.replace("- [ ] P1", "- [x] P1"))).toBe(reviewHash(text));
+});
+
+test("editing a phase's text changes the review hash", () => {
+	const text = fixturePlan();
+	expect(reviewHash(text.replace("P1 do the thing", "P1 do it differently"))).not.toBe(reviewHash(text));
 });
 
 afterAll(() => rmSync(TMP, { recursive: true, force: true }));

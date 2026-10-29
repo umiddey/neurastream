@@ -1015,7 +1015,8 @@ export function queueSummary(index = INDEX, reviewSince = ""): string {
 				if (at === undefined || plans[at - 1]!.status !== "open") continue;
 				waits.push(`waits on #${at}`);
 			}
-		const flags = [status, hold, ...waits, p.priorityId ?? ""].filter(Boolean).join(", ");
+		const done = p.phases.total ? `${p.phases.done}/${p.phases.total} done` : "";
+		const flags = [status, done, hold, ...waits, p.priorityId ?? ""].filter(Boolean).join(", ");
 		const goal = items(sections(p.text).get("goal") ?? "")[0]?.slice(0, 100) ?? "";
 		lines.push(`  ${i + 1}. ${p.file} [${flags}] ${goal}`);
 	});
