@@ -1,5 +1,5 @@
 # Changelog
-## Unreleased
+## 0.2.49
 ### Added
 - Main's per-turn call cap (plan 20261028_1545_main_call_budget, P1–P2): every Main tool call counts toward `guards.main_max_calls` (15; 0 = off) since the owner's last message or Main's last hand-back, with the wrap-up warning at `guards.main_warn_calls` (12); at the cap only `guards.main_call_exempt_tools` (`task`, `todo`, `ask`, `wait`) still pass, so Main ends its turn or spawns an implementer instead of grinding. The count lives in the existing edit-window state file (one new field, no second state format); tier `full` ignores the cap. The omp adapter resets the count at Main's terminal hand-back (`agent_end` without `willContinue`); a real owner prompt already did through `checkInject`.
 ## 0.2.48
