@@ -127,6 +127,8 @@ export interface Plan {
 	waitingBlocked: string | null;
 	/** Why Main cannot do it. Null when the line has no `— why you:`. */
 	waitingWhy: string | null;
+	/** The command from `— still true if: \`<cmd>\``; exit 0 keeps the card up. Null without one. */
+	waitingCheck: string | null;
 	waitsOn: string[];
 	priorityId: string | null;
 	/** First level-1 "# " heading in the plan, else the file basename. */
@@ -246,26 +248,40 @@ const MAIN_ONLY_LINE = /^\s*(?:[-*]\s+)?(Status:|WAITING on owner:|Waits on:|Can
 
 const WAITING_BLOCKED = " — blocked: ";
 const WAITING_WHY = " — why you: ";
+/** The hold's own proof: exit 0 means the hold is still real (src/core/waiting-check.ts). */
+const WAITING_CHECK = " — still true if: ";
+
+export interface WaitingParts {
+	ask: string;
+	blocked: string | null;
+	why: string | null;
+	/** The backticked command after `— still true if:`, or null. */
+	check: string | null;
+}
 
 /** Split `WAITING on owner:` text. An old one-part line is ask only; a missing part is null. */
-export function splitWaiting(line: string): { ask: string; blocked: string | null; why: string | null } {
-	const marks: { at: number; kind: "blocked" | "why"; len: number }[] = [];
+export function splitWaiting(line: string): WaitingParts {
+	const marks: { at: number; kind: "blocked" | "why" | "check"; len: number }[] = [];
 	const blockedAt = line.indexOf(WAITING_BLOCKED);
 	const whyAt = line.indexOf(WAITING_WHY);
+	const checkAt = line.indexOf(WAITING_CHECK);
 	if (blockedAt >= 0) marks.push({ at: blockedAt, kind: "blocked", len: WAITING_BLOCKED.length });
 	if (whyAt >= 0) marks.push({ at: whyAt, kind: "why", len: WAITING_WHY.length });
+	if (checkAt >= 0) marks.push({ at: checkAt, kind: "check", len: WAITING_CHECK.length });
 	marks.sort((a, b) => a.at - b.at);
-	if (marks.length === 0) return { ask: line.trim(), blocked: null, why: null };
+	if (marks.length === 0) return { ask: line.trim(), blocked: null, why: null, check: null };
 	let blocked: string | null = null;
 	let why: string | null = null;
+	let check: string | null = null;
 	for (let i = 0; i < marks.length; i++) {
 		const mark = marks[i]!;
 		const end = i + 1 < marks.length ? marks[i + 1]!.at : line.length;
 		const text = line.slice(mark.at + mark.len, end).trim();
 		if (mark.kind === "blocked") blocked = text || null;
-		else why = text || null;
+		else if (mark.kind === "why") why = text || null;
+		else check = text.match(/`([^`]+)`/)?.[1]?.trim() || null;
 	}
-	return { ask: line.slice(0, marks[0]!.at).trim(), blocked, why };
+	return { ask: line.slice(0, marks[0]!.at).trim(), blocked, why, check };
 }
 
 /** Keep the first `keep` entries (the file lists them newest first) and move the rest. Pure. */
@@ -354,7 +370,7 @@ function reuseProblems(repo: string, file: string, secs: Map<string, string>, re
 }
 
 export function parsePlan(repo: string, file: string, text: string | null, blockersDir = blockersDirPath(), reviewAgents: string[] = []): Plan {
-	const empty = { repo, file, text: "", status: null, blockers: [], doneCheck: null, worktree: null, branch: null, appliesTo: [], waiting: false, waitingLine: null, waitingAsk: null, waitingBlocked: null, waitingWhy: null, waitsOn: [], priorityId: null, title: path.basename(file), goal: [], summary: null, phases: { done: 0, total: 0 }, started: false };
+	const empty = { repo, file, text: "", status: null, blockers: [], doneCheck: null, worktree: null, branch: null, appliesTo: [], waiting: false, waitingLine: null, waitingAsk: null, waitingBlocked: null, waitingWhy: null, waitingCheck: null, waitsOn: [], priorityId: null, title: path.basename(file), goal: [], summary: null, phases: { done: 0, total: 0 }, started: false };
 	if (text === null) return { ...empty, errors: ["plan file listed in the index does not exist"] };
 	const errors: string[] = [];
 	const secs = sections(text);
@@ -391,7 +407,7 @@ export function parsePlan(repo: string, file: string, text: string | null, block
 	if (bg > BACKGROUND_MAX_LINES) errors.push(`"## Background" has ${bg} lines (max ${BACKGROUND_MAX_LINES}); link a separate file for long context`);
 	const wt = headerField(text, "Worktree");
 	const waitingLine = text.match(/^WAITING on owner:[ \t]*(.*)$/m)?.[1] ?? null;
-	const waitingParts = waitingLine === null ? { ask: null, blocked: null, why: null } : splitWaiting(waitingLine);
+	const waitingParts = waitingLine === null ? { ask: null, blocked: null, why: null, check: null } : splitWaiting(waitingLine);
 	return {
 		repo,
 		file,
@@ -407,6 +423,7 @@ export function parsePlan(repo: string, file: string, text: string | null, block
 		waitingAsk: waitingParts.ask,
 		waitingBlocked: waitingParts.blocked,
 		waitingWhy: waitingParts.why,
+		waitingCheck: waitingParts.check,
 		waitsOn: [...text.matchAll(/^[ \t]*(?:[-*][ \t]+)?Waits on:[ \t]*(.+)$/gm)].map(m => m[1]!.trim()),
 		priorityId: text.match(/^PRIORITY-ID:\s*`?([A-Z]{2}[0-9]{2})`?/m)?.[1] ?? null,
 		title: text.match(/^# (.+)$/m)?.[1]?.trim() || path.basename(file),

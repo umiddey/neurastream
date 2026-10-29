@@ -33,7 +33,11 @@ PRIORITY-ID: <optional, e.g. PR01>
 Status: open
 <!-- The implementer may only append dated entries here: what was done, what was verified (command +
      result), commits, what is next. It never changes the Status line or adds "WAITING on owner".
-     A hold is one line: `WAITING on owner: <what to do> — blocked: <what stays stuck until then> — why you: <why Main cannot do it>` (blocked and why you may be omitted).
+     A hold is one line: `WAITING on owner: <what to do> — blocked: <what stays stuck until then> — why you: <why Main cannot do it> — still true if: \`<cmd>\`` (blocked, why you and still true if may be omitted).
+     `still true if` is the hold's own proof: neurastream runs the command in the plan's worktree (else its repo)
+     before the question card is shown — exit 0 keeps the card up, non-zero hides it, opens a "stale-hold"
+     incident and prints it (a timeout counts as unknown: the card stays, no incident).
+     The hold line itself is never edited automatically; Main removes or rewrites it.
      Every new entry ends with a Findings line: "Findings: none", or one item per finding (bug,
      workaround, improvement — any repo) with file:line evidence, items separated by ";". Plan-guard
      restores an entry without it. Findings stay notes: Main reads them, they never become incidents.
