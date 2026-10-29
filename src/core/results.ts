@@ -375,7 +375,7 @@ export function releasesReport(runs: Run[], plans: PlanNode[], selfRepo: string 
 	for (const e of events) {
 		if (e.type === "product" && typeof e.repo === "string" && typeof e.name === "string" && typeof e.value === "number" && typeof e.ts === "number") {
 			products.push({ repo: e.repo, name: e.name, value: e.value, ts: e.ts });
-		} else if (e.type === "ci" && typeof e.repo === "string" && typeof e.ts === "number" && e.repo !== selfRepo) {
+		} else if (e.type === "ci" && typeof e.repo === "string" && typeof e.ts === "number" && realRepo(e.repo) !== selfRepo) {
 			merges.push({ repo: e.repo, mr: String(e.mr), ts: e.ts });
 		}
 	}

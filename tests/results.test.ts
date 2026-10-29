@@ -5,7 +5,7 @@
 
 import { afterAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ompRunSource } from "../src/adapters/omp/sessions.ts";
@@ -346,14 +346,19 @@ test("metrics features prints the table through the real CLI on fixture data", (
 	writeFileSync(fixPath, planText("Fix alpha", [`fix ${ALPHA}: the widget leaked`], "complete", [`- ${stamp(BASE - 2 * DAY + HOUR)} Main: fix shipped. Findings: none`]));
 	try {
 		const main = join(PROJ, "20261026_0900_main.jsonl");
+		// Both Main lines must share one epoch hour: attributeCosts buckets Main $ per epoch
+		// hour, and a :50+ start puts the +600s "done" line in the next hour's unnamed bucket
+		// (overhead), losing the $2 — a minute-of-run lottery, not a TZ effect. Anchor to the
+		// hour top of BASE - 3 * DAY so the pair is start-minute-independent.
+		const mainHour = Math.floor((BASE - 3 * DAY) / HOUR) * HOUR;
 		writeFileSync(
 			main,
 			[
-				userLine(iso(BASE - 3 * DAY), `plan ${ALPHA} and ${FIX} together`),
-				assistantLine(iso(BASE - 3 * DAY + 600), "done", 2),
+				userLine(iso(mainHour + 60), `plan ${ALPHA} and ${FIX} together`),
+				assistantLine(iso(mainHour + 120), "done", 2),
 			].join("\n") + "\n",
 		);
-		backdate(main, BASE - 3 * DAY);
+		backdate(main, mainHour + 60);
 		// A sub naming alpha only: its whole cost goes to alpha's chain, outside the Main hour split.
 		const sub = join(PROJ, "NsAlpha1.jsonl");
 		writeFileSync(
@@ -434,6 +439,11 @@ test("releases: a 10-day-old tag shows both sides, a 2-day-old tag is measuring,
 	];
 	const report = releasesReport(runs, loadPlans(CFG), NSREPO, DAYS, NOW, tags, events);
 	expect(report.rows.map(r => r.name)).toEqual(["v1.0.0", "proj#77", "v1.1.0"]);
+	// The same self merge through a symlinked path to the self repo is still self (macOS
+	// /var → /private/var): the ci event's repo is compared by real path on both sides.
+	symlinkSync(NSREPO, join(TMP, "nsrepo-link"), "dir");
+	const linkEvents: Ev[] = events.map(e => (e.type === "ci" && e.mr === "88" ? { type: "ci", mr: "88", repo: join(TMP, "nsrepo-link"), tries: e.tries, ts: e.ts } : e));
+	expect(releasesReport(runs, loadPlans(CFG), NSREPO, DAYS, NOW, tags, linkEvents).rows.map(r => r.name)).toEqual(["v1.0.0", "proj#77", "v1.1.0"]);
 	// v1.0.0, 10 days old: both windows are complete.
 	const old = report.rows[0]!;
 	expect(old.kind).toBe("neurastream");
