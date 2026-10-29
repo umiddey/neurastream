@@ -18,7 +18,8 @@ import { appendMetric } from "../src/core/metrics.ts";
 import { checkTool } from "../src/core/guards.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { createOmpAdapter, ownerInboxCursorPath, ownerInboxMessage, type ExtensionHost } from "../src/adapters/omp/index.ts";
-import { inboxPath, agentRows, buildPageData, ciRows, dropSlot, edgeScrollStep, incidentRows, machineRow, nowStats, questionRows, queueRows, scoresData, startOwnerUi, type OwnerUiOptions, type OwnerUiServer } from "../src/core/owner-ui.ts";
+import { inboxPath, agentRows, buildPageData, ciRows, dropSlot, edgeScrollStep, incidentRows, machineRow, nowStats, questionRows, queueRows, renderPage, scoresData, startOwnerUi, type OwnerUiOptions, type OwnerUiServer, type PageData, type ResultsData } from "../src/core/owner-ui.ts";
+import type { ChainRow, FeaturesReport, ReleaseRow, ReleaseSideStats, ReleasesReport } from "../src/core/results.ts";
 import { runUi } from "../src/cli/ui.ts";
 import { parsePlan, stateDirPath, unlockPath } from "../src/core/queue/lib.ts";
 import { parseWhoisLogin, type Tailscale } from "../src/core/tailscale.ts";
@@ -1781,6 +1782,10 @@ test("tab selection: each tab shows its own sections and an unknown tab falls ba
 	expect(spend).toContain("By model");
 	expect(spend).toContain("$0.20");
 	expect(spend).not.toContain(QUESTION);
+	const results = await (await get(svc, "/?tab=results")).text();
+	expect(results).toContain('<a href="/?tab=results" class="on">Results</a>');
+	expect(results).toContain("<h1>Results</h1>");
+	expect(results).not.toContain(QUESTION);
 	const unknown = await (await get(svc, "/?tab=bogus")).text();
 	expect(unknown).toContain("Today");
 	expect(unknown).toContain('href="/?tab=now" class="on">Now</a>');
@@ -1880,4 +1885,110 @@ test("knowledge: an empty manifest states the convention", async () => {
 	expect(body).toContain("No topics yet");
 	expect(body).toContain("docs/knowledge/");
 	expect(body).toContain("configured roots");
+});
+
+// --- Results tab (plan 20261025_2148 P4): chart, releases table, y/x links ---
+// Content tests render renderPage directly with hand-built ResultsData: the live server path is
+// covered by the tab-selection leg above plus the data builders' own tests in results.test.ts.
+
+const relSide = (perFeature: number | null): ReleaseSideStats => ({
+	perFeature,
+	featuresPerDay: perFeature === null ? null : 0.5,
+	callsPerFeature: perFeature === null ? null : 3,
+	tokensPerCall: perFeature === null ? null : 900,
+	fixPlansPerFeature: perFeature === null ? null : 0.5,
+	// Two repos share the name, so the tab must qualify the product metrics per repo.
+	products: [
+		{ repo: TOY, name: "dist_mb", value: perFeature === null ? null : perFeature * 2 },
+		{ repo: join(TMP, "other"), name: "dist_mb", value: 7 },
+	],
+});
+
+const relRow = (name: string, kind: "product" | "neurastream", daysAgo: number, measuring: boolean): ReleaseRow => ({
+	name,
+	kind,
+	repo: TOY,
+	ts: nowSec() - daysAgo * 86400,
+	measuring,
+	before: relSide(4),
+	after: relSide(measuring ? null : 2),
+});
+
+const RESULTS: ResultsData = {
+	features: { days: 7, from: 0, to: 0, rows: [], summaries: [] },
+	releases: {
+		days: 7,
+		rows: [relRow("v1.0.0", "neurastream", 10, false), relRow("toy#!77", "product", 4, false), relRow("v1.1.0", "neurastream", 2, true)],
+	},
+};
+
+const EMPTY_DATA: PageData = {
+	questions: [],
+	agents: [],
+	queue: [],
+	ci: [],
+	incidents: [],
+	scores: { header: [], rows: [], text: [] },
+	machine: null,
+	stats: null,
+	knowledge: null,
+	messages: [],
+	lockMinutesLeft: null,
+};
+
+function resultsPage(params: string, results: ResultsData | null = RESULTS): string {
+	return renderPage(CFG, { ...EMPTY_DATA, results }, new URLSearchParams(params), "results-nonce");
+}
+
+test("results tab: chart, releases table and y/x links render for both x modes", () => {
+	for (const x of ["time", "feature"]) {
+		const html = resultsPage(`tab=results&x=${x}`);
+		expect(html).toContain("<svg");
+		expect(html).toContain(`<h1>Results</h1>`);
+		expect(html).toContain(`aria-label="$ per feature by ${x === "time" ? "day" : "release"}"`);
+		expect(html).toContain("v1.0.0 · $2.00 ·"); // a point tooltip: the after value of the metric
+		expect(html).toContain("toy#!77"); // the releases table names every release
+		expect(html).toContain('<span class="chip c-ready">measuring</span>');
+		expect(html).toContain('<span class="good">▼</span>'); // $/feature 4→2 is for the better
+		expect(html).toContain('<span class="note">');
+	}
+	const time = resultsPage("tab=results&x=time");
+	expect(time).toContain('href="/?tab=results&amp;y=usd&amp;x=feature"'); // the x control link
+	expect(time).toContain('href="/?tab=results&amp;y=fix&amp;x=time"'); // the y control links
+	expect(time).toContain('href="/?tab=results&amp;y=p:toy:dist_mb&amp;x=time"'); // product numbers qualify by repo on a name clash
+	expect(time.match(/<line[^>]*stroke-dasharray="3 3"/g)?.length).toBe(3); // a dashed vertical per release on the time axis
+	const feature = resultsPage("tab=results&x=feature");
+	expect(feature).not.toContain('stroke-dasharray="3 3"'); // in feature mode the x axis is the releases themselves
+});
+
+test("results tab: an unknown y falls back to $/feature", () => {
+	const html = resultsPage("tab=results&y=bogus");
+	expect(html).toContain('aria-label="$ per feature by day"');
+	expect(html).toContain('<a href="/?tab=results&amp;y=usd&amp;x=time" class="on">$/feat</a>');
+});
+
+test("results tab: a product number is its own y metric", () => {
+	const html = resultsPage("tab=results&y=p:toy:dist_mb");
+	expect(html).toContain('aria-label="dist_mb (product number) by day"');
+	expect(html).toContain("8→4<span>"); // the table shows the raw numbers, arrow without a color class
+});
+
+test("results tab: an empty ledger shows No finished features yet", () => {
+	const nothing: ResultsData = {
+		features: { days: 7, from: 0, to: 0, rows: [], summaries: [] },
+		releases: { days: 7, rows: [] },
+	};
+	const html = resultsPage("tab=results", nothing);
+	expect(html).toContain("No finished features yet");
+	expect(html).not.toContain("<svg");
+	// Features exist but nothing was ever released: say that instead.
+	const row: ChainRow = { stem: "20261020_0800_old", kind: "product", plans: 1, fixPlans: 0, total: 1, first: 1, closedAt: nowSec() };
+	const noReleases: FeaturesReport = { days: 7, from: 0, to: 0, rows: [row], summaries: [] };
+	expect(resultsPage("tab=results", { features: noReleases, releases: { days: 7, rows: [] } })).toContain("No releases recorded yet");
+});
+
+test("results tab: unreadable data renders unavailable and never fails the page", () => {
+	const html = resultsPage("tab=results", null);
+	expect(html).toContain("Results unavailable");
+	expect(html).toContain("<h1>Results</h1>");
 });

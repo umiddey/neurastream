@@ -4,13 +4,11 @@ import {
 	copyFileSync,
 	existsSync,
 	mkdirSync,
-	mkdtempSync,
 	readFileSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 
 // The port under test is the checkout these tests ship in (worktree-safe: never a hardcoded path).
@@ -355,6 +353,28 @@ test("resource-alerts matches the original", () => {
 test.skipIf(process.platform !== "linux")("tmp-snapshot matches the original", () => {
 	const home = homeFor("snap");
 	pinOmp(home);
+	// The oracle and the port rsync the literal /tmp/ (P5b): one rsync PATH shim (envFor puts
+	// ~/.local/bin first) redirects that source into a fake /tmp under the sandbox for both
+	// sides, so the run never copies the machine's real /tmp into its own sandbox.
+	const fakeTmp = join(home, "fake-tmp");
+	mkdirSync(fakeTmp, { recursive: true });
+	writeFileSync(join(fakeTmp, "sandbox-marker"), "fake /tmp\n");
+	const realMarker = join(ROOT, "real-tmp-marker");
+	writeFileSync(realMarker, "real /tmp\n");
+	const realRsync = spawnSync("sh", ["-c", "command -v rsync"], { encoding: "utf8" }).stdout.trim() || "/usr/bin/rsync";
+	writeFileSync(
+		join(home, ".local/bin/rsync"),
+		[
+			"#!/usr/bin/env bash",
+			"args=()",
+			'for a in "$@"; do',
+			`  [[ $a == /tmp/ ]] && a="${fakeTmp}/"`,
+			'  args+=("$a")',
+			"done",
+			`exec ${realRsync} "\${args[@]}"`,
+		].join("\n"),
+	);
+	chmodSync(join(home, ".local/bin/rsync"), 0o755);
 	const env = envFor(home);
 	mkdirSync(join(home, "Work/gateforge"), { recursive: true });
 	spawnSync("git", ["init", "-b", "main"], { cwd: join(home, "Work/gateforge"), env });
@@ -368,6 +388,9 @@ test.skipIf(process.platform !== "linux")("tmp-snapshot matches the original", (
 	expect(stripTs(port.stdout)).toBe(stripTs(py.stdout));
 	expect(stripVanished(toOracle(port.stderr))).toBe(stripVanished(py.stderr));
 	expect(port.code).toBe(py.code);
+	// The snapshot mirrors the fake /tmp only: the sandbox marker is in, the real one is out.
+	expect(existsSync(join(home, "Work/tmp-snapshot/tmp/sandbox-marker"))).toBe(true);
+	expect(existsSync(join(home, "Work/tmp-snapshot/tmp", basename(realMarker)))).toBe(false);
 }, 120_000);
 
 // The 0.2.0 queue format change (one index, plan 20261024_1400_one_index) supersedes the frozen

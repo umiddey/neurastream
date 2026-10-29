@@ -143,13 +143,13 @@ test("M4 counts owner messages, corrections and Main's trailing-? questions from
 		kind: "main",
 		lastWriteAt: NOW - 100,
 		messages: [
-			{ role: "user", cost: 0, text: JSON.stringify([{ type: "text", text: "no, that is wrong" }]) },
-			{ role: "user", cost: 0, text: JSON.stringify("ok thanks") },
-			{ role: "assistant", cost: 0, text: JSON.stringify([{ type: "text", text: "Shall I continue?" }]) },
-			{ role: "assistant", cost: 0, text: JSON.stringify([{ type: "text", text: "Done." }]) },
+			{ role: "user", cost: 0, ts: null, text: JSON.stringify([{ type: "text", text: "no, that is wrong" }]) },
+			{ role: "user", cost: 0, ts: null, text: JSON.stringify("ok thanks") },
+			{ role: "assistant", cost: 0, ts: null, text: JSON.stringify([{ type: "text", text: "Shall I continue?" }]) },
+			{ role: "assistant", cost: 0, ts: null, text: JSON.stringify([{ type: "text", text: "Done." }]) },
 		],
 	});
-	const sub = run({ id: "s", kind: "sub", lastWriteAt: NOW - 100, messages: [{ role: "user", cost: 0, text: "no" }] });
+	const sub = run({ id: "s", kind: "sub", lastWriteAt: NOW - 100, messages: [{ role: "user", cost: 0, ts: null, text: "no" }] });
 	const patterns = ["\\bno\\b", "wrong"].map((p) => new RegExp(p, "i"));
 	expect(m4([main, sub], cur, patterns)).toEqual({ users: 2, corrections: 1, questions: 1 });
 });
@@ -164,7 +164,7 @@ test("M4 does not count the rollover note request or a handoff's note as owner c
 		id: "20261023-main",
 		kind: "main",
 		lastWriteAt: NOW - 100,
-		messages: machine.map(text => ({ role: "user", cost: 0, text: JSON.stringify([{ type: "text", text }]) })),
+		messages: machine.map(text => ({ role: "user", cost: 0, ts: null, text: JSON.stringify([{ type: "text", text }]) })),
 	});
 	const patterns = ["\\bno\\b", "wrong", "stop"].map((p) => new RegExp(p, "i"));
 	expect(m4([main], cur, patterns)).toEqual({ users: 3, corrections: 1, questions: 0 });
@@ -359,4 +359,44 @@ test("M6 counts the window's incident stories and the median hours from open to 
 	expect(view).toEqual({ opened: 6, planned: 1, dismissed: 1, fixed: 3, medianHours: 2 });
 	// An empty window reads zeros with no median, and the numbers land in the report text.
 	expect(m6([], w)).toEqual({ opened: 0, planned: 0, dismissed: 0, fixed: 0, medianHours: null });
+});
+
+// --- P3: product numbers on every merge, and product_cmds validation ---
+
+test("metrics ci runs the repo's product_cmds once and appends one product row per number; a failing or non-numeric number is skipped with a stderr line", () => {
+	const repo = join(TMP, "prod-repo");
+	mkdirSync(repo, { recursive: true });
+	const cfg = cfgWith(join(TMP, "home-prod"), "printf '[1]'");
+	cfg.metrics.product_cmds = { [repo]: { seven: "printf '7'", words: "printf 'nope'", boom: "exit 3" } };
+	const errs: string[] = [];
+	const orig = console.error;
+	console.error = (m?: unknown) => errs.push(String(m));
+	let status: number;
+	try {
+		status = recordCi(cfg, repo, "9", NOW);
+	} finally {
+		console.error = orig;
+	}
+	expect(status).toBe(0);
+	expect(readMetricEvents(cfg)).toEqual([
+		{ type: "ci", mr: "9", repo, tries: 1, ts: NOW },
+		{ type: "product", repo, name: "seven", value: 7, ts: NOW },
+	]);
+	expect(errs.some(l => l.includes("words"))).toBe(true);
+	expect(errs.some(l => l.includes("boom"))).toBe(true);
+});
+
+test("metrics.product_cmds validates shape; the template default is {}", () => {
+	const home = join(TMP, "home-pc");
+	mkdirSync(home, { recursive: true });
+	expect(loadConfig({ home }).metrics.product_cmds).toEqual({});
+	const file = join(home, "user.yml");
+	writeFileSync(file, "metrics:\n  product_cmds: nope\n");
+	expect(() => loadConfig({ home, file })).toThrow(/product_cmds/);
+	writeFileSync(file, "metrics:\n  product_cmds:\n    /repo: printf 1\n");
+	expect(() => loadConfig({ home, file })).toThrow(/product_cmds\.\/repo/);
+	writeFileSync(file, "metrics:\n  product_cmds:\n    /repo:\n      dist_mb: \"\"\n");
+	expect(() => loadConfig({ home, file })).toThrow(/product_cmds\.\/repo\.dist_mb/);
+	writeFileSync(file, "metrics:\n  product_cmds:\n    /repo:\n      dist_mb: \"du -sm frontend/dist | cut -f1\"\n");
+	expect(loadConfig({ home, file }).metrics.product_cmds).toEqual({ "/repo": { dist_mb: "du -sm frontend/dist | cut -f1" } });
 });

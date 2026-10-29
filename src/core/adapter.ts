@@ -8,6 +8,8 @@ export interface RunMessage {
 	role: string;
 	cost: number;
 	text: string;
+	/** Unix seconds the line was written at; null when the line carried no readable timestamp. */
+	ts: number | null;
 }
 
 export interface Run {

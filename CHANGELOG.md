@@ -1,4 +1,9 @@
 # Changelog
+## 0.2.51
+### Added
+- Feature results (plan 20261025_2148): `neurastream metrics features [--days N] [--json]` prices finished features — a feature is a plan plus every later plan whose Goal names its file stem, finished when every plan in the chain closes or archives; each hour of Main cost splits evenly over the plan files that hour's messages name (none → overhead), a sub run's cost goes to the plan its first message names. `neurastream metrics releases [--days N] [--json]` prints the same ledger metrics for the N days before vs after each release (a `v*` tag of this repo or another repo's `metrics ci` merge) plus the configured product numbers (`metrics.product_cmds`); `RunMessage` carries the session line's `ts`, and the owner page's Results tab draws the releases as an inline-SVG chart (y = metric, x = time or feature/release order; product numbers stay neutral).
+### Fixed
+- The owner page's pill tabs keep their gaps and padding at 390 px: the row scrolls horizontally instead of squeezing six labels together.
 ## 0.2.50
 ### Added
 - `neurastream doctor` and `queue-check` check `review.agents` against `## Allowed` of the subagents file (plan 20261028_1600, P4d): when Allowed names agents but no review agent, that is a problem (every review spawn would be refused); an empty Allowed (a fresh install) is not; an entry that is not allowed is a warning.

@@ -187,8 +187,8 @@ export interface M4 {
 
 /**
  * M4: user messages in main runs written in the window, how many match a correction pattern,
- * and assistant messages whose last text block ends in "?". RunMessage has no timestamp, so
- * a main run counts whole by its lastWriteAt.
+ * and assistant messages whose last text block ends in "?". Messages may carry ts, but M4
+ * keeps the whole-run measure: a main run counts by its lastWriteAt.
  */
 export function m4(runs: Run[], w: Window, patterns: RegExp[]): M4 {
 	const out: M4 = { users: 0, corrections: 0, questions: 0 };

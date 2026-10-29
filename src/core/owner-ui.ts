@@ -20,7 +20,8 @@ import { dismissIncident, isFindingKind, openIncidents } from "./incidents.ts";
 import { byText, knowledgeManifest, readKnowledgeTopicFile, urlField, urlValue, type KnowledgeEntry } from "./knowledge.ts";
 import { log } from "./guards.ts";
 import { readMetricEvents } from "./metrics.ts";
-import { activePlans, chatUnlock, dependencyOrderProblems, expandHome, stateDirPath, unlockPath, type Plan } from "./queue/lib.ts";
+import { activePlans, chatUnlock, dependencyOrderProblems, expandHome, gitTop, stateDirPath, unlockPath, type Plan } from "./queue/lib.ts";
+import { featuresReport, gatherTags, loadPlans, releasesReport, type FeaturesReport, type ReleaseRow, type ReleaseSideStats, type ReleasesReport } from "./results.ts";
 import type { Tailscale } from "./tailscale.ts";
 
 const ANSWER_MAX = 2000;
@@ -31,7 +32,7 @@ const MESSAGE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 export const OWNER_MESSAGE_KEEP_SEC = 43200;
 const REFRESH_SEC = 20;
 /** The page's tabs, in pill order; anything else in `?tab=` renders Now. */
-const TABS: [string, string][] = [["now", "Now"], ["queue", "Queue"], ["agents", "Agents"], ["spend", "Spend"], ["knowledge", "Base"]];
+const TABS: [string, string][] = [["now", "Now"], ["queue", "Queue"], ["agents", "Agents"], ["spend", "Spend"], ["knowledge", "Base"], ["results", "Results"]];
 const TAB_IDS = TABS.map(([id]) => id);
 // Tailscale hands out addresses from 100.64.0.0/10 (CGNAT) and its own ULA /48 for IPv6.
 const TAILNET6 = /^fd7a:115c:a1e0:/i;
@@ -747,6 +748,8 @@ export interface PageData {
 	knowledge: KnowledgeEntry[] | null;
 	/** The 24 h tile numbers; null when the run source is unreadable. */
 	stats: NowStats | null;
+	/** The Results tab's ledger and release windows; null when unreadable, absent in hand-built PageData. */
+	results?: ResultsData | null;
 	/** The owner's messages newer than the keep window, newest first; null when unreadable. */
 	messages: MessageRow[] | null;
 	/** Minutes left in the guard unlock; null = locked. */
@@ -783,6 +786,7 @@ export function buildPageData(cfg: Config, source: RunSource): PageData {
 		machine: safe(() => machineRow(cfg)),
 		knowledge: safe(() => knowledgeManifest(cfg)),
 		stats: safe(() => nowStats(cfg, source, nowSec())),
+		results: safe(() => resultsData(cfg, source)),
 		messages: safe(() => recentOwnerMessages(nowSec())),
 		lockMinutesLeft: lockMinutesLeft(cfg),
 	};
@@ -822,8 +826,8 @@ export function edgeScrollStep(y: number, viewportH: number): number {
 const SCRIPT = `(function(){
 var dropSlot=${dropSlot.toString()};
 var edgeScrollStep=${edgeScrollStep.toString()};
-// Keep only the tab in the address bar: receipts are one-time DOM, not a reloadable URL.
-if(location.search){var keep=new URLSearchParams(location.search).get("tab");history.replaceState(null,"",location.pathname+(keep?"?tab="+keep:""));}
+// Keep the tab in the address bar (receipts are one-time DOM, not a reloadable URL); the Results tab keeps y/x so the 20 s refresh renders the same selection.
+if(location.search){var q=new URLSearchParams(location.search);var keep=new URLSearchParams();if(q.get("tab"))keep.set("tab",q.get("tab"));if(q.get("tab")==="results"){if(q.get("y"))keep.set("y",q.get("y"));if(q.get("x"))keep.set("x",q.get("x"));}var ks=keep.toString();history.replaceState(null,"",location.pathname+(ks?"?"+ks:""));}
 function store(d,v){var k="nsui:"+d.id;if(v===undefined)return sessionStorage.getItem(k);sessionStorage.setItem(k,v?"1":"0");}
 function bindDetails(root){var ds=root.querySelectorAll("details[id]");for(var i=0;i<ds.length;i++){(function(d){var s=store(d);if(s!==null)d.open=s==="1";d.addEventListener("toggle",function(){store(d,d.open);});})(ds[i]);}}
 var dragging=false;
@@ -946,6 +950,222 @@ function knowledgeHtml(entries: KnowledgeEntry[], repo: string, topic: string): 
 	return `${crumb}<h1>${esc(hit.title)}</h1><div class="card"><iframe class="knowframe" title="${esc(hit.title)}" src="/knowledge/${urlValue(repo)}/${urlValue(topic)}"></iframe></div>`;
 }
 
+// ---- Results tab (plan 20261025_2148 P4): $ per finished feature, releases before vs after ----
+
+export interface ResultsData {
+	/** The ledger over the last `metrics.report_days` days — only the empty state reads it. */
+	features: FeaturesReport;
+	/** Per release, the N-day before/after windows: the chart's series and the table's rows. */
+	releases: ReleasesReport;
+}
+
+let resultsCache: { at: number; data: ResultsData } | null = null;
+
+/**
+ * The tab's data from the P2/P3 functions, computed once per build (the chart and the table read
+ * the same object, like the Spend tile and its table). Cached for a minute: a release's before
+ * window reaches back past the features window, so one build can parse months of sessions while
+ * the page refetches every ${REFRESH_SEC} s.
+ */
+function resultsData(cfg: Config, source: RunSource): ResultsData {
+	const now = nowSec();
+	if (resultsCache && now - resultsCache.at < 60) return resultsCache.data;
+	const days = 7;
+	const selfRepo = gitTop(import.meta.dir)?.repo ?? null;
+	const tags = gatherTags(selfRepo);
+	const events = readMetricEvents(cfg);
+	const oldest = Math.min(now, ...tags.map(t => t.ts), ...events.filter(e => e.type === "ci").map(e => Number(e.ts)));
+	const runs = source.listRuns(oldest - days * 86400);
+	const plans = loadPlans(cfg);
+	const data: ResultsData = {
+		features: featuresReport(runs, plans, selfRepo, now - cfg.metrics.report_days * 86400, now),
+		releases: releasesReport(runs, plans, selfRepo, days, now, tags, events),
+	};
+	resultsCache = { at: now, data };
+	return data;
+}
+
+/** One y axis choice: where the number sits on a release side and which way is better. */
+interface YMetric {
+	key: string;
+	label: string;
+	axis: string;
+	/** null = no known direction (product numbers): the table's arrow carries no color. */
+	better: "lower" | "higher" | null;
+	fmt(v: number): string;
+	get(side: ReleaseSideStats): number | null;
+}
+
+const LEDGER_METRICS: YMetric[] = [
+	{ key: "usd", label: "$/feat", axis: "$ per feature", better: "lower", fmt: v => `$${v.toFixed(2)}`, get: s => s.perFeature },
+	{ key: "perday", label: "/day", axis: "features per day", better: "higher", fmt: v => v.toFixed(2), get: s => s.featuresPerDay },
+	{ key: "calls", label: "calls", axis: "main calls per feature", better: "lower", fmt: v => v.toFixed(1), get: s => s.callsPerFeature },
+	{ key: "tok", label: "tok", axis: "tokens per call", better: "lower", fmt: v => v.toFixed(0), get: s => s.tokensPerCall },
+	{ key: "fix", label: "fix", axis: "fix plans per feature", better: "lower", fmt: v => v.toFixed(2), get: s => s.fixPlansPerFeature },
+];
+
+/** One metric per recorded product number, keyed `p:<name>` (repo-qualified when names clash). */
+function productMetrics(releases: ReleasesReport): YMetric[] {
+	const pairs = new Map<string, { repo: string; name: string }>();
+	for (const row of releases.rows) for (const p of [...row.before.products, ...row.after.products]) pairs.set(`${p.repo}|${p.name}`, p);
+	const clashes: Record<string, number> = {};
+	for (const { name } of pairs.values()) clashes[name] = (clashes[name] ?? 0) + 1;
+	return [...pairs.values()]
+		.sort((a, b) => (a.name + a.repo).localeCompare(b.name + b.repo))
+		.map(({ repo, name }) => {
+			const clash = (clashes[name] ?? 0) > 1;
+			return {
+				key: clash ? `p:${basename(repo)}:${name}` : `p:${name}`,
+				label: clash ? `${basename(repo)}/${name}` : name,
+				axis: `${name} (product number)`,
+				better: null,
+				fmt: (v: number) => String(Math.round(v * 100) / 100),
+				get: (s: ReleaseSideStats): number | null => s.products.find(p => p.repo === repo && p.name === name)?.value ?? null,
+			};
+		});
+}
+
+const RESULT_KINDS = ["product", "neurastream"] as const;
+const KIND_COLOR: Record<(typeof RESULT_KINDS)[number], string> = { product: "var(--acc)", neurastream: "var(--teal)" };
+const CHART_W = 390;
+const CHART_H = 200;
+const CHART_L = 48;
+const CHART_R = 8;
+const CHART_T = 10;
+const CHART_B = 20;
+
+interface ChartPoint {
+	px: number;
+	py: number;
+	label: string;
+	value: number;
+}
+interface ChartSeries {
+	label: string;
+	color: string;
+	points: ChartPoint[];
+}
+
+/** The tab's controls: plain links, so the page's existing fetch/pushState swap handles them with no new script. */
+function resultsControls(all: YMetric[], y: YMetric, x: "time" | "feature"): string {
+	const yLinks = all
+		.map(m => `<a href="/?tab=results&amp;y=${m.key}&amp;x=${x}"${m.key === y.key ? ` class="on"` : ""}>${esc(m.label)}</a>`)
+		.join("");
+	const xLinks = (["time", "feature"] as const)
+		.map(v => `<a href="/?tab=results&amp;y=${y.key}&amp;x=${v}"${v === x ? ` class="on"` : ""}>${v === "time" ? "time" : "feature"}</a>`)
+		.join("");
+	return `<div class="rlinks"><span>y</span>${yLinks}</div><div class="rlinks"><span>x</span>${xLinks}</div>`;
+}
+
+/**
+ * Hand-written inline SVG under the page's CSP: one polyline per series (product vs neurastream
+ * for a ledger metric, one per product number), points carrying <title> tooltips, releases as
+ * dashed verticals on the time axis, theme colors via the page's CSS variables.
+ */
+function resultsChart(releases: ReleasesReport, y: YMetric, x: "time" | "feature"): string {
+	const rows = releases.rows;
+	const mid = CHART_L + (CHART_W - CHART_L - CHART_R) / 2;
+	const t0 = rows[0]!.ts;
+	const t1 = rows[rows.length - 1]!.ts;
+	const pxOf = (i: number, ts: number): number =>
+		x === "feature" ? (rows.length < 2 ? mid : CHART_L + (i / (rows.length - 1)) * (CHART_W - CHART_L - CHART_R))
+			: t1 === t0 ? mid : CHART_L + ((ts - t0) / (t1 - t0)) * (CHART_W - CHART_L - CHART_R);
+	const tip = (row: ReleaseRow, v: number): string => `${row.name} · ${y.fmt(v)} · ${strftime(row.ts, "%m-%d %H:%M")}`;
+	const point = (row: ReleaseRow, i: number, v: number): ChartPoint => ({ px: pxOf(i, row.ts), py: 0, label: tip(row, v), value: v });
+	const series: ChartSeries[] = LEDGER_METRICS.includes(y)
+		? RESULT_KINDS.map(kind => ({
+				label: kind,
+				color: KIND_COLOR[kind],
+				points: rows.flatMap((row, i) => {
+					if (row.kind !== kind) return [];
+					const v = y.get(row.after);
+					return v === null ? [] : [point(row, i, v)];
+				}),
+			}))
+		: [
+				{
+					label: y.label,
+					color: "var(--warn)",
+					points: rows.flatMap((row, i) => {
+						const v = y.get(row.after);
+						return v === null ? [] : [point(row, i, v)];
+					}),
+				},
+			];
+	const yMax = Math.max(...series.flatMap(s => s.points.map(p => p.value)), 1e-9);
+	const pyOf = (v: number): number => CHART_T + (1 - v / yMax) * (CHART_H - CHART_T - CHART_B);
+	const parts: string[] = [];
+	for (const v of [0, yMax / 2, yMax]) {
+		parts.push(`<line x1="${CHART_L}" x2="${CHART_W - CHART_R}" y1="${pyOf(v).toFixed(1)}" y2="${pyOf(v).toFixed(1)}" stroke="var(--bd)"/>`);
+		parts.push(`<text x="${CHART_L - 5}" y="${(pyOf(v) + 3).toFixed(1)}" text-anchor="end" font-size="10" fill="var(--mut)">${esc(y.fmt(v))}</text>`);
+	}
+	if (x === "time") {
+		for (const row of rows) {
+			const px = pxOf(0, row.ts).toFixed(1);
+			parts.push(
+				`<line x1="${px}" x2="${px}" y1="${CHART_T}" y2="${CHART_H - CHART_B}" stroke="var(--bd)" stroke-dasharray="3 3"><title>${esc(`${row.name} · ${strftime(row.ts, "%m-%d %H:%M")}`)}</title></line>`,
+			);
+		}
+		parts.push(`<text x="${CHART_L}" y="${CHART_H - 6}" font-size="10" fill="var(--mut)">${esc(strftime(t0, "%m-%d"))}</text>`);
+		parts.push(`<text x="${CHART_W - CHART_R}" y="${CHART_H - 6}" text-anchor="end" font-size="10" fill="var(--mut)">${esc(strftime(t1, "%m-%d"))}</text>`);
+	}
+	for (const s of series) {
+		if (s.points.length > 1) {
+			const pts = s.points.map(p => `${p.px.toFixed(1)},${pyOf(p.value).toFixed(1)}`).join(" ");
+			parts.push(`<polyline points="${pts}" fill="none" stroke="${s.color}" stroke-width="2"/>`);
+		}
+		for (const p of s.points) {
+			parts.push(`<circle cx="${p.px.toFixed(1)}" cy="${pyOf(p.value).toFixed(1)}" r="3" fill="${s.color}"><title>${esc(p.label)}</title></circle>`);
+		}
+	}
+	const legend = series.map(s => `<span style="color:${s.color}">— ${esc(s.label)}</span>`).join("");
+	return `<p class="rlegend">${legend}</p><svg class="rchart" role="img" aria-label="${esc(`${y.axis} by ${x === "time" ? "day" : "release"}`)}" viewBox="0 0 ${CHART_W} ${CHART_H}">${parts.join("")}</svg>`;
+}
+
+/** One row per release, the `metrics releases` table: before→after cells with ▲/▼, green when the change is for the better. */
+function resultsTable(releases: ReleasesReport, all: YMetric[]): string {
+	const cell = (row: ReleaseRow, m: YMetric): string => {
+		const before = m.get(row.before);
+		const after = m.get(row.after);
+		if (before === null || after === null) return `<td class="mutcell">–</td>`;
+		const arrow = after > before ? "▲" : after < before ? "▼" : "·";
+		const cls = m.better !== null && after !== before ? ((m.better === "lower") === (after < before) ? ` class="good"` : ` class="badv"`) : "";
+		return `<td>${esc(m.fmt(before))}→${esc(m.fmt(after))}<span${cls}>${arrow}</span></td>`;
+	};
+	const head = `<tr><th>release</th>${all.map(m => `<th>${esc(m.label)}</th>`).join("")}</tr>`;
+	const body = releases.rows
+		.map(row =>
+			`<tr><td>${esc(row.name)} <span class="note">${strftime(row.ts, "%m-%d")}</span>${row.measuring ? ` <span class="chip c-ready">measuring</span>` : ""}</td>${all.map(m => cell(row, m)).join("")}</tr>`,
+		)
+		.join("");
+	return `<div class="tscroll"><table><thead>${head}</thead><tbody>${body}</tbody></table></div>`;
+}
+
+const RESULTS_CAVEAT = "Fixes inside the same plan are not split out; plans that do not cite an earlier stem are not linked. Product numbers carry no better/worse color.";
+
+function resultsTabHtml(d: ResultsData | null | undefined, params: URLSearchParams): string {
+	if (!d) return `<h1>Results</h1>${na("Results")}`;
+	if (!d.releases.rows.length) {
+		const empty = d.features.rows.length ? "No releases recorded yet" : "No finished features yet";
+		return `<h1>Results</h1><div class="card"><p class="empty">${empty}</p></div><p class="sub">${RESULTS_CAVEAT}</p>`;
+	}
+	const x = params.get("x") === "feature" ? "feature" : "time";
+	const all = [...LEDGER_METRICS, ...productMetrics(d.releases)];
+	// An unknown y falls back to $/feature.
+	const y = all.find(m => m.key === params.get("y")) ?? all[0]!;
+	return `<h1>Results</h1>
+<p class="sub">What features cost and whether releases made it better or worse.</p>
+<div class="card">
+${resultsControls(all, y, x)}
+${resultsChart(d.releases, y, x)}
+</div>
+<h2>Releases <small>${d.releases.days} days before → after</small></h2>
+<div class="card">
+${resultsTable(d.releases, all)}
+</div>
+<p class="sub">${RESULTS_CAVEAT}</p>`;
+}
+
 /** The whole page as one HTML string. Exported for scripts/ui-preview.ts (no server). */
 export function renderPage(cfg: Config, data: PageData, params: URLSearchParams, nonce: string): string {
 	const req = params.get("tab") ?? "";
@@ -1005,7 +1225,8 @@ ${machine}
 </div>`
 					: tab === "knowledge"
 						? `${data.knowledge === null ? na("Base") : knowledgeHtml(data.knowledge, params.get("repo") ?? "", params.get("topic") ?? "")}`
-						: `<h1>Spend</h1>
+						: tab === "spend"
+							? `<h1>Spend</h1>
 <p class="sub">List price over the last 24 hours.</p>
 <div class="card">
 ${spendTileHtml(data)}
@@ -1013,7 +1234,8 @@ ${spendTileHtml(data)}
 <h2>By model</h2>
 <div class="card">
 ${modelSpendTable(data.stats)}
-</div>`;
+</div>`
+							: resultsTabHtml(data.results, params);
 	return `<!doctype html>
 <html lang="en">
 <head>
@@ -1030,8 +1252,8 @@ html{scroll-padding-top:64px}
 body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.4 system-ui,-apple-system,sans-serif}
 .top{position:sticky;top:0;display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--bg);z-index:2}
 .logo{font-weight:800;color:var(--acc)}
-.pills{display:flex;background:var(--card);border:1px solid var(--bd);border-radius:999px;padding:3px;flex:1}
-.pills a{flex:1;text-align:center;padding:5px 0;border-radius:999px;color:var(--mut);text-decoration:none;font-size:13px}
+.pills{display:flex;background:var(--card);border:1px solid var(--bd);border-radius:999px;padding:3px;flex:1;gap:3px;overflow-x:auto}
+.pills a{flex:none;text-align:center;padding:5px 10px;border-radius:999px;color:var(--mut);text-decoration:none;font-size:13px;white-space:nowrap}
 .pills a.on{background:var(--bg);color:var(--fg);font-weight:600;box-shadow:0 0 0 1px var(--bd)}
 .lock{border:1px solid var(--bd);background:var(--card);border-radius:999px;padding:6px 10px;font-size:13px;color:var(--fg);position:relative;flex:none}
 .lock summary{list-style:none;white-space:nowrap}
@@ -1110,6 +1332,15 @@ table{border-collapse:collapse;width:100%;font-size:13px}
 th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--bd);font-variant-numeric:tabular-nums}
 th{color:var(--mut);font-weight:600}
 tr:last-child td{border-bottom:none}
+.tscroll{overflow-x:auto}
+td.mutcell{color:var(--mut)}
+span.good{color:var(--ok);font-weight:600}
+span.badv{color:var(--red);font-weight:600}
+.rlinks{display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:10px 14px 0;font-size:12px;color:var(--mut)}
+.rlinks a{border:1px solid var(--bd);border-radius:999px;padding:3px 10px;color:var(--mut);text-decoration:none;background:var(--card)}
+.rlinks a.on{color:var(--fg);background:var(--bg);font-weight:600;box-shadow:0 0 0 1px var(--bd)}
+.rlegend{margin:0;padding:10px 14px 0;font-size:12px;color:var(--mut);display:flex;gap:12px}
+.rchart{width:100%;height:auto;display:block;padding:4px 2px 8px}
 .merges,.incidents{margin:0;padding:8px 14px 8px 32px}
 .merges li,.incidents li{margin:6px 0}
 .mrow{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--bd)}

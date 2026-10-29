@@ -176,6 +176,10 @@ metrics:
   report_days: 7
   correction_patterns: ['\bno\b', 'wrong', 'why did', 'properly', 'not what', 'stop', 'bullshit', 'fuck']
   ci_pipelines_cmd: ""   # command run in the repo dir with {mr} replaced; stdout must be a JSON array; "" = not set
+  product_cmds: {}       # {<repo path>: {<name>: shell command printing one number}}, run in that repo after every `metrics ci` merge
+  # product_cmds:
+  #   /opt/myapp:
+  #     dist_mb: "du -sm frontend/dist | cut -f1"
 
 incidents:
   contradiction_grace_min: 3   # minutes after a finished task-result before a RUNNING/WAITING ledger row is a contradiction
