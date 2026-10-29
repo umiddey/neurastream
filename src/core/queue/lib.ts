@@ -572,11 +572,13 @@ function subagentsOpWrites(code: string): boolean {
 	return false;
 }
 
-export function writeTargets(toolName: string, input: Record<string, unknown>, cwd: string): string[] {
+export function writeTargets(toolName: string, input: Record<string, unknown>, cwd: string, relative?: string[]): string[] {
 	const out = new Set<string>();
 	const add = (raw: string, from: string) => {
-		const s = expandHome(String(raw).trim().replace(/^["']|["']$/g, ""));
+		const typed = String(raw).trim().replace(/^["']|["']$/g, "");
+		const s = expandHome(typed);
 		if (!s || s.includes("://") || s.startsWith("$") || s === "/dev/null" || s.startsWith("/dev/")) return;
+		if (relative && !typed.startsWith("/")) relative.push(typed);
 		out.add(path.resolve(from, s));
 	};
 	if (toolName === "write") {
@@ -783,6 +785,21 @@ export function allowedAgents(file = subagentsPath()): Set<string> {
 	} catch {}
 	const body = sections(text).get("allowed") ?? "";
 	return new Set([...body.matchAll(/^\s*[-*]\s+`([a-z0-9-]+)`/gm)].map(m => m[1] ?? ""));
+}
+
+// P4d (plan 20261028_1600): a review spawn runs under a review.agents entry that Main may spawn
+// (## Allowed of the subagents file). When Allowed names agents and none of them is a review.agents
+// entry, every review spawn is refused: a problem. When Allowed is empty (a fresh install), no subagent
+// can spawn at all yet, so there is no review spawn to refuse. An entry not allowed is a warning.
+export function reviewAgentsProblem(cfg: Config, allowed: Set<string>): { problem: string | null; warnings: string[] } {
+	const agents = cfg.review.agents;
+	const warnings = agents
+		.filter(a => !allowed.has(a))
+		.map(a => `review.agents lists "${a}", which is not in "## Allowed" of ${cfg.paths.subagents}; it cannot run a review spawn`);
+	const problem = allowed.size === 0 || agents.some(a => allowed.has(a))
+		? null
+		: `no review.agents entry is in "## Allowed" of ${cfg.paths.subagents}: set review.agents to an allowed agent in config.yml`;
+	return { problem, warnings };
 }
 
 export const CANCELLED_REL = "docs/plans/CANCELLED.md";
@@ -1015,7 +1032,8 @@ export function queueSummary(index = INDEX, reviewSince = ""): string {
 				if (at === undefined || plans[at - 1]!.status !== "open") continue;
 				waits.push(`waits on #${at}`);
 			}
-		const flags = [status, hold, ...waits, p.priorityId ?? ""].filter(Boolean).join(", ");
+		const done = p.phases.total ? `${p.phases.done}/${p.phases.total} done` : "";
+		const flags = [status, done, hold, ...waits, p.priorityId ?? ""].filter(Boolean).join(", ");
 		const goal = items(sections(p.text).get("goal") ?? "")[0]?.slice(0, 100) ?? "";
 		lines.push(`  ${i + 1}. ${p.file} [${flags}] ${goal}`);
 	});

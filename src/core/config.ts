@@ -1,7 +1,7 @@
 // Loads ~/.config/neurastream/config.yml over templates/config.yml.
 // Values (paths, names, prices) live in the template, not in this file.
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -317,6 +317,32 @@ const ENV_MAP: Record<string, { path: string[]; kind: EnvKind }> = {
 
 export function configFile(home = homedir()): string {
 	return join(home, ".config", "neurastream", "config.yml");
+}
+
+/**
+ * The config as of now. Each call stats `file`; when its mtime changed it calls `load()`.
+ * A failed reload keeps the last good config and reports one line through `onError`, so a
+ * broken edit never fails open or crashes a running guard. Used by a harness adapter per guarded call.
+ */
+export function reloadingConfig(
+	initial: Config,
+	file: string,
+	load: () => Config,
+	onError: (line: string) => void,
+): () => Config {
+	let cfg = initial;
+	let seen = statSync(file, { throwIfNoEntry: false })?.mtimeMs ?? 0;
+	return () => {
+		const now = statSync(file, { throwIfNoEntry: false })?.mtimeMs ?? 0;
+		if (now === seen) return cfg;
+		seen = now;
+		try {
+			cfg = load();
+		} catch (err) {
+			onError(`config reload refused, keeping the last good config: ${err instanceof Error ? err.message : String(err)}`);
+		}
+		return cfg;
+	};
 }
 
 function isObj(v: unknown): v is Record<string, unknown> {

@@ -22,11 +22,11 @@ import type { Decision } from "../../core/adapter.ts";
 import { AGENTS_TEMPLATE, renderBlock } from "../../core/agents-md.ts";
 import { chatGo, chatTier, type Tier } from "../../core/autonomy.ts";
 import { burdenRule, repoRules, rulesChanged } from "../../core/repo-rules.ts";
-import { loadConfig, type Config } from "../../core/config.ts";
+import { configFile, loadConfig, reloadingConfig, type Config } from "../../core/config.ts";
 import { checkWrite, deferSteer, type WriteCheckConfig } from "../../core/write-check.ts";
 import { nowSec, strftime } from "../../core/clock.ts";
 import { runDetectors, runDetectorsGated, type DetectorInput } from "../../core/incident-detectors.ts";
-import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, newProgressEntries, planReadNote, recordMainResult, resetMainCalls, revertMainEdit, rekeySpawnFile } from "../../core/guards.ts";
+import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, newProgressEntries, planReadNote, recordMainResult, resetMainCalls, revertMainEdit, rekeySpawnFile, reviewSpawnEnd } from "../../core/guards.ts";
 import { rateLimitWait } from "../../core/rate-limit.ts";
 import { notifyProviders, postReply } from "../../core/notify.ts";
 import { loadKnownSecrets, redactSecrets, redactSummary } from "../../core/secret-redact.ts";
@@ -565,8 +565,10 @@ export function deliverOwnerInbox(pi: ExtensionHost, cfg: Config): void {
 	adapterLog(cfg, `owner inbox: delivered ${delivered} answer(s) (cursor ${cursor} → ${next})`);
 }
 
-/** Register the guard handlers on one extension host. `cfg` is injectable for tests. */
-export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
+/** Register the guard handlers on one extension host. `initial` is injectable for tests; `freshConfig` re-reads the config per guarded call. */
+export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig: () => Config = () => initial): void {
+	// Guarded handlers take `cfg = freshConfig()` first, so an edited config.yml reaches the next call (P4e).
+	let cfg = initial;
 	// The queue library resolves its paths from env snapshots; point them at this config first.
 	applyQueueEnv(cfg);
 	// Main's rules ride its system prompt each turn; they are never written into the owner's AGENTS.md.
@@ -575,12 +577,12 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	let callsSinceStop = 0;
 	let idleStops = 0;
 	let timer: unknown;
-	let inboxTimer: unknown;
 	const calls = new Map<string, number>(); // subagent call budget, by agent id
 	const pending = new Map<string, Map<string, string>>(); // toolCallId -> plan snapshots
 	const pendingWrite = new Map<string, Map<string, string | null>>(); // toolCallId -> write-check snapshots; null: the file did not exist
 	const deferredWrite = new Map<string, Map<string, string | null>>(); // agent id -> files that added deferred findings this turn -> text before the first one (null: new file); judged at that session's own agent_end
 	const pendingRules = new Set<string>(); // repos Main worked in, rules to hand over at the next prompt
+	const pendingReviewNotes: string[] = []; // P4k: review spawns that ended with no verdict; Main hears at its next prompt
 	// Chat notify (plans 20261024_2155, 20261025_0130): the text a hand-back already posted
 	// (attempted) — one post per distinct text, never a retry loop. The reply itself comes from
 	// the stop/agent_end event, never the session file (session_stop fires BEFORE agent_end, and
@@ -747,7 +749,6 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 			? c.setInterval(() => deliverOwnerInbox(pi, cfg), OWNER_INBOX_POLL_MS)
 			: setInterval(() => deliverOwnerInbox(pi, cfg), OWNER_INBOX_POLL_MS);
 		if (it && typeof it === "object" && "unref" in it && typeof it.unref === "function") it.unref();
-		inboxTimer = it;
 	});
 
 	// What a subagent is still missing (plan 20261027_1530 P2): the rules of the repo its plan is
@@ -786,6 +787,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	};
 
 	pi.on("before_agent_start", (event, ctx) => {
+		cfg = freshConfig();
 		const c = asCtx(ctx);
 		const prompt = asString(asRecord(event).prompt);
 		if (c.kind !== "main") {
@@ -816,12 +818,13 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 			if (r && rulesChanged(cfg, asString(c.id) || "main", r.path, r.text)) rules.push(`Repo rules (${r.path}):\n${r.text}`);
 		}
 		pendingRules.clear();
+		const reviewNotes = isMain(ctx) ? pendingReviewNotes.splice(0) : [];
 		const hostPrompt = asRecord(event).systemPrompt;
 		return {
 			systemPrompt: [...(Array.isArray(hostPrompt) ? hostPrompt : []), mainRules],
 			message: {
 				customType: "main-guard.queue",
-				content: [d.inject, notice, ...rules].filter(Boolean).join("\n\n"),
+				content: [d.inject, notice, ...reviewNotes, ...rules].filter(Boolean).join("\n\n"),
 				display: false,
 			},
 		};
@@ -830,7 +833,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	// The spawn event carries no brief, so the plan gate runs at the task tool call (original
 	// behaviour); here only the allow-list and the task-only rule apply, with the original texts.
 	pi.on("before_subagent_spawn", (event, ctx) => {
-		if (asCtx(ctx).kind === "sub") return;
+		cfg = freshConfig();
 		const agent = asString(asRecord(event).agent);
 		const kind = asString(asRecord(event).invocationKind);
 		if (!q.allowedAgents().has(agent))
@@ -840,7 +843,10 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		return undefined;
 	});
 
+	let lastMainRc: RolloverCtx | null = null;
+
 	pi.on("tool_call", (event, ctx) => {
+		cfg = freshConfig();
 		const c = asCtx(ctx);
 		const e = asRecord(event);
 		const tool = asString(e.toolName);
@@ -859,8 +865,10 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		// running ones finish first. Subagents' own tool calls are unaffected. Main's task calls
 		// also carry the running job labels for the priority gate (20261025_0215 P2).
 		let runningJobs: string[] | undefined;
-		if (!isSub && tool === "task") {
-			const rc = asRolloverCtx(ctx);
+		if (!isSub) lastMainRc = asRolloverCtx(ctx);
+		if (tool === "task") {
+			// A subagent's task call drains and labels by Main's rollover context: its own ctx has none.
+			const rc = lastMainRc;
 			runningJobs = rc?.runningJobs();
 			if (cfg.rollover.enabled && rc) {
 				const why = spawnRefusal(rolloverSnapshot(rc).state, runningJobs ?? []);
@@ -902,6 +910,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	};
 
 	pi.on("tool_result", (event, ctx) => {
+		cfg = freshConfig();
 		onSizeCheck("tool_result", event, ctx);
 		const e = asRecord(event);
 		const c = asCtx(ctx);
@@ -928,7 +937,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 				try {
 					after = readFileSync(file, "utf8");
 				} catch {}
-				const d = checkPlanEdit({ path: file, before, after, agent: c.kind === "sub" ? "sub" : "main" }, cfg);
+				const d = checkPlanEdit({ path: file, before, after, agent: c.kind === "sub" ? "sub" : "main", agentId: id }, cfg);
 				if (!d.allow && d.restore) {
 					try {
 						if (d.restore.text === null) rmSync(d.restore.path, { force: true });
@@ -1012,6 +1021,7 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 	});
 
 	pi.on("session_stop", (e, ctx) => {
+		cfg = freshConfig();
 		const c = asCtx(ctx);
 		if (c.hasAgent && c.kind !== "main") return;
 		// A relaunch is requested: omp shuts down at the next idle, so the stop must not be continued.
@@ -1348,6 +1358,13 @@ export function createOmpAdapter(pi: ExtensionHost, cfg: Config): void {
 		if (asRecord(e).willContinue === true) return;
 		resetMainCalls();
 	});
+	// P4k backstop (plan 20261028_1600): a named review spawn that ends with no verdict recorded at its edit is judged here, from its own plan file; the note tells Main at its next prompt.
+	pi.on("agent_end", (_e, ctx) => {
+		const c = asCtx(ctx);
+		if (c.kind !== "sub" || !c.id) return;
+		const note = reviewSpawnEnd(c.id, cfg);
+		if (note) pendingReviewNotes.push(note);
+	});
 
 	// omp is really shutting down: the exit-grace fallback must not fire.
 	pi.on("session_shutdown", () => clearGrace?.());
@@ -1535,5 +1552,6 @@ export default function ompExtension(pi: ExtensionHost): void {
 	// no config read. `neurastream main` sets it for its child (launch.ts), so anything the Main
 	// session spawns inherits it and stays guarded.
 	if (process.env[MAIN_ENV] !== "1") return;
-	createOmpAdapter(pi, loadConfig());
+	const initial = loadConfig();
+	createOmpAdapter(pi, initial, reloadingConfig(initial, configFile(), () => loadConfig(), line => adapterLog(initial, line)));
 }

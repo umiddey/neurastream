@@ -11,7 +11,7 @@ import { join } from "node:path";
 import type { SpawnEvent } from "../src/core/adapter.ts";
 import type { Config } from "../src/core/config.ts";
 import { loadConfig } from "../src/core/config.ts";
-import { checkPlanEdit, checkSpawn, pendingWorkProblem, spawnProblem } from "../src/core/guards.ts";
+import { checkPlanEdit, checkSpawn, pendingWorkProblem, reviewHash, spawnProblem } from "../src/core/guards.ts";
 import { listOpenMrs, type CommandResult, type CommandRunner } from "../src/core/mr-sweep.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { unlandedRows } from "../src/core/wip-check.ts";
@@ -84,12 +84,13 @@ const cfg: Config = (() => {
 })();
 applyQueueEnv(cfg);
 
-// The P2 PASS gate sits beside the P3 gate: record one review through the guard's subagent path
-// so these tests exercise only the pending-work check.
+// The P2 PASS gate sits beside the P3 gate: record one review through the guard's named review
+// spawn (P4k) so these tests exercise only the pending-work check.
 {
 	const before = readFileSync(PLAN, "utf8");
+	writeFileSync(join(STATE, "review-spawns.json"), JSON.stringify({ rev1: { plan: PLAN, text: before, hash: reviewHash(before), verdicts: 0 } }));
 	checkPlanEdit(
-		{ path: PLAN, before, after: `${before}\n- PLAN REVIEW: PASS — redundant: none — inefficient: none — insecure: none — MRs: !211\n  Findings: none\n`, agent: "sub" },
+		{ path: PLAN, before, after: `${before}\n- PLAN REVIEW: PASS — redundant: none — inefficient: none — insecure: none — MRs: !211\n  Findings: none\n`, agent: "sub", agentId: "rev1" },
 		cfg,
 	);
 }

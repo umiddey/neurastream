@@ -212,8 +212,8 @@ test("queueSummary flags an open plan waiting on an open plan with waits on #N, 
 	const a = plan("20261025_2342_a.md", waitingPlan("Plan A", b));
 	setIndex(a, b);
 	const s = queueSummary(MAIN);
-	expect(s).toContain(`  1. ${a} [open, waits on #2]`);
-	expect(s).toContain(`  2. ${b} [open]`);
+	expect(s).toContain(`  1. ${a} [open, 0/1 done, waits on #2]`);
+	expect(s).toContain(`  2. ${b} [open, 0/1 done]`);
 	setIndex(b, a);
-	expect(queueSummary(MAIN)).toContain(`  2. ${a} [open, waits on #1]`);
+	expect(queueSummary(MAIN)).toContain(`  2. ${a} [open, 0/1 done, waits on #1]`);
 });
