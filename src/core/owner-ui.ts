@@ -748,7 +748,7 @@ export interface PageData {
 	knowledge: KnowledgeEntry[] | null;
 	/** The 24 h tile numbers; null when the run source is unreadable. */
 	stats: NowStats | null;
-	/** The Results tab's ledger and release windows; null when unreadable, absent in hand-built PageData. */
+	/** The Results tab's ledger and release windows; null when unreadable, absent on every other tab (its months-long run window is too slow to build on each 20 s refresh). */
 	results?: ResultsData | null;
 	/** The owner's messages newer than the keep window, newest first; null when unreadable. */
 	messages: MessageRow[] | null;
@@ -775,7 +775,7 @@ function lockMinutesLeft(cfg: Config): number | null {
 	}
 }
 
-export function buildPageData(cfg: Config, source: RunSource): PageData {
+export function buildPageData(cfg: Config, source: RunSource, tab: string): PageData {
 	return {
 		questions: safe(() => questionRows(cfg)),
 		agents: safe(() => agentRows(cfg, source)),
@@ -786,7 +786,7 @@ export function buildPageData(cfg: Config, source: RunSource): PageData {
 		machine: safe(() => machineRow(cfg)),
 		knowledge: safe(() => knowledgeManifest(cfg)),
 		stats: safe(() => nowStats(cfg, source, nowSec())),
-		results: safe(() => resultsData(cfg, source)),
+		results: tab === "results" ? safe(() => resultsData(cfg, source)) : undefined,
 		messages: safe(() => recentOwnerMessages(nowSec())),
 		lockMinutesLeft: lockMinutesLeft(cfg),
 	};
@@ -1392,7 +1392,7 @@ function sentTo(tab: string, sent: string): string {
 /** The normal page (the GET layout) as a POST reply; the stale-answer reply is this with sent=stale. */
 function pageRes(cfg: Config, source: RunSource, params: URLSearchParams): Response {
 	const nonce = randomUUID().replaceAll("-", "");
-	return new Response(renderPage(cfg, buildPageData(cfg, source), params, nonce), {
+	return new Response(renderPage(cfg, buildPageData(cfg, source, params.get("tab") ?? ""), params, nonce), {
 		status: 200,
 		headers: {
 			"content-type": "text/html; charset=utf-8",
