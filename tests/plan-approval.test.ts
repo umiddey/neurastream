@@ -55,6 +55,7 @@ function setup(): { dir: string; cfg: Config; pages: string } {
 	const dir = mkdtempSync(join(tmpdir(), "plan-approval-"));
 	process.env.QUEUE_STATE = join(dir, "state");
 	const cfg = loadConfig({ file: join(dir, "missing.yml"), home: dir, env: {} });
+	cfg.review.agents = [];
 	cfg.paths.queue_state = join(dir, "state");
 	const pages = join(dir, "public");
 	cfg.pages.enabled = true;
@@ -144,6 +145,8 @@ test("main-guard: a spawn is refused on an unapproved plan page and passes on th
 pages:
   enabled: false
   dir: "${pages}"
+review:
+  agents: []
 `,
 	);
 	// A real blocker script the plan can name: the plan gate checks it exists and is executable.

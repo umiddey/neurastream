@@ -94,6 +94,8 @@ const baseCfg: Config = (() => {
   unlock: "${join(AGENT, ".guard-unlock")}"
   guard_log: "${join(HOME, "main-guard.log")}"
   plan_guard_log: "${join(HOME, "plan-guard.log")}"
+review:
+  agents: []
 `,
 	);
 	return loadConfig({ home: HOME, env: {} });
