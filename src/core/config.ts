@@ -167,9 +167,7 @@ export interface Config {
 	ui: { enabled: boolean; port: number; owner_login: string };
 	/** Plan review gate (plan 20261028_1600): reuse lines and, from P2 on, the reviewer PASS lock. */
 	review: {
-		/** Plans stamped before this ISO date are exempt from the reuse-line and reviewer-PASS gates; "" = off. */
-		since: string;
-		/** Agents a review spawn may run under: the PASS exemption needs one of these plus the brief's `Plan review: <plan>` line. */
+		/** Agents a review spawn may run under: the PASS exemption needs one of these plus the brief's `Plan review: <plan>` line. An empty list turns both review gates off (P5c). */
 		agents: string[];
 		/** Minutes the spawn gate caches a repo's open-MR list in <queue_state>/mr-cache.json; 0 = no cache. */
 		mr_cache_minutes: number;
@@ -519,7 +517,6 @@ function check(cfg: Config): void {
 		throw new ConfigError(`guards.plan_offer: not a valid regex: ${cfg.guards.plan_offer}`);
 	}
 	if (!(cfg.rollover.max_session_mb > 0)) throw new ConfigError("rollover.max_session_mb must be > 0");
-	if (typeof cfg.review.since !== "string") throw new ConfigError("review.since must be an ISO date string (\"\" = off)");
 	if (!Array.isArray(cfg.review.agents) || cfg.review.agents.some(a => typeof a !== "string" || !a.trim()))
 		throw new ConfigError('review.agents must be a list of agent names allowed to run review spawns (default ["reviewer"])');
 	if (!Number.isInteger(cfg.review.mr_cache_minutes) || cfg.review.mr_cache_minutes < 0)

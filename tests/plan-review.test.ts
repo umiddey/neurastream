@@ -17,7 +17,8 @@ import { fixturePlan } from "./fixtures/plan.ts";
 const TMP = mkdtempSync(join(tmpdir(), "plan-review-"));
 const REPO = join(TMP, "repo");
 const BLOCKERS = join(TMP, "blockers");
-const SINCE = "2026-10-28";
+/** A non-empty review.agents list: the reuse gate applies (P5: the gates are off only on an empty list). */
+const AGENTS = ["reviewer"];
 
 mkdirSync(join(REPO, ".git"), { recursive: true }); // planRepo walks up to .git; without it planGate resolves citations under docs/plans
 mkdirSync(join(REPO, "docs/plans"), { recursive: true });
@@ -36,7 +37,7 @@ function planFile(stamp: string, reuse?: string): string {
 }
 
 function parsed(file: string): Plan {
-	return parsePlan(REPO, file, readFileSync(file, "utf8"), BLOCKERS, SINCE);
+	return parsePlan(REPO, file, readFileSync(file, "utf8"), BLOCKERS, AGENTS);
 }
 
 // --- P1: reuse lines ---
@@ -74,7 +75,7 @@ test("queueProblems reports the missing Reuse section under the plan's file", ()
 	const file = planFile("20261029_0106", "");
 	const index = join(TMP, "INDEX.md");
 	writeFileSync(index, `${file}\n`);
-	const probs = queueProblems(index, BLOCKERS, SINCE);
+	const probs = queueProblems(index, BLOCKERS, AGENTS);
 	expect(probs.map(q => `${q.where}: ${q.problem}`).join("\n")).toMatch(new RegExp(file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + ".*## Reuse"));
 });
 
@@ -109,7 +110,6 @@ writeFileSync(
   guard_log: "${join(GHOME, "main-guard.log")}"
   plan_guard_log: "${join(GHOME, "plan-guard.log")}"
 review:
-  since: "2026-10-28"
   agents: ["reviewer"]
 `,
 );
@@ -325,7 +325,7 @@ test("the queue summary shows N/M done for a plan's phases", () => {
 	writeFileSync(file, THREE_PHASES);
 	const index = join(TMP, "INDEX3.md");
 	writeFileSync(index, `${file}\n`);
-	expect(queueSummary(index, SINCE)).toMatch(/\[open, 2\/3 done\]/);
+	expect(queueSummary(index, AGENTS)).toMatch(/\[open, 2\/3 done\]/);
 });
 
 test("ticking a phase box does not change the review hash", () => {

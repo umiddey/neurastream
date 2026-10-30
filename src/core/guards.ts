@@ -191,14 +191,13 @@ export type Spawner = "main" | "sub";
  * P2 (plan 20261028_1600): a spawn on a plan needs a recorded reviewer PASS whose hash still
  * matches the plan text — progress-only edits keep a PASS valid, any other change expires it,
  * a FAIL is denied with its first finding. A review spawn itself — an agent from review.agents
- * whose brief has the `Plan review: <plan>` line — is exempt when Main launches it, and so is any plan stamped
- * before `review.since` (P4c: same cutover as the reuse-line gate).
+ * whose brief has the `Plan review: <plan>` line — is exempt when Main launches it. P5 removed
+ * the cutover: every named plan is gated.
  */
 export function reviewPassProblem(named: string[], brief: string, agent: string, cfg: Config, spawner: Spawner): string | null {
 	const reviews = readPlanReviews();
 	for (const file of named) {
 		if (isReviewSpawn(file, brief, agent, cfg, spawner)) continue;
-		if (!q.reviewApplies(file, cfg.review.since)) continue;
 		const rec = reviews[file];
 		if (!rec) return `plan ${file} has no current reviewer PASS. Spawn a reviewer with templates/plan-review-brief.md.`;
 		if (rec.verdict === "FAIL")
@@ -562,7 +561,7 @@ function unticked(p: Plan): string[] {
 
 // Plans an implementer brief may run on; returns [reason, null] or [null, plan files].
 export function planGate(text: string, label: string, cfg?: Config): [string | null, string[]] {
-	const plans = q.activePlans(undefined, undefined, cfg?.review.since ?? "");
+	const plans = q.activePlans(undefined, undefined, cfg?.review.agents ?? []);
 	const unclosed = plans.filter(p => (p.status === "complete" || p.status === "cancelled") && !q.awaitingMerge(p));
 	if (unclosed.length)
 		return [
@@ -1497,7 +1496,7 @@ export function checkInject(e: InjectEvent, cfg: Config): Decision {
 	recordOwnerMessage(e.inject, cfg);
 	let summary: string;
 	try {
-		summary = q.queueSummary(undefined, cfg.review.since);
+		summary = q.queueSummary(undefined, cfg.review.agents);
 	} catch (err) {
 		summary = `Queue unreadable (${q.INDEX}): ${err}`;
 	}
@@ -1803,12 +1802,12 @@ function readMainReads(): Record<string, string> {
 }
 
 // Plans still responsible for: open plans (parked "WAITING on owner" excluded) plus queue problems.
-export function openQueue(reviewSince = ""): string[] {
+export function openQueue(reviewAgents: string[] = []): string[] {
 	const open = q
 		.activePlans()
 		.filter(p => !p.waiting && !q.awaitingMerge(p))
 		.map(p => p.file);
-	for (const prob of q.queueProblems(undefined, undefined, reviewSince)) open.push(`${prob.where}: ${prob.problem}`);
+	for (const prob of q.queueProblems(undefined, undefined, reviewAgents)) open.push(`${prob.where}: ${prob.problem}`);
 	const unique: string[] = [];
 	for (const item of open) if (!unique.includes(item)) unique.push(item);
 	return unique;
@@ -1845,7 +1844,7 @@ export function checkStop(e: StopEvent, cfg: Config): Decision {
 	}
 	let open: string[];
 	try {
-		open = openQueue(cfg.review.since);
+		open = openQueue(cfg.review.agents);
 	} catch (err) {
 		log(cfg.paths.guard_log, `BLOCK stop: cannot read queue: ${err}`);
 		open = [`queue unreadable (${q.INDEX}): ${err}`];
