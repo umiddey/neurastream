@@ -82,6 +82,8 @@ interface EditWindow {
 	windowStart: number;
 	/** Main tool calls since the last owner prompt or terminal hand-back (main_call_exempt_tools never count). */
 	mainCalls: number;
+	/** When the first of those calls was counted; the count expires MAIN_CALLS_RESET_SEC later. */
+	mainCallsStart?: number;
 }
 
 function windowFile(): string {
@@ -92,7 +94,7 @@ export function readWindow(): EditWindow {
 	try {
 		const w = JSON.parse(readFileSync(windowFile(), "utf8")) as Partial<EditWindow>;
 		if (Array.isArray(w.used) && typeof w.windowStart === "number")
-			return { used: w.used, windowStart: w.windowStart, mainCalls: typeof w.mainCalls === "number" ? w.mainCalls : 0 };
+			return { used: w.used, windowStart: w.windowStart, mainCalls: typeof w.mainCalls === "number" ? w.mainCalls : 0, mainCallsStart: typeof w.mainCallsStart === "number" ? w.mainCallsStart : 0 };
 	} catch {}
 	return { used: [], windowStart: 0, mainCalls: 0 };
 }
@@ -1168,12 +1170,23 @@ function mainCallApplies(e: ToolEvent, cfg: Config): boolean {
 	return cfg.guards.main_max_calls > 0 && currentTier(cfg) !== "full" && !cfg.guards.main_call_exempt_tools.includes(e.tool);
 }
 
+/**
+ * A count older than this starts over, even with no owner message or hand-back: a blocked stop is
+ * a continuation, not a hand-back, so without it a capped Main with no owner awake stays refused
+ * all night.
+ */
+const MAIN_CALLS_RESET_SEC = 15 * 60;
+
+function mainCallsExpired(w: EditWindow): boolean {
+	return w.mainCalls > 0 && nowSec() - (w.mainCallsStart ?? 0) >= MAIN_CALLS_RESET_SEC;
+}
+
 /** Refusal once this turn has spent main_max_calls, or null. */
 function mainCallStop(e: ToolEvent, cfg: Config): string | null {
 	if (!mainCallApplies(e, cfg)) return null;
 	const w = readWindow();
-	if (w.mainCalls >= cfg.guards.main_max_calls)
-		return `main-guard: call ${w.mainCalls}/${cfg.guards.main_max_calls} since the owner's last message or your last hand-back (guards.main_max_calls). End your turn with the answer, or spawn an implementer.`;
+	if (w.mainCalls >= cfg.guards.main_max_calls && !mainCallsExpired(w))
+		return `main-guard: call ${w.mainCalls}/${cfg.guards.main_max_calls} since the owner's last message or your last hand-back (guards.main_max_calls); the count starts over ${Math.ceil((MAIN_CALLS_RESET_SEC - (nowSec() - (w.mainCallsStart ?? 0))) / 60)} min from now. End your turn with the answer, or spawn an implementer.`;
 	return null;
 }
 
@@ -1181,6 +1194,10 @@ function mainCallStop(e: ToolEvent, cfg: Config): string | null {
 function mainCallWarn(e: ToolEvent, cfg: Config): string {
 	if (!mainCallApplies(e, cfg)) return "";
 	const w = readWindow();
+	if (w.mainCalls === 0 || mainCallsExpired(w)) {
+		w.mainCalls = 0;
+		w.mainCallsStart = nowSec();
+	}
 	w.mainCalls += 1;
 	writeWindow(w);
 	if (w.mainCalls >= cfg.guards.main_warn_calls)

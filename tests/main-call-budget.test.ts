@@ -234,6 +234,18 @@ test("the adapter resets at a terminal agent_end and keeps counting across willC
 	expect(agentEndReset({ willContinue: true }).mainCalls).toBe(5);
 });
 
+test("a capped count starts over 15 min after its first call, with no owner message or hand-back", () => {
+	toCap();
+	const start = readWindow().mainCallsStart!;
+	writeWindow({ ...readWindow(), mainCallsStart: start - 14 * 60 });
+	const still = checkTool(mainEvent("read"), cfg);
+	expect(still.allow).toBe(false);
+	expect(still.reason).toContain("starts over 1 min from now");
+	writeWindow({ ...readWindow(), mainCallsStart: start - 15 * 60 });
+	expect(checkTool(mainEvent("read"), cfg).allow).toBe(true);
+	expect(readWindow().mainCalls).toBe(1);
+});
+
 afterAll(() => {
 	rmSync(OMP_HOME, { recursive: true, force: true });
 });

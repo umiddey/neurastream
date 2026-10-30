@@ -58,6 +58,8 @@ export interface OwnerUiOptions {
 	port?: number;
 	/** The peer address of a request. Default: the socket address. Tests inject fixture peers. */
 	peerOf?: (req: Request, server: UiHttpServer) => string;
+	/** Starts a background Results build. Default: spawnResultsBuild. Tests inject a recorder. */
+	resultsBuild?: ResultsBuild;
 }
 
 export type Auth = { ok: true; login: string } | { ok: false; why: string };
@@ -748,8 +750,8 @@ export interface PageData {
 	knowledge: KnowledgeEntry[] | null;
 	/** The 24 h tile numbers; null when the run source is unreadable. */
 	stats: NowStats | null;
-	/** The Results tab's ledger and release windows; null when unreadable, absent on every other tab (its months-long run window is too slow to build on each 20 s refresh). */
-	results?: ResultsData | null;
+	/** The Results tab's saved numbers and build state; absent on every other tab. The numbers come from a background process (computeResults), never from the request. */
+	results?: ResultsView | null;
 	/** The owner's messages newer than the keep window, newest first; null when unreadable. */
 	messages: MessageRow[] | null;
 	/** Minutes left in the guard unlock; null = locked. */
@@ -775,7 +777,7 @@ function lockMinutesLeft(cfg: Config): number | null {
 	}
 }
 
-export function buildPageData(cfg: Config, source: RunSource, tab: string): PageData {
+export function buildPageData(cfg: Config, source: RunSource, tab: string, build: ResultsBuild = spawnResultsBuild): PageData {
 	return {
 		questions: safe(() => questionRows(cfg)),
 		agents: safe(() => agentRows(cfg, source)),
@@ -786,7 +788,7 @@ export function buildPageData(cfg: Config, source: RunSource, tab: string): Page
 		machine: safe(() => machineRow(cfg)),
 		knowledge: safe(() => knowledgeManifest(cfg)),
 		stats: safe(() => nowStats(cfg, source, nowSec())),
-		results: tab === "results" ? safe(() => resultsData(cfg, source)) : undefined,
+		results: tab === "results" ? safe(() => resultsView(nowSec(), build)) : undefined,
 		messages: safe(() => recentOwnerMessages(nowSec())),
 		lockMinutesLeft: lockMinutesLeft(cfg),
 	};
@@ -959,17 +961,28 @@ export interface ResultsData {
 	releases: ReleasesReport;
 }
 
-let resultsCache: { at: number; data: ResultsData } | null = null;
+/** The tab as the page sees it: the last saved numbers (if any), when they were saved, and whether a build runs now. */
+export interface ResultsView {
+	data: ResultsData | null;
+	at: number | null;
+	building: boolean;
+}
+
+/** Saved numbers older than this start a fresh background build. */
+const RESULTS_MAX_AGE_SEC = 3600;
+/** A build that failed or got killed is retried no sooner than this. */
+const RESULTS_RETRY_SEC = 600;
+
+export function resultsCachePath(): string {
+	return `${stateDirPath()}/results-cache.json`;
+}
 
 /**
- * The tab's data from the P2/P3 functions, computed once per build (the chart and the table read
- * the same object, like the Spend tile and its table). Cached for a minute: a release's before
- * window reaches back past the features window, so one build can parse months of sessions while
- * the page refetches every ${REFRESH_SEC} s.
+ * The tab's numbers from the P2/P3 functions. A release's before window reaches back months, so
+ * one build parses GBs of sessions for over a minute: it runs only in the separate process
+ * src/cli/results-build.ts, never in the server, which it froze (I-20261030-121).
  */
-function resultsData(cfg: Config, source: RunSource): ResultsData {
-	const now = nowSec();
-	if (resultsCache && now - resultsCache.at < 60) return resultsCache.data;
+export function computeResults(cfg: Config, source: RunSource, now: number): ResultsData {
 	const days = 7;
 	const selfRepo = gitTop(import.meta.dir)?.repo ?? null;
 	const tags = gatherTags(selfRepo);
@@ -977,12 +990,39 @@ function resultsData(cfg: Config, source: RunSource): ResultsData {
 	const oldest = Math.min(now, ...tags.map(t => t.ts), ...events.filter(e => e.type === "ci").map(e => Number(e.ts)));
 	const runs = source.listRuns(oldest - days * 86400);
 	const plans = loadPlans(cfg);
-	const data: ResultsData = {
+	return {
 		features: featuresReport(runs, plans, selfRepo, now - cfg.metrics.report_days * 86400, now),
 		releases: releasesReport(runs, plans, selfRepo, days, now, tags, events),
 	};
-	resultsCache = { at: now, data };
-	return data;
+}
+
+/** Starts one background build; calls `done` when it exits, whatever the outcome. */
+export type ResultsBuild = (done: () => void) => void;
+
+export const spawnResultsBuild: ResultsBuild = done => {
+	const proc = Bun.spawn(["nice", "-n", "19", process.execPath, `${import.meta.dir}/../cli/results-build.ts`], { stdout: "ignore", stderr: "inherit" });
+	void proc.exited.then(done, done);
+};
+
+let buildRunning = false;
+let lastBuildStart = 0;
+
+/** Reads the saved numbers and, when they are missing or stale, starts one build in the background. */
+function resultsView(now: number, build: ResultsBuild): ResultsView {
+	let saved: { at: number; data: ResultsData } | null = null;
+	try {
+		saved = JSON.parse(readFileSync(resultsCachePath(), "utf8"));
+	} catch {
+		// No build has finished yet.
+	}
+	if ((!saved || now - saved.at >= RESULTS_MAX_AGE_SEC) && !buildRunning && now - lastBuildStart >= RESULTS_RETRY_SEC) {
+		buildRunning = true;
+		lastBuildStart = now;
+		build(() => {
+			buildRunning = false;
+		});
+	}
+	return { data: saved?.data ?? null, at: saved?.at ?? null, building: buildRunning };
 }
 
 /** One y axis choice: where the number sits on a release side and which way is better. */
@@ -1143,8 +1183,12 @@ function resultsTable(releases: ReleasesReport, all: YMetric[]): string {
 
 const RESULTS_CAVEAT = "Fixes inside the same plan are not split out; plans that do not cite an earlier stem are not linked. Product numbers carry no better/worse color.";
 
-function resultsTabHtml(d: ResultsData | null | undefined, params: URLSearchParams): string {
-	if (!d) return `<h1>Results</h1>${na("Results")}`;
+function resultsTabHtml(view: ResultsView | null | undefined, params: URLSearchParams): string {
+	const d = view?.data;
+	if (!d) {
+		if (view?.building) return `<h1>Results</h1><div class="card"><p class="empty">Working out the numbers from your past sessions — the first time takes a few minutes. This page refreshes by itself.</p></div>`;
+		return `<h1>Results</h1>${na("Results")}`;
+	}
 	if (!d.releases.rows.length) {
 		const empty = d.features.rows.length ? "No releases recorded yet" : "No finished features yet";
 		return `<h1>Results</h1><div class="card"><p class="empty">${empty}</p></div><p class="sub">${RESULTS_CAVEAT}</p>`;
@@ -1154,7 +1198,7 @@ function resultsTabHtml(d: ResultsData | null | undefined, params: URLSearchPara
 	// An unknown y falls back to $/feature.
 	const y = all.find(m => m.key === params.get("y")) ?? all[0]!;
 	return `<h1>Results</h1>
-<p class="sub">What features cost and whether releases made it better or worse.</p>
+<p class="sub">What features cost and whether releases made it better or worse. Updated ${Math.max(0, Math.round((nowSec() - (view.at ?? nowSec())) / 60))} min ago${view.building ? " · updating now" : ""}.</p>
 <div class="card">
 ${resultsControls(all, y, x)}
 ${resultsChart(d.releases, y, x)}
@@ -1390,9 +1434,9 @@ function sentTo(tab: string, sent: string): string {
 }
 
 /** The normal page (the GET layout) as a POST reply; the stale-answer reply is this with sent=stale. */
-function pageRes(cfg: Config, source: RunSource, params: URLSearchParams): Response {
+function pageRes(cfg: Config, source: RunSource, params: URLSearchParams, build: ResultsBuild = spawnResultsBuild): Response {
 	const nonce = randomUUID().replaceAll("-", "");
-	return new Response(renderPage(cfg, buildPageData(cfg, source, params.get("tab") ?? ""), params, nonce), {
+	return new Response(renderPage(cfg, buildPageData(cfg, source, params.get("tab") ?? "", build), params, nonce), {
 		status: 200,
 		headers: {
 			"content-type": "text/html; charset=utf-8",
@@ -1677,6 +1721,7 @@ function handleReorder(cfg: Config, fields: Record<string, string>, login: strin
 /** Starts the page. Refuses to start when ui.enabled is false or ui.owner_login is empty, and on the default hostname when tailscale does not answer. */
 export function startOwnerUi(opts: OwnerUiOptions): OwnerUiServer {
 	const { cfg, tailscale, source } = opts;
+	const resultsBuild = opts.resultsBuild ?? spawnResultsBuild;
 	// The double-press guard (P8c) is per-server memory: a fresh server starts empty, which also
 	// keeps the tests (one server per test) hermetic.
 	lastAnswerByPlan.clear();
@@ -1725,7 +1770,7 @@ export function startOwnerUi(opts: OwnerUiOptions): OwnerUiServer {
 							code = 403;
 						} else if (req.method === "GET" && url.pathname === "/") {
 							sweepOwnerMessages(nowSec());
-							res = pageRes(cfg, source, url.searchParams);
+							res = pageRes(cfg, source, url.searchParams, resultsBuild);
 							code = 200;
 						} else if (req.method === "GET" && url.pathname.startsWith("/knowledge/")) {
 							// The Knowledge tab's frame: the topic's own file bytes, GET only, no write path.
