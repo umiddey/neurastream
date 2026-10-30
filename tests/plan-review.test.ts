@@ -9,6 +9,7 @@ import type { ToolEvent } from "../src/core/adapter.ts";
 import { loadConfig, reloadingConfig } from "../src/core/config.ts";
 import { checkPlanEdit, checkSpawn, checkTool, reviewHash, reviewSpawnEnd } from "../src/core/guards.ts";
 import type { CommandRunner } from "../src/core/mr-sweep.ts";
+import { queueCheck } from "../src/core/queue-check.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { parsePlan, queueProblems, queueSummary, reviewAgentsProblem, type Plan } from "../src/core/queue/lib.ts";
 import { fixturePlan } from "./fixtures/plan.ts";
@@ -59,9 +60,9 @@ test("a valid reuse line (including new: none) is clean", () => {
 	expect(parsed(planFile("20261029_0104")).errors).toEqual([]);
 });
 
-test("a plan stamped before review.since is exempt", () => {
+test("a plan stamped before the old cutover is no longer exempt (P5)", () => {
 	const p = parsed(planFile("20261020_0100", ""));
-	expect(p.errors).toEqual([]);
+	expect(p.errors.join("\n")).toMatch(/## Reuse/);
 });
 
 test("Reuse is an allowed plan section", () => {
@@ -204,19 +205,22 @@ test("a review spawn is exempt without a record", () => {
 	expect(gspawn(`Plan review: ${LOCKED}\nReview P1 against its phases.`, "reviewer", gcfg, "rev1")).toMatchObject({ allow: true });
 });
 
-// --- P4c: the PASS gate honours review.since (plans stamped before the cutover are exempt) ---
+// --- P5 (plan 20261028_1600): the cutover is gone; every plan needs a current PASS ---
 
 const PRE_SINCE = join(REPO, "docs/plans/20261020_0100_presince.md");
 writeFileSync(join(GAGENT, "INDEX.md"), `${LOCKED}\n${PRE_SINCE}\n`);
 writeFileSync(PRE_SINCE, fixturePlan());
 
-test("a plan stamped before review.since spawns with no PASS", () => {
+test("a plan stamped before the old cutover is refused with no PASS (P5)", () => {
 	rmSync(REVIEWS, { force: true });
 	freshProgress();
-	expect(gspawn(`Work ${PRE_SINCE} on P1`)).toMatchObject({ allow: true });
+	expect(gspawn(`Work ${PRE_SINCE} on P1`)).toMatchObject({
+		allow: false,
+		reason: expect.stringContaining("no current reviewer PASS"),
+	});
 });
 
-test("a plan stamped on/after review.since is still refused with no PASS", () => {
+test("a plan with no PASS is refused however it is stamped", () => {
 	rmSync(REVIEWS, { force: true });
 	freshProgress();
 	expect(gspawn(`Work ${LOCKED} on P1`)).toMatchObject({
@@ -225,12 +229,36 @@ test("a plan stamped on/after review.since is still refused with no PASS", () =>
 	});
 });
 
-test(`since: "" turns the PASS gate off`, () => {
+test("review.agents [] turns the PASS gate off", () => {
+	rmSync(REVIEWS, { force: true });
+	rmSync(join(GSTATE, "incidents.jsonl"), { force: true }); // the FAIL tests' findings are open incidents; this test is about the off-switch
+	freshProgress();
+	expect(gspawn(`Work ${LOCKED} on P1`, "worker", withAgents([]))).toMatchObject({ allow: true });
+});
+
+test("review.agents [glm] still refuses a plan with no PASS", () => {
 	rmSync(REVIEWS, { force: true });
 	freshProgress();
-	expect(gspawn(`Work ${LOCKED} on P1`, "worker", { ...gcfg, review: { ...gcfg.review, since: "" } })).toMatchObject({
-		allow: true,
+	expect(gspawn(`Work ${PRE_SINCE} on P1`, "worker", withAgents(["glm"]))).toMatchObject({
+		allow: false,
+		reason: expect.stringContaining("no current reviewer PASS"),
 	});
+});
+
+test("review.agents [] is a valid config even when Allowed names agents (I-20261030-5)", () => {
+	expect(reviewAgentsProblem(withAgents([]), new Set(["worker", "reviewer"])).problem).toBeNull();
+});
+
+test("queue-check passes with review.agents [] even for a plan without Reuse (I-20261030-5)", () => {
+	const plan = planFile("20261031_0100", "");
+	const index = join(GAGENT, "INDEX.md");
+	const before = readFileSync(index, "utf8");
+	writeFileSync(index, `${before}${plan}\n`);
+	try {
+		expect(queueCheck(["--no-mr-sweep"], withAgents([]))).toBe(0);
+	} finally {
+		writeFileSync(index, before);
+	}
 });
 
 // --- P4g: the review line is matched exactly; a PLAN REVIEW line outside that form is restored ---
