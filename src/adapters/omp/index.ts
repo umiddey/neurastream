@@ -26,7 +26,7 @@ import { configFile, loadConfig, reloadingConfig, type Config } from "../../core
 import { checkWrite, deferSteer, type WriteCheckConfig } from "../../core/write-check.ts";
 import { nowSec, strftime } from "../../core/clock.ts";
 import { runDetectors, runDetectorsGated, type DetectorInput } from "../../core/incident-detectors.ts";
-import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, newProgressEntries, planReadNote, recordMainResult, resetMainCalls, revertMainEdit, rekeySpawnFile, reviewSpawnEnd } from "../../core/guards.ts";
+import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, newProgressEntries, planReadNote, recordMainResult, resetMainCalls, revertMainEdit, rekeySpawnFile, reviewSpawnEnd, STOP_PLAN_OFFER_REFUSAL } from "../../core/guards.ts";
 import { rateLimitWait } from "../../core/rate-limit.ts";
 import { notifyProviders, postReply } from "../../core/notify.ts";
 import { loadKnownSecrets, redactSecrets, redactSummary } from "../../core/secret-redact.ts";
@@ -1320,6 +1320,12 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		}
 		// A real hand-back: the turn ended without a rate limit — the episode is over.
 		disarmRateEpisode();
+		// A deferred hand-back fires no session_stop: reset the per-turn cap here (I-20261030-24)
+		// and steer a promise like checkStop refuses it (I-20261030-32).
+		resetMainCalls();
+		if (new RegExp(cfg.guards.plan_offer, "i").test(reply.text)) {
+			pi.sendUserMessage(STOP_PLAN_OFFER_REFUSAL);
+		}
 		notifyHandback(reply, "agent_end hand-back");
 	});
 	// Turn end: page answers that arrived during the turn go out (P3b), then open plans that now
@@ -1354,8 +1360,8 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 	});
 
 	// Terminal hand-back (plan 20261028_1545 P2): a willContinue agent_end keeps the turn going
-	// (blocked stop, todo/plan-mode continuation, deferred hand-back), so only its absence ends
-	// the turn — the per-turn call budget resets for the next one.
+	// (blocked stop, todo/plan-mode continuation, deferred hand-back); only its absence ends the
+	// turn — the budget resets here and on the deferred hand-back above (I-20261030-24).
 	pi.on("agent_end", (e, ctx) => {
 		if (!isMain(ctx)) return;
 		if (asRecord(e).willContinue === true) return;

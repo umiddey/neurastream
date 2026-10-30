@@ -1,4 +1,9 @@
 # Changelog
+## Unreleased
+### Changed
+- `guards.plan_offer` (templates/config.yml, docs/config.md) now also refuses a Main stop reply that promises instead of offering — "I will", "I'll" — with the refusal "don't promise it — do it now, or write the plan and index it"; checkStop's reason and log moved to the exported `STOP_PLAN_OFFER_REFUSAL` const (I-20261030-25, I-20261030-32).
+- The omp adapter resets Main's per-turn call cap on a real deferred hand-back (a `willContinue` agent_end with a pending async job), so the count no longer stays spent until the owner's next message (I-20261030-24).
+- A deferred hand-back whose reply promises instead of planning steers Main with the plan offer refusal via `pi.sendUserMessage` (I-20261030-32).
 ## 0.2.54
 ### Fixed
 - Tapping the owner page's Results tab still froze the whole page: the server built months of numbers itself (over a minute, GBs), again on every refresh. A separate low-priority process (`src/cli/results-build.ts`) now builds them at most hourly into `results-cache.json` in the state dir; the tab only reads that file and shows "Working out the numbers…" until the first build lands.

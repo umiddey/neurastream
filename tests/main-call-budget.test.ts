@@ -189,20 +189,20 @@ const REPO = dirname(dirname(import.meta.path));
 const ADAPTER = join(REPO, "src/adapters/omp/index.ts");
 const OMP_HOME = "/tmp/neurastream-home-main-budget";
 
-function agentEndReset(event: Record<string, unknown>): { mainCalls: unknown } {
+function agentEndReset(event: Record<string, unknown>, jobs: string[] = []): { mainCalls: unknown; sent: string[] } {
 	// The child's import path is only known at runtime (the worktree these tests ship in), and the
 	// scenario must load the adapter the way the harness does — a runtime-selected specifier, the
 	// same pattern tests/guards-omp.test.ts uses.
 	const body = `
-const h = {};
+const h = {}; const sent = [];
 const mod = await import(${JSON.stringify(ADAPTER)});
-mod.default({ on: (ev, cb) => { (h[ev] ??= []).push(cb); }, registerCommand: () => {}, sendUserMessage: () => {} });
+mod.default({ on: (ev, cb) => { (h[ev] ??= []).push(cb); }, registerCommand: () => {}, sendUserMessage: (c) => { sent.push(c); } });
 const fs = await import("node:fs");
 const win = ${JSON.stringify(join(OMP_HOME, "state/edit-window.json"))};
 fs.writeFileSync(win, JSON.stringify({ used: [], windowStart: 0, mainCalls: 5 }));
-const ctx = ${JSON.stringify({ agent: { kind: "main", id: "main" }, cwd: "/tmp" })};
+const ctx = Object.assign(${JSON.stringify({ agent: { kind: "main", id: "main" }, cwd: "/tmp" })}, { sessionManager: { getSessionId: () => "s1", getSessionFile: () => "/tmp/s1.jsonl" }, getAsyncJobSnapshot: () => ({ running: ${JSON.stringify(jobs.map(j => ({ label: j })))} }) });
 for (const cb of h["agent_end"] ?? []) await cb(${JSON.stringify(event)}, ctx);
-console.log(JSON.stringify(JSON.parse(fs.readFileSync(win, "utf8"))));
+const out = JSON.parse(fs.readFileSync(win, "utf8")); console.log(JSON.stringify(Object.assign(out, { sent })));
 `;
 	const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("QUEUE_")));
 	Object.assign(env, { HOME: OMP_HOME, NEURASTREAM_MAIN_LAUNCHER: "1" });
@@ -226,7 +226,7 @@ console.log(JSON.stringify(JSON.parse(fs.readFileSync(win, "utf8"))));
 	);
 	const r = spawnSync("bun", ["-e", body], { encoding: "utf8", cwd: "/tmp", env, timeout: 60_000 });
 	if (r.status !== 0) throw new Error(`adapter run failed: ${r.stderr}`);
-	return JSON.parse(r.stdout.trim()) as { mainCalls: unknown };
+	return JSON.parse(r.stdout.trim()) as { mainCalls: unknown; sent: string[] };
 }
 
 test("the adapter resets at a terminal agent_end and keeps counting across willContinue", () => {
@@ -244,6 +244,17 @@ test("a capped count starts over 15 min after its first call, with no owner mess
 	writeWindow({ ...readWindow(), mainCallsStart: start - 15 * 60 });
 	expect(checkTool(mainEvent("read"), cfg).allow).toBe(true);
 	expect(readWindow().mainCalls).toBe(1);
+});
+
+test("a deferred hand-back (willContinue + a running job, reply ended with stop) resets the count", () => {
+	expect(agentEndReset({ willContinue: true, messages: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "handing back" }] }] }, ["bg_1"]).mainCalls).toBe(0);
+});
+
+test("a deferred hand-back that promises is steered", () => {
+	const refused = agentEndReset({ willContinue: true, messages: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "I'll merge it later" }] }] }, ["bg_1"]);
+	const plain = agentEndReset({ willContinue: true, messages: [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "handing back" }] }] }, ["bg_1"]);
+	expect(refused.sent.some(s => typeof s === "string" && s.includes("don't promise it — do it now, or write the plan and index it"))).toBe(true);
+	expect(plain.sent.some(s => typeof s === "string" && s.includes("don't promise it — do it now, or write the plan and index it"))).toBe(false);
 });
 
 afterAll(() => {

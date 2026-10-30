@@ -97,19 +97,38 @@ test("a stop reply that offers to plan is refused", () => {
 	fresh();
 	const d = checkStop({ agent: "main", callsSinceStop: 0, idleStops: 0, ledgerText: "", reply: "backups broken, want me to write a plan?" }, cfg);
 	expect(d.allow).toBe(false);
-	expect(d.reason).toContain("don't offer it — write the plan and index it");
+	expect(d.reason).toContain("don't promise it — do it now, or write the plan and index it");
 });
 
 test("two idle stops do not release the offer block", () => {
 	fresh();
 	const d = checkStop({ agent: "main", callsSinceStop: 0, idleStops: 2, ledgerText: "", reply: "should I plan this?" }, cfg);
 	expect(d.allow).toBe(false);
-	expect(d.reason).toContain("don't offer it — write the plan and index it");
+	expect(d.reason).toContain("don't promise it — do it now, or write the plan and index it");
 });
 
 test("a stop reply without the offer stops as before", () => {
 	fresh();
 	const d = checkStop({ agent: "main", callsSinceStop: 0, idleStops: 0, ledgerText: "", reply: "backups broken, investigating now" }, cfg);
+	expect(d.allow).toBe(true);
+});
+
+test("a stop reply that promises instead of planning is refused", () => {
+	fresh();
+	const d = checkStop({ agent: "main", callsSinceStop: 0, idleStops: 0, ledgerText: "", reply: "I'll file it as an incident." }, cfg);
+	expect(d.allow).toBe(false);
+	expect(d.reason).toContain("don't promise it — do it now, or write the plan and index it");
+});
+
+test("a stop reply that promises mid-sentence is refused", () => {
+	fresh();
+	const d = checkStop({ agent: "main", callsSinceStop: 0, idleStops: 0, ledgerText: "", reply: "Done. I will check CI later." }, cfg);
+	expect(d.allow).toBe(false);
+});
+
+test("a stop reply that predicts the future is not a promise", () => {
+	fresh();
+	const d = checkStop({ agent: "main", callsSinceStop: 0, idleStops: 0, ledgerText: "", reply: "CI will finish in 5 min" }, cfg);
 	expect(d.allow).toBe(true);
 });
 
@@ -173,7 +192,7 @@ test("guard stop --json refuses a reply that offers to plan", () => {
 	const r = guardCli("stop", { agent: "main", callsSinceStop: 0, idleStops: 0, ledgerText: "", reply: "backups broken, want me to write a plan?" });
 	expect(r.code).toBe(2);
 	expect(r.d.allow).toBe(false);
-	expect(r.d.reason).toContain("don't offer it — write the plan and index it");
+	expect(r.d.reason).toContain("don't promise it — do it now, or write the plan and index it");
 });
 
 test("guard stop --json allows a reply without the offer", () => {
