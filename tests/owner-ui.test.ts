@@ -1183,9 +1183,29 @@ test("buildPageData wraps nowStats in the safe() rule: a throwing run source giv
 		},
 		mainSession: () => null,
 	};
-	const d = buildPageData(CFG, bad);
+	const d = buildPageData(CFG, bad, "now");
 	expect(d.stats).toBeNull();
 	expect(d.questions).toHaveLength(1);
+});
+
+test("buildPageData reads the Results window only on the Results tab: other tabs never list runs older than a day", () => {
+	const sinces: number[] = [];
+	const rec: RunSource = {
+		listRuns: (since: number) => {
+			sinces.push(since);
+			return [];
+		},
+		mainSession: () => null,
+	};
+	const dayAgo = Date.now() / 1000 - 86400 - 60;
+	for (const tab of ["now", "queue", "agents", "spend", "knowledge", ""]) {
+		sinces.length = 0;
+		expect(buildPageData(CFG, rec, tab).results).toBeUndefined();
+		expect(sinces.every(s => s >= dayAgo)).toBe(true);
+	}
+	sinces.length = 0;
+	expect(buildPageData(CFG, rec, "results").results).not.toBeUndefined();
+	expect(sinces.some(s => s < dayAgo)).toBe(true);
 });
 
 // --- P4: queue reorder by drag and drop ---
