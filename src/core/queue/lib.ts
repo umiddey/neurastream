@@ -774,14 +774,16 @@ export function allowedAgents(file = subagentsPath()): Set<string> {
 
 // P4d (plan 20261028_1600): a review spawn runs under a review.agents entry that Main may spawn
 // (## Allowed of the subagents file). When Allowed names agents and none of them is a review.agents
-// entry, every review spawn is refused: a problem. When Allowed is empty (a fresh install), no subagent
-// can spawn at all yet, so there is no review spawn to refuse. An entry not allowed is a warning.
+// entry, every review spawn is refused: a problem. An empty review.agents list turns both review
+// gates off (P5c, I-20261030-5), so it is valid whatever Allowed holds. When Allowed is empty (a
+// fresh install), no subagent can spawn at all yet, so there is no review spawn to refuse. An
+// entry not allowed is a warning.
 export function reviewAgentsProblem(cfg: Config, allowed: Set<string>): { problem: string | null; warnings: string[] } {
 	const agents = cfg.review.agents;
 	const warnings = agents
 		.filter(a => !allowed.has(a))
 		.map(a => `review.agents lists "${a}", which is not in "## Allowed" of ${cfg.paths.subagents}; it cannot run a review spawn`);
-	const problem = allowed.size === 0 || agents.some(a => allowed.has(a))
+	const problem = agents.length === 0 || allowed.size === 0 || agents.some(a => allowed.has(a))
 		? null
 		: `no review.agents entry is in "## Allowed" of ${cfg.paths.subagents}: set review.agents to an allowed agent in config.yml`;
 	return { problem, warnings };

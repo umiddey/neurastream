@@ -195,6 +195,7 @@ export type Spawner = "main" | "sub";
  * the cutover: every named plan is gated.
  */
 export function reviewPassProblem(named: string[], brief: string, agent: string, cfg: Config, spawner: Spawner): string | null {
+	if (!cfg.review.agents.length) return null; // P5c: an empty review.agents list turns both review gates off
 	const reviews = readPlanReviews();
 	for (const file of named) {
 		if (isReviewSpawn(file, brief, agent, cfg, spawner)) continue;
