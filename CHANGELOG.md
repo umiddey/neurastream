@@ -1,4 +1,8 @@
 # Changelog
+## 0.2.54
+### Fixed
+- Tapping the owner page's Results tab still froze the whole page: the server built months of numbers itself (over a minute, GBs), again on every refresh. A separate low-priority process (`src/cli/results-build.ts`) now builds them at most hourly into `results-cache.json` in the state dir; the tab only reads that file and shows "Working out the numbers…" until the first build lands.
+- Main's per-turn call cap (`guards.main_max_calls`) never reset while the owner was away: a blocked stop is a continuation, not a hand-back. The count now also starts over 15 min after its first call, and the refusal says when.
 ## 0.2.53
 ### Fixed
 - The owner page froze for every tab: each 20 s refresh built the Results tab's months-long run window (62 s and 10 GB on a 13 GB sessions dir). `buildPageData` now takes the tab and builds Results only on the Results tab; the other tabs read at most the last day (0.7 s).

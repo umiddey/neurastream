@@ -18,7 +18,7 @@ import { appendMetric } from "../src/core/metrics.ts";
 import { checkTool } from "../src/core/guards.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { createOmpAdapter, ownerInboxCursorPath, ownerInboxMessage, type ExtensionHost } from "../src/adapters/omp/index.ts";
-import { inboxPath, agentRows, buildPageData, ciRows, dropSlot, edgeScrollStep, incidentRows, machineRow, nowStats, questionRows, queueRows, renderPage, scoresData, startOwnerUi, type OwnerUiOptions, type OwnerUiServer, type PageData, type ResultsData } from "../src/core/owner-ui.ts";
+import { inboxPath, agentRows, buildPageData, ciRows, dropSlot, edgeScrollStep, incidentRows, machineRow, nowStats, questionRows, queueRows, renderPage, resultsCachePath, scoresData, startOwnerUi, type OwnerUiOptions, type OwnerUiServer, type PageData, type ResultsData } from "../src/core/owner-ui.ts";
 import type { ChainRow, FeaturesReport, ReleaseRow, ReleaseSideStats, ReleasesReport } from "../src/core/results.ts";
 import { runUi } from "../src/cli/ui.ts";
 import { parsePlan, stateDirPath, unlockPath } from "../src/core/queue/lib.ts";
@@ -167,6 +167,7 @@ function ui(over: Partial<OwnerUiOptions> = {}): OwnerUiServer {
 		hostname: "127.0.0.1",
 		port: 0,
 		peerOf: () => PEER,
+		resultsBuild: () => {}, // never spawn the real months-long build from a test
 		...over,
 	});
 	stopFns.push(svc.stop);
@@ -1188,7 +1189,7 @@ test("buildPageData wraps nowStats in the safe() rule: a throwing run source giv
 	expect(d.questions).toHaveLength(1);
 });
 
-test("buildPageData reads the Results window only on the Results tab: other tabs never list runs older than a day", () => {
+test("the Results tab never lists old runs in the server: it starts one background build and shows the saved numbers", () => {
 	const sinces: number[] = [];
 	const rec: RunSource = {
 		listRuns: (since: number) => {
@@ -1198,14 +1199,27 @@ test("buildPageData reads the Results window only on the Results tab: other tabs
 		mainSession: () => null,
 	};
 	const dayAgo = Date.now() / 1000 - 86400 - 60;
+	const dones: (() => void)[] = [];
+	const build = (done: () => void) => void dones.push(done);
 	for (const tab of ["now", "queue", "agents", "spend", "knowledge", ""]) {
-		sinces.length = 0;
-		expect(buildPageData(CFG, rec, tab).results).toBeUndefined();
-		expect(sinces.every(s => s >= dayAgo)).toBe(true);
+		expect(buildPageData(CFG, rec, tab, build).results).toBeUndefined();
 	}
-	sinces.length = 0;
-	expect(buildPageData(CFG, rec, "results").results).not.toBeUndefined();
-	expect(sinces.some(s => s < dayAgo)).toBe(true);
+	expect(dones).toHaveLength(0);
+	rmSync(resultsCachePath(), { force: true });
+	// Nothing saved yet: one build starts, and the tab says it is working, not "unavailable".
+	expect(buildPageData(CFG, rec, "results", build).results).toEqual({ data: null, at: null, building: true });
+	expect(dones).toHaveLength(1);
+	// The 20 s refresh while it runs starts no second build.
+	buildPageData(CFG, rec, "results", build);
+	expect(dones).toHaveLength(1);
+	expect(sinces.every(s => s >= dayAgo)).toBe(true);
+	// The build saves its numbers and exits: the tab shows them, and fresh numbers start no build.
+	const at = nowSec();
+	writeFileSync(resultsCachePath(), JSON.stringify({ at, data: RESULTS }));
+	dones[0]!();
+	expect(buildPageData(CFG, rec, "results", build).results).toEqual({ data: RESULTS, at, building: false });
+	expect(dones).toHaveLength(1);
+	rmSync(resultsCachePath(), { force: true });
 });
 
 // --- P4: queue reorder by drag and drop ---
@@ -1957,7 +1971,7 @@ const EMPTY_DATA: PageData = {
 };
 
 function resultsPage(params: string, results: ResultsData | null = RESULTS): string {
-	return renderPage(CFG, { ...EMPTY_DATA, results }, new URLSearchParams(params), "results-nonce");
+	return renderPage(CFG, { ...EMPTY_DATA, results: results && { data: results, at: nowSec(), building: false } }, new URLSearchParams(params), "results-nonce");
 }
 
 test("results tab: chart, releases table and y/x links render for both x modes", () => {
