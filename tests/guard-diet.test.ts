@@ -190,6 +190,7 @@ test("open findings and traces incidents refuse neither spawn nor stop; a realti
 	const rt = addIncident(cfg, { source: "realtime", kind: "detector", summary: "toy detector fired", evidence: "guard log" }).incident;
 	// a new Progress entry keeps planGate's no-new-entry rule out of the second spawn's way
 	writeFileSync(PLAN, BEFORE.replace(OLD, `${OLD}\n- 2026-10-31 12:30 (w2): second run. Findings: none.`));
+	writeFileSync(INDEX, `${PLAN}\n`); // list the plan again: only the realtime incident may block this spawn
 	const d2 = checkSpawn(spawn, cfg);
 	expect(d2.allow).toBe(false);
 	expect(d2.reason).toContain(rt.id);
