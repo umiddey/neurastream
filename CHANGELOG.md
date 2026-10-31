@@ -1,4 +1,5 @@
 # Changelog
+<<<<<<< HEAD
 
 ## Unreleased
 ### Added
@@ -45,6 +46,11 @@
 - Review spawns may run read-only shell; secret paths judged under both config home and OS home; stop is released at `main_max_calls`; `approval.since: ""` turns approval fully off.
 - Injected queue summary and stop refusal show the top 10 plans plus "… N more".
 - Read tools and non-writing shell skip blocker scripts; a denial names the hit paths and the script's output.
+=======
+## Unreleased
+### Changed
+- `guards.rate_limit` replaces `default_wait_s` and `max_wait_s` (the doubling is gone) with `probe_interval_s` (300), `max_probes` (288), `probe_timeout_s` (90) and `probe_cmd` (the shell command that probes the provider; `{model}` is replaced by the shell-quoted model). A named retry-after is still waited for, plus `slack_s`. A config that still sets the retired keys is refused as an unknown key (P2, plan 20261027_1500).
+>>>>>>> c851de9 (docs(changelog): rate-limit config keys (P2))
 ## 0.2.57
 ### Changed
 - Plan approval records a hash of the plan text in `<queue_state>/plan-approvals.json` instead of writing an `Approved:` line into the plan; the plan file is never edited, and `Approval: self` is gone (P1, plan 20261029_1455). main-guard refuses a spawn until the record matches the plan's current text.
