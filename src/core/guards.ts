@@ -1363,10 +1363,14 @@ export function checkTool(e: ToolEvent, cfg: Config): Decision {
 	const hit = protectedHit(openWrites, cfg);
 	if (hit && !unlocked(cfg)) {
 		log(cfg.paths.plan_guard_log, `BLOCK ${e.agent}:${e.agentId} tool=${e.tool} protected: ${hit}`);
+		// The plan index (plan 20261031_0911 P2) is guard surface like the rest, but unlike the
+		// others an agent has a sanctioned way to change it: the queue add/move CLI through
+		// writeIndex. Name it, so the refusal says what to do instead of naming the unlock.
+		const viaQueue = hit === q.INDEX ? ` Plans enter the index or move within it through \`neurastream queue add\` / \`neurastream queue move\`.` : "";
 		return deny(
 			`plan-guard: ${hit} is a protected guard file. Only the owner changes it (unlock: \`touch ${q.UNLOCK}\` in a terminal${
 				cfg.guards.chat_unlock ? `, or type \`unlock ${cfg.guards.unlock_minutes}\` in chat` : ""
-			}, valid ${cfg.guards.unlock_minutes} min).`,
+			}, valid ${cfg.guards.unlock_minutes} min).${viaQueue}`,
 		);
 	}
 	if (e.agent === "main") {
