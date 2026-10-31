@@ -23,6 +23,7 @@
 
 import { execFileSync } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import type { Decision, InjectEvent, PlanEditEvent, SpawnEvent, StopEvent, ToolEvent } from "./adapter.ts";
 import { currentTier, takeGo } from "./autonomy.ts";
@@ -305,13 +306,14 @@ function matchReviewSpawn(spawns: Record<string, ReviewSpawn>, agentId: string):
 	return null;
 }
 
-/** P4f: the secret-read deny: credential dirs under home, and env files. */
+/** P4f: the secret-read deny: credential dirs under a home, and env files. Shell text expands `~` to the process home (queue lib) while config points at the sandbox home in tests, so both roots are judged; they are the same directory in production. */
 function secretPath(p: string, cfg: Config, cwd: string): boolean {
-	const home = cfg.paths.home;
-	const abs = path.resolve(cwd, p.startsWith("~/") ? path.join(home, p.slice(2)) : p);
+	const abs = path.resolve(cwd, p.startsWith("~/") ? path.join(cfg.paths.home, p.slice(2)) : p);
 	const base = path.basename(abs);
-	const inCredDir = [".config", ".ssh", ".gnupg", ".aws"].some(d => abs.startsWith(path.join(home, d) + path.sep));
-	return inCredDir || base.startsWith(".env") || base.endsWith(".env");
+	if (base.startsWith(".env") || base.endsWith(".env")) return true;
+	return [cfg.paths.home, homedir()].some(home =>
+		[".config", ".ssh", ".gnupg", ".aws"].some(d => abs.startsWith(path.join(path.resolve(home), d) + path.sep)),
+	);
 }
 
 /** P4f: a named review spawn may read, use todo, and edit only its own plan. Shell, spawn, cancel and MCP tools are denied; so are secret reads. */
@@ -325,6 +327,15 @@ function reviewLockProblem(e: ToolEvent, cfg: Config): string | null {
 		return `review spawn ${e.agentId} may edit only its plan ${plan}.`;
 	}
 	if (cfg.guards.read_tools.includes(e.tool) || e.tool === "todo") {
+		const reads = [...(e.paths ?? []), ...q.touchedPaths(e.tool, input, e.cwd)];
+		return reads.some(p => secretPath(p, cfg, e.cwd)) ? `review spawn ${e.agentId} may not read credentials or env files.` : null;
+	}
+	// P5 (plan 20261031_1207): a shell call gets the read tools' deny — allowed when it writes
+	// nothing and its text carries no landing/mutating/spawn command and no secret path.
+	if (cfg.guards.shell_tools.includes(e.tool)) {
+		const writes = [...(e.writes ?? []), ...q.writeTargets(e.tool, input, e.cwd, [])];
+		if (writes.length || writesShellText(input, cfg))
+			return `review spawn ${e.agentId} may only read, use todo, and edit its plan; shell writes, landing and mutating commands are denied.`;
 		const reads = [...(e.paths ?? []), ...q.touchedPaths(e.tool, input, e.cwd)];
 		return reads.some(p => secretPath(p, cfg, e.cwd)) ? `review spawn ${e.agentId} may not read credentials or env files.` : null;
 	}
@@ -1004,6 +1015,19 @@ function landingCommand(input: Record<string, unknown>): boolean {
 		if (cmd === "gh" && words[i + 1] === "pr" && words[i + 2] === "merge") return true;
 		return false;
 	});
+}
+
+// P5/P5c (plan 20261031_1207): the shell text a read-only fast path may never carry — a landing
+// command (push / MR merge), git add or commit, npm publish, a bypass_spawn launch, or a MUTATING
+// write. Landing and commit commands produce no write targets, so this text filter — not
+// writeTargets — is what keeps them out of the review lock's shell allow and the blocker skip.
+// One predicate for both callers; reviewLockProblem denies it, subRules keeps the blockers on it.
+function writesShellText(input: Record<string, unknown>, cfg: Config): boolean {
+	if (landingCommand(input)) return true;
+	const text = q.withoutQuotedRedirects(Object.values(input).filter((v): v is string => typeof v === "string").join("\n"));
+	if (/\bgit\s+(add|commit)\b/.test(text) || /\bnpm\s+publish\b/.test(text)) return true;
+	if (cfg.guards.bypass_spawn.some(entry => bypassRegExp(entry).test(text))) return true;
+	return q.MUTATING.test(text);
 }
 
 // The read tool's stand-in for a value it hid. A file may hold one only where it is produced
@@ -1870,6 +1894,16 @@ export function checkStop(e: StopEvent, cfg: Config): Decision {
 	if (e.reply && new RegExp(cfg.guards.plan_offer, "i").test(e.reply)) {
 		log(cfg.paths.guard_log, "BLOCK stop: reply offers or promises instead of doing it");
 		return { allow: false, reason: STOP_PLAN_OFFER_REFUSAL, state };
+	}
+	// P5 (plan 20261031_1207): once the turn spent its call budget, the stop is the release —
+	// refusing it would order a capped Main to keep making calls the cap itself refuses. The
+	// 15-min window expiry restarts the count, and the keep-working rule with it.
+	if (cfg.guards.main_max_calls > 0) {
+		const w = readWindow();
+		if (w.mainCalls >= cfg.guards.main_max_calls && !mainCallsExpired(w)) {
+			log(cfg.paths.guard_log, `ALLOW stop: turn spent ${w.mainCalls}/${cfg.guards.main_max_calls} calls`);
+			return { ...ALLOW, state };
+		}
 	}
 	let open: string[];
 	try {

@@ -154,8 +154,9 @@ export function chatApprove(text: string, cfg: Config, source: string): ChatAppr
 	return { applied: true, plan: plan.file };
 }
 
-/** Why a spawn may not run on this plan, or null. A plan with a page in Base needs a record with its current hash. A plan stamped at or after `since` (approval.since, "" = off) needs a page too (plan 20261029_1455 P3): with no page it is refused until the page is published. A file with no stamp counts as stamped after `since`. */
+/** Why a spawn may not run on this plan, or null. Approval off (`since === ""`) approves everything, page or not (plan 20261031_1207 P5: the reviewer agent replaced the hard gate). Otherwise a plan with a page in Base needs a record with its current hash, and a plan stamped at or after `since` needs a page too (plan 20261029_1455 P3): with no page it is refused until the page is published. A file with no stamp counts as stamped after `since`. */
 export function approvalProblem(text: string, file: string, pagesDir: string, since: string): string | null {
+	if (since === "") return null;
 	const page = pageOfPlan(pagesDir, file);
 	const stamp = /^\d{8}_\d{4}/.exec(basename(file))?.[0] ?? null;
 	const gated = since !== "" && (stamp === null || stamp >= since);
