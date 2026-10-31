@@ -11,13 +11,15 @@
 // negative claims probe a bounded window just past the armed wait.
 
 import { afterAll, beforeAll, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { createOmpAdapter, reset as resetAdapter } from "../src/adapters/omp/index.ts";
+import { createOmpAdapter, recordProviderOutFromRateLimit, reset as resetAdapter } from "../src/adapters/omp/index.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { blockersDirPath, indexPath } from "../src/core/queue/lib.ts";
+import { readOut } from "../src/core/provider-state.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "rate-limit-omp-"));
 const HOME = join(TMP, "home");
@@ -450,3 +452,35 @@ test("after a normal turn the episode restarts: attempt 1 again and a fresh post
 	expect(logLines().filter(l => l.includes("(2s, attempt 1)"))).toHaveLength(2);
 	await until(() => rlHits().length === 2);
 }, 30_000);
+
+// Plan 20261027_1500 P1: the named reset is parsed once. recordProviderOutFromRateLimit returns it in
+// epoch ms (null when the text names none) and records the same epoch as the provider's out-until.
+const ZAI_RESET_TEXT = `429 {"code":"1308","message":"Usage limit reached for 5 hour. Your limit will reset at 2026-10-27 07:04:26"}`;
+// 07:04:26 Asia/Shanghai (quota.reset_tz) = 00:04:26 CET = 2026-10-26T23:04:26Z.
+const ZAI_RESET_EPOCH_S = Date.UTC(2026, 9, 26, 23, 4, 26) / 1000;
+const PROVIDER_STATE = new URL("../src/core/provider-state.ts", import.meta.url).pathname;
+const rateLimitedReply = (errorMessage: string) => ({ text: "", stopReason: "error", toolCalls: 0, errorMessage, provider: "zai", model: null });
+
+test("a named reset is parsed once: the returned ms and the recorded until are the same zone-correct epoch", () => {
+	const cfg = writeConfig();
+	const named = recordProviderOutFromRateLimit(rateLimitedReply(ZAI_RESET_TEXT), Date.now() + 5000, cfg);
+	expect(named).toBe(ZAI_RESET_EPOCH_S * 1000);
+	expect(readOut(cfg).at(-1)).toMatchObject({ provider: "zai", until: ZAI_RESET_EPOCH_S, source: "rate-limit-reset" });
+});
+
+test("a rate-limited text that names no reset time returns null and records the armed wait", () => {
+	const cfg = writeConfig();
+	const before = readOut(cfg).length;
+	const named = recordProviderOutFromRateLimit(rateLimitedReply("429 rate limit reached, try later"), Date.now() + 5000, cfg);
+	expect(named).toBeNull();
+	expect(readOut(cfg).slice(before).map(r => r.source)).toEqual(["rate-limit"]);
+});
+
+test("the named reset epoch is the same under any process time zone", () => {
+	const cfg = writeConfig();
+	const script = `import(${JSON.stringify(PROVIDER_STATE)}).then(m => console.log(m.resetEpochFromText(${JSON.stringify(ZAI_RESET_TEXT)}, { pattern: ${JSON.stringify(cfg.quota.reset_pattern)}, zone: "Asia/Shanghai" })));`;
+	for (const TZ of ["Europe/Berlin", "UTC"]) {
+		const r = spawnSync(process.execPath, ["-e", script], { env: { ...process.env, HOME, TZ }, encoding: "utf8" });
+		expect(r.stdout.trim()).toBe(String(ZAI_RESET_EPOCH_S));
+	}
+});

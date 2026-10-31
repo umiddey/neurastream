@@ -334,7 +334,7 @@ function recordProviderOutFromTask(e: Record<string, unknown>, content: unknown[
 }
 
 /** Rate-limited turn end: record the reset time the error text names, else the armed wait. */
-function recordProviderOutFromRateLimit(reply: EventReply | null, untilMs: number, cfg: Config): void {
+export function recordProviderOutFromRateLimit(reply: EventReply | null, untilMs: number, cfg: Config): number | null {
 	const provider = reply?.provider ?? providerOfModel(reply?.model ?? null);
 	if (!provider) return;
 	const named = reply ? resetEpochFromText(reply.errorMessage ?? "", resetRule(cfg)) : null;
