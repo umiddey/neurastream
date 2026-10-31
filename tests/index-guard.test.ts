@@ -3,7 +3,7 @@
 // the same set in a new order writes (b), every write leaves the file 0444 so even a plain
 // writeFileSync throws EACCES (c), checkTool guards the index path like a guard file with the
 // owner unlock as the only exception (d), and a QUEUE_INDEX exported before the run never leaks
-// past the test preload: a sandboxed loadConfig gets a queue_index under the preload's dir (e).
+// past the test preload: a sandboxed loadConfig gets a queue_index under its sandbox home (e).
 // Each case fails on origin/main: writeIndex, the index protection and tests/preload.ts do not
 // exist yet.
 
@@ -82,15 +82,13 @@ async function writeIndex(): Promise<WriteIndex> {
 	return mod.writeIndex;
 }
 
-test("(e) QUEUE_INDEX set before the run never leaks: loadConfig({ home }) gets a queue_index under the test preload's dir", async () => {
+test("(e) QUEUE_INDEX set before the run never leaks: loadConfig({ home }) gets a queue_index under the sandbox home", () => {
 	const s = seed();
-	// Dynamic import on purpose (test exercising a module-loading boundary): tests/preload.ts is
-	// itself the missing behaviour (plan P3 adds it), so a static import would crash the whole
-	// file instead of failing this case alone with the missing preload as the reason.
-	const preload = (await import("./preload.ts")) as { PRELOAD_TMP?: string };
-	expect(typeof preload.PRELOAD_TMP).toBe("string");
+	// The preload deleted every inherited QUEUE_* var before this module loaded, so the index
+	// resolves from the sandbox config, not from the sentinel this run was started with. Without
+	// the preload the sentinel would win over the config file (loadConfig applies env over it).
 	const cfg = loadConfig({ home: s.home });
-	expect(cfg.paths.queue_index.startsWith(preload.PRELOAD_TMP!)).toBe(true);
+	expect(cfg.paths.queue_index.startsWith(s.home)).toBe(true);
 	expect(cfg.paths.queue_index).not.toBe(RUN_QUEUE_INDEX);
 });
 

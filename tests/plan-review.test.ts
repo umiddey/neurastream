@@ -114,8 +114,16 @@ review:
 `,
 );
 
+// The gate setup points QUEUE_* env at its sandbox; restore the caller's at the end so nothing
+// leaks into the test files that run after this one.
+const queueEnvBefore = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("QUEUE_")));
 const gcfg = loadConfig({ home: GHOME, env: {} });
 applyQueueEnv(gcfg);
+
+afterAll(() => {
+	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
+	Object.assign(process.env, queueEnvBefore);
+});
 
 // No origin remote: the P3 pending-work check degrades off the toy repo, so these tests see only the PASS gate.
 const gRunner: CommandRunner = args =>

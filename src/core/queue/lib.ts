@@ -65,7 +65,7 @@ function originBase(repo: string): string {
 	return head.ok && head.out ? `refs/remotes/${head.out}` : "refs/remotes/origin/main";
 }
 
-/** P4: an open plan auto-close starts for — its branch exists and has landed, or it names no branch (a Main-only plan) and every phase is ticked. Shared by the omp autoClose filter and queueProblems' landed lock (P5); queue-close --auto re-checks authoritatively. */
+/** P4: an open plan auto-close starts for — its branch exists and has landed, or it names no branch (a Main-only plan) and every phase is ticked. Shared by the adapter's autoClose filter and queueProblems' landed lock (P5); queue-close --auto re-checks authoritatively. */
 export function autoCloseCandidate(p: Plan): boolean {
 	if (p.status !== "open" || p.errors.length) return false;
 	if (!p.branch) return p.phases.total > 0 && p.phases.done === p.phases.total;

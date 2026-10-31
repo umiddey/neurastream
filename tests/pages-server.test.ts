@@ -10,7 +10,7 @@ import { applyQueueEnv } from "../src/core/queue/env.ts";
 const LOOPBACK = [127, 0, 0, 1].join(".");
 const servers: {stop():void}[]=[];
 const dirs:string[]=[];
-afterEach(()=>{for(const s of servers.splice(0))s.stop();for(const d of dirs.splice(0))rmSync(d,{recursive:true,force:true});delete process.env.QUEUE_STATE;});
+afterEach(()=>{for(const s of servers.splice(0))s.stop();for(const d of dirs.splice(0))rmSync(d,{recursive:true,force:true});for(const k of Object.keys(process.env))if(k.startsWith("QUEUE_"))delete process.env[k];});
 test("pages serves contained files and rejects unsafe paths and peers",async()=>{
  const root=mkdtempSync(join(tmpdir(),"pages-test-"));dirs.push(root);writeFileSync(join(root,"index.html"),"<h1>ok</h1>");writeFileSync(join(root,"x.svg"),"<svg/>");writeFileSync(join(root,".hidden"),"no");symlinkSync(join(root,"x.svg"),join(root,"link.svg"));
  const tailscale={ip4:()=>"100.64.0.1",dnsName:()=>null,whois:()=>"owner@example.test",logins:()=>[]};const cfg=loadConfig();cfg.pages.enabled=true;cfg.pages.dir=root;cfg.pages.port=0;cfg.ui.owner_login="owner@example.test";

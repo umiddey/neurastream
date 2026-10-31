@@ -22,7 +22,8 @@ const dirs: string[] = [];
 afterEach(() => {
 	for (const s of servers.splice(0)) s.stop();
 	for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
-	delete process.env.QUEUE_STATE;
+	// the helpers below applyQueueEnv all seven path vars, not just QUEUE_STATE: strip them all
+	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
 });
 
 // A plan page is the drilldown template with only DATA edited (plan 20261031_0917 P2); this DATA
