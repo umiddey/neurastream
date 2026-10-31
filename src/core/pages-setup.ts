@@ -17,7 +17,7 @@ const DATA_MARK = "/* === DATA === */";
 const END_DATA_MARK = "/* === END DATA === */";
 export interface RunnerResult { status: number | null; stderr: string; stdout?: string }
 export type Runner = (args: string[]) => RunnerResult;
-export const systemRunner: Runner = args => { const r = spawnSync("systemctl", args, { encoding:"utf8" }); return { status:r.status, stderr:r.stderr ?? "" }; };
+export const systemRunner: Runner = args => { const r = spawnSync("systemctl", args, { encoding:"utf8" }); return { status:r.status, stderr:r.stderr ?? "", stdout:r.stdout ?? "" }; };
 export interface Setup { home?: string; runner?: Runner; tailscale?: Tailscale }
 function editBlock(text: string | null, values: { enabled: boolean; port: number; dir: string }): string {
  const fresh = ["pages:", `  enabled: ${values.enabled}`, `  port: ${values.port}`, `  dir: "${values.dir.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`];
