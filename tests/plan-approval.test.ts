@@ -222,21 +222,21 @@ const recordsOf = (cfg: Config): Record<string, { hash: string; via: string; pag
 
 test("chatApprove: `approve <stamp>` records a chat approval for the one open plan that matches", () => {
 	const { dir, cfg } = setup();
-	const [plan] = indexedPlans(dir, cfg, ["20261029_1455_forced.md", "20261030_0900_other.md"]);
+	const [plan = ""] = indexedPlans(dir, cfg, ["20261029_1455_forced.md", "20261030_0900_other.md"]);
 	expect(chatApprove("  approve 20261029_1455 ", cfg, "interactive")).toEqual({ applied: true, plan });
 	const rec = recordsOf(cfg)[plan];
-	expect(rec.hash).toBe(reviewHash(readFileSync(plan, "utf8")));
-	expect(rec.via).toBe("chat");
-	expect(rec.page).toBe(""); // no page in Base for this plan
+	expect(rec?.hash).toBe(reviewHash(readFileSync(plan, "utf8")));
+	expect(rec?.via).toBe("chat");
+	expect(rec?.page).toBe(""); // no page in Base for this plan
 	expect(readFileSync(cfg.paths.plan_guard_log, "utf8")).toContain(`APPROVE chat source=interactive plan=${plan}`);
 });
 
 test("chatApprove: a plan that has a page in Base records that page", () => {
 	const { dir, cfg } = setup();
-	const [plan] = indexedPlans(dir, cfg, ["20261029_1455_forced.md"]);
+	const [plan = ""] = indexedPlans(dir, cfg, ["20261029_1455_forced.md"]);
 	recordPagePlan(cfg.pages.dir, "toy.html", { plan, missing: [], thin: [] });
 	chatApprove("approve 20261029_1455", cfg, "interactive");
-	expect(recordsOf(cfg)[plan].page).toBe("toy.html");
+	expect(recordsOf(cfg)[plan]?.page).toBe("toy.html");
 });
 
 test("chatApprove: an unknown stamp records nothing and says no open plan matches", () => {
@@ -255,13 +255,12 @@ test("chatApprove: two open plans matching one stamp record nothing", () => {
 
 test("chatApprove: a failed write is a problem, never an approval", () => {
 	const { dir, cfg } = setup();
-	const [plan] = indexedPlans(dir, cfg, ["20261029_1455_forced.md"]);
+	const [plan = ""] = indexedPlans(dir, cfg, ["20261029_1455_forced.md"]);
 	const blocked = join(dir, "state-is-a-file");
 	writeFileSync(blocked, "not a directory");
 	cfg.paths.queue_state = blocked;
 	applyQueueEnv(cfg);
 	const r = chatApprove("approve 20261029_1455", cfg, "interactive");
-	expect(r.applied).toBe(false);
-	expect(r.problem).toContain("not approved");
+	expect(r).toEqual({ applied: false, problem: expect.stringContaining("not approved") });
 	expect(() => approvePlanFile(plan, "toy.html")).toThrow();
 });

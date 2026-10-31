@@ -140,9 +140,9 @@ export function chatApprove(text: string, cfg: Config, source: string): ChatAppr
 	if (!m) return { applied: false };
 	const stamp = m[1];
 	const matches = q.activePlans().filter(p => p.status === "open" && basename(p.file).startsWith(`${stamp}_`));
-	if (matches.length === 0) return { applied: false, problem: `no open plan ${stamp}` };
-	if (matches.length > 1) return { applied: false, problem: `${matches.length} open plans match ${stamp}; nothing approved` };
-	const [plan] = matches;
+	const [plan, second] = matches;
+	if (!plan) return { applied: false, problem: `no open plan ${stamp}` };
+	if (second) return { applied: false, problem: `${matches.length} open plans match ${stamp}; nothing approved` };
 	try {
 		recordApproval(plan.file, { hash: reviewHash(plan.text), at: Date.now(), via: "chat", page: pageOfPlan(cfg.pages.dir, plan.file) ?? "" });
 	} catch (e) {
