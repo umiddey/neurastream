@@ -5,7 +5,7 @@
 // service manager or detector inputs.
 
 import { afterAll, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { loadConfig, type Config } from "../src/core/config.ts";
@@ -276,4 +276,56 @@ test("ci: a commit that failed and then passed records one ci-flaky metric", () 
 	watchOnce(cfg, ciDeps(T, answers));
 	watchOnce(cfg, ciDeps(T + 900, answers));
 	expect(readMetricEvents(cfg).filter(e => e.type === "ci-flaky").map(e => e.sha)).toEqual(["sha1"]);
+});
+
+// INCIDENT I-20261031-255: the first backfill records at most MERGED_LIST (20) merged MRs per run,
+// even when the forge answers with more.
+test("ci: the first backfill records at most 20 merged MRs per run", () => {
+	const cfg = tempCfg("ci-m3-cap");
+	healthy(cfg);
+	cfg.metrics.ci_pipelines_cmd = "ci-count {mr}";
+	const merged = Array.from({ length: 25 }, (_, i) => ({ iid: i + 1 }));
+	const answers = { ...gitlab([glRun(1, "main", "aaa", "success", 0.1)], [], merged), "sh -c": "[{},{}]" };
+	watchOnce(cfg, ciDeps(T, answers));
+	expect(readMetricEvents(cfg).filter(e => e.type === "ci")).toHaveLength(20);
+});
+
+// INCIDENT I-20261031-256: a CI error on one merged MR skips that MR only, the rest still record,
+// and the skip is logged once per MR, not on every run.
+test("ci: a CI error on one merged MR skips it, records the rest, and logs the skip once", () => {
+	const cfg = tempCfg("ci-m3-skip");
+	healthy(cfg);
+	cfg.metrics.ci_pipelines_cmd = "ci-count {mr}";
+	const base = forgeCli({ ...gitlab([glRun(1, "main", "aaa", "success", 0.1)], [], [{ iid: 5 }, { iid: 6 }]), "sh -c": "[{},{}]" });
+	const runner: CommandRunner = (args, opts) => (args.some(a => a.endsWith("'5'")) ? { code: 1, stdout: "", stderr: "boom" } : base(args, opts));
+	const d = { ...deps(T), runner, plans: () => [CI_PLAN] };
+	watchOnce(cfg, d);
+	watchOnce(cfg, { ...d, now: () => T + 900 });
+	expect(readMetricEvents(cfg).filter(e => e.type === "ci").map(e => e.mr)).toEqual(["6"]);
+	expect(readFileSync(cfg.paths.guard_log, "utf8").split("\n").filter(l => l.includes("ci command for !5"))).toHaveLength(1);
+});
+
+// INCIDENT I-20261031-257: the watcher's M3 run also records the repo's product numbers, as `metrics ci` does.
+test("ci: the watcher's M3 run also records the repo's product numbers", () => {
+	const cfg = tempCfg("ci-products");
+	healthy(cfg);
+	const repo = mkdtempSync(join(tmpdir(), "watch-repo-"));
+	DIRS.push(repo);
+	cfg.metrics.ci_pipelines_cmd = "ci-count {mr}";
+	cfg.metrics.product_cmds = { [repo]: { seven: "printf '7'" } };
+	const forge = { ...gitlab([glRun(1, "main", "aaa", "success", 0.1)], [], [{ iid: 5 }]), "sh -c": "[{},{}]" };
+	const answers = Object.fromEntries(Object.entries(forge).map(([k, v]) => [k.replaceAll("/work/app", repo), v]));
+	watchOnce(cfg, { ...deps(T), runner: forgeCli(answers), plans: () => [{ ...CI_PLAN, repo }] });
+	expect(readMetricEvents(cfg).filter(e => e.type === "product").map(e => [e.name, e.value])).toEqual([["seven", 7]]);
+});
+
+// INCIDENT I-20261031-258: a ci-red-mr held back by a staffed plan is still red, so it is not
+// dismissed as recovered.
+test("ci: a ci-red-mr held back by a staffed plan stays open, not dismissed as recovered", () => {
+	const cfg = tempCfg("ci-mr-held");
+	healthy(cfg);
+	expect(watchOnce(cfg, ciDeps(T, STALE_RED)).opened.map(i => i.kind)).toEqual(["ci-red-mr"]);
+	const r = watchOnce(cfg, ciDeps(T + 900, STALE_RED, [CI_PLAN.file]));
+	expect(r.closed).toHaveLength(0);
+	expect(openIncidents(cfg).map(i => i.kind)).toContain("ci-red-mr");
 });
