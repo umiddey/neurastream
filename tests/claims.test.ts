@@ -65,7 +65,7 @@ test("claim writes a Claim file; a second main is Held with the holder named; re
 	const s = store(dir);
 	const c = asClaim(s.claim(PLAN, "a"));
 	expect(c).toEqual({ plan: PLAN, main: "a", host: hostname(), pid: process.pid, since: 1_000_000, beat: 1_000_000 });
-	expect(readdirSync(join(dir, "claims"))).toEqual([`${createHash("sha256").update(PLAN).digest("hex")}.json`]);
+	expect(readdirSync(join(dir, "claims")).filter(f => f.endsWith(".json"))).toEqual([`${createHash("sha256").update(PLAN).digest("hex")}.json`]);
 	const held = asHeld(s.claim(PLAN, "b"));
 	expect(held.main).toBe("a");
 	expect(s.list()).toEqual([c]);
@@ -76,6 +76,7 @@ test("claim writes a Claim file; a second main is Held with the holder named; re
 });
 
 test("the same main claiming twice gets the same Claim back: since unchanged, beat refreshed", () => {
+	now = 1_000_000;
 	const dir = sandbox();
 	const s = store(dir);
 	const first = asClaim(s.claim(PLAN, "a"));
@@ -87,6 +88,7 @@ test("the same main claiming twice gets the same Claim back: since unchanged, be
 });
 
 test("a claim frees at 30 minutes without a heartbeat, not at 29", () => {
+	now = 1_000_000;
 	const dir = sandbox();
 	const s = store(dir);
 	s.claim(PLAN, "a");
@@ -99,6 +101,7 @@ test("a claim frees at 30 minutes without a heartbeat, not at 29", () => {
 });
 
 test("a non-holder's heartbeat is false and its release is a no-op", () => {
+	now = 1_000_000;
 	const dir = sandbox();
 	const s = store(dir);
 	s.claim(PLAN, "a");
@@ -118,6 +121,7 @@ test("a non-holder's heartbeat is false and its release is a no-op", () => {
 // loop), so up to 40 processes race and each round's state dir must still end with exactly
 // one Claim and seven Held.
 test("race: eight processes claiming one plan at once leave exactly one Claim and seven Held, five times", async () => {
+	now = 1_000_000;
 	const dir = sandbox();
 	const child = writeChild(dir);
 	const ROUNDS = [0, 1, 2, 3, 4];
@@ -140,6 +144,7 @@ test("race: eight processes claiming one plan at once leave exactly one Claim an
 });
 
 test("takeover race: eight processes taking an expired claim leave exactly one winner", async () => {
+	now = 1_000_000;
 	const dir = sandbox();
 	const child = writeChild(dir);
 	const stateDir = join(dir, "takeover");

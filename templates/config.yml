@@ -111,6 +111,8 @@ queue:
   auto_close_min: 15
   repo_index: "INDEX.md"
   cancelled_rel: "docs/plans/CANCELLED.md"
+  # Minutes without a heartbeat before a Main's plan claim frees (src/core/claims.ts).
+  claim_ttl_min: 30
 
 guards:
   sub_warn_calls: 90
