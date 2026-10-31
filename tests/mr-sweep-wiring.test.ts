@@ -223,12 +223,22 @@ test("priority ids stay a clean list and do not run the sweep", () => {
 test("the queue-check bin sees a PATH-injected glab and fails only when the MR is untracked", () => {
 	const shims = path.join(TMP, "bin-cli");
 	shim(shims, "glab", JSON_SHIM);
-	const { home } = plant("cli");
+	const { home, cfg } = plant("cli");
 	const run = spawnSync("bun", [path.join(REPO, "bin/queue-check")], {
 		encoding: "utf8",
 		env: {
 			...process.env,
 			HOME: home,
+			// The bin must judge THIS sandbox's queue, not whatever QUEUE_* the ambient
+			// environment happens to carry (a leaked var would override the planted config):
+			// point all seven path vars at the planted sandbox explicitly.
+			QUEUE_AGENT: cfg.paths.agent_dir,
+			QUEUE_INDEX: cfg.paths.queue_index,
+			QUEUE_BLOCKERS: cfg.paths.blockers,
+			QUEUE_STATE: cfg.paths.queue_state,
+			QUEUE_SUBAGENTS: cfg.paths.subagents,
+			QUEUE_CANCELLED: cfg.paths.cancelled,
+			QUEUE_UNLOCK: cfg.paths.unlock,
 			PATH: `${shims}:${process.env.PATH ?? "/usr/bin:/bin"}`,
 			MR_SWEEP_JSON: GL(206, "feat/lost"),
 		},

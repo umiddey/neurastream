@@ -8,7 +8,7 @@
 // exist yet.
 
 import { afterAll, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolEvent } from "../src/core/adapter.ts";
@@ -82,12 +82,31 @@ async function writeIndex(): Promise<WriteIndex> {
 	return mod.writeIndex;
 }
 
+// Realpath that tolerates missing paths: the dump must print /var -> /private/var style
+// differences without dying on a path the sandbox never created.
+function realPathOr(p: string): string {
+	try {
+		return realpathSync(p);
+	} catch {
+		return p;
+	}
+}
+
 test("(e) QUEUE_INDEX set before the run never leaks: loadConfig({ home }) gets a queue_index under the sandbox home", () => {
 	const s = seed();
 	// The preload deleted every inherited QUEUE_* var before this module loaded, so the index
 	// resolves from the sandbox config, not from the sentinel this run was started with. Without
 	// the preload the sentinel would win over the config file (loadConfig applies env over it).
 	const cfg = loadConfig({ home: s.home });
+	if (!cfg.paths.queue_index.startsWith(s.home)) {
+		// Name every QUEUE_* var live at this moment (CI file order differs per machine): the next
+		// miss names its leaker instead of failing blind. Realpaths catch /var -> /private/var.
+		const live = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("QUEUE_")));
+		throw new Error(
+			`(e) queue_index ${cfg.paths.queue_index} is not under ${s.home} (realpath ${realPathOr(s.home)}); ` +
+				`QUEUE_* live right now: ${JSON.stringify(live)}`,
+		);
+	}
 	expect(cfg.paths.queue_index.startsWith(s.home)).toBe(true);
 	expect(cfg.paths.queue_index).not.toBe(RUN_QUEUE_INDEX);
 });
