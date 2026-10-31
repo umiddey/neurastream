@@ -6,7 +6,7 @@
 // tests.
 
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -1874,6 +1874,8 @@ mkdirSync(join(KROOT, "demo-app", "docs", "knowledge"), { recursive: true });
 mkdirSync(join(KROOT, "no-docs/.git"), { recursive: true });
 writeFileSync(KARCH, KARCH_HTML);
 writeFileSync(join(KROOT, "demo-app", "docs/knowledge/cost.html"), "<p>no title here</p>");
+// Fixed mtimes older than every Base page fixture, so "newest wins" never depends on today's date.
+for (const f of [KARCH, join(KROOT, "demo-app", "docs/knowledge/cost.html")]) utimesSync(f, new Date("2026-10-20T10:00:00Z"), new Date("2026-10-20T10:00:00Z"));
 mkdirSync(join(TMP, "knowledge-state"), { recursive: true });
 mkdirSync(join(TMP, "knowledge-state-empty"), { recursive: true });
 const KCFG: Config = {
