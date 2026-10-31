@@ -1,9 +1,10 @@
 import { afterAll, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Claim, fileClaimStore, type Held } from "../src/core/claims.ts";
+import { lock, tryLock } from "../src/core/file-lock.ts";
 
 const ROOT = join(import.meta.dir, "..");
 // A full `bun test` must leave nothing under os.tmpdir() (plan 20261029_1530 P3): every
@@ -45,7 +46,7 @@ function writeChild(dir: string): string {
 		child,
 		`import { fileClaimStore } from ${JSON.stringify(join(ROOT, "src", "core", "claims.ts"))};
 const [stateDir, plan, main] = process.argv.slice(2);
-const store = fileClaimStore(stateDir!, () => Date.now() / 1000);
+const store = fileClaimStore(stateDir!, () => Date.now() / 1000, 30);
 process.stdout.write(JSON.stringify(store.claim(plan!, main!)));
 `,
 	);
@@ -138,6 +139,24 @@ test("holder returns the live claim for a plan, null when free or expired", () =
 	expect(s.holder(PLAN)?.main).toBe("a");
 	now += 60;
 	expect(s.holder(PLAN)).toBeNull();
+});
+
+// The deterministic lock test (P1 review I-20261031-188): the store's flock is held in-process,
+// a second acquirer is refused right now (what a spawned claim hits: it blocks), and after the
+// release the spawned claim runs and wins — fixed outcomes, no wall-clock waits.
+test("a claim waits for the store lock: held in-process, a second acquirer is refused, release lets the spawned claim win", async () => {
+	now = 1_000_000;
+	const dir = sandbox();
+	const child = writeChild(dir);
+	const stateDir = join(dir, "lockwait");
+	mkdirSync(join(stateDir, "claims"), { recursive: true });
+	const lockPath = join(stateDir, "claims", ".lock");
+	const held = lock(lockPath);
+	expect(tryLock(lockPath)).toBeNull(); // refused while held: a spawned claim blocks here
+	held.release();
+	const won = asClaim(await claimViaChild(child, stateDir, "/tmp/neurastream-test-plans/lockwait.md", "w"));
+	expect(won.main).toBe("w");
+	expect(readdirSync(join(stateDir, "claims")).filter(f => f.endsWith(".json"))).toHaveLength(1);
 });
 
 // Five independent rounds; every round's eight children spawn together (no await inside a

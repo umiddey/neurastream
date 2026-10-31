@@ -58,11 +58,12 @@ function writeClaim(path: string, claim: Claim): void {
 }
 
 /**
- * The local file claim store. `ttlMin` is `queue.claim_ttl_min` (the caller passes the
- * configured value): a claim whose `beat` is 30 minutes old by default is free for takeover.
- * The clock is injected in unix seconds (src/core/clock.ts convention) so tests never use real time.
+ * The local file claim store. `ttlMin` is `queue.claim_ttl_min` — required, every caller passes
+ * the configured value (P1 review I-20261031-189): a claim whose `beat` is that many minutes old
+ * is free for takeover. The clock is injected in unix seconds (src/core/clock.ts convention) so
+ * tests never use real time.
  */
-export function fileClaimStore(stateDir: string, clock: () => number, ttlMin = 30): ClaimStore {
+export function fileClaimStore(stateDir: string, clock: () => number, ttlMin: number): ClaimStore {
 	const dir = join(stateDir, "claims");
 	const lockPath = join(dir, ".lock");
 
