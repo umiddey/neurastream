@@ -15,7 +15,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 export const PAGES_UNIT_TEMPLATE = join(HERE, "../../templates/systemd/neurastream-pages.service");
 const DATA_MARK = "/* === DATA === */";
 const END_DATA_MARK = "/* === END DATA === */";
-export interface RunnerResult { status: number | null; stderr: string }
+export interface RunnerResult { status: number | null; stderr: string; stdout?: string }
 export type Runner = (args: string[]) => RunnerResult;
 export const systemRunner: Runner = args => { const r = spawnSync("systemctl", args, { encoding:"utf8" }); return { status:r.status, stderr:r.stderr ?? "" }; };
 export interface Setup { home?: string; runner?: Runner; tailscale?: Tailscale }
