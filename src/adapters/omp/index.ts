@@ -199,24 +199,28 @@ function subActionDetectors(cfg: Config, ctx: unknown, planFile: string, before:
 	}
 }
 
-// Background queue-close for every plan Main marked complete. Ported from the
-// original autoClose: same filter, same "--- auto-close attempt" log line, detached child with
-// stdio on the per-plan close log. QUEUE_CLOSE_BIN overrides the binary (tests); without it the
-// package's own executable bin/queue-close runs (its `#!/usr/bin/env bun` shebang picks bun).
+// Background queue-close for every plan Main marked complete — and (P4, plan 20261031_0911) for
+// every OPEN plan whose work has landed. Ported from the original autoClose: same filter, same
+// "--- auto-close attempt" log line, detached child with stdio on the per-plan close log.
+// QUEUE_CLOSE_BIN overrides the binary (tests); without it the package's own executable
+// bin/queue-close runs (its `#!/usr/bin/env bun` shebang picks bun).
 // Never process.execPath: inside the harness that is the harness binary itself, so the child was
 // a new agent session that loaded this plugin and auto-closed again — a process fork bomb
 // (2026-10-21 OOMs, ~175 processes).
-function closeChildArgs(plan: string): [string, string[]] {
+function closeChildArgs(plan: string, auto: boolean): [string, string[]] {
 	const bin = process.env.QUEUE_CLOSE_BIN;
-	if (bin) return [bin, [plan]];
-	return [join(import.meta.dir, "..", "..", "..", "bin", "queue-close"), [plan]];
+	const args = auto ? ["--auto", plan] : [plan];
+	if (bin) return [bin, args];
+	return [join(import.meta.dir, "..", "..", "..", "bin", "queue-close"), args];
 }
 
 export function autoClose(cfg: Config): string[] {
 	const started: string[] = [];
 	let plans: q.Plan[];
 	try {
-		plans = q.activePlans().filter(p => (p.status === "complete" || p.status === "cancelled") && !p.errors.length);
+		// P4: landed open plans auto-close too (q.autoCloseCandidate) — the child runs queue-close
+		// --auto and writes "Status: complete" itself when the done check passes.
+		plans = q.activePlans().filter(p => (p.status === "complete" || p.status === "cancelled" || q.autoCloseCandidate(p)) && !p.errors.length);
 	} catch {
 		return started;
 	}
@@ -228,7 +232,7 @@ export function autoClose(cfg: Config): string[] {
 			const outFile = q.closeLog(p.file);
 			appendFileSync(outFile, `--- ${new Date().toISOString()} auto-close attempt\n`);
 			const out = openSync(outFile, "a");
-			const [bin, args] = closeChildArgs(p.file);
+			const [bin, args] = closeChildArgs(p.file, p.status === "open");
 			const child = spawn(bin, args, { detached: true, stdio: ["ignore", out, out], env: process.env });
 			child.unref();
 			started.push(p.file);

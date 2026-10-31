@@ -1,10 +1,77 @@
 // Queue model: ONE index — the main index lists plan files, one absolute path per line (templates/queue/TEMPLATE.md).
 
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { accessSync, appendFileSync, chmodSync, constants, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Config } from "../config.ts";
+
+// --- landing detection (plan 20261031_0911 P4/P5): lives here, not queue-close.ts, because
+// queueProblems' landed lock needs it and lib must not import the closer that imports lib ---
+
+/** `{ ok, out }` from a git run in `cwd` (stdout+stderr, trimmed). */
+export function gitOut(cwd: string, ...args: string[]): { ok: boolean; out: string } {
+	const r = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
+	return { ok: r.status === 0, out: `${r.stdout ?? ""}${r.stderr ?? ""}`.trim() };
+}
+
+// True when commit `into` already holds everything in `from`: a clean merge of `from` into it
+// yields exactly its own tree.
+function contains(repo: string, into: string, from: string): boolean {
+	const m = gitOut(repo, "merge-tree", "--write-tree", into, from);
+	return m.ok && m.out.split("\n")[0] === gitOut(repo, "rev-parse", `${into}^{tree}`).out;
+}
+
+// Squash or rebase merges put a new commit on base, so the branch tip is never an ancestor of it.
+// The branch counts as landed when (a) a commit on base carries the same combined patch as the
+// whole branch, (b) every file the branch changed is identical on base, or (c) merging the branch
+// into some first-parent commit of base since the fork point changes nothing (the release squash
+// that shipped it; later edits on base would otherwise conflict).
+function squashMerged(repo: string, ref: string, base: string): boolean {
+	const mb = gitOut(repo, "merge-base", ref, base);
+	if (!mb.ok) return false;
+	const probe = gitOut(repo, "commit-tree", `${ref}^{tree}`, "-p", mb.out, "-m", "queue-close squash probe");
+	if (probe.ok && gitOut(repo, "cherry", base, probe.out).out.startsWith("-")) return true;
+	const files = gitOut(repo, "diff", "--name-only", mb.out, ref);
+	if (!files.ok || !files.out) return false;
+	if (gitOut(repo, "diff", "--quiet", ref, base, "--", ...files.out.split("\n")).ok) return true;
+	const since = gitOut(repo, "rev-list", "--first-parent", "--max-count=200", `${mb.out}..${base}`);
+	return since.ok && !!since.out && since.out.split("\n").some(s => contains(repo, s, ref));
+}
+
+// (d) Stacked branches squashed together with later edits conflict in (c). The plan then names
+// the release: "Landed: <commit on base> from <pre-squash commit>". Verified, never trusted: the
+// first must be on base, the branch tip must be in the second's history, and the first must
+// already contain the second.
+function declaredLanded(repo: string, ref: string, base: string, text: string): boolean {
+	const m = text.match(/^(?:- )?Landed: ([0-9a-f]{7,40}) from ([0-9a-f]{7,40})\s*$/m);
+	if (!m || !m[1] || !m[2]) return false;
+	return gitOut(repo, "merge-base", "--is-ancestor", m[1], base).ok &&
+		gitOut(repo, "merge-base", "--is-ancestor", ref, m[2]).ok &&
+		contains(repo, m[1], m[2]);
+}
+
+/** P4 (plan 20261031_0911): `branch` has landed on `base` — an ancestor, squash/rebase-merged, or declared landed in the plan text. Re-exported by queue-close.ts. */
+export function landed(repo: string, branch: string, base: string, text: string): boolean {
+	return gitOut(repo, "merge-base", "--is-ancestor", `refs/heads/${branch}`, base).ok ||
+		squashMerged(repo, `refs/heads/${branch}`, base) ||
+		declaredLanded(repo, `refs/heads/${branch}`, base, text);
+}
+
+/** The base landing is judged against outside queueClose: origin's default branch, no fetch (the filter and queueProblems run per prompt; queue-close --auto re-checks with its own upstreamBase). */
+function originBase(repo: string): string {
+	const head = gitOut(repo, "symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD");
+	return head.ok && head.out ? `refs/remotes/${head.out}` : "refs/remotes/origin/main";
+}
+
+/** P4: an open plan auto-close starts for — its branch exists and has landed, or it names no branch (a Main-only plan) and every phase is ticked. Shared by the omp autoClose filter and queueProblems' landed lock (P5); queue-close --auto re-checks authoritatively. */
+export function autoCloseCandidate(p: Plan): boolean {
+	if (p.status !== "open" || p.errors.length) return false;
+	if (!p.branch) return p.phases.total > 0 && p.phases.done === p.phases.total;
+	if (!gitOut(p.repo, "rev-parse", "--verify", "-q", `refs/heads/${p.branch}`).ok) return false;
+	return landed(p.repo, p.branch, originBase(p.repo), p.text);
+}
 
 const HOME = os.homedir();
 // Base set by applyQueueEnv from paths.agent_dir. Specific QUEUE_* vars still win.
