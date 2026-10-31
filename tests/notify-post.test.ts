@@ -12,7 +12,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { createOmpAdapter } from "../src/adapters/omp/index.ts";
+import { createOmpAdapter, reset as resetAdapter } from "../src/adapters/omp/index.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { postReply } from "../src/core/notify.ts";
 import { notePath, relaunchPath } from "../src/core/rollover.ts";
@@ -293,6 +293,8 @@ afterAll(async () => {
 	discord.stop(true);
 	slack.stop(true);
 	await postReply("settle", bothCfg());
+	// Clear the active adapter's rollover state before the sandbox dirs are removed (P3c).
+	resetAdapter();
 	rmSync(TMP, { recursive: true, force: true });
 	if (compileCacheBefore === undefined) delete process.env.NODE_COMPILE_CACHE;
 	else process.env.NODE_COMPILE_CACHE = compileCacheBefore;

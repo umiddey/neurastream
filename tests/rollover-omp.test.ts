@@ -132,6 +132,9 @@ let draft = "";
 let shutdowns = 0;
 
 afterAll(() => {
+	// Clear the active adapter's rollover state so a stale grace-period timer does not
+	// fire into the dirs we rmSync next or into a later test file's sandbox paths (P3c).
+	reset();
 	rmSync(TMP, { recursive: true, force: true });
 	rmSync(NOTE, { force: true });
 	if (compileCacheBefore === undefined) delete process.env.NODE_COMPILE_CACHE;

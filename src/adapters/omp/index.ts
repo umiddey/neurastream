@@ -565,6 +565,8 @@ export function deliverOwnerInbox(pi: ExtensionHost, cfg: Config): void {
 	adapterLog(cfg, `owner inbox: delivered ${delivered} answer(s) (cursor ${cursor} → ${next})`);
 }
 
+/** The most recently registered createOmpAdapter cleanup, for the exported reset(). */
+let activeAdapterReset: (() => void) | null = null;
 /** Register the guard handlers on one extension host. `initial` is injectable for tests; `freshConfig` re-reads the config per guarded call. */
 export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig: () => Config = () => initial): void {
 	// Guarded handlers take `cfg = freshConfig()` first, so an edited config.yml reaches the next call (P4e).
@@ -1200,6 +1202,15 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		}
 	};
 
+	// Clear the rollover episode state so a later createOmpAdapter setup in the same
+	// process starts clean: a stale armGraceTimer would otherwise fire with this
+	// closure's cfg and recreate torn-down dirs (P3c).
+	const clearRolloverState = (): void => {
+		clearGrace?.();
+		relaunched = false;
+		flight = null;
+	};
+	activeAdapterReset = clearRolloverState;
 	// The launcher restarts omp: the request file carries the note and the editor draft, and omp
 	// shuts down only after the file is written. A failed write keeps the session running.
 	// Returns whether the request was written.
@@ -1553,6 +1564,15 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 			c.notify("main-rollover: under neurastream main the rollover starts from your next message, not from this command.");
 		},
 	});
+}
+
+/** Clear the active adapter's rollover state. Tests call this in afterAll so a stale
+ * grace-period timer does not fire into a later test file's sandbox paths (P3c). */
+export function reset(): void {
+	if (activeAdapterReset) {
+		activeAdapterReset();
+		activeAdapterReset = null;
+	}
 }
 
 /** package.json omp.extensions entry. */
