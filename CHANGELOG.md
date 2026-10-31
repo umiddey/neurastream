@@ -1,12 +1,19 @@
 # Changelog
-## Unreleased
+## 0.2.56
+### Added
+- Owner page: the Base tab lists published pages under their repo (one card per repo, newest first, expired pages gone); `pages publish` records each page's repo.
+- Owner page: the Add note button works on a phone long-press.
+- `ui.allow_this_machine` admits this machine as the owner on the owner page.
 ### Changed
 - CI fails on any oxlint warning (`bun run lint`).
 - Write-check: a linter with `only_with_config` is skipped when no repo lint config file is found walking up to the git top; the shipped ruff argv drops `--select`/`--ignore` and oxlint drops `-D` group flags so a repo's own config governs (P10, I-20261031-93).
 - Write-check: an edit whose before text holds git conflict markers (`<<<<<<<` / `>>>>>>>`) is allowed with a note instead of being linted (P11, I-20261029-450).
 - Write-check config validates `only_with_config` as a list of non-empty file names.
+- A higher plan with an open MR on its branch no longer blocks spawns on lower plans.
 ### Fixed
 - A plan copied into separate clones (no shared `.git`) now appears once in `FINISHED.md`: `finishedKey` keys on the heading title plus the plan file basename, so per-clone repo names no longer multiply an entry (`bun run typecheck`, `bun test tests/queue-finished.test.ts`).
+- Plans under `docs/plans/<subdir>/` count as live plans (Main plan-file match, brief-lint, plan roots).
+- The test suite leaves no temp files behind: every temp dir is removed in teardown, and a new omp adapter clears the previous one's armed grace timer.
 ## 0.2.55
 ### Changed
 - `guards.plan_offer` (templates/config.yml, docs/config.md) now also refuses a Main stop reply that promises instead of offering — "I will", "I'll" — with the refusal "don't promise it — do it now, or write the plan and index it"; checkStop's reason and log moved to the exported `STOP_PLAN_OFFER_REFUSAL` const (I-20261030-25, I-20261030-32).
