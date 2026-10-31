@@ -49,7 +49,7 @@ function seed(): Sandbox {
 	const toy = join(home, "projects/toy");
 	const state = join(home, ".local/state/queue");
 	const blockers = join(agent, "blockers");
-	for (const d of [blockers, join(home, ".config/neurastream"), state]) mkdirSync(d, { recursive: true });
+	for (const d of [blockers, join(home, ".config/neurastream"), state, join(toy, "docs/plans")]) mkdirSync(d, { recursive: true });
 	writeFileSync(join(blockers, "nopush"), "#!/bin/sh\nexit 0\n");
 	chmodSync(join(blockers, "nopush"), 0o755);
 	writeFileSync(
@@ -133,6 +133,11 @@ function openPlanText(opts: { title: string; branch?: string; done: string }): s
 		"## Code read by Main",
 		"- `src/core/queue/lib.ts`",
 		"",
+		"## Reuse",
+		// The plan review gate (20261028_1600) checks this line when review.agents is set, as
+		// planGate does; the citation must exist in the plan's repo (landedRepo writes work.ts).
+		"- new: none — checked: work.ts:1 — reuse: the branch is already squashed to main",
+		"",
 		"## Progress",
 		"Status: open",
 		"- merged, waiting on the queue hand-off.",
@@ -202,6 +207,9 @@ test("(g) a landed open plan whose done check fails stays indexed and queueProbl
 
 test("(h) planGate refuses a brief for another plan while the landed plan is stuck; a brief naming the stuck plan passes", () => {
 	if (!stuck) throw new Error("(g) left no stuck plan");
+	// The bunfig preload's beforeEach re-points QUEUE_* at its own tmp before every test; assert
+	// this file's sandbox back (same pattern as owner-ui.test.ts), or planGate reads an empty index.
+	applyQueueEnv(stuck.cfg);
 	const other = join(stuck.toy, "docs/plans/20261020_1400_other.md");
 	writeFileSync(other, openPlanText({ title: "other work", done: "exit 1" }));
 	writeFileSync(stuck.index, `${stuck.plan}\n${other}\n`);
@@ -213,6 +221,8 @@ test("(h) planGate refuses a brief for another plan while the landed plan is stu
 
 test("(i) checkStop refuses Main while the stuck plan holds and the running subagents are not on it", () => {
 	if (!stuck) throw new Error("(g) left no stuck plan");
+	// Same preload-env re-assert as (h): checkStop reads the queue through env-derived paths.
+	applyQueueEnv(stuck.cfg);
 	// A live subagent on unrelated work must not release the stop: only fix work naming the
 	// blocking plan may. (The allowed counterpart is pinned by (h): a brief naming the plan passes.)
 	const ledger = "unrelated-impl RUNNING since 10:00 idle 0m\n";

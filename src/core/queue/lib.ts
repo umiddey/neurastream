@@ -1052,6 +1052,12 @@ export function awaitingMerge(p: Plan): boolean {
 	return p.status === "complete" && (lastCloseResult(p.file) ?? "").startsWith("queue-close: AWAITING merge");
 }
 
+/** P5 (plan 20261031_0911): the plan's last queue-close attempt did not close it — a refusal or still awaiting merge ("already running" is another close in flight, not a failure). */
+export function lastCloseFailed(file: string): boolean {
+	const last = lastCloseResult(file);
+	return !!last && !last.startsWith("queue-close: CLOSED") && !last.startsWith("queue-close: already");
+}
+
 /**
  * I-20261025-208: index order is priority, so an open plan must never sit above an open plan of
  * this list it waits on. A "Waits on" target that is not an open plan of the list (complete,
@@ -1090,6 +1096,14 @@ export function queueProblems(index = INDEX, blockersDir = BLOCKERS_DIR, reviewA
 			const last = lastCloseResult(p.file);
 			probs.push({ where: p.file, problem: `says ${p.status} but is still indexed; auto-close runs at every prompt, every 15 min and after a push${last ? ` (last: ${last.replace(/^queue-close: /, "")})` : ""}` });
 		}
+		// P5 (plan 20261031_0911): a landed open plan whose auto-close failed locks the queue — the
+		// spawn gate and the stop gate refuse everything that does not name it until it closes.
+		if (p.status === "open" && autoCloseCandidate(p) && lastCloseFailed(p.file))
+			probs.push({ where: p.file, problem: `landed but not closed: ${path.basename(p.file)} — ${(lastCloseResult(p.file) ?? "").replace(/^queue-close: /, "")}` });
+		// P5: a done check that rides `merge-base --is-ancestor` re-does the landing check the
+		// closer already owns, squash-aware — and misses squashes.
+		if (p.doneCheck?.includes("merge-base --is-ancestor"))
+			probs.push({ where: p.file, problem: "done check runs git merge-base --is-ancestor — queue-close checks landing itself, squash-aware; drop it" });
 		for (const c of cancelledMatches(p)) probs.push({ where: p.file, problem: cancelledProblem(p, c) });
 		// A plan file must live in a main checkout, never in a linked worktree.
 		const g = gitTop(p.file);
