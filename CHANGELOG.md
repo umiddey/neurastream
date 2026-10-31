@@ -1,4 +1,7 @@
 # Changelog
+## Unreleased
+### Changed
+- Plan approval records a hash of the plan text in `<queue_state>/plan-approvals.json` instead of writing an `Approved:` line into the plan; the plan file is never edited, and `Approval: self` is gone (P1, plan 20261029_1455). main-guard refuses a spawn until the record matches the plan's current text.
 ## 0.2.56
 ### Added
 - Owner page: the Base tab lists published pages under their repo (one card per repo, newest first, expired pages gone); `pages publish` records each page's repo.
