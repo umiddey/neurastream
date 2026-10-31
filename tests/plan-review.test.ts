@@ -237,11 +237,16 @@ test("a plan with no PASS is refused however it is stamped", () => {
 	});
 });
 
-test("review.agents [] turns the PASS gate off", () => {
+test("review.plan false turns the PASS gate off; an empty review.agents list no longer does (P6)", () => {
 	rmSync(REVIEWS, { force: true });
 	rmSync(join(GSTATE, "incidents.jsonl"), { force: true }); // the FAIL tests' findings are open incidents; this test is about the off-switch
 	freshProgress();
-	expect(gspawn(`Work ${LOCKED} on P1`, "worker", withAgents([]))).toMatchObject({ allow: true });
+	expect(gspawn(`Work ${LOCKED} on P1`, "worker", { ...gcfg, review: { ...gcfg.review, agents: [], plan: false } })).toMatchObject({ allow: true });
+	freshProgress(); // the first spawn spent the plan's progress hash; the PASS-gate spawn needs its own
+	expect(gspawn(`Work ${LOCKED} on P1`, "worker", withAgents([]))).toMatchObject({
+		allow: false,
+		reason: expect.stringContaining("no current reviewer PASS"),
+	});
 });
 
 test("review.agents [glm] still refuses a plan with no PASS", () => {
@@ -703,4 +708,53 @@ test("a review spawn that ends with no verdict tells Main and records nothing", 
 	expect(reviewSpawnEnd("rev1-2", gcfg)).toBe(`rev1 wrote no verdict on ${LOCKED}.`);
 	expect(reviewsNow()[LOCKED]).toBeUndefined();
 	expect(reviewSpawnEnd("worker-1", gcfg)).toBeNull();
+});
+
+// --- P6: review.code, the code review tick gate ---
+
+const CODE_PASS = "\n- 2026-10-31 16:00 RevC1: CODE REVIEW: PASS — phase: P1 — redundant: none — inefficient: none — insecure: none — MRs: none\n  Findings: none\n";
+const mainTick = (cfg: typeof gcfg) => {
+	const before = readFileSync(LOCKED, "utf8");
+	return checkPlanEdit({ path: LOCKED, before, after: before.replace("- [ ] P1 ", "- [x] P1 "), agent: "main" }, cfg);
+};
+const codeReviewsNow = (): unknown => {
+	try {
+		const store = JSON.parse(readFileSync(REVIEWS, "utf8")) as { code?: Record<string, unknown> }; // the store readPlanReviews/writePlanReviews keep
+		return store.code?.[LOCKED];
+	} catch {
+		return undefined;
+	}
+};
+
+/** The reviewer's accepted edit, written back like the guard's caller does, so the plan text carries the verdict. */
+function reviewerEditWritten(entry: string): void {
+	const before = readFileSync(LOCKED, "utf8");
+	expect(reviewerEdit(entry).allow).toBe(true);
+	writeFileSync(LOCKED, before + entry);
+}
+
+test("review.code default false leaves Main's phase tick alone with no CODE REVIEW entry", () => {
+	rmSync(REVIEWS, { force: true });
+	expect(mainTick(gcfg)).toMatchObject({ allow: true });
+});
+
+test("review.code true refuses Main's tick until a review spawn records CODE REVIEW: PASS (P6)", () => {
+	rmSync(REVIEWS, { force: true });
+	const cfg = { ...gcfg, review: { ...gcfg.review, code: true } };
+	const refused = mainTick(cfg);
+	expect(refused.allow).toBe(false);
+	expect(refused.restore).toMatchObject({ path: LOCKED });
+	expect(refused.reason).toContain("P1");
+	expect(refused.reason).toContain("spawn a code reviewer or set review.code: false");
+	reviewerEditWritten(CODE_PASS);
+	expect(codeReviewsNow()).toMatchObject({ verdict: "PASS", by: "rev1", phases: ["P1"] });
+	expect(mainTick(cfg).allow).toBe(true);
+});
+
+test("a Main-written CODE REVIEW line is restored and never counts (P6)", () => {
+	rmSync(REVIEWS, { force: true });
+	const before = readFileSync(LOCKED, "utf8");
+	const d = checkPlanEdit({ path: LOCKED, before, after: `${before.replace("- [ ] P1 ", "- [x] P1 ")}${CODE_PASS}`, agent: "main" }, { ...gcfg, review: { ...gcfg.review, code: true } });
+	expect(d).toMatchObject({ allow: false, restore: { path: LOCKED, text: before } });
+	expect(codeReviewsNow()).toBeUndefined();
 });

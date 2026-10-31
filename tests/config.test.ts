@@ -109,6 +109,17 @@ describe("loadConfig", () => {
 		);
 		expect(() => loadConfig({ file: withFile("knowledge:\n  max_age_s: many\n"), home, env: {} })).toThrow(/must be a number/);
 	});
+
+	test("review.plan defaults on and review.code off (P6)", () => {
+		const cfg = loadConfig({ file: "/tmp/neurastream-home-config/missing.yml", home, env: {} });
+		expect(cfg.review.plan).toBe(true);
+		expect(cfg.review.code).toBe(false);
+	});
+
+	test("review.plan and review.code reject non-boolean values (P6)", () => {
+		expect(() => loadConfig({ file: withFile('review:\n  plan: "true"\n'), home, env: {} })).toThrow(/review\.plan/);
+		expect(() => loadConfig({ file: withFile("review:\n  code: 1\n"), home, env: {} })).toThrow(/review\.code/);
+	});
 });
 
 describe("adapter", () => {

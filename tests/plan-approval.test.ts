@@ -180,6 +180,7 @@ pages:
   dir: "${pages}"
 review:
   agents: []
+  plan: false
 `,
 	);
 	// A real blocker script the plan can name: the plan gate checks it exists and is executable.

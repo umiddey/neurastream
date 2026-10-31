@@ -143,6 +143,7 @@ brief:
   path_prefixes: ["${HOME}/"]
 review:
   agents: []
+  plan: false
 `,
 	);
 	cfg = loadConfig({ home: HOME, env: {} });

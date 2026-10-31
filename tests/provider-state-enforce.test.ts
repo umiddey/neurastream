@@ -83,6 +83,7 @@ adapter:
   extensions: "${join(home, ".omp/agent/extensions")}"
 review:
   agents: []
+  plan: false
 ${prefer ? 'ledger:\n  prefer:\n    - glm\n    - deepseek\n    - haiku\n' : ""}`,
 	);
 	return loadConfig({ home, env: {} });

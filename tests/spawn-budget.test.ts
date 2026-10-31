@@ -99,6 +99,7 @@ guards:
   free_prefixes: ["${join(HOME, "Work/heavy-run.sh")}"]
 review:
   agents: []
+  plan: false
 `,
 	);
 	spawnSync("git", ["init", "-q"], { cwd: TOY });

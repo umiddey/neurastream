@@ -96,6 +96,7 @@ const baseCfg: Config = (() => {
   plan_guard_log: "${join(HOME, "plan-guard.log")}"
 review:
   agents: []
+  plan: false
 `,
 	);
 	return loadConfig({ home: HOME, env: {} });

@@ -167,8 +167,12 @@ export interface Config {
 	ui: { enabled: boolean; port: number; owner_login: string; allow_this_machine: boolean };
 	/** Plan review gate (plan 20261028_1600): reuse lines and, from P2 on, the reviewer PASS lock. */
 	review: {
-		/** Agents a review spawn may run under: the PASS exemption needs one of these plus the brief's `Plan review: <plan>` line. An empty list turns both review gates off (P5c). */
+		/** Agents a review spawn may run under: the PASS exemption needs one of these plus the brief's `Plan review: <plan>` line. An empty list turns only the `## Reuse` requirement off; the PASS gate follows `plan` (P6). */
 		agents: string[];
+		/** The reviewer PASS gate (P6): `false` skips it; an empty `agents` list no longer turns it off. */
+		plan: boolean;
+		/** The code review gate (P6): `true` refuses Main ticking a plan phase until a named review spawn's `CODE REVIEW: PASS` entry covers that phase. */
+		code: boolean;
 		/** Minutes the spawn gate caches a repo's open-MR list in <queue_state>/mr-cache.json; 0 = no cache. */
 		mr_cache_minutes: number;
 	};
@@ -523,6 +527,8 @@ function check(cfg: Config): void {
 	if (!(cfg.rollover.max_session_mb > 0)) throw new ConfigError("rollover.max_session_mb must be > 0");
 	if (!Array.isArray(cfg.review.agents) || cfg.review.agents.some(a => typeof a !== "string" || !a.trim()))
 		throw new ConfigError('review.agents must be a list of agent names allowed to run review spawns (default ["reviewer"])');
+	if (typeof cfg.review.plan !== "boolean") throw new ConfigError("review.plan must be true or false (the reviewer PASS gate; default true)");
+	if (typeof cfg.review.code !== "boolean") throw new ConfigError("review.code must be true or false (the code review tick gate; default false)");
 	if (!Number.isInteger(cfg.review.mr_cache_minutes) || cfg.review.mr_cache_minutes < 0)
 		throw new ConfigError("review.mr_cache_minutes must be an integer >= 0 (minutes the spawn gate caches a repo's open-MR list; 0 = no cache)");
 	if (typeof cfg.approval.since !== "string" || (cfg.approval.since !== "" && !/^\d{8}_\d{4}$/.test(cfg.approval.since)))
