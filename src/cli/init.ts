@@ -71,10 +71,10 @@ function configText(home: string, invoked: string, agentDir?: string): string {
 	}
 	const protectedPaths = [...installedBins(home, invoked), `${agent}/notes/`, `${agent}/blockers/`, `${agent}/queue/`];
 	const items = protectedPaths.map(p => `    - ${yamlQuote(p)}`);
-	const placeholder = /^  protected: \[\](.*)$/m;
+	const placeholder = /^  protected: \[\].*$/m;
 	if (!placeholder.test(text)) throw new Error("templates/config.yml has no protected placeholder");
-	// The placeholder's trailing comment stays on the `protected:` header line.
-	return text.replace(placeholder, (_m, comment: string) => ["  protected:" + comment, ...items].join("\n"));
+	// The header stays a bare `  protected:`: install, uninstall and the guards read it in that form.
+	return text.replace(placeholder, ["  protected:", ...items].join("\n"));
 }
 
 function putFile(dest: string, body: string, mode: number, created: string[], unchanged: string[]): void {
