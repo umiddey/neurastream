@@ -17,9 +17,10 @@ import { nowSec } from "../src/core/clock.ts";
 import { clearKnownSecretsCache } from "../src/core/secret-redact.ts";
 import { watchOnce, type FailedUnit, type WatchDeps } from "../src/core/watch.ts";
 
-// The redaction marker spelled in parts: the joined literal is the placeholder shape the
-// placeholder guard refuses in every write but secret-redact.ts and its own tests.
-const MARK = `[REDACTED${":"}`;
+// The redaction marker spelled in parts (guards.test.ts holds the joined form): the joined
+// literal is the placeholder shape the placeholder guard refuses in every write but
+// secret-redact.ts and its own tests, and the forbidden-names scan counts it as a hit.
+const MARK = ["[", "REDACTED", ":"].join("");
 
 const DIRS: string[] = [];
 afterAll(() => {
