@@ -61,6 +61,9 @@ function deps(at: number, posts: string[], units: FailedUnit[] = []): WatchDeps 
 		listUnits: () => units,
 		gather: (): GatedInputs => ({ results: [], runs: [], blocks: [] }),
 		notify: text => posts.push(text),
+		runner: () => ({ code: 1, stdout: "", stderr: "no forge in this test" }),
+		plans: () => [],
+		staffed: () => [],
 	};
 }
 

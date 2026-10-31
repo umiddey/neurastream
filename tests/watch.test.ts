@@ -14,6 +14,8 @@ import type { GatedInputs } from "../src/core/incident-detectors.ts";
 import { openIncidents } from "../src/core/incidents.ts";
 import { nowSec } from "../src/core/clock.ts";
 import { watchDoctorLine, watchHealth, watchOnce, watchUnitPaths, type FailedUnit, type WatchDeps } from "../src/core/watch.ts";
+import type { CommandRunner } from "../src/core/mr-sweep.ts";
+import { readMetricEvents } from "../src/core/metrics.ts";
 
 const DIRS: string[] = [];
 afterAll(() => { for (const d of DIRS) rmSync(d, { recursive: true, force: true }); });
@@ -27,8 +29,10 @@ function tempCfg(label: string): Config {
 /** Injected deps: a frozen clock, no failed units, empty detector inputs, a notifier that
  * swallows the posts (P2 tests assert the incident store, not the chat). */
 function deps(at: number, units: FailedUnit[] = [], gather: () => GatedInputs = () => ({ results: [], runs: [], blocks: [] })): WatchDeps {
-	return { now: () => at, listUnits: () => units, gather, notify: () => {} };
+	return { now: () => at, listUnits: () => units, gather, notify: () => {}, runner: noForge, plans: () => [], staffed: () => [] };
 }
+/** No forge answers: the CI check finds nothing in the non-CI tests. */
+const noForge: CommandRunner = () => ({ code: 1, stdout: "", stderr: "no forge in this test" });
 
 /** The jobs the default watch.expect lists: all fresh, so nothing is stale. */
 function healthy(cfg: Config): void {
@@ -166,4 +170,110 @@ test("watchDoctorLine prints on/off and the minutes since the last watch run", (
 	mkdirSync(hb, { recursive: true });
 	writeFileSync(join(hb, "watch.json"), JSON.stringify({ name: "watch", ok: true, detail: "", at: new Date(now - 5 * 60000).toISOString() }));
 	expect(watchDoctorLine(watchHealth(cfg, now, "linux"))).toBe("watch: on, last run 5 min ago");
+});
+
+// P6b (plan 20261027_1430): CI in the loop. The forge CLI and git are a fake CommandRunner keyed
+// by argv prefix: no network, no real repo. Times hang off the real clock because healthy()
+// stamps its heartbeats with it.
+const T = nowSec();
+const ago = (hours: number): string => new Date((T - hours * 3600) * 1000).toISOString();
+const CI_PLAN = { file: "20261027_1430_x.md", repo: "/work/app", text: "MR !7 is the next step" };
+
+function forgeCli(answers: Record<string, string>): CommandRunner {
+	return args => {
+		const key = Object.keys(answers).find(k => args.join(" ").startsWith(k));
+		return key === undefined ? { code: 1, stdout: "", stderr: `no fake for ${args.join(" ")}` } : { code: 0, stdout: answers[key]!, stderr: "" };
+	};
+}
+function ciDeps(at: number, answers: Record<string, string>, staffed: string[] = []): WatchDeps {
+	return { ...deps(at), runner: forgeCli(answers), plans: () => [CI_PLAN], staffed: () => staffed };
+}
+/** One GitLab pipeline row as `glab api projects/:id/pipelines` prints it. */
+function glRun(id: number, ref: string, sha: string, status: string, hoursAgo: number): object {
+	return { id, ref, sha, status, created_at: ago(hoursAgo) };
+}
+function gitlab(pipelines: object[], mrs: object[] = [], merged: object[] = []): Record<string, string> {
+	return {
+		"git -C /work/app remote get-url origin": "git@gitlab.example.com:g/app.git\n",
+		"git -C /work/app symbolic-ref": "origin/main\n",
+		"glab api projects/:id/pipelines": JSON.stringify(pipelines),
+		"glab mr list -F json": JSON.stringify(mrs),
+		"glab mr list --merged": JSON.stringify(merged),
+	};
+}
+const STALE_RED = gitlab(
+	[glRun(3, "feat/x", "ccc", "failed", 3), glRun(2, "feat/x", "bbb", "failed", 4), glRun(1, "main", "aaa", "success", 5)],
+	[{ iid: 7, source_branch: "feat/x" }],
+);
+
+test("ci: a failed pipeline on the default branch opens one ci-red-main incident", () => {
+	const cfg = tempCfg("ci-main");
+	healthy(cfg);
+	const answers = gitlab([glRun(2, "main", "bbb", "failed", 0.1)]);
+	const first = watchOnce(cfg, ciDeps(T, answers));
+	expect(first.opened.map(i => i.kind)).toEqual(["ci-red-main"]);
+	const again = watchOnce(cfg, ciDeps(T + 900, answers));
+	expect(again.opened).toHaveLength(0);
+	expect(again.deduped).toHaveLength(1);
+});
+
+test("ci: GitHub runs feed the same default-branch check", () => {
+	const cfg = tempCfg("ci-gh");
+	healthy(cfg);
+	const answers = {
+		"git -C /work/app remote get-url origin": "git@github.com:g/app.git\n",
+		"git -C /work/app symbolic-ref": "origin/main\n",
+		"gh run list": JSON.stringify([{ databaseId: 9, headBranch: "main", headSha: "zzz", conclusion: "failure", status: "completed", createdAt: ago(0.1) }]),
+	};
+	expect(watchOnce(cfg, ciDeps(T, answers)).opened.map(i => i.kind)).toEqual(["ci-red-main"]);
+});
+
+test("ci: an open MR whose pipeline has failed longer than watch.ci_red_hours opens ci-red-mr", () => {
+	const cfg = tempCfg("ci-mr");
+	healthy(cfg);
+	const r = watchOnce(cfg, ciDeps(T, STALE_RED));
+	expect(r.opened.map(i => i.kind)).toEqual(["ci-red-mr"]);
+	expect(r.opened[0]!.summary).toContain("!7");
+});
+
+test("ci: a red MR inside watch.ci_red_hours opens nothing", () => {
+	const cfg = tempCfg("ci-mr-fresh");
+	healthy(cfg);
+	const fresh = gitlab([glRun(2, "feat/x", "bbb", "failed", 0.5)], [{ iid: 7, source_branch: "feat/x" }]);
+	expect(watchOnce(cfg, ciDeps(T, fresh)).opened).toHaveLength(0);
+});
+
+test("ci: a stale red MR named by a plan with a running agent opens nothing", () => {
+	const cfg = tempCfg("ci-mr-staffed");
+	healthy(cfg);
+	expect(watchOnce(cfg, ciDeps(T, STALE_RED, [CI_PLAN.file])).opened).toHaveLength(0);
+});
+
+test("ci: a green pipeline on the MR closes ci-red-mr", () => {
+	const cfg = tempCfg("ci-mr-green");
+	healthy(cfg);
+	watchOnce(cfg, ciDeps(T, STALE_RED));
+	const green = gitlab([glRun(4, "feat/x", "ddd", "success", 0.1)], [{ iid: 7, source_branch: "feat/x" }]);
+	const r = watchOnce(cfg, ciDeps(T + 60, green));
+	expect(r.closed.map(i => i.kind)).toEqual(["ci-red-mr"]);
+});
+
+test("ci: each merged MR records one M3 ci metric, once", () => {
+	const cfg = tempCfg("ci-m3");
+	healthy(cfg);
+	cfg.metrics.ci_pipelines_cmd = "ci-count {mr}";
+	const answers = { ...gitlab([glRun(1, "main", "aaa", "success", 0.1)], [], [{ iid: 5 }, { iid: 6 }]), "sh -c": "[{},{}]" };
+	watchOnce(cfg, ciDeps(T, answers));
+	watchOnce(cfg, ciDeps(T + 900, answers));
+	const ci = readMetricEvents(cfg).filter(e => e.type === "ci");
+	expect(ci.map(e => [e.mr, e.tries])).toEqual([["5", 2], ["6", 2]]);
+});
+
+test("ci: a commit that failed and then passed records one ci-flaky metric", () => {
+	const cfg = tempCfg("ci-flaky");
+	healthy(cfg);
+	const answers = gitlab([glRun(2, "main", "sha1", "success", 0.2), glRun(1, "main", "sha1", "failed", 0.5)]);
+	watchOnce(cfg, ciDeps(T, answers));
+	watchOnce(cfg, ciDeps(T + 900, answers));
+	expect(readMetricEvents(cfg).filter(e => e.type === "ci-flaky").map(e => e.sha)).toEqual(["sha1"]);
 });
