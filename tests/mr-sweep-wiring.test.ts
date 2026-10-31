@@ -118,10 +118,16 @@ function runCheck(cfg: Config, args: string[] = []): { code: number; out: string
 	console.log = (...a: unknown[]) => {
 		lines.push(a.map(String).join(" "));
 	};
+	// queueCheck applies cfg's queue env to this process (src/core/queue-check.ts applies it
+	// before every run); save it and strip what was applied afterwards, so the sandbox paths
+	// cannot leak into the test files that run after this one.
+	const queueEnvBefore = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("QUEUE_")));
 	try {
 		return { code: queueCheck(args, cfg), out: lines.join("\n") };
 	} finally {
 		console.log = orig;
+		for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
+		Object.assign(process.env, queueEnvBefore);
 	}
 }
 
