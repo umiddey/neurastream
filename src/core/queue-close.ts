@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import type { Config } from "./config.ts";
 import { applyQueueEnv } from "./queue/env.ts";
-import { activePlans, cancelledFile, cancelledLine, closeLog, finishedEntry, finishedPath, INDEX, prependFinished, sha, STATE_DIR } from "./queue/lib.ts";
+import { activePlans, cancelledFile, cancelledLine, closeLog, finishedEntry, finishedPath, INDEX, prependFinished, sha, STATE_DIR, writeIndex } from "./queue/lib.ts";
 import { fixedIncident } from "./incidents.ts";
 
 export function queueClose(args: string[], cfg: Config): number {
@@ -286,7 +286,7 @@ export function queueClose(args: string[], cfg: Config): number {
 	// One index: the closed plan's line leaves the main index; there is no repo INDEX.md.
 	const lines = readFileSync(INDEX, "utf8").split("\n").filter(l => l.trim());
 	const keep = lines.filter(l => path.resolve(l.trim().replace(/^[-*]\s+/, "").replace(/`/g, "").replace(/^~(?=\/)/, os.homedir())) !== file);
-	writeFileSync(INDEX, keep.length ? `${keep.join("\n")}\n` : "");
+	writeIndex(keep, { removed: cancelling ? "cancel" : "close" });
 	console.log(`queue-close: removed from ${INDEX} (${keep.length} plan(s) left)`);
 	try {
 		const sp = path.join(STATE_DIR, "spawns.json");

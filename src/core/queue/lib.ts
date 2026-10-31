@@ -1,7 +1,7 @@
 // Queue model: ONE index — the main index lists plan files, one absolute path per line (templates/queue/TEMPLATE.md).
 
 import { createHash } from "node:crypto";
-import { accessSync, appendFileSync, constants, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { accessSync, appendFileSync, chmodSync, constants, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Config } from "../config.ts";
@@ -98,6 +98,27 @@ function indexLines(file: string): string[] | null {
 // Relative lines resolve against `base` (default: the cwd); a repo INDEX.md passes its repo dir.
 export function readIndex(file = indexPath(), base = process.cwd()): string[] {
 	return [...new Set((indexLines(file) ?? []).map(l => path.resolve(base, expandHome(l))))];
+}
+
+// The one writer of the index (plan 20261031_0911 P2): the index can only grow. A plan that would
+// disappear without an explicit close/cancel/migrate reason throws before anything is written, and
+// every write lands temp+rename then chmods the file to 0444. No 0o644 before the rename: rename(2)
+// replaces a read-only target with directory-write permission only, so the file is never writable —
+// not even between the rename and the chmod.
+export function writeIndex(lines: string[], why?: { removed?: "close" | "cancel" | "migrate" }): void {
+	const index = indexPath();
+	const newSet = new Set(
+		lines.filter(l => l.trim()).map(l => path.resolve(expandHome(l.trim().replace(/^[-*]\s+/, "").replace(/`/g, "").trim()))),
+	);
+	const gone = readIndex(index).filter(p => !newSet.has(p));
+	if (gone.length && !why?.removed)
+		throw new Error(
+			`writeIndex: ${gone.join(", ")} would leave the index; only a close, cancel or migrate removes a plan (why: { removed: "close" | "cancel" | "migrate" })`,
+		);
+	const tmp = `${index}.tmp`;
+	writeFileSync(tmp, lines.length ? `${lines.join("\n")}\n` : "");
+	renameSync(tmp, index);
+	chmodSync(index, 0o444);
 }
 
 export function sections(text: string): Map<string, string> {
@@ -667,6 +688,9 @@ function protectedPaths(): string[] {
 		`${agent}/agents/`,
 		`${agent}/AGENTS.md`,
 		`${agent}/CANCELLED.md`,
+		// The plan index (plan 20261031_0911 P2): append-only and 0444 on disk. Agents add or
+		// reorder through `neurastream queue add` / `queue move`; only the owner writes directly.
+		indexPath(),
 		`${stateDirPath()}/`,
 		`${agent}/config.yml`,
 		// The user's neurastream config file, even when agent_dir points elsewhere: an agent that
