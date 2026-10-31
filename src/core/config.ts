@@ -501,6 +501,8 @@ function check(cfg: Config): void {
 			throw new ConfigError(`${at}.argv must be a non-empty list of strings containing "{file}"`);
 		if (typeof l.pattern !== "string" || !l.pattern.includes("(?<rule>"))
 			throw new ConfigError(`${at}.pattern must be a regex with a named group rule`);
+		if (l.only_with_config !== undefined && (!Array.isArray(l.only_with_config) || l.only_with_config.some((n) => typeof n !== "string" || n === "")))
+			throw new ConfigError(`${at}.only_with_config must be a list of file names`);
 		regexes.push([`${at}.pattern`, l.pattern]);
 	}
 	for (const [key, src] of regexes) {

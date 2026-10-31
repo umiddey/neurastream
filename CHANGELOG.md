@@ -2,6 +2,9 @@
 ## Unreleased
 ### Changed
 - CI fails on any oxlint warning (`bun run lint`).
+- Write-check: a linter with `only_with_config` is skipped when no repo lint config file is found walking up to the git top; the shipped ruff argv drops `--select`/`--ignore` and oxlint drops `-D` group flags so a repo's own config governs (P10, I-20261031-93).
+- Write-check: an edit whose before text holds git conflict markers (`<<<<<<<` / `>>>>>>>`) is allowed with a note instead of being linted (P11, I-20261029-450).
+- Write-check config validates `only_with_config` as a list of non-empty file names.
 ### Fixed
 - A plan copied into separate clones (no shared `.git`) now appears once in `FINISHED.md`: `finishedKey` keys on the heading title plus the plan file basename, so per-clone repo names no longer multiply an entry (`bun run typecheck`, `bun test tests/queue-finished.test.ts`).
 ## 0.2.55
