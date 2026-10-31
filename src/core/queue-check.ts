@@ -1,6 +1,6 @@
 import type { Config } from "./config.ts";
 import { applyQueueEnv } from "./queue/env.ts";
-import { activePlans, allowedAgents, queueProblems, queueSummary, reviewAgentsProblem } from "./queue/lib.ts";
+import { activePlans, allowedAgents, holdWarnings, queueProblems, queueSummary, reviewAgentsProblem } from "./queue/lib.ts";
 import { mrSweep } from "./mr-sweep.ts";
 import { recheckHolds, staleFiles, staleHoldLines } from "./waiting-check.ts";
 
@@ -26,6 +26,8 @@ export function queueCheck(args: string[], cfg: Config): number {
 		fail = true;
 	}
 	for (const w of review.warnings) console.log(`warning: ${w}`);
+	// P4 (plan 20261027_0915): a hold dated DONE_CLAIM_SINCE or later without its own check warns; the exit code stays.
+	for (const w of holdWarnings(plans)) console.log(`warning: ${w}`);
 	if (!args.includes("--no-mr-sweep")) {
 		try {
 			const sweep = mrSweep();

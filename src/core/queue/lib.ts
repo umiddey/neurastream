@@ -1123,6 +1123,7 @@ export function queueProblems(index = INDEX, blockersDir = BLOCKERS_DIR, reviewA
 		if (p.doneCheck?.includes("merge-base --is-ancestor"))
 			probs.push({ where: p.file, problem: "done check runs git merge-base --is-ancestor — queue-close checks landing itself, squash-aware; drop it" });
 		for (const c of cancelledMatches(p)) probs.push({ where: p.file, problem: cancelledProblem(p, c) });
+		probs.push(...doneClaimProblems(p));
 		// A plan file must live in a main checkout, never in a linked worktree.
 		const g = gitTop(p.file);
 		if (g && g.top !== g.repo)
@@ -1139,6 +1140,62 @@ export function queueProblems(index = INDEX, blockersDir = BLOCKERS_DIR, reviewA
 		probs.push({ where: plans[i - 1]?.file ?? index, problem: m });
 	}
 	return probs;
+}
+
+// P4 (plan 20261027_0915): from this day on, a Progress entry claiming a phase done/complete/
+// "nothing left"/"finished" must quote that phase's verify command (or the Done check) and its
+// result, or queue-check fails the plan; entries without a date or dated before it are grandfathered.
+export const DONE_CLAIM_SINCE = "2026-11-01";
+
+const DONE_WORD = /\b(?:done|completed?|nothing left|finished)\b/i;
+const NOT_DONE = /\b(?:not|never)\s+(?:done|completed?|finished)\b/i;
+const RESULT_MARK = /\bexit(?: code|ed)?\s*\d|\b\d+ pass|\b\d+ fail|\bpass(?:ed|ing)?\b|\bfail(?:ed|ing)?\b|\bresult\b/i;
+
+/** Progress entries: the "- " line plus the lines up to the next entry start (trimProgressBody's rule). */
+function progressEntryBlocks(text: string): string[] {
+	const lines = progressBody(text).split("\n").filter(l => !l.startsWith(POINTER_PREFIX));
+	const blocks: string[] = [];
+	for (let i = 0; i < lines.length; i++) {
+		if (!lines[i]!.startsWith("- ") || MAIN_ONLY_LINE.test(lines[i]!)) continue;
+		let j = i + 1;
+		while (j < lines.length && !(lines[j]!.startsWith("- ") && !MAIN_ONLY_LINE.test(lines[j]!))) j++;
+		blocks.push(lines.slice(i, j).join("\n"));
+		i = j - 1;
+	}
+	return blocks;
+}
+
+/** A dated done claim about phase Pn must quote Pn's verify (or the Done check) with its result; else one problem per entry. */
+function doneClaimProblems(p: Plan): QueueProblem[] {
+	const probs: QueueProblem[] = [];
+	const verifies = new Map<string, string>();
+	for (const line of items(sections(p.text).get("phases") ?? "")) {
+		const id = /\[.\]\s*(P\d+[a-z]?)/i.exec(line)?.[1];
+		const cmd = /verify:\s*`([^`]+)`/.exec(line)?.[1];
+		if (id && cmd) verifies.set(id.toUpperCase(), cmd);
+	}
+	for (const entry of progressEntryBlocks(p.text)) {
+		const date = /^- (\d{4}-\d{2}-\d{2})/.exec(entry)?.[1];
+		if (!date || date < DONE_CLAIM_SINCE || !DONE_WORD.test(entry) || NOT_DONE.test(entry)) continue;
+		const ids = [...entry.matchAll(/\b(P\d+[a-z]?)\b/g)].map(m => m[1]!.toUpperCase());
+		if (!ids.length) continue;
+		const backings = [...new Set(ids.flatMap(id => verifies.get(id) ?? []))];
+		if (p.doneCheck) backings.push(p.doneCheck);
+		// No verify command and no Done check to quote: nothing this plan can back a claim with, so it is not judged.
+		if (!backings.length) continue;
+		if (backings.some(c => entry.includes(c)) && RESULT_MARK.test(entry)) continue;
+		probs.push({ where: p.file, problem: `unbacked done claim: ${p.file} ${entry.split("\n")[0]!.slice(0, 80)}` });
+	}
+	return probs;
+}
+
+/** P4: a hold dated DONE_CLAIM_SINCE or later without `still true if` is a warning; the exit code never changes. */
+export function holdWarnings(plans: Plan[]): string[] {
+	return plans.flatMap(p => {
+		if (!p.waiting || p.waitingCheck) return [];
+		const date = /^(\d{4}-\d{2}-\d{2})/.exec(p.waitingLine ?? "")?.[1];
+		return date && date >= DONE_CLAIM_SINCE ? [`${p.file}: WAITING hold dated ${date} carries no "still true if" check`] : [];
+	});
 }
 
 // P5b (plan 20261031_1207, I-20261031-330): the summary rides every Main prompt and the stop
