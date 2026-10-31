@@ -333,14 +333,18 @@ function recordProviderOutFromTask(e: Record<string, unknown>, content: unknown[
 	adapterLog(cfg, `PROVIDER-OUT recorded: ${provider} out until ${new Date(epoch * 1000).toISOString()} (task result)`);
 }
 
-/** Rate-limited turn end: record the reset time the error text names, else the armed wait. */
+/** Rate-limited turn end: record the reset time the error text names, else the armed wait. Returns the
+ *  named reset in epoch ms (null when the text names none): the one parse of that text, which the call
+ *  site passes on to the rate-limit episode (plan 20261027_1500 P2/P3). */
 export function recordProviderOutFromRateLimit(reply: EventReply | null, untilMs: number, cfg: Config): number | null {
-	const provider = reply?.provider ?? providerOfModel(reply?.model ?? null);
-	if (!provider) return;
 	const named = reply ? resetEpochFromText(reply.errorMessage ?? "", resetRule(cfg)) : null;
-	const epoch = named ?? Math.floor(untilMs / 1000);
-	recordOut(cfg, provider, epoch, named !== null ? "rate-limit-reset" : "rate-limit");
-	adapterLog(cfg, `PROVIDER-OUT recorded: ${provider} out until ${new Date(epoch * 1000).toISOString()} (${named !== null ? "reset time in error text" : "rate limit, no reset time"})`);
+	const provider = reply?.provider ?? providerOfModel(reply?.model ?? null);
+	if (provider) {
+		const epoch = named ?? Math.floor(untilMs / 1000);
+		recordOut(cfg, provider, epoch, named !== null ? "rate-limit-reset" : "rate-limit");
+		adapterLog(cfg, `PROVIDER-OUT recorded: ${provider} out until ${new Date(epoch * 1000).toISOString()} (${named !== null ? "reset time in error text" : "rate limit, no reset time"})`);
+	}
+	return named === null ? null : named * 1000;
 }
 
 // Session rollover helpers: the harness context read through runtime checks, and the file size and
