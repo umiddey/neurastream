@@ -15,6 +15,7 @@ import { dirname, join } from "node:path";
 import { createOmpAdapter, recordProviderOutFromRateLimit, reset as resetAdapter } from "../src/adapters/omp/index.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { type ProbeRunner, probeStep, readLimitState } from "../src/core/limit-probe.ts";
+import { notifyIdle } from "../src/core/notify.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { blockersDirPath, indexPath } from "../src/core/queue/lib.ts";
 import { readOut } from "../src/core/provider-state.ts";
@@ -295,7 +296,10 @@ function liveCtx(cfg: Config, ticks: FakeTicks): Record<string, unknown> {
 	};
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+	// The previous test's fire-and-forget posts must land while its own hit list still holds them:
+	// drain the serial notify queue before reset() clears it, so no late post leaks into this test.
+	await notifyIdle();
 	reset();
 	rmSync(join(QUEUE_STATE, "main-limit.json"), { force: true });
 	now = T0;
@@ -368,7 +372,7 @@ test("an owner message mid-episode cancels the tick, and the probe count survive
 	now = T0 + 30_000;
 	ticks.fire(); // probe 1: still limited
 	expect(readLimitState(cfg)).toMatchObject({ probes: 1 });
-	await host.emit("input", { text: "hello", source: "interactive" }, ctx);
+	await host.emit("before_agent_start", { prompt: "hello" }, ctx);
 	expect(logLines().filter(l => l.includes("RATE-LIMIT tick cancelled: owner message"))).toHaveLength(1);
 	now = T0 + 60_000;
 	ticks.fire(); // cancelled: no probe runs
@@ -476,6 +480,24 @@ test("a rate-limited deferred hand-back opens the episode instead of logging no 
 	expect(logLines().filter(l => l.includes("RATE-LIMIT stop"))).toHaveLength(1);
 	await until(() => rlHits().length === 1);
 	expect(readLimitState(cfg)).toMatchObject({ back_at: null });
+});
+
+// I-20261031-313: the deferred hand-back path parses the named reset too — the episode waits for
+// it and no probe runs before it, exactly like the session_stop path.
+test("a rate-limited deferred hand-back waits for a named reset instead of probing", async () => {
+	now = Date.UTC(2026, 9, 26, 22, 0, 0); // before the named reset 2026-10-26T23:04:26Z
+	const cfg = stopCfg(writeConfig());
+	const host = adapterWith(cfg);
+	const ticks = fakeTicks();
+	const ctx = { ...ctxFor([{ label: "bg-job" }]), setInterval: ticks.install, spawnLimitProbe: () => {} };
+	await host.emit("agent_end", { willContinue: true, messages: [msg({ stopReason: "error", errorMessage: ZAI_RESET_TEXT })] }, ctx);
+	await until(() => rlHits().length === 1);
+	expect(readLimitState(cfg)).toMatchObject({ reset_named: true, back_at: ZAI_RESET_EPOCH_S * 1000, probes: 0 });
+	now = ZAI_RESET_EPOCH_S * 1000 + 30_000;
+	ticks.fire();
+	expect(spawns).toBe(0);
+	expect(host.sent).toHaveLength(1);
+	expect(readLimitState(cfg)).toBeNull();
 });
 
 // Plan 20261027_1500 P1: the named reset is parsed once. recordProviderOutFromRateLimit returns it in
