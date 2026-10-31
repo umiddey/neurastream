@@ -1,13 +1,25 @@
 // Plan approval from the plan's own diagram page (plan 20261026_0930 P9). A plan that has a page in
-// Base is approved there — the Approve bar records `Approved: <date> (<page>)` in the plan — and a
-// chat "go" is the same thing: Main writes the same line. `Approval: self — owner: "<his words>"`
-// covers the plans he tells Main to do on its own. main-guard refuses a spawn on a plan that has a
-// page and no line; a plan with no page predates the convention and is left alone.
+// Base is approved there: the Approve bar records a hash of the plan text in the queue state
+// (plan-approvals.json). The plan file is never edited. main-guard refuses a spawn on a plan whose page
+// has no record with the plan's current hash; a plan with no page predates the convention and is left alone.
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import * as q from "./queue/lib.ts";
 
-const APPROVED = /^\s*(?:[-*]\s+)?Approved:.*$/im;
-const SELF = /^\s*(?:[-*]\s+)?Approval:\s*self\b[^\n]*owner:\s*["\u201c][^"\u201d\n]+["\u201d]/im;
+/** Lines only Main may write: the status, owner parking, plan waits, owner cancellation, cancelled-list clearance. */
+export const MAIN_ONLY_LINE = /^\s*(?:[-*]\s+)?(Status:|WAITING on owner:|Waits on:|Cancelled by owner:|False positive:)/;
+
+/** What a PASS covers: the plan text outside "## Progress" without the Main-only lines, so progress notes never expire a review. */
+export function reviewHash(text: string): string {
+	return q.sha(
+		q
+			.outsideProgress(text)
+			.split("\n")
+			.filter(l => !MAIN_ONLY_LINE.test(l))
+			.map(l => l.replace(/^(\s*[-*]\s+)\[[xX]\]/, "$1[ ]")) // a ticked phase box hashes as unticked: ticking never expires a PASS
+			.join("\n"),
+	);
+}
 
 /** What publishing recorded for a page: the plan it approves and what its diagram check found. */
 export interface PagePlan {
@@ -60,36 +72,56 @@ export function pageOfPlan(dir: string, file: string): string | null {
 	return null;
 }
 
-export function isApproved(text: string): boolean {
-	return APPROVED.test(text) || SELF.test(text);
+// --- Plan approval records (plan 20261026_0930 P9): a hash in the queue state, not a line in the plan ---
+
+/** One approval: the plan text it covers, when it was recorded, and how. */
+export interface PlanApproval {
+	hash: string;
+	at: number;
+	via: "page";
+	page: string;
 }
 
-export function isSelfApproved(text: string): boolean {
-	return SELF.test(text);
+function planApprovalsFile(): string {
+	return join(q.STATE_DIR, "plan-approvals.json");
 }
 
-export function approvalLine(page: string, now = new Date()): string {
-	return `Approved: ${now.toISOString().slice(0, 10)} (${page})`;
+function readPlanApprovals(): Record<string, PlanApproval> {
+	try {
+		const parsed = JSON.parse(readFileSync(planApprovalsFile(), "utf8"));
+		if (parsed?.approvals && typeof parsed.approvals === "object") return parsed.approvals as Record<string, PlanApproval>;
+	} catch {
+	}
+	return {};
 }
 
-/** The plan text with its approval line replaced, or added above the first `## ` section. */
-export function recordApproval(text: string, page: string, now = new Date()): string {
-	const line = approvalLine(page, now);
-	if (APPROVED.test(text)) return text.replace(APPROVED, line);
-	const at = text.search(/^## /m);
-	return at < 0 ? `${text.replace(/\s*$/, "")}\n${line}\n` : `${text.slice(0, at)}${line}\n\n${text.slice(at)}`;
+function writePlanApprovals(approvals: Record<string, PlanApproval>): void {
+	try {
+		mkdirSync(q.STATE_DIR, { recursive: true });
+		writeFileSync(planApprovalsFile(), JSON.stringify({ approvals }, null, 1));
+	} catch {
+		// plan approval is best-effort: if the state dir is not writable, the guard simply refuses the spawn
+	}
 }
 
-/** Write the owner's click into the plan and return the line it recorded. */
+function readPlanApproval(file: string): PlanApproval | null {
+	return readPlanApprovals()[file] ?? null;
+}
+
+/** The owner's click on a plan page: record a hash of the plan text in the queue state and return the page it approved. The plan file itself is never edited. */
 export function approvePlanFile(file: string, page: string, now = new Date()): string {
-	writeFileSync(file, recordApproval(readFileSync(file, "utf8"), page, now));
-	return approvalLine(page, now);
+	const text = readFileSync(file, "utf8");
+	const approvals = readPlanApprovals();
+	approvals[file] = { hash: reviewHash(text), at: now.getTime(), via: "page", page };
+	writePlanApprovals(approvals);
+	return `approved ${page}`;
 }
 
 /** Why a spawn may not run on this plan, or null; only a plan with a page in Base is gated. */
 export function approvalProblem(text: string, file: string, pagesDir: string): string | null {
-	if (isApproved(text)) return null;
 	const page = pageOfPlan(pagesDir, file);
-	if (page === null) return null;
-	return `plan ${file} has no "Approved:" line. The owner approves it from ${page} in Base, or the plan says Approval: self \u2014 owner: "<his words>".`;
+	if (page === null) return null; // no page: the plan predates the convention, not gated
+	const rec = readPlanApproval(file);
+	if (rec !== null && rec.hash === reviewHash(text)) return null;
+	return `plan ${file} has no approval record. The owner approves it from ${page} in Base.`;
 }

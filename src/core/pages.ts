@@ -27,9 +27,9 @@ export function startPagesServer(opts: PagesOptions): PagesServer {
   // rows Main delivers. Same origin only, so another site's tab cannot write to the inbox; nothing here
   // touches the page file, and a submit with no note text is refused.
   if (req.method === "POST") {
-   // Approve from the plan's own page (plan 20261026 P9): the click records `Approved: <date> (<page>)`
-   // in the plan recorded at publish. Only that plan, only from this page's origin, and never while a
-   // note on the page has no answer.
+   // Approve from the plan's own page (plan 20261026 P9): the click records a hash of the plan text
+   // in the queue state (plan-approvals.json). Only that plan, only from this page's origin, and
+   // never while a note on the page has no answer.
    if (url.pathname === "/_approve") {
     if (req.headers.get("origin") !== `http://${req.headers.get("host")}`) return plain("forbidden: origin is not this page", 403);
     const page = url.searchParams.get("page") ?? "";

@@ -197,7 +197,6 @@ review:
 	expect(ask().code).toBe(0);
 	// A stale hash: still refused.
 	writeFileSync(join(state, "plan-approvals.json"), JSON.stringify({ approvals: { [plan]: { hash: "stalehash", at: 1, via: "page", page: "toy.html" } } }));
-	const stale = ask();
-	expect(stale.code).not.toBe(0);
-	expect(stale.reason).toContain("has no approval record");
+	// The record gate is checked on its own: this spawn already ran, so the guard's progress check would also refuse it.
+	expect(approvalProblem(body, plan, pages)).toContain("has no approval record");
 });

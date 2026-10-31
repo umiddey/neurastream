@@ -10,6 +10,7 @@ import { checkDiagram, diagramData, planItems } from "../src/core/diagram-check.
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { publishPage } from "../src/core/pages-setup.ts";
 import { readPagePlan } from "../src/core/plan-approval.ts";
+import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { startPagesServer } from "../src/core/pages.ts";
 import { runDiagram } from "../src/cli/diagram.ts";
 
@@ -89,6 +90,7 @@ test("publish --plan: an incomplete diagram keeps Approve disabled and the serve
 	process.env.QUEUE_STATE = join(dir, "state");
 	const cfg: Config = loadConfig({ file: join(dir, "missing.yml"), home: dir, env: {} });
 	cfg.paths.queue_state = join(dir, "state");
+	applyQueueEnv(cfg);
 	cfg.pages.enabled = true;
 	cfg.pages.dir = join(dir, "public");
 	cfg.pages.port = 0;
@@ -115,10 +117,11 @@ test("publish --plan: an incomplete diagram keeps Approve disabled and the serve
 	const state = await (await fetch(`${base}/_approve?page=toy.html`)).json();
 	expect(state.problems).toEqual(["P2: the phase is in no box", "tests/b.test.ts (P2): named in the plan, in no box", "root has 1 kid"]);
 	expect((await fetch(`${base}/_approve?page=toy.html`, { method: "POST", headers: { origin: base } })).status).toBe(409);
-	// The complete diagram publishes with the bar enabled, and the click records the line.
+	// The complete diagram publishes with the bar enabled, and the click records the plan's hash in the queue state.
 	writeFileSync(src, FULL);
 	expect(publishPage(src, "Toy", true, out, { plan })).toBe("toy.html");
 	expect(readFileSync(join(out, "toy.html"), "utf8")).toContain("<button id=\"ns-approve-btn\" type=\"button\">Approve</button>");
 	expect((await fetch(`${base}/_approve?page=toy.html`, { method: "POST", headers: { origin: base } })).status).toBe(200);
-	expect(readFileSync(plan, "utf8")).toContain("Approved: ");
+	expect(readFileSync(plan, "utf8")).not.toContain("Approved:"); // the plan file is never edited
+	expect(JSON.parse(readFileSync(join(cfg.paths.queue_state, "plan-approvals.json"), "utf8")).approvals[plan].page).toBe("toy.html");
 });
