@@ -110,6 +110,8 @@ test("a complete close writes one short entry; a cancel writes none; a second cl
 
 	copyFileSync(archived, COMPLETE);
 	rmSync(archived);
+	// queueClose leaves the index 0444 (plan 20261031_0911 P2); reseed fresh instead of writing over it.
+	rmSync(INDEX);
 	writeFileSync(INDEX, `${COMPLETE}\n${CANCELLED}\n`);
 	expect(queueClose([COMPLETE], cfg)).toBe(0);
 	expect(headings(readFileSync(FINISHED, "utf8"))).toHaveLength(1);

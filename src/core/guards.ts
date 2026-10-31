@@ -592,6 +592,17 @@ export function planGate(text: string, label: string, cfg?: Config): [string | n
 			`${label}: a brief must not ask for research for a plan to be written. Please never ever ever write a plan when another agent is doing the research or reading for you. Main reads the code for its plans itself.`,
 			[],
 		];
+	// P5 (plan 20261031_0911): a landed open plan whose auto-close failed locks the queue — every
+	// brief must name it, so the next spawn works on closing it instead of around it. A named
+	// locked plan skips the unticked-phase checks below: its work has landed, the job is the close.
+	const locked = plans.filter(p => p.status === "open" && q.autoCloseCandidate(p) && q.lastCloseFailed(p.file));
+	for (const s of locked) {
+		if (named.some(n => n.file === s.file)) continue;
+		return [
+			`${label}: ${s.file} landed but its auto-close failed (${(q.lastCloseResult(s.file) ?? "").replace(/^queue-close: /, "")}). The queue is locked on it: name this plan in the brief and fix the close before any other spawn.`,
+			[],
+		];
+	}
 	const spawns = readSpawns();
 	for (const p of named) {
 		if (p.errors.length) return [`${label}: plan ${p.file} is not ready (${p.errors.join("; ")}).`, []];
@@ -610,6 +621,8 @@ export function planGate(text: string, label: string, cfg?: Config): [string | n
 			if (approval) return [approval, []];
 		}
 		const open = unticked(p);
+		// A locked plan's work has landed: closing it is the job, there is no phase left to tick.
+		if (locked.some(l => l.file === p.file)) continue;
 		if (!open.length) return [`${label}: plan ${p.file} has no unticked phase left.`, []];
 		if (!open.some(id => new RegExp(`\\b${id}\\b`).test(text)))
 			return [`${label}: the brief must name an unticked phase of ${p.file} (${open.join(", ")}).`, []];
@@ -1363,10 +1376,14 @@ export function checkTool(e: ToolEvent, cfg: Config): Decision {
 	const hit = protectedHit(openWrites, cfg);
 	if (hit && !unlocked(cfg)) {
 		log(cfg.paths.plan_guard_log, `BLOCK ${e.agent}:${e.agentId} tool=${e.tool} protected: ${hit}`);
+		// The plan index (plan 20261031_0911 P2) is guard surface like the rest, but unlike the
+		// others an agent has a sanctioned way to change it: the queue add/move CLI through
+		// writeIndex. Name it, so the refusal says what to do instead of naming the unlock.
+		const viaQueue = hit === q.INDEX ? ` Plans enter the index or move within it through \`neurastream queue add\` / \`neurastream queue move\`.` : "";
 		return deny(
 			`plan-guard: ${hit} is a protected guard file. Only the owner changes it (unlock: \`touch ${q.UNLOCK}\` in a terminal${
 				cfg.guards.chat_unlock ? `, or type \`unlock ${cfg.guards.unlock_minutes}\` in chat` : ""
-			}, valid ${cfg.guards.unlock_minutes} min).`,
+			}, valid ${cfg.guards.unlock_minutes} min).${viaQueue}`,
 		);
 	}
 	if (e.agent === "main") {
@@ -1947,6 +1964,24 @@ export function checkStop(e: StopEvent, cfg: Config): Decision {
 				'`neurastream incident dismiss <id> --why "<text>"`. The stop stays refused while an incident is open.',
 			state,
 		};
+	}
+	// P5 (plan 20261031_0911): a landed open plan whose auto-close failed holds the stop until a
+	// running subagent's brief names it (staffing ∩ live ledger); unrelated live subagents release
+	// nothing, and there is no idle-stop valve — the lock lifts when the plan closes or is staffed.
+	const locked = q.activePlans().filter(p => p.status === "open" && q.autoCloseCandidate(p) && q.lastCloseFailed(p.file));
+	if (locked.length) {
+		const staffed = staffedPlans(readStaffing(), liveSubagents(e.ledgerText));
+		const unworked = locked.filter(s => !staffed.includes(s.file));
+		if (unworked.length) {
+			log(cfg.paths.guard_log, `BLOCK stop: landed but not closed: ${unworked.map(s => s.file).join(", ")}`);
+			return {
+				allow: false,
+				reason:
+					`main-guard: ${unworked.map(s => `${s.file} landed but its auto-close failed (${(q.lastCloseResult(s.file) ?? "").replace(/^queue-close: /, "")})`).join("; ")}. ` +
+					"The stop stays locked: spawn an agent whose brief names the plan, or fix the close.",
+				state,
+			};
+		}
 	}
 	if (open.length === 0) return { ...ALLOW, state };
 	if (liveSubagents(e.ledgerText).length > 0) {

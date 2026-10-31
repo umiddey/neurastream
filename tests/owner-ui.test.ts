@@ -151,6 +151,11 @@ afterAll(() => {
 });
 
 beforeEach(() => {
+	// The bunfig preload (plan 20261031_0911 P3) re-points the seven QUEUE_* path vars at its
+	// shared sandbox for each test, overriding the module-top applyQueueEnv(CFG): the runtime
+	// helpers would then read the preload's inbox while the adapter and checkTool judge CFG's
+	// paths. Re-assert CFG's queue paths first, so env and CFG name the same files again.
+	applyQueueEnv(CFG);
 	rmSync(inboxPath(), { force: true });
 	rmSync(ownerInboxCursorPath(), { force: true });
 	rmSync(unlockPath(), { force: true });
@@ -1264,6 +1269,8 @@ function reorderIndex(): string {
 	writeFileSync(PLAN_B, PLAN_TEXT("open", false));
 	writeFileSync(PLAN_C, PLAN_TEXT("open", false));
 	const index = join(TMP, "reorder-index.md");
+	// A reorder leaves the index 0444 (plan 20261031_0911 P2); reseed fresh instead of writing over it.
+	rmSync(index, { force: true });
 	writeFileSync(
 		index,
 		[
@@ -1287,6 +1294,8 @@ function mixedIndex(): string {
 	writeFileSync(PLAN_C, PLAN_TEXT("open", false));
 	writeFileSync(PLAN_E, PLAN_TEXT("open", true));
 	const index = join(TMP, "reorder-index-open.md");
+	// A reorder leaves the index 0444 (plan 20261031_0911 P2); reseed fresh instead of writing over it.
+	rmSync(index, { force: true });
 	writeFileSync(
 		index,
 		[
@@ -1375,6 +1384,8 @@ function waitsIndex(): string {
 	writeFileSync(PLAN_B, PLAN_TEXT("open", false));
 	writeFileSync(PLAN_C, PLAN_TEXT("open", false));
 	const index = join(TMP, "reorder-index-waits.md");
+	// A reorder leaves the index 0444 (plan 20261031_0911 P2); reseed fresh instead of writing over it.
+	rmSync(index, { force: true });
 	writeFileSync(index, [PLAN_B, PLAN_C, PLAN_A, ""].join("\n"));
 	return index;
 }

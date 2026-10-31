@@ -4,8 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import type { Config } from "./config.ts";
 import { applyQueueEnv } from "./queue/env.ts";
-import { activePlans, cancelledFile, cancelledLine, closeLog, finishedEntry, finishedPath, INDEX, prependFinished, sha, STATE_DIR } from "./queue/lib.ts";
+import { activePlans, cancelledFile, cancelledLine, closeLog, finishedEntry, finishedPath, gitOut as git, INDEX, landed, prependFinished, sha, STATE_DIR, writeIndex } from "./queue/lib.ts";
 import { fixedIncident } from "./incidents.ts";
+
+// P4 (plan 20261031_0911): the landing check lives in queue/lib.ts (queueProblems' landed lock
+// shares it, and lib cannot import this closer back); re-exported here per the plan.
+export { landed };
 
 export function queueClose(args: string[], cfg: Config): number {
 	applyQueueEnv(cfg);
@@ -23,43 +27,6 @@ export function queueClose(args: string[], cfg: Config): number {
 	function die(msg: string): never {
 		result(`queue-close: REFUSED: ${msg}`);
 		process.exit(1);
-	}
-	function git(cwd: string, ...gargs: string[]): { ok: boolean; out: string } {
-		const r = spawnSync("git", ["-C", cwd, ...gargs], { encoding: "utf8" });
-		return { ok: r.status === 0, out: `${r.stdout ?? ""}${r.stderr ?? ""}`.trim() };
-	}
-	// Squash or rebase merges put a new commit on base, so the branch tip is never an ancestor of it.
-	// The branch counts as landed when (a) a commit on base carries the same combined patch as the
-	// whole branch, (b) every file the branch changed is identical on base, or (c) merging the branch
-	// into some first-parent commit of base since the fork point changes nothing (the release squash
-	// that shipped it; later edits on base would otherwise conflict).
-	function squashMerged(repo: string, ref: string, base: string): boolean {
-		const mb = git(repo, "merge-base", ref, base);
-		if (!mb.ok) return false;
-		const probe = git(repo, "commit-tree", `${ref}^{tree}`, "-p", mb.out, "-m", "queue-close squash probe");
-		if (probe.ok && git(repo, "cherry", base, probe.out).out.startsWith("-")) return true;
-		const files = git(repo, "diff", "--name-only", mb.out, ref);
-		if (!files.ok || !files.out) return false;
-		if (git(repo, "diff", "--quiet", ref, base, "--", ...files.out.split("\n")).ok) return true;
-		const since = git(repo, "rev-list", "--first-parent", "--max-count=200", `${mb.out}..${base}`);
-		return since.ok && !!since.out && since.out.split("\n").some(s => contains(repo, s, ref));
-	}
-	// True when commit `into` already holds everything in `from`: a clean merge of `from` into it
-	// yields exactly its own tree.
-	function contains(repo: string, into: string, from: string): boolean {
-		const m = git(repo, "merge-tree", "--write-tree", into, from);
-		return m.ok && m.out.split("\n")[0] === git(repo, "rev-parse", `${into}^{tree}`).out;
-	}
-	// (d) Stacked branches squashed together with later edits conflict in (c). The plan then names
-	// the release: "Landed: <commit on base> from <pre-squash commit>". Verified, never trusted: the
-	// first must be on base, the branch tip must be in the second's history, and the first must
-	// already contain the second.
-	function declaredLanded(repo: string, ref: string, base: string, text: string): boolean {
-		const m = text.match(/^(?:- )?Landed: ([0-9a-f]{7,40}) from ([0-9a-f]{7,40})\s*$/m);
-		if (!m || !m[1] || !m[2]) return false;
-		return git(repo, "merge-base", "--is-ancestor", m[1], base).ok &&
-			git(repo, "merge-base", "--is-ancestor", ref, m[2]).ok &&
-			contains(repo, m[1], m[2]);
 	}
 	// A clone of a clone judges "landed" against the middle copy's default branch, which can be
 	// stale. Follow local-path origins (at most 3 hops) to the upstream repo and fetch its default
@@ -82,8 +49,11 @@ export function queueClose(args: string[], cfg: Config): number {
 	}
 	const today = new Date().toISOString().slice(0, 10);
 
-	const arg = args[0];
-	if (!arg) die("usage: queue-close <plan file>");
+	// --auto (plan 20261031_0911 P4): autoClose starts the closer for an OPEN plan whose branch has
+	// landed; the done check decides, and a pass writes "Status: complete" here, nobody else.
+	const auto = args[0] === "--auto";
+	const arg = auto ? args[1] : args[0];
+	if (!arg) die("usage: queue-close [--auto] <plan file>");
 	const file = path.resolve(arg);
 	resultLog = closeLog(file);
 
@@ -103,7 +73,8 @@ export function queueClose(args: string[], cfg: Config): number {
 	const plan = activePlans().find(p => p.file === file);
 	if (!plan) die(`${file} is not listed in the main index ${INDEX}`);
 	if (plan.errors.length) die(`plan does not match the template: ${plan.errors.join("; ")}`);
-	if (plan.status !== "complete" && plan.status !== "cancelled") die(`plan says "Status: ${plan.status}", not complete or cancelled`);
+	if (plan.status !== "complete" && plan.status !== "cancelled" && !(auto && plan.status === "open"))
+		die(`plan says "Status: ${plan.status}", not complete or cancelled`);
 	const cancelling = plan.status === "cancelled";
 	if (plan.worktree && (plan.file === plan.worktree || plan.file.startsWith(`${plan.worktree}/`))) {
 		// The plan file may sit under the named worktree when that worktree IS the main checkout
@@ -138,11 +109,7 @@ export function queueClose(args: string[], cfg: Config): number {
 	if (wtExists && !owned) console.log(`queue-close: worktree ${plan.worktree} kept: it is on ${wtEntry?.branch ?? (wtEntry ? "a detached HEAD" : "no branch of this repo")}`);
 	const branch = plan.branch;
 	const branchExists = !!branch && git(plan.repo, "rev-parse", "--verify", "-q", `refs/heads/${branch}`).ok;
-	const merged = branchExists && (
-		git(plan.repo, "merge-base", "--is-ancestor", `refs/heads/${branch}`, base).ok ||
-		squashMerged(plan.repo, `refs/heads/${branch}`, base) ||
-		declaredLanded(plan.repo, `refs/heads/${branch}`, base, readFileSync(file, "utf8"))
-	);
+	const merged = branchExists && landed(plan.repo, branch!, base, readFileSync(file, "utf8"));
 
 	// A plan whose worktree is missing or kept is checked against the upstream base, never a foreign checkout.
 	const detached = !!plan.worktree && !owned;
@@ -176,15 +143,26 @@ export function queueClose(args: string[], cfg: Config): number {
 			}
 			if (dc.status !== 0) {
 				rmSync(doneCache, { force: true });
-				const text = readFileSync(file, "utf8")
-					.replace(/^Status:\s*complete\s*$/m, "Status: open")
-					.replace(/^(## Progress[^\n]*\n(?:Status:[^\n]*\n)?)/m, `$1- ${today} queue-close: done check failed (exit ${dc.status ?? "timeout"}); reopened.\n`);
-				writeFileSync(file, text);
-				die(`done check failed (exit ${dc.status ?? "timeout"}); plan reopened (Status: open)`);
+				if (!auto) {
+					const text = readFileSync(file, "utf8")
+						.replace(/^Status:\s*complete\s*$/m, "Status: open")
+						.replace(/^(## Progress[^\n]*\n(?:Status:[^\n]*\n)?)/m, `$1- ${today} queue-close: done check failed (exit ${dc.status ?? "timeout"}); reopened.\n`);
+					writeFileSync(file, text);
+					die(`done check failed (exit ${dc.status ?? "timeout"}); plan reopened (Status: open)`);
+				}
+				// --auto keeps the open plan as it is — no reopen text; the refusal lands in the close
+				// log for the landed lock (P5) to report, and the cache is dropped so the next attempt
+				// reruns the check.
+				die(`done check failed (exit ${dc.status ?? "timeout"})`);
 			}
 			writeFileSync(doneCache, `${doneKey}\n`);
 		}
 	}
+
+	// --auto on an open plan: the done check just passed, so this close writes "Status: complete"
+	// itself and everything below proceeds as for any complete plan.
+	if (auto && plan.status === "open")
+		writeFileSync(file, readFileSync(file, "utf8").replace(/^Status:\s*open\s*$/m, "Status: complete"));
 
 	if (branchExists && !merged && !cancelling) {
 		result(`queue-close: AWAITING merge: done check green; branch ${branch} is not merged into ${base} yet, plan stays indexed until it lands`);
@@ -204,11 +182,11 @@ export function queueClose(args: string[], cfg: Config): number {
 	const named = wtExists && owned ? list.find(w => w.path === real(plan.worktree!)) : undefined;
 	// The plan's worktrees: the one it names plus any registered worktree on the plan's branch.
 	const mine = list.filter(w => (plan.branch && w.branch === plan.branch) || w === named);
-	const landed = !branchExists || merged;
+	const landedOk = !branchExists || merged;
 	for (const w of mine) {
 		if (w.main) console.log(`queue-close: worktree ${w.path} kept: it is the repo's main checkout`);
 		else if (git(w.path, "status", "--porcelain").out) console.log(`queue-close: worktree ${w.path} kept: it has uncommitted changes`);
-		else if (!landed) console.log(`queue-close: worktree ${w.path} kept: branch ${branch} is not merged`);
+		else if (!landedOk) console.log(`queue-close: worktree ${w.path} kept: branch ${branch} is not merged`);
 		else {
 			const rm = git(plan.repo, "worktree", "remove", w.path);
 			if (!rm.ok || existsSync(w.path)) console.log(`queue-close: worktree ${w.path} kept: git worktree remove failed (${rm.out})`);
@@ -286,7 +264,7 @@ export function queueClose(args: string[], cfg: Config): number {
 	// One index: the closed plan's line leaves the main index; there is no repo INDEX.md.
 	const lines = readFileSync(INDEX, "utf8").split("\n").filter(l => l.trim());
 	const keep = lines.filter(l => path.resolve(l.trim().replace(/^[-*]\s+/, "").replace(/`/g, "").replace(/^~(?=\/)/, os.homedir())) !== file);
-	writeFileSync(INDEX, keep.length ? `${keep.join("\n")}\n` : "");
+	writeIndex(keep, { removed: cancelling ? "cancel" : "close" });
 	console.log(`queue-close: removed from ${INDEX} (${keep.length} plan(s) left)`);
 	try {
 		const sp = path.join(STATE_DIR, "spawns.json");
@@ -294,14 +272,26 @@ export function queueClose(args: string[], cfg: Config): number {
 		delete s[file];
 		writeFileSync(sp, JSON.stringify(s, null, 1));
 	} catch {}
-	// Incidents this plan fixes (plan P5): each INCIDENT <id> in a closing plan gets a fixed
-	// record, so the guards stop pushing a bug whose fix just shipped. Cancelled plans did not
-	// ship their fix — the owner records a dismissal instead. A refusal (unknown id, already
-	// resolved) is logged into the close log and never fails the close.
+	// Incidents this plan fixes (plan P5): each INCIDENT <id> cited outside ## Progress gets a
+	// fixed record, so the guards stop pushing a bug whose fix just shipped. Progress is
+	// narrative, not fix work (I-20261031-349, P5b): an id Main only filed there ("needs a phase
+	// here") was never fixed by a phase — it stays open and the close logs it. Cancelled plans
+	// did not ship their fix — the owner records a dismissal instead. A refusal (unknown id,
+	// already resolved) is logged into the close log and never fails the close.
 	if (!cancelling) {
+		// Cut ## Progress (until the next heading) before lifting ids: an id cited in the Goal or
+		// a phase counts whether or not the INCIDENT keyword prefixes it; an id whose only
+		// citation sits in Progress does not.
+		let inProgress = false;
+		const body = plan.text.split("\n").filter(l => {
+			if (l.startsWith("## ")) inProgress = l.trim() === "## Progress";
+			return !inProgress;
+		}).join("\n");
+		const ids = new Set([...body.matchAll(/\bI-\d{8}-\d+\b/g)].map(m => m[0]));
+		for (const id of new Set([...plan.text.matchAll(/\bINCIDENT\s+(I-\d{8}-\d+)\b/g)].map(m => m[1]!)))
+			if (!ids.has(id)) result(`queue-close: still open: ${id} (cited only in ## Progress)`);
 		const recorded: string[] = [];
 		// A plan may cite one incident several times; record it once so the second citation is not a refusal.
-		const ids = new Set([...plan.text.matchAll(/\bINCIDENT\s+(I-\d{8}-\d+)\b/g)].map(m => m[1]!));
 		for (const id of ids) {
 			const why = fixedIncident(cfg, id, file);
 			if (why) result(`queue-close: not recording fixed for ${id}: ${why}`);

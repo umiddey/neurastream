@@ -1,10 +1,77 @@
 // Queue model: ONE index — the main index lists plan files, one absolute path per line (templates/queue/TEMPLATE.md).
 
 import { createHash } from "node:crypto";
-import { accessSync, appendFileSync, constants, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { accessSync, appendFileSync, chmodSync, constants, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Config } from "../config.ts";
+
+// --- landing detection (plan 20261031_0911 P4/P5): lives here, not queue-close.ts, because
+// queueProblems' landed lock needs it and lib must not import the closer that imports lib ---
+
+/** `{ ok, out }` from a git run in `cwd` (stdout+stderr, trimmed). */
+export function gitOut(cwd: string, ...args: string[]): { ok: boolean; out: string } {
+	const r = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
+	return { ok: r.status === 0, out: `${r.stdout ?? ""}${r.stderr ?? ""}`.trim() };
+}
+
+// True when commit `into` already holds everything in `from`: a clean merge of `from` into it
+// yields exactly its own tree.
+function contains(repo: string, into: string, from: string): boolean {
+	const m = gitOut(repo, "merge-tree", "--write-tree", into, from);
+	return m.ok && m.out.split("\n")[0] === gitOut(repo, "rev-parse", `${into}^{tree}`).out;
+}
+
+// Squash or rebase merges put a new commit on base, so the branch tip is never an ancestor of it.
+// The branch counts as landed when (a) a commit on base carries the same combined patch as the
+// whole branch, (b) every file the branch changed is identical on base, or (c) merging the branch
+// into some first-parent commit of base since the fork point changes nothing (the release squash
+// that shipped it; later edits on base would otherwise conflict).
+function squashMerged(repo: string, ref: string, base: string): boolean {
+	const mb = gitOut(repo, "merge-base", ref, base);
+	if (!mb.ok) return false;
+	const probe = gitOut(repo, "commit-tree", `${ref}^{tree}`, "-p", mb.out, "-m", "queue-close squash probe");
+	if (probe.ok && gitOut(repo, "cherry", base, probe.out).out.startsWith("-")) return true;
+	const files = gitOut(repo, "diff", "--name-only", mb.out, ref);
+	if (!files.ok || !files.out) return false;
+	if (gitOut(repo, "diff", "--quiet", ref, base, "--", ...files.out.split("\n")).ok) return true;
+	const since = gitOut(repo, "rev-list", "--first-parent", "--max-count=200", `${mb.out}..${base}`);
+	return since.ok && !!since.out && since.out.split("\n").some(s => contains(repo, s, ref));
+}
+
+// (d) Stacked branches squashed together with later edits conflict in (c). The plan then names
+// the release: "Landed: <commit on base> from <pre-squash commit>". Verified, never trusted: the
+// first must be on base, the branch tip must be in the second's history, and the first must
+// already contain the second.
+function declaredLanded(repo: string, ref: string, base: string, text: string): boolean {
+	const m = text.match(/^(?:- )?Landed: ([0-9a-f]{7,40}) from ([0-9a-f]{7,40})\s*$/m);
+	if (!m || !m[1] || !m[2]) return false;
+	return gitOut(repo, "merge-base", "--is-ancestor", m[1], base).ok &&
+		gitOut(repo, "merge-base", "--is-ancestor", ref, m[2]).ok &&
+		contains(repo, m[1], m[2]);
+}
+
+/** P4 (plan 20261031_0911): `branch` has landed on `base` — an ancestor, squash/rebase-merged, or declared landed in the plan text. Re-exported by queue-close.ts. */
+export function landed(repo: string, branch: string, base: string, text: string): boolean {
+	return gitOut(repo, "merge-base", "--is-ancestor", `refs/heads/${branch}`, base).ok ||
+		squashMerged(repo, `refs/heads/${branch}`, base) ||
+		declaredLanded(repo, `refs/heads/${branch}`, base, text);
+}
+
+/** The base landing is judged against outside queueClose: origin's default branch, no fetch (the filter and queueProblems run per prompt; queue-close --auto re-checks with its own upstreamBase). */
+function originBase(repo: string): string {
+	const head = gitOut(repo, "symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD");
+	return head.ok && head.out ? `refs/remotes/${head.out}` : "refs/remotes/origin/main";
+}
+
+/** P4: an open plan auto-close starts for — its branch exists and has landed, or it names no branch (a Main-only plan) and every phase is ticked. Shared by the adapter's autoClose filter and queueProblems' landed lock (P5); queue-close --auto re-checks authoritatively. */
+export function autoCloseCandidate(p: Plan): boolean {
+	if (p.status !== "open" || p.errors.length) return false;
+	if (!p.branch) return p.phases.total > 0 && p.phases.done === p.phases.total;
+	if (!gitOut(p.repo, "rev-parse", "--verify", "-q", `refs/heads/${p.branch}`).ok) return false;
+	return landed(p.repo, p.branch, originBase(p.repo), p.text);
+}
 
 const HOME = os.homedir();
 // Base set by applyQueueEnv from paths.agent_dir. Specific QUEUE_* vars still win.
@@ -98,6 +165,41 @@ function indexLines(file: string): string[] | null {
 // Relative lines resolve against `base` (default: the cwd); a repo INDEX.md passes its repo dir.
 export function readIndex(file = indexPath(), base = process.cwd()): string[] {
 	return [...new Set((indexLines(file) ?? []).map(l => path.resolve(base, expandHome(l))))];
+}
+
+// The one writer of the index (plan 20261031_0911 P2): the index can only grow. A plan that would
+// disappear without an explicit close/cancel/migrate reason throws before anything is written, and
+// every write lands temp+rename then chmods the file to 0444. No 0o644 before the rename: rename(2)
+// replaces a read-only target with directory-write permission only, so the file is never writable —
+// not even between the rename and the chmod. `file` defaults to the env index; the owner page
+// reorders the cfg's queue_index, which tests point away from the env index.
+export function writeIndex(lines: string[], why?: { removed?: "close" | "cancel" | "migrate" }, file = indexPath()): void {
+	const index = file;
+	const newSet = new Set(
+		lines.filter(l => l.trim()).map(l => path.resolve(expandHome(l.trim().replace(/^[-*]\s+/, "").replace(/`/g, "").trim()))),
+	);
+	const gone = readIndex(index).filter(p => !newSet.has(p));
+	if (gone.length && !why?.removed)
+		throw new Error(
+			`writeIndex: ${gone.join(", ")} would leave the index; only a close, cancel or migrate removes a plan (why: { removed: "close" | "cancel" | "migrate" })`,
+		);
+	const tmp = `${index}.tmp`;
+	writeFileSync(tmp, lines.length ? `${lines.join("\n")}\n` : "");
+	renameSync(tmp, index);
+	chmodSync(index, 0o444);
+}
+
+// Doctor's enforcement half of the same plan: the live index must sit at 0444 between writes, so
+// no program — not just an agent tool call — can rewrite it. Returns the mode it had to fix.
+export function enforceReadOnlyIndex(index = indexPath()): string | null {
+	try {
+		const mode = statSync(index).mode & 0o777;
+		if (mode === 0o444) return null;
+		chmodSync(index, 0o444);
+		return `0${mode.toString(8)}`;
+	} catch {
+		return null;
+	}
 }
 
 export function sections(text: string): Map<string, string> {
@@ -667,6 +769,9 @@ function protectedPaths(): string[] {
 		`${agent}/agents/`,
 		`${agent}/AGENTS.md`,
 		`${agent}/CANCELLED.md`,
+		// The plan index (plan 20261031_0911 P2): append-only and 0444 on disk. Agents add or
+		// reorder through `neurastream queue add` / `queue move`; only the owner writes directly.
+		indexPath(),
 		`${stateDirPath()}/`,
 		`${agent}/config.yml`,
 		// The user's neurastream config file, even when agent_dir points elsewhere: an agent that
@@ -947,6 +1052,12 @@ export function awaitingMerge(p: Plan): boolean {
 	return p.status === "complete" && (lastCloseResult(p.file) ?? "").startsWith("queue-close: AWAITING merge");
 }
 
+/** P5 (plan 20261031_0911): the plan's last queue-close attempt did not close it — a refusal or still awaiting merge ("already running" is another close in flight, not a failure). */
+export function lastCloseFailed(file: string): boolean {
+	const last = lastCloseResult(file);
+	return !!last && !last.startsWith("queue-close: CLOSED") && !last.startsWith("queue-close: already");
+}
+
 /**
  * I-20261025-208: index order is priority, so an open plan must never sit above an open plan of
  * this list it waits on. A "Waits on" target that is not an open plan of the list (complete,
@@ -985,6 +1096,14 @@ export function queueProblems(index = INDEX, blockersDir = BLOCKERS_DIR, reviewA
 			const last = lastCloseResult(p.file);
 			probs.push({ where: p.file, problem: `says ${p.status} but is still indexed; auto-close runs at every prompt, every 15 min and after a push${last ? ` (last: ${last.replace(/^queue-close: /, "")})` : ""}` });
 		}
+		// P5 (plan 20261031_0911): a landed open plan whose auto-close failed locks the queue — the
+		// spawn gate and the stop gate refuse everything that does not name it until it closes.
+		if (p.status === "open" && autoCloseCandidate(p) && lastCloseFailed(p.file))
+			probs.push({ where: p.file, problem: `landed but not closed: ${path.basename(p.file)} — ${(lastCloseResult(p.file) ?? "").replace(/^queue-close: /, "")}` });
+		// P5: a done check that rides `merge-base --is-ancestor` re-does the landing check the
+		// closer already owns, squash-aware — and misses squashes.
+		if (p.doneCheck?.includes("merge-base --is-ancestor"))
+			probs.push({ where: p.file, problem: "done check runs git merge-base --is-ancestor — queue-close checks landing itself, squash-aware; drop it" });
 		for (const c of cancelledMatches(p)) probs.push({ where: p.file, problem: cancelledProblem(p, c) });
 		// A plan file must live in a main checkout, never in a linked worktree.
 		const g = gitTop(p.file);
