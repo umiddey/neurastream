@@ -131,6 +131,7 @@ const RUNS: RunSource = {
 // tailnet peer resolves to someone else; everything else makes whois fail.
 const TS: Tailscale = {
 	ip4: () => OWN_IP,
+	state: () => "running",
 	// The seam's contract (like realTailscale): the MagicDNS name, trailing dot already stripped.
 	dnsName: () => DNS_NAME,
 	whois: (peer: string) => (peer === PEER ? OWNER : peer === "100.95.10.7" ? "other@example.com" : null),
@@ -403,7 +404,7 @@ test("ui.enabled false refuses to start", () => {
 });
 
 test("a silent tailscale refuses to start on the default hostname", () => {
-	expect(() => ui({ tailscale: { ip4: () => null, dnsName: () => null, whois: () => null, logins: () => null }, hostname: undefined })).toThrow();
+	expect(() => ui({ tailscale: { ip4: () => null, dnsName: () => null, whois: () => null, logins: () => null, state: () => "stopped" }, hostname: undefined })).toThrow();
 });
 
 test("a real loopback request (no peer injection) gets 403", async () => {

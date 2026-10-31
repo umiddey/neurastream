@@ -108,7 +108,7 @@ test("publish --plan: an incomplete diagram keeps Approve disabled and the serve
 		missing: ["P2: the phase is in no box", "tests/b.test.ts (P2): named in the plan, in no box"],
 		thin: ["root has 1 kid"],
 	});
-	const tailscale = { ip4: () => "", dnsName: () => null, whois: () => "owner@example.test", logins: () => [] };
+	const tailscale = { ip4: () => "", dnsName: () => null, whois: () => "owner@example.test", logins: () => [], state: () => "running" as const };
 	const server = startPagesServer({ cfg, tailscale, source: { listRuns: () => [], mainSession: () => null }, hostname: LOOPBACK, port: 0, root: out, peerOf: () => LOOPBACK });
 	servers.push(server);
 	const base = `http://${LOOPBACK}:${server.port}`;

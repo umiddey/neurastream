@@ -3,6 +3,7 @@
 ### Added
 - `neurastream config set|get|list <key> [value]` reads or writes one config key through the line-based editor in `src/core/config-edit.ts` (the one `ui on|off` and `pages on|off` now share). Keys are the leaf paths of `templates/config.yml`; an unknown key, or a value that would not load, is refused and the file is left untouched. Comments and every other line of the file are kept byte-for-byte.
 - `pages on|off` validate the edited config before writing it, as `ui on|off` already did.
+- `ui on` checks Tailscale first: a missing binary prints the install steps and, on a terminal, asks `Open the Tailscale download page now? [y/N]`; installed but not connected prints `sudo tailscale up`. Nothing is written or started until Tailscale runs. `neurastream doctor` reports `tailscale: ok`, `tailscale: missing` or `tailscale: logged out` when the owner page is enabled.
 ## 0.2.56
 ### Added
 - Owner page: the Base tab lists published pages under their repo (one card per repo, newest first, expired pages gone); `pages publish` records each page's repo.

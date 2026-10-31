@@ -29,6 +29,28 @@ export const systemRunner: Runner = args => {
 	return { status: r.status, stderr: r.stderr ?? "" };
 };
 
+export interface Terminal {
+	/** Prints the question on the terminal and returns the answer line. */
+	ask(question: string): string;
+	/** Opens a URL in the default browser. */
+	open(url: string): void;
+}
+
+// Production terminal. sh reads the answer from the inherited terminal, so uiOn stays synchronous.
+export const systemTerminal: Terminal = {
+	ask(question) {
+		const r = spawnSync("sh", ["-c", 'printf "%s" "$1" >&2; read -r answer; printf "%s" "$answer"', "sh", question], { encoding: "utf8", stdio: ["inherit", "pipe", "inherit"] });
+		return r.stdout ?? "";
+	},
+	open(url) {
+		spawnSync(process.platform === "darwin" ? "open" : "xdg-open", [url], { stdio: "ignore" });
+	},
+};
+
+const TAILSCALE_DOWNLOAD = "https://tailscale.com/download";
+const TAILSCALE_MISSING = "The phone page needs Tailscale (free, private network for your devices). Install it: Linux `curl -fsSL https://tailscale.com/install.sh | sh` (asks for your password), macOS: the App Store app, others: https://tailscale.com/download. Then run `neurastream ui on` again.";
+const TAILSCALE_STOPPED = "Tailscale is installed but not connected. Run `sudo tailscale up` (Linux) or open the Tailscale app (macOS), then run this again.";
+
 export interface UiSetupOptions {
 	/** HOME the config file and the user unit resolve against. Default: the real home. */
 	home?: string;
@@ -44,6 +66,8 @@ export interface UiOnOptions extends UiSetupOptions {
 	login: string;
 	/** The --port N of the command line; null leaves the config's ui.port in place. */
 	port?: number | null;
+	/** Terminal seam for the missing-tailscale question. Absent: no question, only the message. src/cli/ui.ts passes the real one on a TTY. */
+	terminal?: Terminal;
 }
 
 export function uiOn(opts: UiOnOptions): number {
@@ -52,6 +76,18 @@ export function uiOn(opts: UiOnOptions): number {
 	const tailscale = opts.tailscale ?? realTailscale;
 	const print = opts.print ?? console.log;
 	const error = opts.error ?? console.error;
+	// Tailscale comes first (plan 20261028_2356 P2): nothing is read, written or run unless it is up.
+	const state = tailscale.state();
+	if (state === "missing") {
+		error(`neurastream ui: ${TAILSCALE_MISSING}`);
+		const terminal = opts.terminal;
+		if (terminal && terminal.ask("Open the Tailscale download page now? [y/N] ").trim().toLowerCase() === "y") terminal.open(TAILSCALE_DOWNLOAD);
+		return 1;
+	}
+	if (state === "stopped") {
+		error(`neurastream ui: ${TAILSCALE_STOPPED}`);
+		return 1;
+	}
 	const file = configFile(home);
 	let cfg;
 	try {
