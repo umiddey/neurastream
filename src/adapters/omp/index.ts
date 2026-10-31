@@ -26,7 +26,8 @@ import { configFile, loadConfig, reloadingConfig, type Config } from "../../core
 import { checkWrite, deferSteer, type WriteCheckConfig } from "../../core/write-check.ts";
 import { nowSec, strftime } from "../../core/clock.ts";
 import { runDetectors, runDetectorsGated, type DetectorInput } from "../../core/incident-detectors.ts";
-import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, newProgressEntries, planReadNote, recordMainResult, resetMainCalls, revertMainEdit, rekeySpawnFile, reviewSpawnEnd, STOP_PLAN_OFFER_REFUSAL } from "../../core/guards.ts";
+import { fileClaimStore } from "../../core/claims.ts";
+import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, mainId, newProgressEntries, planReadNote, recordMainResult, resetMainCalls, revertMainEdit, rekeySpawnFile, reviewSpawnEnd, STOP_PLAN_OFFER_REFUSAL } from "../../core/guards.ts";
 import { rateLimitWait } from "../../core/rate-limit.ts";
 import { notifyProviders, postReply } from "../../core/notify.ts";
 import { loadKnownSecrets, redactSecrets, redactSummary } from "../../core/secret-redact.ts";
@@ -425,6 +426,8 @@ function sizeOf(path: string): number {
 
 /** Idle-poll interval for the owner inbox. */
 export const OWNER_INBOX_POLL_MS = 15_000;
+/** How often the adapter heartbeats every claim this Main holds (plan 20261027_1300 P3). */
+export const CLAIM_BEAT_MS = 60_000;
 
 /** The delivered cursor: how many owner-inbox rows Main's session has consumed. */
 export function ownerInboxCursorPath(): string {
@@ -751,6 +754,16 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 			? c.setInterval(() => deliverOwnerInbox(pi, cfg), OWNER_INBOX_POLL_MS)
 			: setInterval(() => deliverOwnerInbox(pi, cfg), OWNER_INBOX_POLL_MS);
 		if (it && typeof it === "object" && "unref" in it && typeof it.unref === "function") it.unref();
+		// Multi-main P3: every held claim heartbeats once a minute while this Main session lives,
+		// so a live Main never loses a plan to queue.claim_ttl_min. session_shutdown releases
+		// nothing: the TTL frees a crashed or restarted Main's claims the same way.
+		const beat = (): void => {
+			const store = fileClaimStore(cfg.paths.queue_state, nowSec, cfg.queue.claim_ttl_min);
+			const id = mainId();
+			for (const claim of store.list()) if (claim.main === id) store.heartbeat(claim.plan, id);
+		};
+		const hb: unknown = c.setInterval ? c.setInterval(beat, CLAIM_BEAT_MS) : setInterval(beat, CLAIM_BEAT_MS);
+		if (hb && typeof hb === "object" && "unref" in hb && typeof hb.unref === "function") hb.unref();
 	});
 
 	// What a subagent is still missing (plan 20261027_1530 P2): the rules of the repo its plan is

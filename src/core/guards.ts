@@ -35,7 +35,8 @@ import { unlandedRows } from "./wip-check.ts";
 import * as q from "./queue/lib.ts";
 import type { Plan } from "./queue/lib.ts";
 
-import { nowSec } from "./clock.ts";
+import { fileClaimStore, type Claim, type ClaimStore } from "./claims.ts";
+import { nowSec, strftime } from "./clock.ts";
 import { outUntil, pinModel, providerOfModel, readOut } from "./provider-state.ts";
 const ALLOW: Decision = { allow: true, reason: "" };
 
@@ -1140,6 +1141,11 @@ function taskLaunch(input: Record<string, unknown>, cfg: Config, runningJobs: st
 	}
 	const inc = incidentSpawnProblem("spawn", JSON.stringify(input), files, cfg);
 	if (inc) return inc;
+	const held = claimGate(files, cfg);
+	if (held) {
+		log(cfg.paths.guard_log, `BLOCK spawn: ${held}`);
+		return held;
+	}
 	recordSpawns(files, staffing);
 	recordBudgets(budgets);
 	return null;
@@ -1441,6 +1447,33 @@ export function planReadNote(tool: string, input: Record<string, unknown>, cwd: 
 }
 
 /**
+ * P3 (plan 20261027_1300): the claim store behind the spawn and Main edit gates. Claims live under
+ * `<queue_state>/claims/`; the free-after TTL is queue.claim_ttl_min (never the store's default).
+ */
+function claims(cfg: Config): ClaimStore {
+	return fileClaimStore(cfg.paths.queue_state, nowSec, cfg.queue.claim_ttl_min);
+}
+
+/** The held refusal (plan 20261027_1300 P3): "plan X is held by Main B since HH:MM" (HH:MM local). */
+function heldProblem(file: string, held: Claim): string {
+	return `plan ${file} is held by Main ${held.main} since ${strftime(held.since, "%H:%M")}`;
+}
+
+/**
+ * The spawn claim gate (plan 20261027_1300 P3): a spawn on a plan claims it for this Main first;
+ * another Main's live claim refuses the launch — a sub's launch too, once its Main no longer
+ * holds the claim. Returns the refusal, or null.
+ */
+function claimGate(files: string[], cfg: Config): string | null {
+	const store = claims(cfg);
+	for (const f of files) {
+		const c = store.claim(f, mainId());
+		if ("heldBy" in c) return heldProblem(f, c.heldBy);
+	}
+	return null;
+}
+
+/**
  * spawn: the allow-list, task-only and open-plan gates for one implementer launch. Covers both
  * original paths (the extension spawn event and a `task` tool call); the brief names the plan.
  */
@@ -1491,7 +1524,12 @@ export function checkSpawn(e: SpawnEvent, cfg: Config, runner: CommandRunner = d
 	const pick = preferProblem(e.agent, e.brief, e.runningJobs, cfg);
 	if (pick) {
 		log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${pick}`);
-		return deny(`main-guard: ${e.agent}: ${pick}`);
+		return deny(`main-guard: ${pick}`);
+	}
+	const held = claimGate(named, cfg);
+	if (held) {
+		log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${held}`);
+		return deny(`main-guard: ${held}`);
 	}
 	const staffing: Record<string, string[]> = {};
 	for (const f of named) staffing[f] = [e.agent];
@@ -1667,6 +1705,17 @@ export function findingsValue(block: string): string | null {
 // Main's plan text outside "## Progress" must rest on files Main read itself (planReadProblems).
 // An empty `before` means the plan file did not exist yet; a refusal then deletes it.
 function checkMainPlan(e: PlanEditEvent, cfg: Config): PlanEditDecision {
+	// P3 (plan 20261027_1300): another Main's live claim on this plan refuses the edit, restored
+	// like any refused plan edit. No claim — or this Main's own — edits freely.
+	const holder = claims(cfg).holder(e.path);
+	if (holder && holder.main !== mainId()) {
+		log(cfg.paths.plan_guard_log, `RESTORE ${e.path} (held by Main ${holder.main})`);
+		return {
+			allow: false,
+			reason: `plan-guard: ${heldProblem(e.path, holder)}; the file was restored.`,
+			restore: { path: e.path, text: e.before || null },
+		};
+	}
 	// A PLAN REVIEW line is a review spawn's verdict (P4k): Main writes none, so its edit is restored.
 	if (newProgressEntries(e.before, e.after).some(b => REVIEW_LINE.test(b))) {
 		log(cfg.paths.plan_guard_log, `RESTORE ${e.path} (Main wrote a review line)`);

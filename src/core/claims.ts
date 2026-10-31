@@ -31,6 +31,8 @@ export interface Held {
 
 export interface ClaimStore {
 	claim(plan: string, main: string): Claim | Held;
+	/** The live claim for a plan, or null when it is free (absent, unreadable or expired). Read-only: no claim is taken. */
+	holder(plan: string): Claim | null;
 	heartbeat(plan: string, main: string): boolean;
 	release(plan: string, main: string): void;
 	list(): Claim[];
@@ -109,6 +111,12 @@ export function fileClaimStore(stateDir: string, clock: () => number, ttlMin = 3
 				return true;
 			});
 		},
+		holder(plan) {
+			return run(() => {
+				const cur = readClaim(fileFor(plan));
+				return cur && !expired(cur, clock()) ? cur : null;
+			});
+		},
 		release(plan, main) {
 			run(() => {
 				const path = fileFor(plan);
@@ -117,12 +125,15 @@ export function fileClaimStore(stateDir: string, clock: () => number, ttlMin = 3
 			});
 		},
 		list() {
-			return run(() =>
-				readdirSync(dir)
+			return run(() => {
+				// A crashed writer leaves <claim>.<pid>.tmp behind; the next list sweeps it (the lock
+				// guarantees no live writer is mid-rename).
+				for (const f of readdirSync(dir)) if (f.endsWith(".tmp")) rmSync(join(dir, f), { force: true });
+				return readdirSync(dir)
 					.filter(f => f.endsWith(".json"))
 					.map(f => readClaim(join(dir, f)))
-					.filter((c): c is Claim => c !== null),
-			);
+					.filter((c): c is Claim => c !== null);
+			});
 		},
 	};
 }

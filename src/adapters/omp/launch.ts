@@ -118,8 +118,13 @@ export function stripNameFlag(args: string[]): { args: string[]; name: string | 
 	for (let i = 0; i < args.length; i++) {
 		const arg = args[i] ?? "";
 		if (arg === "--name") {
-			name = args[i + 1];
-			i++;
+			const next = args[i + 1];
+			// A bare `--name` with no value (next token missing or another flag) has none: fall back
+			// to the env/default id instead of eating the next flag as the id (I-20261031-225).
+			if (next !== undefined && !next.startsWith("-")) {
+				name = next;
+				i++;
+			}
 		} else if (arg.startsWith("--name=")) {
 			name = arg.slice("--name=".length);
 		} else {

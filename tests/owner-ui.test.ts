@@ -936,18 +936,18 @@ test("Main's session start arms a 15 s inbox poll; a subagent session arms none"
 	try {
 		const { pi, sent, handlers } = fakePi();
 		createOmpAdapter(pi, CFG);
-		let tick: (() => void) | null = null;
-		let ms = 0;
+		const timers: { cb: () => void; ms: number }[] = [];
 		handlers.get("session_start")!(undefined, {
 			setInterval: (cb: () => void, every: number) => {
-				tick = cb;
-				ms = every;
-				return 7;
+				timers.push({ cb, ms: every });
+				return timers.length;
 			},
 		});
-		expect(ms).toBe(15_000);
+		// The inbox poll (15 s) among the session timers (autoClose, the multi-main claim beat).
+		const poll = timers.find(t => t.ms === 15_000);
+		expect(poll).toBeTruthy();
 		appendFileSync(inboxPath(), `${rec("later")}\n`);
-		tick!();
+		poll!.cb();
 		expect(sent).toEqual([`Owner answered on the phone page — 20261019_wait.md: ${QUESTION} → later`]);
 		// A subagent session arms no timer (the handler returns before arming).
 		let subTimers = 0;
