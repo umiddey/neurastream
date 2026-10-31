@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { fileClaimStore } from "../src/core/claims.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { strftime } from "../src/core/clock.ts";
-import { claimCli } from "../src/core/claim-cli.ts";
+import { claimCli } from "../src/cli/claim.ts";
 import { checkTool } from "../src/core/guards.ts";
 import type { ToolEvent } from "../src/core/adapter.ts";
 import { queueSummary } from "../src/core/queue/lib.ts";
@@ -79,6 +79,7 @@ ${extra}`;
 
 function build(): Config {
 	mkdirSync(join(TOY, "docs/plans"), { recursive: true });
+	for (const d of [join(AGENT, "notes"), join(HOME, ".config/neurastream"), STATE]) mkdirSync(d, { recursive: true });
 	spawnSync("git", ["init", "-q", "-b", "main"], { cwd: TOY });
 	// A holds it (rank 1), B waits on the owner (rank 2), C waits on the open D (rank 3),
 	// D is free (rank 4): `claim next` must take D.
@@ -87,7 +88,6 @@ function build(): Config {
 	writeFileSync(PLAN_C, planText("Plan C", `Waits on: ${PLAN_D}\n`));
 	writeFileSync(PLAN_D, planText("Plan D"));
 	writeFileSync(INDEX, `${PLAN_A}\n${PLAN_B}\n${PLAN_C}\n${PLAN_D}\n`);
-	for (const d of [join(AGENT, "notes"), join(HOME, ".config/neurastream"), STATE]) mkdirSync(d, { recursive: true });
 	writeFileSync(join(AGENT, "CANCELLED.md"), "");
 	writeFileSync(
 		join(HOME, ".config/neurastream/config.yml"),
@@ -118,6 +118,11 @@ function store() {
 	return fileClaimStore(STATE, () => NOW, 30);
 }
 
+/** Claims live in one store dir across this file's tests: wipe for a fresh scenario. */
+function resetClaims(): void {
+	rmSync(join(STATE, "claims"), { recursive: true, force: true });
+}
+
 /** claimCli prints to stdout; capture so the tests can pin the lines. */
 function capture(fn: () => number): { rc: number; out: string[] } {
 	const out: string[] = [];
@@ -130,11 +135,12 @@ function capture(fn: () => number): { rc: number; out: string[] } {
 	}
 }
 
-function bashEv(agent: string, command: string): ToolEvent {
+function bashEv(agent: "main" | "sub", command: string): ToolEvent {
 	return { tool: "bash", input: { command }, cwd: TOY, agent, agentId: agent === "main" ? "m1" : "s1", calls: 0, paths: [], writes: [], command, runningJobs: [] };
 }
 
 test("claim next takes the highest free plan, skipping held, owner-waiting and waits-on plans", () => {
+	resetClaims();
 	store().claim(PLAN_A, "b"); // another live Main holds the top plan
 	const { rc, out } = capture(() => claimCli(["next"], cfg));
 	expect(rc).toBe(0);
@@ -144,6 +150,7 @@ test("claim next takes the highest free plan, skipping held, owner-waiting and w
 });
 
 test("claim next claims nothing and exits 1 when every open plan is held, waiting or waits-on", () => {
+	resetClaims();
 	store().claim(PLAN_A, "b");
 	store().claim(PLAN_D, "b"); // C waits on D, D itself is held: nothing is pickable
 	const { rc, out } = capture(() => claimCli(["next"], cfg));
@@ -154,6 +161,7 @@ test("claim next claims nothing and exits 1 when every open plan is held, waitin
 });
 
 test("claim list shows each live holder with since HH:MM", () => {
+	resetClaims();
 	store().claim(PLAN_A, "b");
 	store().claim(PLAN_D, "a");
 	const { rc, out } = capture(() => claimCli(["list"], cfg));
@@ -163,6 +171,7 @@ test("claim list shows each live holder with since HH:MM", () => {
 });
 
 test("claim release frees this Main's claim; another Main's needs --force, which frees it", () => {
+	resetClaims();
 	store().claim(PLAN_D, "a");
 	store().claim(PLAN_A, "b");
 	expect(capture(() => claimCli(["release", PLAN_D], cfg)).rc).toBe(0);
@@ -176,7 +185,7 @@ test("claim release frees this Main's claim; another Main's needs --force, which
 
 test("the guard refuses claim release --force for every agent, owner-only", () => {
 	const cmd = `neurastream claim release ${PLAN_A} --force`;
-	for (const agent of ["main", "sub"]) {
+	for (const agent of ["main", "sub"] as const) {
 		const d = checkTool(bashEv(agent, cmd), cfg);
 		expect(d.allow).toBe(false);
 		expect(d.reason).toContain("plan-guard:");
@@ -187,14 +196,15 @@ test("the guard refuses claim release --force for every agent, owner-only", () =
 });
 
 test("queueSummary flags each plan held by <id> since HH:MM or free, and an expired claim is free", () => {
+	resetClaims();
 	const claims = store();
 	claims.claim(PLAN_A, "b");
 	claims.claim(PLAN_D, "a");
 	// An expired claim (beat 31 min old, TTL 30) must not flag its holder.
 	fileClaimStore(STATE, () => NOW - 31 * 60, 30).claim(PLAN_C, "c");
 	const s = queueSummary(INDEX, [], claims);
-	expect(s).toContain(`1. ${PLAN_A} [open, held by b since ${SINCE}]`);
-	expect(s).toContain(`2. ${PLAN_B} [open, WAITING on owner:`);
-	expect(s).toContain(`3. ${PLAN_C} [open, waits on #4, free]`);
-	expect(s).toContain(`4. ${PLAN_D} [open, held by a since ${SINCE}]`);
+	expect(s).toContain(`1. ${PLAN_A} [open, 0/1 done, held by b since ${SINCE}]`);
+	expect(s).toContain(`2. ${PLAN_B} [open, 0/1 done, WAITING on owner:`);
+	expect(s).toContain(`3. ${PLAN_C} [open, 0/1 done, waits on #4, free]`);
+	expect(s).toContain(`4. ${PLAN_D} [open, 0/1 done, held by a since ${SINCE}]`);
 });

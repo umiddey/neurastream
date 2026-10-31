@@ -5,6 +5,8 @@ import { accessSync, appendFileSync, constants, existsSync, mkdirSync, readFileS
 import os from "node:os";
 import path from "node:path";
 import type { Config } from "../config.ts";
+import type { ClaimStore } from "../claims.ts";
+import { strftime } from "../clock.ts";
 
 const HOME = os.homedir();
 // Base set by applyQueueEnv from paths.agent_dir. Specific QUEUE_* vars still win.
@@ -1004,7 +1006,7 @@ export function queueProblems(index = INDEX, blockersDir = BLOCKERS_DIR, reviewA
 	return probs;
 }
 
-export function queueSummary(index = INDEX, reviewAgents: string[] = []): string {
+export function queueSummary(index = INDEX, reviewAgents: string[] = [], claimStore?: ClaimStore): string {
 	// Index order IS priority (20261025_0215_index_priority): the list is flat and ranked,
 	// rank 1 = the index's top line; repos only surface through each plan's own path.
 	const plans = activePlans(index);
@@ -1023,7 +1025,11 @@ export function queueSummary(index = INDEX, reviewAgents: string[] = []): string
 				waits.push(`waits on #${at}`);
 			}
 		const done = p.phases.total ? `${p.phases.done}/${p.phases.total} done` : "";
-		const flags = [status, done, hold, ...waits, p.priorityId ?? ""].filter(Boolean).join(", ");
+		// P4 multi-main (20261027_1300): with the claim store handed in (guards' inject and
+		// queue-check pass it), every plan shows `held by <id> since HH:MM` or `free`.
+		const holder = claimStore?.holder(p.file) ?? null;
+		const claimFlag = claimStore ? (holder ? `held by ${holder.main} since ${strftime(holder.since, "%H:%M")}` : "free") : "";
+		const flags = [status, done, hold, ...waits, claimFlag, p.priorityId ?? ""].filter(Boolean).join(", ");
 		const goal = items(sections(p.text).get("goal") ?? "")[0]?.slice(0, 100) ?? "";
 		lines.push(`  ${i + 1}. ${p.file} [${flags}] ${goal}`);
 	});

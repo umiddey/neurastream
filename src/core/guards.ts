@@ -968,6 +968,22 @@ function startsOwnerUi(input: Record<string, unknown>): boolean {
 	});
 }
 
+// True when a command segment runs `claim release <plan> --force` (plan 20261027_1300 P4): it
+// frees another Main's claim, the owner's terminal move, refused for every agent. Segment
+// splitting and launcher skipping match startsOwnerUi, so `sh -c "neurastream claim release x
+// --force"` and `sudo neurastream claim release x --force` are seen too.
+function forceClaimRelease(input: Record<string, unknown>): boolean {
+	const text = Object.values(input).filter((v): v is string => typeof v === "string").join("\n");
+	return text.split(/&&|\|\||;|\||\n|\$\(|`/).some(seg => {
+		const words = seg.trim().split(/\s+/).filter(Boolean).map(w => w.replace(/^["'(]+|["')]+$/g, ""));
+		let i = 0;
+		while (i < words.length && (LAUNCHERS[words[i] ?? ""] === true || /^\w+=/.test(words[i] ?? "") || /(^|\/)main\.ts$/.test(words[i] ?? ""))) i++;
+		const seq = words.slice(i).map(bin);
+		if (seq[0] === "neurastream") seq.shift();
+		return seq[0] === "claim" && seq.includes("release") && seq.includes("--force");
+	});
+}
+
 // True when a command segment lands work on a remote (plan 20261025_1940 P2): `git push`,
 // `glab mr merge`, `gh pr merge`. Segment splitting and launcher skipping match startsOwnerUi,
 // so `sh -c "git push"`, `sudo git push` and chained pushes are seen too.
@@ -1175,6 +1191,13 @@ function bypassLaunch(command: string, cfg: Config, spawner: Spawner): string | 
 		}
 		const inc = incidentSpawnProblem("bypass launch", command, named, cfg);
 		if (inc) return inc;
+		// I-20261031-280: a bypass launch takes the claims like every other spawn, as its last
+		// refusal before the record.
+		const held = claimGate(named, cfg);
+		if (held) {
+			log(cfg.paths.guard_log, `BLOCK bypass launch: ${held}`);
+			return held;
+		}
 		if (named.length) recordSpawns(named);
 	}
 	return null;
@@ -1279,6 +1302,12 @@ export function checkTool(e: ToolEvent, cfg: Config): Decision {
 		return deny(
 			"plan-guard: starting the owner page (neurastream ui, or systemctl --user start/restart/enable of neurastream-ui) is the owner's move, not an agent's.",
 		);
+	}
+	// claim release --force frees another Main's claim (plan 20261027_1300 P4): the owner's
+	// terminal move, refused for every agent like the ui-start, plan-guard style.
+	if (cfg.guards.shell_tools.includes(e.tool) && forceClaimRelease(input)) {
+		log(cfg.paths.plan_guard_log, `BLOCK ${e.agent}:${e.agentId} tool=${e.tool} claim-force: ${String(input.command ?? "")}`);
+		return deny("plan-guard: claim release --force frees another Main's claim; that is the owner's move, in a terminal.");
 	}
 	// The caller may know paths the text search cannot see (structured edits); union, never shrink.
 	const paths: string[] = [];
@@ -1466,9 +1495,18 @@ function heldProblem(file: string, held: Claim): string {
  */
 function claimGate(files: string[], cfg: Config): string | null {
 	const store = claims(cfg);
+	const mine = mainId();
+	const fresh: string[] = [];
 	for (const f of files) {
-		const c = store.claim(f, mainId());
-		if ("heldBy" in c) return heldProblem(f, c.heldBy);
+		const heldBefore = store.holder(f)?.main === mine;
+		const c = store.claim(f, mine);
+		if ("heldBy" in c) {
+			// A refusal leaves the store as it found it (P3 review finding 2): claims this call
+			// newly created are released again; a claim this Main already held before the call stays.
+			for (const g of fresh) store.release(g, mine);
+			return heldProblem(f, c.heldBy);
+		}
+		if (!heldBefore) fresh.push(f);
 	}
 	return null;
 }
@@ -1524,7 +1562,7 @@ export function checkSpawn(e: SpawnEvent, cfg: Config, runner: CommandRunner = d
 	const pick = preferProblem(e.agent, e.brief, e.runningJobs, cfg);
 	if (pick) {
 		log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${pick}`);
-		return deny(`main-guard: ${pick}`);
+		return deny(`main-guard: ${e.agent}: ${pick}`);
 	}
 	const held = claimGate(named, cfg);
 	if (held) {
@@ -1572,7 +1610,7 @@ export function checkInject(e: InjectEvent, cfg: Config): Decision {
 	recordOwnerMessage(e.inject, cfg);
 	let summary: string;
 	try {
-		summary = q.queueSummary(undefined, cfg.review.agents);
+		summary = q.queueSummary(undefined, cfg.review.agents, claims(cfg));
 	} catch (err) {
 		summary = `Queue unreadable (${q.INDEX}): ${err}`;
 	}

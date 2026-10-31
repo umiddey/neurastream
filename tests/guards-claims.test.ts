@@ -315,7 +315,9 @@ test("checkSpawn's preferProblem refusal keeps the wrapper: main-guard: <agent>:
 	const cfg = buildCfg(
 		`adapter:
   name: omp
+  sessions: "${join(HOME, ".omp/agent/sessions")}"
   pins: "${join(AGENT, "agents")}"
+  extensions: "${join(HOME, ".omp/agent/extensions")}"
 ledger:
   prefer:
     - ahead
@@ -330,9 +332,10 @@ ledger:
 	refresh();
 	const d = checkSpawn({ ...spawnEv(), agent: "glm" }, cfg);
 	expect(d.allow).toBe(false);
-	expect(d.reason).toBe(
-		`main-guard: glm: ahead is ahead of glm in ledger.prefer and free (under its provider cap) — spawn ahead, or add "Pick note: <why>" to the brief.`,
-	);
+	// The wrapper names the agent again (I-20261031-277/-278/-279); the pick tail is
+	// preferProblem's own text, pinned in tests/provider-state-enforce.test.ts.
+	expect(d.reason).toContain("main-guard: glm: ");
+	expect(d.reason).toContain("ahead is ahead of glm in ledger.prefer and free");
 });
 
 test("a refused claim gate releases the claims this call created (review finding 2a)", () => {
