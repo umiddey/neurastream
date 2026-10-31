@@ -4,10 +4,10 @@
 // record. A built thing has notes only: no bar, no approve route.
 import { afterEach, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { approvalProblem, approvePlanFile, planForPage } from "../src/core/plan-approval.ts";
+import { approvalProblem, approvePlanFile, chatApprove, planForPage, recordPagePlan } from "../src/core/plan-approval.ts";
 import { reviewHash } from "../src/core/guards.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { appendPageNotes, notesAnswersPath } from "../src/core/page-notes.ts";
@@ -199,4 +199,69 @@ review:
 	writeFileSync(join(state, "plan-approvals.json"), JSON.stringify({ approvals: { [plan]: { hash: "stalehash", at: 1, via: "page", page: "toy.html" } } }));
 	// The record gate is checked on its own: this spawn already ran, so the guard's progress check would also refuse it.
 	expect(approvalProblem(body, plan, pages)).toContain("has no approval record");
+});
+
+// --- Chat approval (plan 20261029_1455 P2): the owner's `approve <YYYYMMDD_HHMM>` in chat ---
+
+/** Write each plan under <dir>/plans, list them in a temp INDEX and point the queue library at it. */
+function indexedPlans(dir: string, cfg: Config, names: string[]): string[] {
+	const files = names.map(name => join(dir, "plans", name));
+	mkdirSync(join(dir, "plans"), { recursive: true });
+	for (const f of files) writeFileSync(f, "# Toy\n\n## Progress\nStatus: open\n- [ ] P1 x\n");
+	const index = join(dir, "INDEX.md");
+	writeFileSync(index, `${files.join("\n")}\n`);
+	cfg.guards.chat_unlock = true;
+	cfg.paths.queue_index = index;
+	cfg.paths.plan_guard_log = join(dir, "plan-guard.log");
+	applyQueueEnv(cfg);
+	return files;
+}
+
+const recordsOf = (cfg: Config): Record<string, { hash: string; via: string; page: string }> =>
+	JSON.parse(readFileSync(join(cfg.paths.queue_state, "plan-approvals.json"), "utf8")).approvals;
+
+test("chatApprove: `approve <stamp>` records a chat approval for the one open plan that matches", () => {
+	const { dir, cfg } = setup();
+	const [plan] = indexedPlans(dir, cfg, ["20261029_1455_forced.md", "20261030_0900_other.md"]);
+	expect(chatApprove("  approve 20261029_1455 ", cfg, "interactive")).toEqual({ applied: true, plan });
+	const rec = recordsOf(cfg)[plan];
+	expect(rec.hash).toBe(reviewHash(readFileSync(plan, "utf8")));
+	expect(rec.via).toBe("chat");
+	expect(rec.page).toBe(""); // no page in Base for this plan
+	expect(readFileSync(cfg.paths.plan_guard_log, "utf8")).toContain(`APPROVE chat source=interactive plan=${plan}`);
+});
+
+test("chatApprove: a plan that has a page in Base records that page", () => {
+	const { dir, cfg } = setup();
+	const [plan] = indexedPlans(dir, cfg, ["20261029_1455_forced.md"]);
+	recordPagePlan(cfg.pages.dir, "toy.html", { plan, missing: [], thin: [] });
+	chatApprove("approve 20261029_1455", cfg, "interactive");
+	expect(recordsOf(cfg)[plan].page).toBe("toy.html");
+});
+
+test("chatApprove: an unknown stamp records nothing and says no open plan matches", () => {
+	const { dir, cfg } = setup();
+	indexedPlans(dir, cfg, ["20261029_1455_forced.md"]);
+	expect(chatApprove("approve 20261031_0101", cfg, "interactive")).toEqual({ applied: false, problem: "no open plan 20261031_0101" });
+	expect(existsSync(join(cfg.paths.queue_state, "plan-approvals.json"))).toBe(false);
+});
+
+test("chatApprove: two open plans matching one stamp record nothing", () => {
+	const { dir, cfg } = setup();
+	indexedPlans(dir, cfg, ["20261029_1455_a.md", "20261029_1455_b.md"]);
+	expect(chatApprove("approve 20261029_1455", cfg, "interactive")).toEqual({ applied: false, problem: "2 open plans match 20261029_1455; nothing approved" });
+	expect(existsSync(join(cfg.paths.queue_state, "plan-approvals.json"))).toBe(false);
+});
+
+test("chatApprove: a failed write is a problem, never an approval", () => {
+	const { dir, cfg } = setup();
+	const [plan] = indexedPlans(dir, cfg, ["20261029_1455_forced.md"]);
+	const blocked = join(dir, "state-is-a-file");
+	writeFileSync(blocked, "not a directory");
+	cfg.paths.queue_state = blocked;
+	applyQueueEnv(cfg);
+	const r = chatApprove("approve 20261029_1455", cfg, "interactive");
+	expect(r.applied).toBe(false);
+	expect(r.problem).toContain("not approved");
+	expect(() => approvePlanFile(plan, "toy.html")).toThrow();
 });
