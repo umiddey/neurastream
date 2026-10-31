@@ -38,6 +38,7 @@ import type { Plan } from "./queue/lib.ts";
 
 import { nowSec } from "./clock.ts";
 import { outUntil, pinModel, providerOfModel, readOut } from "./provider-state.ts";
+import { lint } from "./brief-lint.ts";
 const ALLOW: Decision = { allow: true, reason: "" };
 
 /**
@@ -554,6 +555,12 @@ function unticked(p: Plan): string[] {
 	return [...phases.matchAll(/^\s*[-*]\s+\[ \]\s+(P\d+[a-z]?)\b/gm)].map(m => m[1]!);
 }
 
+/** The open plans the text names — a `Priority skip: <path> — <why>` line names a plan it does NOT run on (20261025_0215 P3), so only the remaining text decides. planGate's targeting, shared with the spawn verdict's brief-lint and cap notes (plan 20261031_1207 P4). */
+function briefPlans(text: string, cfg?: Config): Plan[] {
+	const body = text.replace(/^\s*(?:[-*]\s+)?priority skip:.*$/gim, "");
+	return q.activePlans(undefined, undefined, cfg?.review.agents ?? []).filter(p => body.includes(p.file));
+}
+
 // Plans an implementer brief may run on; returns [reason, null] or [null, plan files].
 export function planGate(text: string, label: string, cfg?: Config): [string | null, string[]] {
 	const plans = q.activePlans(undefined, undefined, cfg?.review.agents ?? []);
@@ -563,10 +570,7 @@ export function planGate(text: string, label: string, cfg?: Config): [string | n
 			`${label}: ${unclosed.map(p => `${p.file} (${p.status})`).join(", ")} is still indexed. Verify it and run \`queue-close <plan>\` before any new spawn.`,
 			[],
 		];
-	// A `Priority skip: <path> — <why>` line names a plan it does NOT run on (20261025_0215 P3);
-	// only the remaining text decides which plans this brief targets.
-	const body = text.replace(/^\s*(?:[-*]\s+)?priority skip:.*$/gim, "");
-	const named = plans.filter(p => body.includes(p.file));
+	const named = briefPlans(text, cfg);
 	if (!named.length)
 		return [
 			`${label}: an implementer needs an open plan. Name the plan's absolute path in the brief; the plan must be listed in ${q.INDEX}.`,
@@ -774,6 +778,37 @@ export function preferProblem(agent: string, brief: string, runningJobs: readonl
 	return null;
 }
 
+/** P4 (plan 20261031_1207): `agent-ledger --cap`'s FULL line at spawn time — the agent's provider already runs its full share of live subagents. Counted from the caller's running job labels, the live data preferProblem counts (a caller without job info counts 0). */
+function ledgerCapProblem(agent: string, runningJobs: readonly string[] | undefined, cfg: Config): string | null {
+	const provider = providerOfModel(pinModel(cfg, agent));
+	if (provider === null || outUntil(cfg, provider) !== null) return null;
+	const sharers = [agent, ...cfg.ledger.prefer.filter(a => providerOfModel(pinModel(cfg, a)) === provider)];
+	const running = (runningJobs ?? []).filter(l => sharers.some(n => l.toLowerCase().includes(n.toLowerCase()))).length;
+	if (running < cfg.ledger.max_running_per_provider) return null;
+	return `provider ${provider} is at its cap (${running} live of ${cfg.ledger.max_running_per_provider} running); stop or wait for one before spawning more.`;
+}
+
+/**
+ * The one spawn verdict (plan 20261031_1207 P4): every refusal in one numbered list, so Main fixes
+ * all of them in one round trip. The named plans' brief-lint errors and the provider-cap note (the
+ * advice Main gathered by hand through `brief-lint` and `agent-ledger --cap`) ride along on an
+ * already-refused spawn — alone they never refuse: real plans carry lint nits, and a full provider
+ * is the prefer order's to weigh, not a gate of its own.
+ */
+function spawnVerdict(agent: string, problems: string[], lintFiles: string[], runningJobs: readonly string[] | undefined, cfg: Config): string | null {
+	if (!problems.length) return null;
+	const advice: string[] = [];
+	for (const f of new Set(lintFiles)) {
+		try {
+			for (const e of lint(f, cfg).errs) advice.push(`${f}: ${e}`);
+		} catch {} // an unreadable plan's refusal is planGate's to name
+	}
+	const cap = ledgerCapProblem(agent, runningJobs, cfg);
+	if (cap) advice.push(cap);
+	const all = [...problems, ...advice];
+	return `${agent}: ${all.length} ${all.length === 1 ? "problem" : "problems"}:\n${all.map((p, i) => `${i + 1}. ${p}`).join("\n")}`;
+}
+
 /**
  * Who is rate-limited comes from live data (plan 20261025_1700 P1): refuse a brief that asserts a
  * provider shown free by providerStatus is rate-limited — named directly or through a prefer
@@ -799,7 +834,7 @@ export function providerClaimProblem(text: string, cfg: Config): string | null {
 	return `${name === provider ? provider : `${name} (provider ${provider})`} is free per the recorded provider state — do not claim it is rate-limited; read the providers line from agent-ledger --cap.`;
 }
 
-/** Reason to refuse a `task` brief, or null; `files` receives the plans to record, `budgets` every named task's call budget (null = none), `staffing` each plan's named tasks of this call, `runningJobs` the caller's running job labels (undefined = no job info). */
+/** Reason to refuse a `task` brief, or null; `files` receives the plans to record, `budgets` every named task's call budget (null = none), `staffing` each plan's named tasks of this call, `runningJobs` the caller's running job labels (undefined = no job info). Every refusal lands in one numbered verdict (plan 20261031_1207 P4). */
 export function spawnProblem(
 	input: Record<string, unknown>,
 	cfg: Config,
@@ -815,30 +850,43 @@ export function spawnProblem(
 	const context = String(input?.context ?? "");
 	const allowed = q.allowedAgents();
 	const shared = briefBudget(context);
+	const problems: string[] = [];
 	const named: Record<string, number | null> = {};
 	for (const t of tasks) {
 		const agent = String(t?.agent ?? "task");
 		const label = String(t?.name ?? agent);
-		if (!allowed.has(agent)) return `${label}: agent "${agent}" is not in "## Allowed" of ${q.SUBAGENTS_MD} (no expensive or unpinned models).`;
-		const [why, plans] = planGate(`${context}\n${String(t?.task ?? "")}`, label, cfg);
-		if (why) return why;
+		const text = `${context}\n${String(t?.task ?? "")}`;
+		if (!allowed.has(agent)) {
+			problems.push(`${label}: agent "${agent}" is not in "## Allowed" of ${q.SUBAGENTS_MD} (no expensive or unpinned models).`);
+			continue;
+		}
+		const [why, plans] = planGate(text, label, cfg);
+		if (why) {
+			problems.push(why);
+			continue;
+		}
 		// P3 (plan 20261028_1600): the task tool is the live spawn path; every task carries its own
-		// pending-work check, before the call-wide gates below.
-		const pending = pendingWorkProblem(plans, `${context}\n${String(t?.task ?? "")}`, cfg, runner);
-		if (pending) return `${label}: ${pending}`;
-		// The task's own `Call budget:` line wins over the shared context's.
-		const role = reviewRole(t?.name, plans, `${context}\n${String(t?.task ?? "")}`, String(t?.agent ?? ""), cfg, spawner);
-		if (role.problem) return `${label}: ${role.problem}`;
-		if (t?.name) roles[label] = role.plan;
-		const review = reviewPassProblem(plans, `${context}\n${String(t?.task ?? "")}`, String(t?.agent ?? ""), cfg, spawner);
-		if (review) return `${label}: ${review}`;
+		// pending-work check, before the call-wide gates below. The task's own `Call budget:` line
+		// wins over the shared context's.
+		const role = reviewRole(t?.name, plans, text, agent, cfg, spawner);
+		const taskProblems = [
+			pendingWorkProblem(plans, text, cfg, runner),
+			role.problem,
+			reviewPassProblem(plans, text, agent, cfg, spawner),
+		];
 		const budget = briefBudget(String(t?.task ?? "")) ?? shared;
 		if (budget !== null) {
-			if (!t?.name) return `${label}: "Call budget: ${budget}" needs a task name (the budget is keyed by it).`;
-			if (budget < 10 || budget > cfg.guards.sub_max_calls_cap)
-				return `${label}: call budget ${budget} is outside the allowed range 10..${cfg.guards.sub_max_calls_cap}.`;
+			if (!t?.name) taskProblems.push(`${label}: "Call budget: ${budget}" needs a task name (the budget is keyed by it).`);
+			else if (budget < 10 || budget > cfg.guards.sub_max_calls_cap)
+				taskProblems.push(`call budget ${budget} is outside the allowed range 10..${cfg.guards.sub_max_calls_cap}.`);
+		}
+		const own = taskProblems.filter((p): p is string => p !== null).map(p => (p.startsWith(`${label}:`) ? p : `${label}: ${p}`));
+		if (own.length) {
+			problems.push(...own);
+			continue;
 		}
 		if (t?.name) {
+			roles[label] = role.plan;
 			named[label] = budget;
 			for (const f of plans) staffing[f] = [...(staffing[f] ?? []), label];
 		}
@@ -847,22 +895,33 @@ export function spawnProblem(
 	Object.assign(budgets, named);
 	// Who is limited and who goes first come from live data and ledger.prefer (plan 20261025_1700
 	// P3): the same rules checkSpawn applies to single-spawn events, per task.
-	const claim = providerClaimProblem(`${context}\n${tasks.map(t => String(t?.task ?? "")).join("\n")}`, cfg);
-	if (claim) return claim;
+	const joined = `${context}\n${tasks.map(t => String(t?.task ?? "")).join("\n")}`;
+	const claim = providerClaimProblem(joined, cfg);
+	if (claim) problems.push(claim);
 	for (const t of tasks) {
 		const pick = preferProblem(String(t?.agent ?? "task"), `${context}\n${String(t?.task ?? "")}`, runningJobs, cfg);
-		if (pick) return `${String(t?.name ?? t?.agent ?? "task")}: ${pick}`;
+		if (pick) problems.push(`${String(t?.name ?? t?.agent ?? "task")}: ${pick}`);
 	}
 	// Priority gate (20261025_0215 P3): once per `task` call, over the plans this call names; the
 	// skip lines may sit in the shared context or any task text.
 	const gate = priorityGate(
 		files,
 		runningJobs,
-		`${context}\n${tasks.map(t => String(t?.task ?? "")).join("\n")}`,
+		joined,
 		cfg,
 		String((tasks[0] && (tasks[0].name ?? tasks[0].agent)) ?? "task"),
 	);
-	if (gate) return gate;
+	if (gate) problems.push(gate);
+	const inc = incidentSpawnProblem("spawn", JSON.stringify(input), files, cfg);
+	if (inc) problems.push(inc);
+	const verdict = spawnVerdict(
+		String((tasks[0] && (tasks[0].name ?? tasks[0].agent)) ?? "task"),
+		problems,
+		files.length ? files : briefPlans(joined, cfg).map(p => p.file),
+		runningJobs,
+		cfg,
+	);
+	if (verdict) return verdict;
 	for (const [name, plan] of Object.entries(roles)) recordReviewSpawn(name, plan);
 	return null;
 }
@@ -1094,6 +1153,8 @@ function taskLaunch(input: Record<string, unknown>, cfg: Config, runningJobs: st
 		log(cfg.paths.guard_log, `BLOCK spawn: cancel pending (${pending.words})`);
 		return `${CANCEL_TODO} Flagged: "${pending.words}"`;
 	}
+	// P4 (plan 20261031_1207): spawnProblem's verdict now carries the incident check too, so one
+	// deny lists every problem.
 	const files: string[] = [];
 	const budgets: Record<string, number | null> = {};
 	const staffing: Record<string, string[]> = {};
@@ -1102,8 +1163,6 @@ function taskLaunch(input: Record<string, unknown>, cfg: Config, runningJobs: st
 		log(cfg.paths.guard_log, `BLOCK spawn: ${why}`);
 		return why;
 	}
-	const inc = incidentSpawnProblem("spawn", JSON.stringify(input), files, cfg);
-	if (inc) return inc;
 	recordSpawns(files, staffing);
 	recordBudgets(budgets);
 	return null;
@@ -1419,44 +1478,34 @@ export function checkSpawn(e: SpawnEvent, cfg: Config, runner: CommandRunner = d
 		return deny(`main-guard: ${e.agent}: agent "${e.agent}" is not in "## Allowed" of ${q.SUBAGENTS_MD} (no expensive or unpinned models).`);
 	if (e.invocationKind !== "task")
 		return deny("main-guard: spawn implementers with the task tool (the plan gate checks its brief).");
+	// P4 (plan 20261031_1207): every gate's refusal lands in one numbered verdict; nothing
+	// short-circuits, so Main sees all the problems in one round trip.
+	const problems: string[] = [];
 	const [why, named] = planGate(e.brief, e.agent, cfg);
-	if (why) {
-		log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${why}`);
-		return deny(`main-guard: ${why}`);
-	}
+	if (why) problems.push(why);
 	const gate = priorityGate(named, e.runningJobs, e.brief, cfg, e.agent);
-	if (gate) {
-		log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${gate}`);
-		return deny(`main-guard: ${gate}`);
-	}
+	if (gate) problems.push(gate);
 	const pendingWork = pendingWorkProblem(named, e.brief, cfg, runner);
-	if (pendingWork) {
-	log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${pendingWork}`)
-	return deny(`main-guard: ${pendingWork}`)
-}
+	if (pendingWork) problems.push(pendingWork);
 	const role = reviewRole(e.name, named, e.brief, e.agent, cfg, "main");
-	if (role.problem) {
-		log(cfg.paths.plan_guard_log, `BLOCK ${e.agent} ${e.name ?? "(unnamed)"} review spawn: ${role.problem}`);
-		return deny(`main-guard: ${role.problem}`);
-	}
+	if (role.problem) problems.push(role.problem);
 	const review = reviewPassProblem(named, e.brief, e.agent, cfg, "main");
-	if (review) {
-		log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${review}`);
-		return deny(`main-guard: ${review}`);
-	}
+	if (review) problems.push(review);
 	const inc = incidentSpawnProblem(`spawn ${e.agent}`, e.brief, named, cfg);
-	if (inc) return deny(`main-guard: ${inc}`);
-	// The owner's pick order and live provider state (plan 20261025_1700 P3), before the spawn records.
+	if (inc) problems.push(inc);
 	const claim = providerClaimProblem(e.brief, cfg);
-	if (claim) {
-		log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${claim}`);
-		return deny(`main-guard: ${e.agent}: ${claim}`);
-	}
+	if (claim) problems.push(`${e.agent}: ${claim}`);
 	const pick = preferProblem(e.agent, e.brief, e.runningJobs, cfg);
-	if (pick) {
-		log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${pick}`);
-		return deny(`main-guard: ${e.agent}: ${pick}`);
+	if (pick) problems.push(`${e.agent}: ${pick}`);
+	const verdict = spawnVerdict(e.agent, problems, named.length ? named : briefPlans(e.brief, cfg).map(p => p.file), e.runningJobs, cfg);
+	if (verdict) {
+		for (const p of problems) {
+			if (p === role.problem) log(cfg.paths.plan_guard_log, `BLOCK ${e.agent} ${e.name ?? "(unnamed)"} review spawn: ${p}`);
+			else log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${p}`);
+		}
+		return deny(`main-guard: ${verdict}`);
 	}
+	// The owner's pick order and live provider state (plan 20261025_1700 P3), before the spawn records.
 	const staffing: Record<string, string[]> = {};
 	for (const f of named) staffing[f] = [e.agent];
 	recordSpawns(named, staffing);
