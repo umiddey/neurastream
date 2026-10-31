@@ -7,6 +7,9 @@
 // injected notifier — the watcher pushes, it never restarts a service or edits plans. The
 // clock, the unit lister, the detector gather and the notifier are injected: tests touch only a
 // temp queue_state, never a real home, network or service manager.
+// CI (P6b, ci.ts) adds four checks per repo of an active plan: a red default branch (ci-red-main),
+// a red open MR past watch.ci_red_hours (ci-red-mr), M3 `ci` for every newly merged MR, and a
+// `ci-flaky` metric when a commit goes red then green.
 
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -19,6 +22,8 @@ import { log } from "./guards.ts";
 import { notifyProviders } from "./notify.ts";
 import { addIncident, dismissIncident, openIncidents, readIncidents, type IncidentView } from "./incidents.ts";
 import { loadKnownSecrets, redactSecrets } from "./secret-redact.ts";
+import { ciScan } from "./ci.ts";
+import type { CommandRunner } from "./mr-sweep.ts";
 
 /** One failed user unit, as the lister reports it. */
 export interface FailedUnit {
@@ -73,6 +78,12 @@ export interface WatchDeps {
 	 *  real. Called at most watch.max_posts_per_run times per run plus one overflow line, and
 	 *  only when a notify provider is configured. */
 	notify: (text: string) => void;
+	/** The forge CLI runner the CI check uses (mr-sweep's CommandRunner), so tests never run glab or gh. */
+	runner: CommandRunner;
+	/** The active plans: the CI check reads their repos and the MRs they name. */
+	plans: () => { file: string; repo: string; text: string }[];
+	/** Plan files with a running agent right now. A timer run has no live job info, so production passes none. */
+	staffed: () => string[];
 }
 
 export interface WatchReport {
@@ -173,7 +184,11 @@ function unitProblems(cfg: Config, listUnits: UnitLister, now: number): WatchPro
 /** One watcher pass: heartbeats, failed units, gated detectors — in that order. */
 export function watchOnce(cfg: Config, deps: WatchDeps): WatchReport {
 	const now = deps.now();
-	const problems = [...beatProblems(cfg, readBeats(cfg), now), ...unitProblems(cfg, deps.listUnits, now)];
+	const ci = ciScan(cfg, { run: deps.runner, now, plans: deps.plans(), staffed: deps.staffed() });
+	for (const s of ci.skipped) log(cfg.paths.guard_log, `ci: skipped ${s}`);
+	if (ci.recorded) log(cfg.paths.guard_log, `ci: recorded M3 for ${ci.recorded} merged MR(s)`);
+	if (ci.flaky) log(cfg.paths.guard_log, `ci: recorded ${ci.flaky} flaky commit(s)`);
+	const problems = [...beatProblems(cfg, readBeats(cfg), now), ...unitProblems(cfg, deps.listUnits, now), ...ci.problems];
 	const current = new Set(problems.map(p => p.fingerprint));
 
 	// Recovery first, so a problem that recovers and re-fails between two runs opens a new

@@ -217,6 +217,8 @@ export interface Config {
 		noisy_min: number;
 		/** Dismiss-rate threshold (0 < ratio <= 1) for the noisy-detector rule (plan 20261027_1430 P6). */
 		noisy_ratio: number;
+		/** Hours an open MR's pipeline may stay failed before incident "ci-red-mr" opens (plan 20261027_1430 P6b). */
+		ci_red_hours: number;
 	};
 	machine: {
 		load_over_cores: number;
@@ -598,6 +600,9 @@ function check(cfg: Config): void {
 	}
 	if (typeof cfg.watch.noisy_ratio !== "number" || !(cfg.watch.noisy_ratio > 0 && cfg.watch.noisy_ratio <= 1)) {
 		throw new ConfigError("watch.noisy_ratio must be a number in (0, 1]");
+	}
+	if (typeof cfg.watch.ci_red_hours !== "number" || !(cfg.watch.ci_red_hours > 0)) {
+		throw new ConfigError("watch.ci_red_hours must be a number > 0");
 	}
 	for (const p of cfg.metrics.correction_patterns) {
 		try {

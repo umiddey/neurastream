@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ConfigError, loadConfig, type Config } from "../core/config.ts";
 import { appendMetric, readMetricEvents } from "../core/metrics.ts";
+import { recordCiMr } from "../core/ci.ts";
 import { nowSec } from "../core/clock.ts";
 import type { RunSource } from "../core/adapter.ts";
 import { buildReport, type BloatSummary, type ProviderSummary } from "../core/report.ts";
@@ -31,47 +32,22 @@ function flagValue(args: string[], name: string): string | undefined {
 	return i >= 0 ? args[i + 1] : undefined;
 }
 
-/** Single-quotes a value for `sh -c`, so an MR id cannot inject shell syntax. */
-function shellQuote(v: string): string {
-	return `'${v.replaceAll("'", "'\\''")}'`;
-}
-
 /** Runs the configured CI command in the repo and records how many pipelines the MR needed. */
 export function recordCi(cfg: Config, repoDir: string, mr: string, now: number): number {
 	if (!repoDir || !mr) {
 		console.error(METRICS_USAGE);
 		return 2;
 	}
-	const template = cfg.metrics.ci_pipelines_cmd;
-	if (!template) {
-		console.error("metrics.ci_pipelines_cmd not set");
-		return 2;
-	}
 	if (!existsSync(repoDir)) {
 		console.error(`repo-dir not found: ${repoDir}`);
 		return 2;
 	}
-	const proc = Bun.spawnSync(["sh", "-c", template.replaceAll("{mr}", shellQuote(mr))], {
-		cwd: repoDir,
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	if (proc.exitCode !== 0) {
-		console.error(`ci command exited ${proc.exitCode}: ${proc.stderr.toString().trim()}`);
-		return 1;
+	const r = recordCiMr(cfg, repoDir, mr, now);
+	if (!r.ok) {
+		console.error(r.error);
+		return r.code;
 	}
-	let pipelines: unknown;
-	try {
-		pipelines = JSON.parse(proc.stdout.toString());
-	} catch {
-		pipelines = undefined;
-	}
-	if (!Array.isArray(pipelines)) {
-		console.error("ci command must print a JSON array on stdout");
-		return 1;
-	}
-	appendMetric(cfg, { type: "ci", mr, repo: repoDir, tries: pipelines.length, ts: now });
-	console.log(`ci: ${mr} needed ${pipelines.length} pipeline(s)`);
+	console.log(`ci: ${mr} needed ${r.tries} pipeline(s)`);
 	recordProducts(cfg, repoDir, now);
 	return 0;
 }

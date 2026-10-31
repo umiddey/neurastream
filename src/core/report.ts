@@ -293,6 +293,7 @@ export function buildReport(cfg: Config, source: RunSource, days: number, now: n
 	const noisy = noisyDetectors(incidents, cur, cfg.watch);
 	const quality = [
 		`Silent failures: ${silentFailures(incidents, cur)} watch incidents; suspected false blocks: ${m7(incidents, falseAlarms, cur)}`,
+		`Flaky jobs: ${events.filter((e) => e.type === "ci-flaky" && inWindow(Number(e.ts), cur)).length} same-commit red→green re-runs`,
 		"Dismiss rate by kind (opened, planned, dismissed):",
 		...kindStats(incidents, cur).map((k) => `- ${k.kind}: ${k.opened}, ${k.planned}, ${k.dismissed} (${Math.round(k.dismissRate * 100)}% dismissed)`),
 	];

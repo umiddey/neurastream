@@ -24,7 +24,8 @@ import { runPages } from "./pages.ts";
 import { watchOn, watchOff } from "./watch-setup.ts";
 import { runUninstall } from "../core/uninstall.ts";
 import { queueMigrate } from "../core/queue-migrate.ts";
-import { allowedAgents, enforceReadOnlyIndex, indexPath, readIndex, subagentsPath, writeIndex } from "../core/queue/lib.ts";
+import { activePlans, allowedAgents, enforceReadOnlyIndex, indexPath, readIndex, subagentsPath, writeIndex } from "../core/queue/lib.ts";
+import { defaultRunner } from "../core/mr-sweep.ts";
 import { allowAgents, denyAgents, invalidSlugs } from "../core/subagents.ts";
 
 const BINS = [
@@ -194,6 +195,10 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 							}),
 						);
 					},
+					runner: defaultRunner,
+					plans: () => activePlans(),
+					// A timer run has no live job info, so no plan is known to be staffed.
+					staffed: () => [],
 				});
 				console.log(`watch: ${report.opened.length} opened, ${report.deduped.length} deduped, ${report.closed.length} recovered, ${report.detectors.length} detector findings`);
 				return 0;

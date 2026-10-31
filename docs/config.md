@@ -102,6 +102,7 @@ watch:                         # the watcher (src/core/watch.ts): `neurastream w
   interval_min: 15            # minutes between watcher runs; `neurastream watch on` installs the timer at this interval
   noisy_min: 5                # weekly report: a detector kind with at least this many incidents in the window ...
   noisy_ratio: 0.5            # ... and at least this dismiss rate opens one "noisy detector" incident
+  ci_red_hours: 2              # an open MR whose pipeline stays failed longer than this opens incident "ci-red-mr" (the watcher also runs metrics.ci_pipelines_cmd for merged MRs)
 
 ledger:
   default_hours: 24
