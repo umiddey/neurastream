@@ -1,4 +1,8 @@
 # Changelog
+## Unreleased
+### Added
+- Every scheduled job beats: `withHeartbeat` wraps wip-snapshot, wip-backup and `metrics report`, the pages server and the owner page server write `pages-serve` / `ui` heartbeats — `{name, at, ok, detail}` JSON under `<queue_state>/heartbeats/<name>.json`, detail cut to 200 chars; a crash beats ok:false with the first error line, then re-throws so exit codes are unchanged. Hidden `neurastream heartbeat <name> [--fail "<text>"]` beats once by hand (live check, your own cron jobs).
+
 ## 0.2.62
 ### Changed
 - Review spawns skip the priority gate (plan 20261028_1600 P8): `priorityGate` drops the plans a Main-authored brief reviews (`Plan review: <plan>` line, agent in `review.agents`, main-launched) before the rank check, so reviews of plans #3+ start while higher plans are idle; implementer spawns and sub-launched calls keep the gate (I-20261031-353).
