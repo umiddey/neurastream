@@ -1,4 +1,11 @@
 # Changelog
+## 0.2.60
+### Changed
+- Plan index is append-only and read-only on disk (0444): one writer `writeIndex`; agents add or reorder plans with `neurastream queue add` / `queue move`; doctor re-locks the file.
+- Tests never touch the real queue: a bun test preload sandboxes every `QUEUE_*` path.
+- Landed open plans auto-close themselves (`queue-close --auto`); a landed plan whose close failed locks spawns and stop until a brief names it.
+- queue-close marks incidents fixed only when cited outside `## Progress`.
+
 ## 0.2.59
 ### Changed
 - Plan pages are forced onto the architecture-drilldown template: `pages publish --plan` refuses anything but the template with its DATA block edited, and refuses to publish an incomplete diagram; the page's approve tap now lands in the owner inbox as one approval row, and doctor fails when neurastream-pages.service predates the installed package (plan 20261031_0917).
