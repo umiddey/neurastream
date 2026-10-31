@@ -3,7 +3,7 @@ import { basename, extname, resolve } from "node:path";
 import type { Config } from "./config.ts";
 import { isLoopback, isTailnet, type UiHttpServer } from "./owner-ui.ts";
 import { appendPageNotes, openNoteIds } from "./page-notes.ts";
-import { approvePlanFile, planForPage, readPagePlan } from "./plan-approval.ts";
+import { approvePlanFile, readPagePlan } from "./plan-approval.ts";
 import type { RunSource } from "./adapter.ts";
 import type { Tailscale } from "./tailscale.ts";
 

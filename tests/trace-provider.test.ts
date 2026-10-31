@@ -4,7 +4,7 @@
 // exercised end to end, plus synthetic events for edges the fixtures cannot carry.
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { TraceEvent } from "../src/core/adapter.ts";

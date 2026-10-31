@@ -19,7 +19,7 @@ export function invalidSlugs(slugs: string[]): string[] {
 function allowedSection(lines: string[]): { head: number; end: number } | null {
 	const head = lines.findIndex(l => ALLOWED_HEAD.test(l));
 	if (head === -1) return null;
-	let end = lines.findIndex((l, i) => i > head && /^## /.test(l));
+	let end = lines.findIndex((l, i) => i > head && l.startsWith('## '));
 	if (end === -1) end = lines.length;
 	return { head, end };
 }

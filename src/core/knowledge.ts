@@ -65,7 +65,7 @@ function parseTitle(html: string, fallback: string): string {
 	return t || fallback;
 }
 
-function topicUpdated(repoPath: string, rel: string, abs: string, now: number): string {
+function topicUpdated(repoPath: string, rel: string, abs: string, _now: number): string {
 	const log = gitRaw(repoPath, ["log", "-1", "--format=%cI", "--", rel]).stdout.trim();
 	if (log) return log;
 	const mtime = statSync(abs).mtimeMs;

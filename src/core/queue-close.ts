@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import type { Config } from "./config.ts";
 import { applyQueueEnv } from "./queue/env.ts";
-import { activePlans, cancelledFile, cancelledLine, closeLog, finishedEntry, finishedPath, INDEX, prependFinished, readIndex, sha, STATE_DIR } from "./queue/lib.ts";
+import { activePlans, cancelledFile, cancelledLine, closeLog, finishedEntry, finishedPath, INDEX, prependFinished, sha, STATE_DIR } from "./queue/lib.ts";
 import { fixedIncident } from "./incidents.ts";
 
 export function queueClose(args: string[], cfg: Config): number {

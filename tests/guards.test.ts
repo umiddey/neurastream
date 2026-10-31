@@ -6,7 +6,7 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { helpText } from "../src/cli/dispatch.ts";
 import type { ToolEvent } from "../src/core/adapter.ts";
@@ -170,8 +170,6 @@ function origRun(body: string, blockers = ORIG_BLOCKERS): unknown {
 // The originals only see this sandbox through the env lines inside origRun's child process (their
 // paths are import-time constants), so each original scenario is a `bun -e` script that imports
 // the extension at runtime — a genuinely runtime-selected module, not a hidden static dependency.
-
-const MAIN_CTX = { agent: { kind: "main" }, cwd: TOY };
 
 function toolEvent(tool: string, input: Record<string, unknown>, agent: "main" | "sub", calls = 0) {
 	return { tool, input, cwd: TOY, agent, agentId: agent === "main" ? "main" : "w1", calls, paths: [], writes: [], command: String(input.command ?? "") };
@@ -343,7 +341,7 @@ test("spawn gates: an unknown subagent is refused; a valid spawn records and the
 // P4: a brief names an unticked phase of the plan it runs on, and never asks for research for a plan.
 test("spawn brief must name an unticked phase of the plan", () => {
 	fresh();
-	writeFileSync(PLAN, TOY_PLAN.replace("- [ ] P1 do the thing — verify: \`test -f src/a.ts\`", "- [x] P1 do the thing — verify: \`test -f src/a.ts\`\n- [ ] P2 do the next thing — verify: \`test -f src/a.ts\`"));
+	writeFileSync(PLAN, TOY_PLAN.replace("- [ ] P1 do the thing — verify: `test -f src/a.ts`", "- [x] P1 do the thing — verify: `test -f src/a.ts`\n- [ ] P2 do the next thing — verify: `test -f src/a.ts`"));
 	const onlyTicked = guardCli("spawn", { agent: "toy-worker", invocationKind: "task", brief: `Work ${PLAN} P1 now.` });
 	expect(onlyTicked.code).toBe(2);
 	expect(onlyTicked.d.reason).toContain("must name an unticked phase");
@@ -356,7 +354,7 @@ test("spawn brief must name an unticked phase of the plan", () => {
 
 test("spawn brief may name a lettered sub-phase (P4a) of the plan", () => {
 	fresh();
-	writeFileSync(PLAN, TOY_PLAN.replace("- [ ] P1 do the thing — verify: \`test -f src/a.ts\`", "- [x] P1 do the thing — verify: \`test -f src/a.ts\`\n- [ ] P2a do the next thing — verify: \`test -f src/a.ts\`\n- [ ] P2b then this — verify: \`test -f src/a.ts\`"));
+	writeFileSync(PLAN, TOY_PLAN.replace("- [ ] P1 do the thing — verify: `test -f src/a.ts`", "- [x] P1 do the thing — verify: `test -f src/a.ts`\n- [ ] P2a do the next thing — verify: `test -f src/a.ts`\n- [ ] P2b then this — verify: `test -f src/a.ts`"));
 	const onlyTicked = guardCli("spawn", { agent: "toy-worker", invocationKind: "task", brief: `Work ${PLAN} P1 now.` });
 	expect(onlyTicked.code).toBe(2);
 	expect(onlyTicked.d.reason).toContain("P2a, P2b");

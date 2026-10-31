@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { uiOff, uiOn, type Runner } from "../src/core/ui-setup.ts";
 import { runUi } from "../src/cli/ui.ts";
-import type { OwnerUiOptions, OwnerUiServer } from "../src/core/owner-ui.ts";
+import type { OwnerUiServer } from "../src/core/owner-ui.ts";
 import type { Tailscale } from "../src/core/tailscale.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "ui-on-off-"));

@@ -11,7 +11,7 @@ import { dirname, join } from "node:path";
 import { parseTraceFile } from "../src/adapters/omp/traces.ts";
 import { parseTs } from "../src/adapters/omp/sessions.ts";
 import type { TraceEvent } from "../src/core/adapter.ts";
-import { loadConfig, ConfigError, TEMPLATE_PATH } from "../src/core/config.ts";
+import { loadConfig, ConfigError } from "../src/core/config.ts";
 import { bloatRules, bloatFindings, callSizes, type BloatRules } from "../src/core/trace-bloat.ts";
 
 const REPO = dirname(dirname(import.meta.path));

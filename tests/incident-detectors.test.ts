@@ -6,7 +6,7 @@ import { afterAll, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { Run, RunSource } from "../src/core/adapter.ts";
+import type { Run } from "../src/core/adapter.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { readIncidents } from "../src/core/incidents.ts";
 import {
@@ -73,8 +73,6 @@ function run(id: string, status: Run["status"], lastWriteAt = NOW - 60): Run {
 		scoreEnd: "",
 	};
 }
-
-const fakeSource = (runs: Run[]): RunSource => ({ listRuns: () => runs, mainSession: () => null });
 
 // The trimmed real line: Main's session announced the agent completed; the ledger kept it RUNNING.
 const FIXTURE_LINE = JSON.parse(readFileSync(join(REPO, "tests/fixtures/incidents/async-result-line.json"), "utf8")) as Record<string, unknown>;

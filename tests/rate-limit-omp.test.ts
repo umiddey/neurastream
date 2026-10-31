@@ -19,7 +19,6 @@ import { loadConfig, type Config } from "../src/core/config.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { blockersDirPath, indexPath } from "../src/core/queue/lib.ts";
 
-const REPO = dirname(dirname(import.meta.path));
 const TMP = mkdtempSync(join(tmpdir(), "rate-limit-omp-"));
 const HOME = join(TMP, "home");
 const QUEUE_STATE = join(TMP, "queue-state");
