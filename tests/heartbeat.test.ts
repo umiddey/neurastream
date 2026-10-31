@@ -39,7 +39,7 @@ test("the hidden heartbeat CLI writes ok:false with --fail", async () => {
 	const savedHome = process.env.HOME;
 	const savedQueueState = process.env.QUEUE_STATE;
 	process.env.HOME = home;
-	// Bun's homedir() ignores a changed HOME (reads passwd), so dispatch's loadConfig() would
+	// Bun's home lookup ignores a changed HOME (reads passwd), so dispatch's loadConfig() would
 	// beat into the real queue_state: point QUEUE_STATE at the temp home instead — applyEnv
 	// reads process.env directly, which overrides both the file and the expanded default.
 	process.env.QUEUE_STATE = join(home, ".local", "state", "queue");
