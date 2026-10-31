@@ -239,9 +239,11 @@ function recordReviews(e: PlanEditEvent, cfg: Config): void {
 			: reviewHash(e.after) !== spawn.hash
 				? { verdict: "FAIL", hash: spawn.hash, finding: "plan changed during review", at, by: name }
 				: { verdict: REVIEW_LINE.exec(block)![2] === "PASS" ? "PASS" : "FAIL", hash: spawn.hash, finding: findingsValue(block) ?? "", at, by: name };
-		// A CODE REVIEW record covers the phases the entry names (P1, P4a, …), wherever in it they stand.
-		if (kind === "CODE") code[e.path] = { ...record, phases: [...new Set([...block.matchAll(/\bP\d+[a-z]?\b/g)].map(m => m[0]))] };
-		else reviews[e.path] = record;
+		// A CODE REVIEW record covers only the phases the verdict names before its Findings line: a phase in the Findings text ("see P2") is a reference, not coverage; an entry without a Findings line covers nothing.
+		if (kind === "CODE") {
+			const head = block.slice(0, Math.max(block.indexOf("Findings:"), 0));
+			code[e.path] = { ...record, phases: [...new Set([...head.matchAll(/\bP\d+[a-z]?\b/g)].map(m => m[0]))] };
+		} else reviews[e.path] = record;
 	}
 	writePlanReviews(reviews, code, cfg);
 	writeReviewSpawns(spawns);

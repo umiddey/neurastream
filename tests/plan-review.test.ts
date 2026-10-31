@@ -783,3 +783,19 @@ test("a newer implementer entry naming the phase voids the PASS wherever it sits
 	writeFileSync(LOCKED, fixturePlan().replace("- Started.\n", NEWER_IMPL + CODE_PASS));
 	expect(mainTick(cfg)).toMatchObject({ allow: false, reason: expect.stringContaining("P1") });
 });
+
+// P6 rework: a verdict covers only the phases named before its Findings line.
+
+const CODE_PASS_SEE_P2 = "\n- 2026-10-31 16:00 RevC1: CODE REVIEW: PASS — phase: P1 — redundant: none — inefficient: none — insecure: none — MRs: none\n  Findings: see P2 for the edge this review did not cover\n";
+
+test("a CODE REVIEW PASS whose Findings mention another phase does not cover it (P6)", () => {
+	rmSync(REVIEWS, { force: true });
+	const cfg = { ...gcfg, review: { ...gcfg.review, code: true } };
+	writeFileSync(LOCKED, fixturePlan().replace(
+		"- [ ] P1 do the thing — verify: `test -f src/a.ts`",
+		"- [ ] P1 do the thing — verify: `test -f src/a.ts`\n- [ ] P2 also this — verify: `test -f src/a.ts`",
+	));
+	expect(reviewerEdit(CODE_PASS_SEE_P2).allow).toBe(true);
+	expect(codeReviewsNow()).toMatchObject({ verdict: "PASS", phases: ["P1"] });
+	expect(mainTick(cfg, "P2")).toMatchObject({ allow: false, reason: expect.stringContaining("P2") });
+});
