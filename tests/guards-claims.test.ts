@@ -113,8 +113,9 @@ review:
 	return loadConfig({ home: HOME, env: {} });
 }
 
-/** Claims from earlier tests must not leak into the next scenario. */
-function freshClaims(): void {
+/** Clock and claims from earlier tests must not leak into the next scenario. */
+function fresh(): void {
+	process.env.NEURASTREAM_NOW = String(NOW);
 	rmSync(join(STATE, "claims"), { recursive: true, force: true });
 }
 
@@ -149,7 +150,7 @@ function taskEv(): ToolEvent {
 test("B cannot spawn on or edit A's plan; A can", () => {
 	const cfg = buildCfg();
 	applyQueueEnv(cfg);
-	freshClaims();
+	fresh();
 	as("a");
 	refresh();
 	expect(checkSpawn(spawnEv(), cfg)).toMatchObject({ allow: true });
@@ -174,7 +175,7 @@ test("B cannot spawn on or edit A's plan; A can", () => {
 test("after A's claim expires B can spawn on and edit the plan", () => {
 	const cfg = buildCfg();
 	applyQueueEnv(cfg);
-	freshClaims();
+	fresh();
 	as("a");
 	refresh();
 	expect(checkSpawn(spawnEv(), cfg)).toMatchObject({ allow: true });
@@ -194,7 +195,7 @@ test("after A's claim expires B can spawn on and edit the plan", () => {
 test("a sub of A is refused once its Main no longer holds the claim", () => {
 	const cfg = buildCfg();
 	applyQueueEnv(cfg);
-	freshClaims();
+	fresh();
 	as("a");
 	refresh();
 	expect(checkSpawn(spawnEv(), cfg)).toMatchObject({ allow: true }); // A claims the plan
@@ -218,7 +219,7 @@ test("a sub of A is refused once its Main no longer holds the claim", () => {
 test("env unset means id main, and the claim is recorded for main", () => {
 	const cfg = buildCfg();
 	applyQueueEnv(cfg);
-	freshClaims();
+	fresh();
 	delete process.env.NEURASTREAM_MAIN_ID;
 	expect(mainId()).toBe("main");
 	refresh();
@@ -255,7 +256,7 @@ function fakeHost(): {
 test("the adapter heartbeats every held claim every 60 s while the Main session lives", async () => {
 	const cfg = buildCfg();
 	applyQueueEnv(cfg);
-	freshClaims();
+	fresh();
 	as("a");
 	const store = claims();
 	store.claim(PLAN, "a");
