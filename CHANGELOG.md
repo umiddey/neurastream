@@ -1,4 +1,7 @@
 # Changelog
+## Unreleased
+### Added
+- Multi-main P1: the claim store (src/core/claims.ts) — one JSON claim file per plan under `<queue_state>/claims/`, every change under the store flock, so two Mains racing for one plan get exactly one winner; `queue.claim_ttl_min` (default 30) frees a claim whose heartbeat has stopped that long.
 ## 0.2.56
 ### Added
 - Owner page: the Base tab lists published pages under their repo (one card per repo, newest first, expired pages gone); `pages publish` records each page's repo.
