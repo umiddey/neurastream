@@ -15,6 +15,7 @@ import { getAdapter } from "../adapters/index.ts";
 import { featuresReport, gatherTags, loadPlans, releasesReport, type FeaturesReport, type ReleasesReport } from "../core/results.ts";
 import { gitTop } from "../core/queue/lib.ts";
 import { assignDumps, bloatReport } from "./traces.ts";
+import { withHeartbeat } from "../core/heartbeat.ts";
 
 export const METRICS_USAGE = [
 	"usage: neurastream metrics ci <repo-dir> <mr-id>",
@@ -286,7 +287,7 @@ export async function runMetrics(args: string[]): Promise<number> {
 	const [sub = "", ...rest] = args;
 	const now = nowSec();
 	if (sub === "ci") return recordCi(cfg, rest[0] ?? "", rest[1] ?? "", now);
-	if (sub === "report") return reportCmd(cfg, getAdapter(cfg).runSource(cfg), rest, now);
+	if (sub === "report") return withHeartbeat(cfg, "metrics-report", () => reportCmd(cfg, getAdapter(cfg).runSource(cfg), rest, now));
 	if (sub === "features") return featuresCmd(cfg, getAdapter(cfg).runSource(cfg), rest, now);
 	if (sub === "releases") return releasesCmd(cfg, getAdapter(cfg).runSource(cfg), rest, now);
 	if (sub === "false-alarm") return recordFalseAlarm(cfg, rest[0] ?? "", flagValue(rest, "--why") ?? "", now);

@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { pagesDoctor } from "../core/pages-doctor.ts";
 import { ConfigError, configFile, loadConfig, type Config } from "../core/config.ts";
+import { beat } from "../core/heartbeat.ts";
 import { postReply } from "../core/notify.ts";
 import { loadKnownSecrets, redactSecrets, redactSummary } from "../core/secret-redact.ts";
 import { applyQueueEnv } from "../core/queue/env.ts";
@@ -144,6 +145,23 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 	}
 	if (cmd === "notify") return runNotify(args);
 	if (cmd === "redact") return runRedact(args);
+	// Hidden: not in helpText. Beats once — the live check (plan P8) and the owner's own cron jobs.
+	if (cmd === "heartbeat") {
+		const failIdx = args.indexOf("--fail");
+		const fail = failIdx >= 0 ? args[failIdx + 1] : undefined;
+		const name = args.find((a, i) => a !== "--fail" && i !== failIdx + 1 && !a.startsWith("--"));
+		if (!name || (failIdx >= 0 && fail === undefined)) {
+			console.error('usage: neurastream heartbeat <name> [--fail "<text>"]');
+			return 2;
+		}
+		try {
+			beat(loadConfig(), name, { ok: fail === undefined, detail: fail ?? "" });
+		} catch (err) {
+			console.error(err instanceof ConfigError ? err.message : String(err));
+			return 1;
+		}
+		return 0;
+	}
 	if (cmd === "uninstall") return runUninstall(args);
 	if (cmd === "queue" && args[0] === "migrate") {
 		try {
