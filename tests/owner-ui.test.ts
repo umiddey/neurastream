@@ -151,6 +151,11 @@ afterAll(() => {
 });
 
 beforeEach(() => {
+	// The bunfig preload (plan 20261031_0911 P3) re-points the seven QUEUE_* path vars at its
+	// shared sandbox for each test, overriding the module-top applyQueueEnv(CFG): the runtime
+	// helpers would then read the preload's inbox while the adapter and checkTool judge CFG's
+	// paths. Re-assert CFG's queue paths first, so env and CFG name the same files again.
+	applyQueueEnv(CFG);
 	rmSync(inboxPath(), { force: true });
 	rmSync(ownerInboxCursorPath(), { force: true });
 	rmSync(unlockPath(), { force: true });
