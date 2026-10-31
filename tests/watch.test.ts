@@ -7,13 +7,13 @@
 import { afterAll, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { beat, type Heartbeat } from "../src/core/heartbeat.ts";
 import type { GatedInputs } from "../src/core/incident-detectors.ts";
 import { openIncidents } from "../src/core/incidents.ts";
 import { nowSec } from "../src/core/clock.ts";
-import { watchOnce, type FailedUnit, type WatchDeps } from "../src/core/watch.ts";
+import { watchDoctorLine, watchHealth, watchOnce, watchUnitPaths, type FailedUnit, type WatchDeps } from "../src/core/watch.ts";
 
 const DIRS: string[] = [];
 afterAll(() => { for (const d of DIRS) rmSync(d, { recursive: true, force: true }); });
@@ -150,4 +150,20 @@ test("a healthy system opens nothing", () => {
 	expect(report.closed).toHaveLength(0);
 	expect(report.detectors).toHaveLength(0);
 	expect(openIncidents(cfg)).toHaveLength(0);
+});
+
+// P4 (plan 20261027_1430): the doctor line. Not installed and never beaten: `watch: off, last run
+// never`. Installed with the watch heartbeat 5 min old: `watch: on, last run 5 min ago`.
+test("watchDoctorLine prints on/off and the minutes since the last watch run", () => {
+	const cfg = tempCfg("doctor");
+	const now = Date.parse("2026-10-31T10:00:00Z");
+	expect(watchDoctorLine(watchHealth(cfg, now, "linux"))).toBe("watch: off, last run never");
+	for (const p of watchUnitPaths(cfg.paths.home, "linux")) {
+		mkdirSync(dirname(p), { recursive: true });
+		writeFileSync(p, "# stub unit\n");
+	}
+	const hb = join(cfg.paths.queue_state, "heartbeats");
+	mkdirSync(hb, { recursive: true });
+	writeFileSync(join(hb, "watch.json"), JSON.stringify({ name: "watch", ok: true, detail: "", at: new Date(now - 5 * 60000).toISOString() }));
+	expect(watchDoctorLine(watchHealth(cfg, now, "linux"))).toBe("watch: on, last run 5 min ago");
 });
