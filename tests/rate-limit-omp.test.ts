@@ -1,22 +1,20 @@
-// Plan 20261025_0640 P2: the adapter turns a rate-limited stop into a wait-it-out: ALLOW without
-// touching the idle-stop counters, one chat post per limit episode, one resume timer that gives
-// Main a new turn when the wait is over, an owner message cancels the resume, and a rate-limited
-// deferred hand-back (agent_end willContinue) arms the timer instead of logging "no reply text".
-// Every request lands on a local Bun.serve fake on 127.0.0.1; no real chat host is contacted.
+// Plan 20261027_1500 P3: the adapter wires the limit probe loop. A rate-limited stop opens an episode
+// (one "limited" chat post). A 30 s tick runs one probe per probe_interval_s until a probe gets
+// through, or until the named reset passes, then sends Main one back message. An owner message
+// cancels the tick and keeps the episode and its probe count; a turn that ends without a limit closes
+// the episode. Every request lands on a local Bun.serve fake; no real chat host is contacted.
 //
-// Real short timers by exception (same reason as tests/notify-post.test.ts): the resume timer is
-// internal to the adapter closure (no exposed promise), and firing it must drive a real fetch
-// against the local webhook server — fake timers cannot advance a real network round-trip. The
-// tests therefore parse a small retry-after-ms (2 s, slack 0) and poll with until(); the
-// negative claims probe a bounded window just past the armed wait.
+// The clock is fake: Date.now is spied and the tick is fired by hand. Probes run in-process through
+// an injected runner, so no provider, omp or network is involved.
 
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createOmpAdapter, recordProviderOutFromRateLimit, reset as resetAdapter } from "../src/adapters/omp/index.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
+import { type ProbeRunner, probeStep, readLimitState } from "../src/core/limit-probe.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { blockersDirPath, indexPath } from "../src/core/queue/lib.ts";
 import { readOut } from "../src/core/provider-state.ts";
@@ -82,27 +80,20 @@ function reset(): void {
 	writeFileSync(INDEX, "");
 	rmSync(GUARD_LOG, { force: true });
 	writeFileSync(SESSION_FILE, "");
-	// P5b: an unanswered owner message from one test must not leak into the next test's resume.
-	rmSync(join(QUEUE_STATE, "owner-messages.jsonl"), { force: true });
 	seedSecrets();
 }
 
-async function until(cond: () => boolean, ms = 9000): Promise<void> {
-	const end = Date.now() + ms;
-	while (!cond()) {
-		if (Date.now() > end) throw new Error("condition not met in time");
-		const { promise, resolve } = Promise.withResolvers<void>();
-		setTimeout(resolve, 25);
-		await promise;
-	}
+// Exception to the no-wall-clock rule: the adapter posts over a real loopback HTTP fake whose
+// completion is not exposed as a promise, so the wait polls the observable effect (the hit list).
+async function until(cond: () => boolean, ticks = 400): Promise<void> {
+	for (let i = 0; i < ticks && !cond(); i++) await sleep(25);
+	expect(cond()).toBe(true);
 }
 
-/** Bounded probe for a negative claim (no further send arrives): real timers, no exposed handle. */
-async function expectNoMore(count: () => number, expected: number, ms = 2600): Promise<void> {
+function sleep(ms: number): Promise<void> {
 	const { promise, resolve } = Promise.withResolvers<void>();
 	setTimeout(resolve, ms);
-	await promise;
-	expect(count()).toBe(expected);
+	return promise;
 }
 
 const logLines = (): string[] => (existsSync(GUARD_LOG) ? readFileSync(GUARD_LOG, "utf8").split("\n").filter(l => l.trim() !== "") : []);
@@ -113,7 +104,7 @@ const rlHits = (): Hit[] => discordHits.filter(h => h.text.startsWith("⏳"));
 
 // --- event builders: the shapes omp's events carry (plan 20261025_0130) ---
 
-type MsgOpts = { stopReason?: string; text?: string; errorMessage?: string; toolCall?: boolean };
+type MsgOpts = { stopReason?: string; text?: string; errorMessage?: string; toolCall?: boolean; model?: string };
 
 function msg(opts: MsgOpts = {}): Record<string, unknown> {
 	const content: Record<string, unknown>[] = [];
@@ -121,6 +112,7 @@ function msg(opts: MsgOpts = {}): Record<string, unknown> {
 	if (opts.toolCall) content.push({ type: "toolCall", id: "c1", name: "bash" });
 	return {
 		role: "assistant",
+		model: opts.model ?? "test-model",
 		stopReason: opts.stopReason ?? "stop",
 		content,
 		...(opts.errorMessage !== undefined ? { errorMessage: opts.errorMessage } : {}),
@@ -261,124 +253,180 @@ afterAll(() => {
 	Object.assign(process.env, queueEnvBefore);
 });
 
-// (a) a 429 stop → allowed, no block reason, one post, timer armed with the parsed wait; firing
-// it sends exactly one user message.
-test("a 429 stop is allowed with one episode post and one resume timer that sends one message", async () => {
+// --- the probe loop on a fake clock ---
+
+const T0 = Date.UTC(2026, 9, 27, 9, 0, 0);
+let now = T0;
+let probeOk = false;
+let spawns = 0;
+let nowSpy: { mockRestore(): void };
+
+const failingRun: ProbeRunner = () => ({ status: probeOk ? 0 : 1, stderr: probeOk ? "" : "still limited" });
+
+/** The fake tick: `install` is the adapter's setInterval stand-in, `fire` runs the stored callback by hand. */
+interface FakeTicks {
+	install(fn: () => void, ms: number): Timer;
+	fire(): void;
+}
+
+/** Keeps the adapter's tick callback so a test can fire it by hand; no timer ever runs. */
+function fakeTicks(): FakeTicks {
+	let cb: (() => void) | null = null;
+	return {
+		install(fn: () => void, _ms: number) {
+			cb = fn;
+			const handle = setInterval(() => {}, 1 << 30); // a real handle, so clearInterval has something to clear
+			handle.unref();
+			return handle;
+		},
+		fire: () => cb?.(),
+	};
+}
+
+/** The omp ctx plus the adapter's two injection points: the tick and the probe spawner. */
+function liveCtx(cfg: Config, ticks: FakeTicks): Record<string, unknown> {
+	return {
+		...ctxFor(),
+		setInterval: ticks.install,
+		spawnLimitProbe: () => {
+			spawns++;
+			probeStep(cfg, Date.now(), failingRun);
+		},
+	};
+}
+
+beforeEach(() => {
 	reset();
+	rmSync(join(QUEUE_STATE, "main-limit.json"), { force: true });
+	now = T0;
+	probeOk = false;
+	spawns = 0;
+	nowSpy = spyOn(Date, "now").mockImplementation(() => now);
+});
+
+afterEach(() => {
+	nowSpy.mockRestore();
+	resetAdapter();
+});
+
+// A limited stop posts once; probes keep failing, so no back message goes out.
+test("a limited stop posts once and sends no back message while probes keep failing", async () => {
 	const cfg = stopCfg(writeConfig());
 	const host = adapterWith(cfg);
-	const ctx = ctxFor();
-	const results = await host.emit("session_stop", stopEvent(err429(2000)), ctx);
-	expect(results).toEqual([]); // ALLOW: no block decision
+	const ticks = fakeTicks();
+	const ctx = liveCtx(cfg, ticks);
+	await host.emit("session_stop", stopEvent(err429(2000)), ctx);
 	await until(() => rlHits().length === 1);
 	expect(rlHits()[0]!.text).toMatch(/^⏳ Main is rate limited by its provider until \d\d:\d\d \(local\); it resumes on its own\.$/);
-	const stop = logLines().filter(l => l.includes("RATE-LIMIT stop"));
-	expect(stop).toHaveLength(1);
-	expect(stop[0]).toMatch(/RATE-LIMIT stop: resume at \d\d:\d\d \(2s, attempt 1\)$/); // parsed 2s, slack 0
-	await until(() => host.sent.length === 1, 8000);
-	expect(host.sent[0]).toMatch(/^main-guard: the provider rate limit is over \(waited until \d\d:\d\d\)\. Continue the queue where you stopped\.$/);
-	expect(logLines().filter(l => l.includes("RATE-LIMIT resume"))).toHaveLength(1);
-}, 30_000);
-
-<<<<<<< HEAD
-// (b) a second 429 after the resume → doubled wait, no second post in the same episode; ONE
-// timer (the doubled one) — the earlier arm is replaced, so exactly two messages in total.
-test("a second 429 in the episode doubles the wait, replaces the timer, posts nothing", async () => {
-	reset();
-	const cfg = stopCfg(writeConfig());
-	const host = adapterWith(cfg);
-	const ctx = ctxFor();
-	await host.emit("session_stop", stopEvent(err429(2000)), ctx); // attempt 1: 2 s
-	await until(() => rlHits().length === 1);
-	await host.emit("session_stop", stopEvent(err429WithoutRetryAfter()), ctx); // attempt 2: doubled default wait
-	const stop = logLines().filter(l => l.includes("RATE-LIMIT stop"));
-	expect(stop).toHaveLength(2);
-	expect(stop[1]).toMatch(/RATE-LIMIT stop: resume at \d\d:\d\d \(10s, attempt 2\)$/);
-	await expectNoMore(() => host.sent.length, 0); // past the replaced 2 s arm: nothing sent yet
-	expect(rlHits()).toHaveLength(1); // no second post in the episode
-	await until(() => host.sent.length === 1, 12_000); // only the doubled default timer fires
-	expect(logLines().filter(l => l.includes("RATE-LIMIT resume"))).toHaveLength(1);
+	expect(readLimitState(cfg)).toMatchObject({ back_at: null, next_probe_at: T0 + 5000, probes: 0 });
+	now = T0 + 30_000;
+	ticks.fire(); // probe 1: still limited
+	now = T0 + 60_000;
+	ticks.fire(); // probe 2: still limited
+	expect(spawns).toBe(2);
+	expect(readLimitState(cfg)).toMatchObject({ back_at: null, probes: 2 });
+	expect(host.sent).toEqual([]);
+	await sleep(100);
 	expect(rlHits()).toHaveLength(1);
-}, 30_000);
+	expect(logLines().filter(l => l.includes("RATE-LIMIT stop"))).toHaveLength(1);
+});
 
-// (P5b) An owner message that only errored turns followed stays unanswered: every resume quotes
-// it first; a real turn end records the answer and the next resume is the plain text again.
-test("resumes quote unanswered owner messages; a real turn end clears them", async () => {
-	reset();
+// A probe that gets through marks the episode back; the next tick sends the one back message.
+test("a probe that gets through sends one back message and removes the episode", async () => {
 	const cfg = stopCfg(writeConfig());
 	const host = adapterWith(cfg);
-	const ctx = ctxFor();
-	const resumeOnce = async (i: number): Promise<void> => {
-		await host.emit("session_stop", stopEvent(err429(2000)), ctx);
-		await until(() => host.sent.length === i + 1, 8000);
-		expect(host.sent[i]?.startsWith("UNANSWERED OWNER MESSAGES — answer these first, then end the turn so the reply reaches Discord:")).toBe(true);
-		expect(host.sent[i]).toContain("Who is ARB and what did you decide about it?");
-		await host.emit("before_agent_start", { prompt: host.sent[i] }, ctx); // the resume's own machine turn
-	};
-	await host.emit("before_agent_start", { prompt: "Who is ARB and what did you decide about it?" }, ctx);
-	await resumeOnce(0);
-	await resumeOnce(1);
-	await resumeOnce(2);
-	await host.emit("session_stop", stopEvent(msg({ text: "answered: ARB is the review agent registry" })), ctx);
-	await host.emit("session_stop", stopEvent(err429(2000)), ctx);
-	await until(() => host.sent.length === 4, 8000);
-	expect(host.sent[3]).toMatch(/^main-guard: the provider rate limit is over \(waited until \d\d:\d\d\)\. Continue the queue where you stopped\.$/);
-}, 40_000);
-
-=======
->>>>>>> 92ff65e (feat(limit-probe): probe loop pure core and rateLimited reshape (P2))
-// A non-turn input leaves the resume armed; only an actual Main turn takes it over.
-test("slash command input leaves the resume armed until it fires", async () => {
-	reset();
-	const host = adapterWith(stopCfg(writeConfig()));
-	const ctx = ctxFor();
-	await host.emit("session_stop", stopEvent(err429(15_000)), ctx);
-	await until(() => rlHits().length === 1, 20_000);
-	await host.emit("input", { text: "/usage", source: "interactive" }, ctx);
-	expect(logLines().filter(l => l.includes("RATE-LIMIT resume cancelled: owner message"))).toHaveLength(0);
-	await until(() => host.sent.length === 1, 20_000);
-	expect(logLines().filter(l => l.includes("RATE-LIMIT resume: new turn sent"))).toHaveLength(1);
-}, 30_000);
-
-test("handled chat unlock leaves the resume armed until it fires", async () => {
-	reset();
-	const cfg = writeConfig();
-	const host = adapterWith(stopCfg({ ...cfg, guards: { ...cfg.guards, chat_unlock: true } }));
-	const ctx = ctxFor();
+	const ticks = fakeTicks();
+	const ctx = liveCtx(cfg, ticks);
 	await host.emit("session_stop", stopEvent(err429(2000)), ctx);
 	await until(() => rlHits().length === 1);
-	const unlockResults = await host.emit("input", { text: "unlock 5", source: "interactive" }, ctx);
-	expect(unlockResults).toContainEqual({ handled: true });
-	await until(() => host.sent.length === 1, 8000);
-	expect(logLines().filter(l => l.includes("RATE-LIMIT resume: new turn sent"))).toHaveLength(1);
-}, 30_000);
+	now = T0 + 30_000;
+	ticks.fire(); // probe 1: still limited
+	probeOk = true;
+	now = T0 + 60_000;
+	ticks.fire(); // probe 2 gets through: marked back, nothing sent yet
+	expect(readLimitState(cfg)).toMatchObject({ back_at: T0 + 60_000 });
+	expect(host.sent).toEqual([]);
+	now = T0 + 90_000;
+	ticks.fire(); // the next tick sends the one back message and closes the episode
+	expect(host.sent).toHaveLength(1);
+	expect(host.sent[0]).toMatch(/^main-guard: the provider limit is over \(back at \d\d:\d\d\)\. Continue the queue where you stopped\.$/);
+	expect(readLimitState(cfg)).toBeNull();
+	expect(logLines().filter(l => l.includes("RATE-LIMIT back"))).toHaveLength(1);
+	ticks.fire(); // the tick is stopped: no second message, no probe
+	expect(host.sent).toHaveLength(1);
+	expect(spawns).toBe(2);
+});
 
-test("a Main turn takeover cancels the resume timer once", async () => {
-	reset();
-	const host = adapterWith(stopCfg(writeConfig()));
-	const ctx = ctxFor();
+// An owner message cancels the tick but keeps the episode; a later limited stop re-arms it with the probe count intact.
+test("an owner message mid-episode cancels the tick, and the probe count survives the re-arm", async () => {
+	const cfg = stopCfg(writeConfig());
+	const host = adapterWith(cfg);
+	const ticks = fakeTicks();
+	const ctx = liveCtx(cfg, ticks);
 	await host.emit("session_stop", stopEvent(err429(2000)), ctx);
 	await until(() => rlHits().length === 1);
-	await host.emit("input", { text: "taking over", source: "interactive" }, ctx);
-	await host.emit("before_agent_start", { prompt: "taking over" }, ctx);
-	expect(logLines().filter(l => l.includes("RATE-LIMIT resume cancelled: owner message"))).toHaveLength(1);
-	await expectNoMore(() => host.sent.length, 0);
-}, 30_000);
+	now = T0 + 30_000;
+	ticks.fire(); // probe 1: still limited
+	expect(readLimitState(cfg)).toMatchObject({ probes: 1 });
+	await host.emit("input", { text: "hello", source: "interactive" }, ctx);
+	expect(logLines().filter(l => l.includes("RATE-LIMIT tick cancelled: owner message"))).toHaveLength(1);
+	now = T0 + 60_000;
+	ticks.fire(); // cancelled: no probe runs
+	expect(spawns).toBe(1);
+	expect(readLimitState(cfg)).toMatchObject({ probes: 1 });
+	now = T0 + 60_000;
+	await host.emit("session_stop", stopEvent(err429(2000)), ctx); // a new limited stop re-arms the tick
+	expect(readLimitState(cfg)).toMatchObject({ probes: 1 });
+	now = T0 + 90_000;
+	ticks.fire(); // re-armed: probe 2 runs
+	expect(spawns).toBe(2);
+	expect(readLimitState(cfg)).toMatchObject({ probes: 2 });
+	await sleep(100);
+	expect(rlHits()).toHaveLength(1); // one limited post for the whole episode
+});
 
-test("the resume's own turn does not log a cancellation", async () => {
-	reset();
-	const host = adapterWith(stopCfg(writeConfig()));
-	const ctx = ctxFor();
+// A turn that ends without a limit closes the episode: nothing is left to probe or send.
+test("a turn that ends without a limit closes the episode; the next limit starts a new one", async () => {
+	const cfg = stopCfg(writeConfig());
+	const host = adapterWith(cfg);
+	const ticks = fakeTicks();
+	const ctx = liveCtx(cfg, ticks);
 	await host.emit("session_stop", stopEvent(err429(2000)), ctx);
 	await until(() => rlHits().length === 1);
-	await until(() => host.sent.length === 1, 8000);
-	await host.emit("before_agent_start", { prompt: host.sent[0] }, ctx);
-	expect(logLines().filter(l => l.includes("RATE-LIMIT resume cancelled: owner message"))).toHaveLength(0);
-}, 30_000);
+	await host.emit("session_stop", stopEvent(msg({ text: "all good" })), ctx);
+	expect(readLimitState(cfg)).toBeNull();
+	now = T0 + 30_000;
+	ticks.fire();
+	expect(spawns).toBe(0);
+	expect(host.sent).toEqual([]);
+	await host.emit("session_stop", stopEvent(err429(2000)), ctx);
+	await until(() => rlHits().length === 2);
+	expect(logLines().filter(l => l.includes("RATE-LIMIT stop"))).toHaveLength(2);
+});
+
+// A named reset is waited for: no probe before it, one back message once it has passed.
+test("a named reset is waited for: no probe before it, one back message after it", async () => {
+	now = Date.UTC(2026, 9, 26, 22, 0, 0); // before the named reset 2026-10-26T23:04:26Z
+	const cfg = stopCfg(writeConfig());
+	const host = adapterWith(cfg);
+	const ticks = fakeTicks();
+	const ctx = liveCtx(cfg, ticks);
+	await host.emit("session_stop", stopEvent(msg({ stopReason: "error", errorMessage: ZAI_RESET_TEXT })), ctx);
+	await until(() => rlHits().length === 1);
+	expect(readLimitState(cfg)).toMatchObject({ reset_named: true, back_at: ZAI_RESET_EPOCH_S * 1000 });
+	now = Date.UTC(2026, 9, 26, 23, 0, 0);
+	ticks.fire();
+	expect(spawns).toBe(0);
+	expect(host.sent).toEqual([]);
+	now = ZAI_RESET_EPOCH_S * 1000 + 30_000;
+	ticks.fire(); // back_at has passed: the back message, still no probe
+	expect(spawns).toBe(0);
+	expect(host.sent).toHaveLength(1);
+	expect(readLimitState(cfg)).toBeNull();
+});
 
 // (d) a normal stop with an open queue still blocks as today.
 test("a normal stop with an open queue still blocks, no post, no rate-limit lines", async () => {
-	reset();
 	const restore = openPlanFixture();
 	try {
 		const cfg = stopCfg(writeConfig());
@@ -398,12 +446,11 @@ test("a normal stop with an open queue still blocks, no post, no rate-limit line
 
 // (e) the idle-stop counters are unchanged by a 429 stop.
 test("a 429 stop leaves the idle-stop counters alone: three real empty stops still needed", async () => {
-	reset();
 	const restore = openPlanFixture();
 	try {
 		const cfg = stopCfg(writeConfig());
 		const host = adapterWith(cfg);
-		const ctx = ctxFor();
+		const ctx = liveCtx(cfg, fakeTicks());
 		await host.emit("session_stop", stopEvent(msg({ text: "" })), ctx); // idle stop 1: BLOCK
 		await host.emit("session_stop", stopEvent(err429(2000)), ctx); // rate limited: ALLOW, counters untouched
 		await host.emit("session_stop", stopEvent(msg({ text: "" })), ctx); // idle stop 2: BLOCK
@@ -413,43 +460,23 @@ test("a 429 stop leaves the idle-stop counters alone: three real empty stops sti
 		const allows = logLines().filter(l => l.includes("ALLOW stop after 3 idle stop attempts"));
 		expect(allows).toHaveLength(1);
 		expect(logLines().indexOf(allows[0]!)).toBeGreaterThan(logLines().findIndex(l => l.includes("RATE-LIMIT stop")));
-		// The rate-limit episode reset on the next non-limited stop: its pending timer is gone.
-		await expectNoMore(() => host.sent.length, 0);
 	} finally {
 		restore();
 	}
 }, 30_000);
 
-// The willContinue agent_end hand-back path gets the same check.
-test("a rate-limited deferred hand-back arms the timer instead of logging no reply text", async () => {
-	reset();
+// The willContinue agent_end hand-back path opens the episode too, instead of logging "no reply text".
+test("a rate-limited deferred hand-back opens the episode instead of logging no reply text", async () => {
 	const cfg = stopCfg(writeConfig());
 	const host = adapterWith(cfg);
-	const ctx = ctxFor([{ label: "bg-job" }]);
+	const ticks = fakeTicks();
+	const ctx = { ...ctxFor([{ label: "bg-job" }]), setInterval: ticks.install, spawnLimitProbe: () => {} };
 	await host.emit("agent_end", { willContinue: true, messages: [err429(2000)] }, ctx);
 	expect(logLines().filter(l => l.includes("no reply text"))).toEqual([]);
 	expect(logLines().filter(l => l.includes("RATE-LIMIT stop"))).toHaveLength(1);
 	await until(() => rlHits().length === 1);
-	await until(() => host.sent.length === 1, 8000);
-	expect(host.sent[0]).toContain("the provider rate limit is over");
-}, 30_000);
-
-// The episode resets on a turn that ends without a rate limit: the next 429 is attempt 1 again.
-test("after a normal turn the episode restarts: attempt 1 again and a fresh post", async () => {
-	reset();
-	const cfg = stopCfg(writeConfig());
-	const host = adapterWith(cfg);
-	const ctx = ctxFor();
-	await host.emit("session_stop", stopEvent(err429(2000)), ctx); // attempt 1
-	await until(() => rlHits().length === 1);
-	await host.emit("session_stop", stopEvent(msg({ text: "all good" })), ctx); // normal turn end: episode over
-	await expectNoMore(() => rlHits().length, 1, 500);
-	await host.emit("session_stop", stopEvent(err429(2000)), ctx); // new episode: attempt 1, posts again
-	const stops = logLines().filter(l => l.includes("RATE-LIMIT stop"));
-	expect(stops).toHaveLength(2);
-	expect(logLines().filter(l => l.includes("(2s, attempt 1)"))).toHaveLength(2);
-	await until(() => rlHits().length === 2);
-}, 30_000);
+	expect(readLimitState(cfg)).toMatchObject({ back_at: null });
+});
 
 // Plan 20261027_1500 P1: the named reset is parsed once. recordProviderOutFromRateLimit returns it in
 // epoch ms (null when the text names none) and records the same epoch as the provider's out-until.
