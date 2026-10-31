@@ -631,7 +631,7 @@ describe("plan approval hard gate (planGate, 20261029_1455 P3)", () => {
 	const blockers = join(home, "blockers");
 	const cancelled = join(home, "CANCELLED.md");
 	const saved = { ...process.env };
-	const body = "# Toy plan\n\nWorktree: -\nBranch: feat/toy\n\n## Goal\n- Toy.\n\n## Forbidden\n- Never skip tests.\n\n## Blockers\n- toy-blocker\n\n## Phases\n- [ ] P1 do the thing — verify: `test -f src/a.ts`\n\n## Done check\n`test -f src/a.ts`\n\n## Progress\nStatus: open\n\n- Started.\n";
+	const body = "# Toy plan\n\nWorktree: -\nBranch: feat/toy\n\n## Goal\n- Toy.\n\n## Forbidden\n- Never skip tests.\n\n## Blockers\n- toy-blocker\n\n## Code read by Main\n- src/a.ts\n\n## Phases\n- [ ] P1 do the thing — verify: `test -f src/a.ts`\n\n## Done check\n`test -f src/a.ts`\n\n## Progress\nStatus: open\n\n- Started.\n";
 
 	beforeAll(() => {
 		for (const d of [dirname(plan), state, pages, blockers]) mkdirSync(d, { recursive: true });

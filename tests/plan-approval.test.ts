@@ -65,21 +65,21 @@ test("approvalProblem: a plan with a page is gated until its record matches", ()
 	const plan = join(dir, "20261027_toy.md");
 	const body = "# Toy\n\n## Phases\n- [ ] P1 x\n";
 	writeFileSync(plan, body);
-	expect(approvalProblem(body, plan, pages)).toBe(null); // no page: not gated
+	expect(approvalProblem(body, plan, pages, "")).toBe(null); // no page: not gated
 	mkdirSync(join(pages, ".meta"), { recursive: true });
 	writeFileSync(join(pages, ".meta", "toy.html.json"), JSON.stringify({ plan }));
 	expect(planForPage(pages, "toy.html")).toBe(plan);
 	// Page exists, no record: gated.
-	const why = approvalProblem(body, plan, pages);
+	const why = approvalProblem(body, plan, pages, "");
 	expect(why).toContain("has no approval record");
 	expect(why).toContain("toy.html");
 	expect(why).toContain(plan);
 	// Matching record: approved.
 	writeFileSync(join(cfg.paths.queue_state, "plan-approvals.json"), JSON.stringify({ approvals: { [plan]: { hash: reviewHash(body), at: 1, via: "page", page: "toy.html" } } }));
-	expect(approvalProblem(body, plan, pages)).toBe(null);
+	expect(approvalProblem(body, plan, pages, "")).toBe(null);
 	// Stale hash: gated.
 	writeFileSync(join(cfg.paths.queue_state, "plan-approvals.json"), JSON.stringify({ approvals: { [plan]: { hash: "stalehash", at: 1, via: "page", page: "toy.html" } } }));
-	expect(approvalProblem(body, plan, pages)).toContain("has no approval record");
+	expect(approvalProblem(body, plan, pages, "")).toContain("has no approval record");
 });
 
 test("publish --plan: the bar is on a plan page, absent on a built thing, and it drops on a republish without one", () => {
@@ -198,7 +198,7 @@ review:
 	// A stale hash: still refused.
 	writeFileSync(join(state, "plan-approvals.json"), JSON.stringify({ approvals: { [plan]: { hash: "stalehash", at: 1, via: "page", page: "toy.html" } } }));
 	// The record gate is checked on its own: this spawn already ran, so the guard's progress check would also refuse it.
-	expect(approvalProblem(body, plan, pages)).toContain("has no approval record");
+	expect(approvalProblem(body, plan, pages, "")).toContain("has no approval record");
 });
 
 // --- Chat approval (plan 20261029_1455 P2): the owner's `approve <YYYYMMDD_HHMM>` in chat ---

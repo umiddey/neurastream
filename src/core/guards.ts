@@ -586,7 +586,7 @@ export function planGate(text: string, label: string, cfg?: Config): [string | n
 				[],
 			];
 		if (cfg) {
-			const approval = approvalProblem(p.text, p.file, cfg.pages.dir);
+			const approval = approvalProblem(p.text, p.file, cfg.pages.dir, cfg.approval.since);
 			if (approval) return [approval, []];
 		}
 		const open = unticked(p);

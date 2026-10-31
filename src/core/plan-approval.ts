@@ -1,7 +1,7 @@
 // Plan approval from the plan's own diagram page (plan 20261026_0930 P9). A plan that has a page in
 // Base is approved there: the Approve bar records a hash of the plan text in the queue state
 // (plan-approvals.json). The plan file is never edited. main-guard refuses a spawn on a plan whose page
-// has no record with the plan's current hash; a plan with no page predates the convention and is left alone.
+// has no record with the plan's current hash; a plan with no page predates the convention and is left alone, unless it is stamped at or after approval.since (plan 20261029_1455 P3), when it is refused until its page is published.
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import * as q from "./queue/lib.ts";
@@ -154,11 +154,17 @@ export function chatApprove(text: string, cfg: Config, source: string): ChatAppr
 	return { applied: true, plan: plan.file };
 }
 
-/** Why a spawn may not run on this plan, or null; only a plan with a page in Base is gated. */
-export function approvalProblem(text: string, file: string, pagesDir: string): string | null {
+/** Why a spawn may not run on this plan, or null. A plan with a page in Base needs a record with its current hash. A plan stamped at or after `since` (approval.since, "" = off) needs a page too (plan 20261029_1455 P3): with no page it is refused until the page is published. A file with no stamp counts as stamped after `since`. */
+export function approvalProblem(text: string, file: string, pagesDir: string, since: string): string | null {
 	const page = pageOfPlan(pagesDir, file);
-	if (page === null) return null; // no page: the plan predates the convention, not gated
+	const stamp = /^\d{8}_\d{4}/.exec(basename(file))?.[0] ?? null;
+	const gated = since !== "" && (stamp === null || stamp >= since);
+	if (page === null) {
+		if (!gated) return null; // predates the convention
+		return `plan ${file} has no page: publish its page with neurastream pages publish <page.html> --plan ${file}`;
+	}
 	const rec = readPlanApproval(file);
 	if (rec !== null && rec.hash === reviewHash(text)) return null;
-	return `plan ${file} has no approval record. The owner approves it from ${page} in Base.`;
+	const hint = gated && stamp !== null ? `, or types: approve ${stamp}` : "";
+	return `plan ${file} has no approval record. The owner approves it from ${page} in Base${hint}.`;
 }
