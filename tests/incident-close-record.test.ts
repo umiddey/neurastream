@@ -229,10 +229,12 @@ test("an incident cited only in ## Progress stays open when the plan closes; one
 });
 
 afterAll(() => {
-	for (const [k, v] of Object.entries(queueEnvBefore)) {
-		if (v === undefined) delete process.env[k];
-		else process.env[k] = v;
-	}
+	// The snapshot above is empty under the deletion-only preload (it deletes every inherited
+	// QUEUE_* before any module loads), so delete what queueClose applied in-process, not just
+	// the snapshot's keys, then put the snapshot back — else the nsar-qclose sandbox paths leak
+	// into the test files that run after this one.
+	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
+	Object.assign(process.env, queueEnvBefore);
 	refreshQueuePaths();
 	rmSync(TMP, { recursive: true, force: true });
 });
