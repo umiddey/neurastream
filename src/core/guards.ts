@@ -29,7 +29,7 @@ import { currentTier, takeGo } from "./autonomy.ts";
 import { approvalProblem, MAIN_ONLY_LINE, reviewHash } from "./plan-approval.ts";
 export { reviewHash };
 import type { Config } from "./config.ts";
-import { addIncident, openIncidents, ownerMessagesFile, ownerSaid, readOwnerMessages, type IncidentView, type OwnerMessage } from "./incidents.ts";
+import { openIncidents, ownerMessagesFile, ownerSaid, readOwnerMessages, type IncidentView, type OwnerMessage } from "./incidents.ts";
 import { notifyProtectedPaths, notifySecretReadHit } from "./notify.ts";
 import { defaultRunner, listOpenMrs, mentioned, type CommandRunner, type OpenMr } from "./mr-sweep.ts";
 import { unlandedRows } from "./wip-check.ts";
@@ -1054,12 +1054,13 @@ export function incidentLine(i: IncidentView): string {
 }
 
 /**
- * While an incident is open, a launch must be fix work: its brief (or a plan the brief names)
- * cites `INCIDENT <id>` of an open incident. Anything else is refused until every open incident
- * has a plan or a dismissal. Returns the refusal reason, or null; `label` names the log line.
+ * While an owner-correction incident (source "realtime") is open, a launch must be fix work: its
+ * brief (or a plan the brief names) cites `INCIDENT <id>` of an open one. Notes from worker
+ * findings/traces never refuse a spawn (plan 20261031_1207 P2). Returns the refusal reason, or
+ * null; `label` names the log line.
  */
 function incidentSpawnProblem(label: string, brief: string, namedPlans: string[], cfg: Config): string | null {
-	const open = openIncidentList(cfg);
+	const open = openIncidentList(cfg).filter(i => i.source === "realtime");
 	if (!open.length) return null;
 	const texts = [brief];
 	for (const f of namedPlans) {
@@ -1559,31 +1560,8 @@ export function checkPlanEdit(e: PlanEditEvent, cfg: Config): PlanEditDecision {
 		log(cfg.paths.plan_guard_log, `RESTORE ${e.path} review line from a spawn that is not its named review spawn`);
 		return { allow: false, reason: `plan-guard: a PLAN REVIEW line counts only from the named review spawn of ${e.path}; the file was restored.`, restore: { path: e.path, text: e.before } };
 	}
-	recordFindings(e, cfg);
 	recordReviews(e, cfg);
 	return ALLOW;
-}
-
-/**
- * Each finding item of an allowed plan edit becomes an incident (source "findings", evidence =
- * plan path + agent; the default fingerprint dedupes the same item text). A subagent's items are
- * kind "agent-finding"; Main's own are kind "main-finding" (20261028_0900 P1: a bug Main writes
- * down must block the stop like a subagent's). A store failure is logged and swallowed: it must
- * not break the verified edit.
- */
-function recordFindings(e: PlanEditEvent, cfg: Config, kind: "agent-finding" | "main-finding" = "agent-finding"): void {
-	try {
-		const evidence = `${e.path} (${e.agent})`;
-		for (const block of newProgressEntries(e.before, e.after)) {
-			const value = findingsValue(block);
-			if (!value || /^none\.?$/i.test(value)) continue;
-			for (const item of value.split(";")) {
-				if (item.trim()) addIncident(cfg, { source: "findings", kind, summary: item.trim(), evidence });
-			}
-		}
-	} catch (err) {
-		log(cfg.paths.plan_guard_log, `findings: cannot record incidents for ${e.path}: ${err}`);
-	}
 }
 
 /** One "## Progress" entry: its "- " line plus indented continuation lines (trimProgressBody's entry rule). */
@@ -1632,7 +1610,6 @@ function checkMainPlan(e: PlanEditEvent, cfg: Config): PlanEditDecision {
 		};
 	}
 	if (q.outsideProgress(e.after) === q.outsideProgress(e.before)) {
-		recordFindings(e, cfg, "main-finding");
 		return ALLOW;
 	}
 	// A cited file Main did read lands in the list instead of the refusal (I-20261025-208): fix the
@@ -1644,7 +1621,6 @@ function checkMainPlan(e: PlanEditEvent, cfg: Config): PlanEditDecision {
 	const known = new Set(e.before ? planReadProblems(e.before, e.path, cfg) : []);
 	const problems = planReadProblems(fixed, e.path, cfg).filter(p => p === NO_SECTION || !known.has(p));
 	if (!problems.length) {
-		recordFindings(e, cfg, "main-finding");
 		if (!fix) return ALLOW;
 		const list = fix.paths.join(", ");
 		log(cfg.paths.plan_guard_log, `AUTO-LIST ${e.path}: ${list}`);
@@ -1823,8 +1799,9 @@ export const STOP_PLAN_OFFER_REFUSAL = "main-guard: don't promise it — do it n
 
 /**
  * stop: Main may not stop while an open plan is not parked "WAITING on owner" (or the queue has a
- * problem) and no subagent is alive to wake it; an open incident (no plan, no dismissal) blocks
- * the stop regardless of live subagents. Three stop attempts in a row with zero tool calls
+ * problem) and no subagent is alive to wake it; an open owner-correction incident (source
+ * "realtime", no plan, no dismissal) blocks the stop regardless of live subagents. Three stop
+ * attempts in a row with zero tool calls
  * in between are let through. Returns the next counters in `state`.
  */
 export function checkStop(e: StopEvent, cfg: Config): Decision {
@@ -1852,7 +1829,8 @@ export function checkStop(e: StopEvent, cfg: Config): Decision {
 	}
 	// Same release valve as cancel-pending: an idle Main that cannot act is let out after two
 	// empty stop attempts instead of looping forever. Live subagents do not clear this block.
-	const incidents = openIncidentList(cfg);
+	// Findings/traces stay notes: only owner corrections (source "realtime") block the stop.
+	const incidents = openIncidentList(cfg).filter(i => i.source === "realtime");
 	if (incidents.length && state.idleStops < 2) {
 		if (state.callsSinceStop === 0) state.idleStops++;
 		state.callsSinceStop = 0;

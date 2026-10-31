@@ -220,7 +220,7 @@ export function planIncident(cfg: Config, id: string, planPath: string): string 
 // 50 messages). Guards match quotes against them (priority skip, autonomy go); incidents dismiss
 // a finding only with them (20261028_0900 P3).
 
-/** The kinds plan-guard's recordFindings writes; only the owner's own words dismiss them. */
+/** The finding kinds worker/Main notes used to be filed as (legacy stores keep them); only the owner's own words dismiss them. */
 const FINDING_KINDS: Record<string, true> = { "agent-finding": true, "main-finding": true };
 
 export function isFindingKind(kind: string): boolean {
