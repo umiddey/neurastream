@@ -19,6 +19,7 @@ import { cpuCount } from "./host.ts";
 import { dismissIncident, isFindingKind, openIncidents } from "./incidents.ts";
 import { byText, knowledgeManifest, readKnowledgeTopicFile, urlField, urlValue, type KnowledgeEntry } from "./knowledge.ts";
 import { log } from "./guards.ts";
+import { publishedPages } from "./pages-expiry.ts";
 import { readMetricEvents } from "./metrics.ts";
 import { activePlans, chatUnlock, dependencyOrderProblems, expandHome, gitTop, stateDirPath, unlockPath, type Plan } from "./queue/lib.ts";
 import { featuresReport, gatherTags, loadPlans, releasesReport, type FeaturesReport, type ReleaseRow, type ReleaseSideStats, type ReleasesReport } from "./results.ts";
@@ -79,9 +80,10 @@ export function isTailnet(peer: string): boolean {
 	return TAILNET6.test(peer);
 }
 
-/** Serve only the owner's phone: a tailnet peer that is not this machine and not loopback, whose tailscale whois login equals ui.owner_login. Everything else is a 403. */
+/** Serve only the owner's phone: a tailnet peer that is not this machine and not loopback, whose tailscale whois login equals ui.owner_login. Everything else is a 403. With `ui.allow_this_machine`, this machine itself (loopback and its own tailnet IP) is served as the owner too — any local process can then press the buttons. */
 export function authenticate(cfg: Config, tailscale: Tailscale, peer: string): Auth {
 	if (!cfg.ui.owner_login) return { ok: false, why: "ui.owner_login is empty" };
+	if (cfg.ui.allow_this_machine && (isLoopback(peer) || peer === tailscale.ip4())) return { ok: true, login: cfg.ui.owner_login };
 	if (isLoopback(peer)) return { ok: false, why: "loopback peer" };
 	if (!isTailnet(peer)) return { ok: false, why: "peer is not a tailnet address" };
 	if (peer === tailscale.ip4()) return { ok: false, why: "this machine's own tailnet address" };
@@ -738,6 +740,9 @@ function jsonFail(error: string, status: number): Response {
 
 // ---- page assembly: one unreadable source never takes the page down ----
 
+/** One published page row for the Base tab: the pages-server link is built once, at data build. */
+export interface PublishedPageRow { name: string; repo: string; published: string; url: string }
+
 export interface PageData {
 	questions: QuestionRow[] | null;
 	agents: AgentRow[] | null;
@@ -748,6 +753,8 @@ export interface PageData {
 	machine: MachineRow | null;
 	/** Repo-local HTML explainers from the knowledge manifest; null when unreadable. */
 	knowledge: KnowledgeEntry[] | null;
+	/** Published pages (plan 20261029_1436 P2), newest first, with their pages-server URL; null when unreadable. */
+	pages: PublishedPageRow[] | null;
 	/** The 24 h tile numbers; null when the run source is unreadable. */
 	stats: NowStats | null;
 	/** The Results tab's saved numbers and build state; absent on every other tab. The numbers come from a background process (computeResults), never from the request. */
@@ -767,6 +774,10 @@ function safe<T>(build: () => T): T | null {
 	}
 }
 
+function publishedRows(cfg: Config, host: string): PublishedPageRow[] {
+	return publishedPages(cfg.pages.dir, new Date()).map(p => ({ ...p, url: `http://${host}:${cfg.pages.port}/${urlValue(p.name)}` }));
+}
+
 function lockMinutesLeft(cfg: Config): number | null {
 	try {
 		const end = statSync(unlockPath()).mtimeMs + cfg.guards.unlock_minutes * 60_000;
@@ -777,7 +788,7 @@ function lockMinutesLeft(cfg: Config): number | null {
 	}
 }
 
-export function buildPageData(cfg: Config, source: RunSource, tab: string, build: ResultsBuild = spawnResultsBuild): PageData {
+export function buildPageData(cfg: Config, source: RunSource, tab: string, build: ResultsBuild = spawnResultsBuild, pagesHost = "tailnet"): PageData {
 	return {
 		questions: safe(() => questionRows(cfg)),
 		agents: safe(() => agentRows(cfg, source)),
@@ -787,6 +798,7 @@ export function buildPageData(cfg: Config, source: RunSource, tab: string, build
 		scores: safe(() => scoresData(cfg)),
 		machine: safe(() => machineRow(cfg)),
 		knowledge: safe(() => knowledgeManifest(cfg)),
+		pages: safe(() => publishedRows(cfg, pagesHost)),
 		stats: safe(() => nowStats(cfg, source, nowSec())),
 		results: tab === "results" ? safe(() => resultsView(nowSec(), build)) : undefined,
 		messages: safe(() => recentOwnerMessages(nowSec())),
@@ -918,34 +930,46 @@ bindPage();
  * read-only files at docs/knowledge/<topic>.html in a repo under the configured roots; the page
  * bytes come from /knowledge/<repo>/<topic> and there is no route that writes one.
  */
-function knowledgeHtml(entries: KnowledgeEntry[], repo: string, topic: string): string {
+function knowledgeHtml(entries: KnowledgeEntry[], repo: string, topic: string, pages: PublishedPageRow[]): string {
 	const repoHref = `/?tab=knowledge&repo=${urlValue(repo)}`;
 	const crumb =
 		repo === ""
 			? ""
 			: `<p class="sub"><a href="/?tab=knowledge">knowledge-base</a> / ${topic === "" ? esc(repo) : `<a href="${repoHref}">${esc(repo)}</a>`}${topic === "" ? "" : ` / ${esc(topic)}`}</p>`;
-	if (entries.length === 0) {
-		return `<h1>Base</h1><div class="card"><p class="empty">No topics yet. Any repo under the configured roots counts: put a page in <span class="mono">docs/knowledge/</span> and it shows up here on the next reload.</p></div>`;
+	if (entries.length === 0 && pages.length === 0) {
+		return `<h1>Base</h1><div class="card"><p class="empty">Nothing here yet. Any repo under the configured roots counts: put a page in <span class="mono">docs/knowledge/</span> or publish one with <span class="mono">pages publish</span>, and it shows up here on the next reload.</p></div>`;
 	}
 	if (repo === "") {
-		const repos = new Map<string, KnowledgeEntry[]>();
-		for (const e of entries) repos.set(e.repo, [...(repos.get(e.repo) ?? []), e]);
+		// One card per repo NAME (plan 20261029_1436 P2): a repo's knowledge topics and its published
+		// pages share the card; a worktree's page was already tagged with the main checkout's name.
+		const repos = new Map<string, { topics: KnowledgeEntry[]; pages: PublishedPageRow[] }>();
+		const slot = (name: string) => {
+			const r = repos.get(name) ?? { topics: [], pages: [] };
+			repos.set(name, r);
+			return r;
+		};
+		for (const e of entries) slot(e.repo).topics.push(e);
+		for (const p of pages) slot(p.repo).pages.push(p);
 		const rows = [...repos.entries()]
 			.sort((a, b) => byText(a[0], b[0]))
-			.map(([name, list]) => {
-				const newest = list.map(e => e.updated).sort().at(-1)!.slice(0, 10);
-				return `<div class="mrow"><a href="/?tab=knowledge&repo=${urlValue(name)}">${esc(name)}</a><span class="mono">${list.length} topic${list.length === 1 ? "" : "s"} · ${newest}</span></div>`;
+			.map(([name, r]) => {
+				const n = r.topics.length + r.pages.length;
+				const newest = [...r.topics.map(e => e.updated), ...r.pages.map(p => p.published)].sort().at(-1)!.slice(0, 10);
+				return `<div class="mrow"><a href="/?tab=knowledge&repo=${urlValue(name)}">${esc(name)}</a><span class="mono">${n} page${n === 1 ? "" : "s"} · ${newest}</span></div>`;
 			})
 			.join("");
-		return `<h1>Base</h1><p class="sub">One card per repo with pages in <span class="mono">docs/knowledge/</span> — tap a repo for its topics.</p><div class="card">${rows}</div>`;
+		return `<h1>Base</h1><p class="sub">One card per repo: its <span class="mono">docs/knowledge/</span> pages and the pages Main published from it — tap a repo to open its list.</p><div class="card">${rows}</div>`;
 	}
 	const topics = entries.filter(e => e.repo === repo);
-	if (topics.length === 0) return `${crumb}<div class="card"><p class="empty">No repo named "${esc(repo)}" has a page under the configured roots.</p></div>`;
+	const repoPages = pages.filter(p => p.repo === repo);
+	if (topics.length === 0 && repoPages.length === 0) return `${crumb}<div class="card"><p class="empty">No repo named "${esc(repo)}" has a page under the configured roots.</p></div>`;
 	if (topic === "") {
-		const rows = topics
+		const topicRows = topics
 			.map(e => `<div class="mrow"><a href="${repoHref}&topic=${urlValue(e.topic)}">${esc(e.title)}</a><span class="mono">${e.updated.slice(0, 10)}</span></div>`)
 			.join("");
-		return `${crumb}<div class="card">${rows}</div>`;
+		// Published pages after the topics, newest first (publishedPages sorts them that way).
+		const pageRows = repoPages.map(p => `<div class="mrow"><a href="${p.url}">${esc(p.name)}</a><span class="mono">${p.published.slice(0, 10)}</span></div>`).join("");
+		return `${crumb}<div class="card">${topicRows}${pageRows}</div>`;
 	}
 	const hit = topics.find(e => e.topic === topic);
 	if (hit === undefined) return `${crumb}<div class="card"><p class="empty">No topic "${esc(topic)}" in ${esc(repo)}.</p></div>`;
@@ -1268,9 +1292,9 @@ ${merges}
 ${machine}
 </div>`
 					: tab === "knowledge"
-						? `${data.knowledge === null ? na("Base") : knowledgeHtml(data.knowledge, params.get("repo") ?? "", params.get("topic") ?? "")}`
+						? `${data.knowledge === null ? na("Base") : knowledgeHtml(data.knowledge, params.get("repo") ?? "", params.get("topic") ?? "", data.pages ?? [])}`
 						: tab === "spend"
-							? `<h1>Spend</h1>
+							? `<h1>Spend</h1
 <p class="sub">List price over the last 24 hours.</p>
 <div class="card">
 ${spendTileHtml(data)}
@@ -1434,9 +1458,9 @@ function sentTo(tab: string, sent: string): string {
 }
 
 /** The normal page (the GET layout) as a POST reply; the stale-answer reply is this with sent=stale. */
-function pageRes(cfg: Config, source: RunSource, params: URLSearchParams, build: ResultsBuild = spawnResultsBuild): Response {
+function pageRes(cfg: Config, source: RunSource, params: URLSearchParams, build: ResultsBuild = spawnResultsBuild, pagesHost = "tailnet"): Response {
 	const nonce = randomUUID().replaceAll("-", "");
-	return new Response(renderPage(cfg, buildPageData(cfg, source, params.get("tab") ?? "", build), params, nonce), {
+	return new Response(renderPage(cfg, buildPageData(cfg, source, params.get("tab") ?? "", build, pagesHost), params, nonce), {
 		status: 200,
 		headers: {
 			"content-type": "text/html; charset=utf-8",
@@ -1459,7 +1483,7 @@ function appendAnswer(plan: string, question: string, answer: string, login: str
 	lastAnswerByPlan.set(plan, { answer, ts: now });
 }
 
-function handleAnswer(cfg: Config, source: RunSource, fields: Record<string, string>, login: string, wantsJson: boolean): Response {
+function handleAnswer(cfg: Config, source: RunSource, fields: Record<string, string>, login: string, wantsJson: boolean, pagesHost: string): Response {
 	const planFile = (fields.plan ?? "").trim();
 	const answer = (fields.answer_text ?? "").trim() || (fields.answer ?? "").trim();
 	if (!planFile || !answer) return wantsJson ? jsonFail("plan and answer are required", 400) : textRes("plan and answer are required", 400);
@@ -1470,7 +1494,7 @@ function handleAnswer(cfg: Config, source: RunSource, fields: Record<string, str
 		// Stale answer (P8b): Main cleared the question before the answer arrived; pass it on anyway.
 		appendAnswer(planFile, "(already cleared)", answer, login);
 		if (wantsJson) return jsonSent("stale", receiptText("stale", new URLSearchParams()));
-		return pageRes(cfg, source, new URLSearchParams({ sent: "stale" }));
+		return pageRes(cfg, source, new URLSearchParams({ sent: "stale" }), undefined, pagesHost);
 	}
 	appendAnswer(planFile, plan.waitingLine, answer, login);
 	if (wantsJson) return jsonSent("answer", receiptText("answer", new URLSearchParams()));
@@ -1722,6 +1746,8 @@ function handleReorder(cfg: Config, fields: Record<string, string>, login: strin
 export function startOwnerUi(opts: OwnerUiOptions): OwnerUiServer {
 	const { cfg, tailscale, source } = opts;
 	const resultsBuild = opts.resultsBuild ?? spawnResultsBuild;
+	// The Base tab links to the pages server by its MagicDNS name, the same URL `pages publish` prints.
+	const pagesHost = tailscale.dnsName() ?? "tailnet";
 	// The double-press guard (P8c) is per-server memory: a fresh server starts empty, which also
 	// keeps the tests (one server per test) hermetic.
 	lastAnswerByPlan.clear();
@@ -1770,7 +1796,7 @@ export function startOwnerUi(opts: OwnerUiOptions): OwnerUiServer {
 							code = 403;
 						} else if (req.method === "GET" && url.pathname === "/") {
 							sweepOwnerMessages(nowSec());
-							res = pageRes(cfg, source, url.searchParams, resultsBuild);
+res = pageRes(cfg, source, url.searchParams, resultsBuild, pagesHost);
 							code = 200;
 						} else if (req.method === "GET" && url.pathname.startsWith("/knowledge/")) {
 							// The Knowledge tab's frame: the topic's own file bytes, GET only, no write path.
@@ -1795,7 +1821,7 @@ export function startOwnerUi(opts: OwnerUiOptions): OwnerUiServer {
 								res = handleIncident(cfg, await fieldsOf(req), login, wantsJson);
 								code = res.status;
 							} else if (url.pathname === "/answer") {
-								res = handleAnswer(cfg, source, await fieldsOf(req), login, wantsJson);
+								res = handleAnswer(cfg, source, await fieldsOf(req), login, wantsJson, pagesHost);
 								code = res.status;
 							} else if (url.pathname === "/unlock") {
 								res = handleUnlock(cfg, await fieldsOf(req), login, wantsJson);

@@ -1,12 +1,14 @@
 import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, basename, extname } from "node:path";
+import { dirname, join, basename, extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { configFile, loadConfig } from "./config.ts";
+import { repoKey } from "./knowledge.ts";
 import { injectPageNotes, type NotesGate } from "./page-notes.ts";
 import { recordPagePlan } from "./plan-approval.ts";
 import { checkDiagram } from "./diagram-check.ts";
+import { gitRaw } from "./proc.ts";
 import { recordPublish } from "./pages-expiry.ts";
 import { realTailscale, type Tailscale } from "./tailscale.ts";
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -49,6 +51,19 @@ export function pagesOff(opts: Setup = {}): number {
  const cfg=loadConfig({home}); writeFileSync(file,editBlock(old,{enabled:false,port:cfg.pages.port,dir:cfg.pages.dir}));
  const r=runner(["--user","stop","neurastream-pages"]); if(r.status!==0){console.error(r.stderr);return 1;} return 0;
 }
+/**
+ * The repo a published page belongs to (plan 20261029_1436 P1): `--repo` wins; otherwise the file's
+ * directory resolved to its main checkout — `git rev-parse --path-format=absolute --git-common-dir`
+ * is absolute, so a file in the main checkout itself names the checkout, not a relative ".git" —
+ * and the checkout's parent named by knowledge.ts's one repo rule, so a linked worktree's page
+ * lands under the main checkout's name. Outside any repo: "other".
+ */
+export function repoForPublish(file: string, explicit?: string): string {
+	if (explicit) return explicit;
+	const top = gitRaw(dirname(resolve(file)), ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+	if (top.code !== 0 || top.stdout === "") return "other";
+	return repoKey(dirname(top.stdout));
+}
 /** Everything a publish carries besides the file: expiry, the notes gate and, on a plan page, the plan. */
 export interface PublishOptions {
 	keep?: boolean;
@@ -57,6 +72,8 @@ export interface PublishOptions {
 	notes?: NotesGate;
 	/** The plan this page approves (P9). A page without one is a built thing: notes only, no Approve bar. */
 	plan?: string;
+	/** The repo the page belongs to in the pages meta (Base tab); resolved by the CLI when absent. */
+	repo?: string;
 }
 
 export function publishPage(file: string, name: string | undefined, force: boolean, dir: string, opts: PublishOptions = {}): string {
@@ -79,8 +96,8 @@ export function publishPage(file: string, name: string | undefined, force: boole
  // one script, injected once — a page that already carries it, or a second publish, stays single.
  const raw = readFileSync(file);
  const content = extname(source).toLowerCase() === ".html" ? Buffer.from(injectPageNotes(raw.toString("utf8"), notes?.answered(targetName) ?? [], approve), "utf8") : raw;
- if(existsSync(target)){const b=readFileSync(target); if(content.equals(b)){recordPublish(dir,targetName,keep,keepDays,now);notes?.settle(targetName);return targetName;} if(!force) throw new Error(`pages: ${targetName} exists with different content (use --force)`);}
- writeFileSync(target, content); recordPublish(dir,targetName,keep,keepDays,now);
+ if(existsSync(target)){const b=readFileSync(target); if(content.equals(b)){recordPublish(dir,targetName,keep,keepDays,now,opts.repo);notes?.settle(targetName);return targetName;} if(!force) throw new Error(`pages: ${targetName} exists with different content (use --force)`);}
+ writeFileSync(target, content); recordPublish(dir,targetName,keep,keepDays,now,opts.repo);
  if(opts.plan !== undefined && diagram !== null) recordPagePlan(dir, targetName, { plan: opts.plan, missing: diagram.missing, thin: diagram.thin });
  notes?.settle(targetName); return targetName;
 }

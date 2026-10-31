@@ -68,6 +68,41 @@ test("inbox: ids run n1, n2, … per page and an empty submit stores nothing", (
 	expect(rows[0]).toMatchObject({ kind: "page-note", page: "/a.html", quote: "too slow", note: "fix the timing", url: "http://x/a.html", login: "owner@example.test" });
 });
 
+// Phone long-press fires selectionchange but never mouseup/contextmenu, so the fab must show on
+// selectionchange too — and both triggers share ONE position, under the selection, so it never
+// jumps (the phone's copy menu sits above it). The injected script is driven with a stub DOM.
+test("phone: selectionchange shows the fab under the selection, mouseup the same spot, cleared hides it", () => {
+	const m = new RegExp(`<script ${NOTES_MARK}>([\\s\\S]*?)<\\/script>`).exec(injectPageNotes("<!doctype html><html><body><p>diagram</p></body></html>"));
+	if (m === null) throw new Error("no page-notes script in the injected page");
+	const rect = { left: 30, top: 60, right: 260, bottom: 84 };
+	const sel = { toString: () => "the diagram", getRangeAt: () => ({ getBoundingClientRect: () => rect }) };
+	let cleared = false;
+	const listeners: Record<string, ((e?: unknown) => void)[]> = {};
+	const spare = { style: {}, dataset: {}, contains: () => false, addEventListener() {}, textContent: "", hidden: false };
+	const panel = { style: {}, dataset: {}, contains: () => false, addEventListener() {}, textContent: "", hidden: false };
+	const fab = { style: {} as Record<string, string>, dataset: {} as Record<string, string>, contains: () => false, addEventListener() {}, textContent: "", hidden: false };
+	const document = {
+		addEventListener: (type: string, fn: (e?: unknown) => void) => {
+			(listeners[type] ??= []).push(fn);
+		},
+		getElementById: (id: string) => (id === "ns-notes" ? panel : id === "ns-note-fab" ? fab : spare),
+	};
+	const window = { getSelection: () => (cleared ? { toString: () => "" } : sel), innerWidth: 900 };
+	new Function("document", "window", m[1]!)(document, window);
+	listeners.selectionchange![0]!(); // long-press: selection exists, no mouse events ever fire
+	expect(fab.style.display).toBe("block");
+	expect(fab.dataset.quote).toBe("the diagram");
+	expect(parseInt(fab.style.top!, 10)).toBeGreaterThanOrEqual(rect.bottom); // under the selection
+	const left = fab.style.left;
+	const top = fab.style.top;
+	listeners.mouseup![0]!({ target: {} }); // desktop drag: the same spot, the button never jumps
+	expect(fab.style.left).toBe(left);
+	expect(fab.style.top).toBe(top);
+	cleared = true;
+	listeners.selectionchange![0]!(); // selection gone: the fab goes with it
+	expect(fab.style.display).toBe("none");
+});
+
 test("pages server: POST /_notes stores quote, note and url; empty submit and a foreign origin are refused", async () => {
 	const root = mkdtempSync(join(tmpdir(), "page-notes-serve-"));
 	const state = mkdtempSync(join(tmpdir(), "page-notes-state-"));

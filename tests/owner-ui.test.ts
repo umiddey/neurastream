@@ -6,7 +6,7 @@
 // tests.
 
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -18,6 +18,7 @@ import { appendMetric } from "../src/core/metrics.ts";
 import { checkTool } from "../src/core/guards.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { createOmpAdapter, reset as resetAdapter, ownerInboxCursorPath, ownerInboxMessage, type ExtensionHost } from "../src/adapters/omp/index.ts";
+import { recordPublish } from "../src/core/pages-expiry.ts";
 import { inboxPath, agentRows, buildPageData, ciRows, dropSlot, edgeScrollStep, incidentRows, machineRow, nowStats, questionRows, queueRows, renderPage, resultsCachePath, scoresData, startOwnerUi, type OwnerUiOptions, type OwnerUiServer, type PageData, type ResultsData } from "../src/core/owner-ui.ts";
 import type { ChainRow, FeaturesReport, ReleaseRow, ReleaseSideStats } from "../src/core/results.ts";
 import { runUi } from "../src/cli/ui.ts";
@@ -78,7 +79,7 @@ const CFG: Config = {
 		ranking_board: join(TMP, "board.md"),
 	},
 	guards: { ...baseCfg.guards, chat_unlock: true },
-	ui: { enabled: true, port: 7787, owner_login: OWNER },
+	ui: { enabled: true, port: 7787, owner_login: OWNER, allow_this_machine: false },
 };
 applyQueueEnv(CFG);
 
@@ -408,6 +409,25 @@ test("a silent tailscale refuses to start on the default hostname", () => {
 test("a real loopback request (no peer injection) gets 403", async () => {
 	const svc = ui({ peerOf: undefined });
 	expect((await get(svc)).status).toBe(403);
+});
+
+// --- ui.allow_this_machine: this machine (loopback and its own tailnet IP) may press the buttons ---
+
+test("ui.allow_this_machine on: this machine's own tailnet address and loopback are served as the owner", async () => {
+	const on = { ...CFG, ui: { ...CFG.ui, allow_this_machine: true } };
+	expect((await get(ui({ cfg: on, peerOf: () => OWN_IP }))).status).toBe(200);
+	expect((await get(ui({ cfg: on, peerOf: undefined }))).status).toBe(200); // real loopback
+});
+
+test("ui.allow_this_machine on: this machine can POST an answer; other peers keep today's treatment", async () => {
+	const on = { ...CFG, ui: { ...CFG.ui, allow_this_machine: true } };
+	const svc = ui({ cfg: on, peerOf: () => OWN_IP });
+	const res = await post(svc, "/answer", { plan: PLAN_W, answer: "yes" });
+	expect(res.status).toBe(303);
+	expect(inboxRecords()[0]).toMatchObject({ plan: PLAN_W, answer: "yes", login: OWNER });
+	// a foreign tailnet login still gets 403 and the owner's phone still gets the page
+	expect((await get(ui({ cfg: on, peerOf: () => "100.95.10.7" }))).status).toBe(403);
+	expect((await get(ui({ cfg: on, peerOf: () => PEER }))).status).toBe(200);
 });
 
 // --- origin: a POST from another page is refused ---
@@ -1854,6 +1874,8 @@ mkdirSync(join(KROOT, "demo-app", "docs", "knowledge"), { recursive: true });
 mkdirSync(join(KROOT, "no-docs/.git"), { recursive: true });
 writeFileSync(KARCH, KARCH_HTML);
 writeFileSync(join(KROOT, "demo-app", "docs/knowledge/cost.html"), "<p>no title here</p>");
+// Fixed mtimes older than every Base page fixture, so "newest wins" never depends on today's date.
+for (const f of [KARCH, join(KROOT, "demo-app", "docs/knowledge/cost.html")]) utimesSync(f, new Date("2026-10-20T10:00:00Z"), new Date("2026-10-20T10:00:00Z"));
 mkdirSync(join(TMP, "knowledge-state"), { recursive: true });
 mkdirSync(join(TMP, "knowledge-state-empty"), { recursive: true });
 const KCFG: Config = {
@@ -1867,7 +1889,7 @@ test("knowledge tab: repo cards count the topics and name the newest update, and
 	const body = await (await get(svc, "/?tab=knowledge")).text();
 	expect(body).toContain('<a href="/?tab=knowledge" class="on">Base</a>');
 	expect(body).toContain('href="/?tab=knowledge&repo=demo-app"');
-	expect(body).toContain("2 topics · ");
+	expect(body).toContain("2 pages · "); // P2: the count covers knowledge topics plus published pages
 	expect(body).not.toContain("no-docs");
 });
 
@@ -1917,7 +1939,7 @@ test("knowledge: an empty manifest states the convention", async () => {
 		cfg: { ...KCFG, knowledge: { roots: [join(TMP, "no-such-root")], max_age_s: 300 }, paths: { ...KCFG.paths, queue_state: join(TMP, "knowledge-state-empty") } },
 	});
 	const body = await (await get(svc, "/?tab=knowledge")).text();
-	expect(body).toContain("No topics yet");
+	expect(body).toContain("Nothing here yet");
 	expect(body).toContain("docs/knowledge/");
 	expect(body).toContain("configured roots");
 });
@@ -1967,6 +1989,7 @@ const EMPTY_DATA: PageData = {
 	machine: null,
 	stats: null,
 	knowledge: null,
+	pages: null,
 	messages: [],
 	lockMinutesLeft: null,
 };
@@ -2026,4 +2049,58 @@ test("results tab: unreadable data renders unavailable and never fails the page"
 	const html = resultsPage("tab=results", null);
 	expect(html).toContain("Results unavailable");
 	expect(html).toContain("<h1>Results</h1>");
+});
+
+// --- Base lists published pages under their repo (plan 20261029_1436 P2): one card per repo
+// name (a worktree's page sits under the main checkout), the repo view lists knowledge topics
+// and published pages, pages newest first, each linked to the pages server; expired pages gone.
+
+const BPAGES = join(TMP, "base-pages");
+const BCFG: Config = { ...KCFG, pages: { ...KCFG.pages, enabled: true, port: 7788, dir: BPAGES } };
+
+/** A real page file plus its meta row, published at a fixed time; keep by default (never expires). */
+function publishFixture(name: string, repo: string, publishedAt: string, opts: { keep?: boolean } = {}): void {
+	mkdirSync(BPAGES, { recursive: true });
+	writeFileSync(join(BPAGES, name), `<p>${name}</p>`);
+	recordPublish(BPAGES, name, opts.keep ?? true, 15, new Date(publishedAt), repo);
+}
+
+test("base: repo cards count knowledge topics plus published pages, one card per repo", async () => {
+	publishFixture("api-notes.html", "demo-app", "2026-10-29T10:00:00Z");
+	publishFixture("older-notes.html", "demo-app", "2026-10-28T10:00:00Z");
+	publishFixture("solo.html", "solo-repo", "2026-10-27T10:00:00Z");
+	const svc = ui({ cfg: BCFG });
+	const body = await (await get(svc, "/?tab=knowledge")).text();
+	expect(body).toContain('href="/?tab=knowledge&repo=demo-app"');
+	expect(body).toContain("4 pages · 2026-10-29"); // 2 knowledge topics + 2 pages, newest wins
+	expect(body).toContain("solo-repo");
+	expect(body).toContain("1 page · 2026-10-27");
+});
+
+test("base: a repo lists its topics and its published pages newest first, each linked to the pages server", async () => {
+	publishFixture("api-notes.html", "demo-app", "2026-10-29T10:00:00Z");
+	publishFixture("older-notes.html", "demo-app", "2026-10-28T10:00:00Z");
+	const svc = ui({ cfg: BCFG });
+	const body = await (await get(svc, "/?tab=knowledge&repo=demo-app")).text();
+	// P1 records a worktree's page under the main checkout's repo — same list, never a worktree card
+	expect(body).toContain(`<a href="http://${DNS_NAME}:7788/api-notes.html">api-notes.html</a>`);
+	expect(body).toContain(`<a href="http://${DNS_NAME}:7788/older-notes.html">older-notes.html</a>`);
+	expect(body.indexOf("api-notes.html")).toBeLessThan(body.indexOf("older-notes.html")); // newest first
+	expect(body).toContain('href="/?tab=knowledge&repo=demo-app&topic=arch"'); // the knowledge topics still list
+	expect(body).toContain('<span class="mono">2026-10-29</span>');
+});
+
+test("base: expired pages are not listed", async () => {
+	publishFixture("dead.html", "demo-app", "2020-01-01T00:00:00Z", { keep: false }); // expired 2020-01-16
+	const svc = ui({ cfg: BCFG });
+	expect(await (await get(svc, "/?tab=knowledge")).text()).not.toContain("dead.html");
+	expect(await (await get(svc, "/?tab=knowledge&repo=demo-app")).text()).not.toContain("dead.html");
+});
+
+test("base: a repo with only published pages lists them instead of the no-repo card", async () => {
+	publishFixture("solo.html", "solo-repo", "2026-10-27T10:00:00Z");
+	const svc = ui({ cfg: BCFG });
+	const body = await (await get(svc, "/?tab=knowledge&repo=solo-repo")).text();
+	expect(body).toContain(`<a href="http://${DNS_NAME}:7788/solo.html">solo.html</a>`);
+	expect(body).not.toContain("No repo named");
 });

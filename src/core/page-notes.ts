@@ -1,6 +1,6 @@
 // Page notes (plan 20261026_0930 P6): `pages publish` injects one style block, one panel and one
-// script into an HTML artifact, so the owner can select or right-click a passage he is reading and
-// leave a note about that quote. "Submit all" posts them to the pages server, which appends one
+// script into an HTML artifact, so the owner can select a passage — mouse or a phone long-press —
+// and leave a note about that quote. "Submit all" posts them to the pages server, which appends one
 // owner-inbox row per note — the file Main already delivers as a user message. The page never
 // changes itself: notes are outbound only, and nothing on it is editable.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
@@ -53,14 +53,21 @@ const SCRIPT = `<script ${NOTES_MARK}>(function(){
   panel.hidden=notes.length===0;
  }
  function add(text){notes.push({quote:text,note:""});paint();var boxes=list.querySelectorAll("textarea");if(boxes.length)boxes[boxes.length-1].focus();}
+ function show(text,r){
+  fab.style.left=Math.max(8,Math.min(window.innerWidth-100,r.left))+"px";
+  fab.style.top=Math.max(8,r.bottom+8)+"px";
+  fab.style.display="block";fab.dataset.quote=text;
+ }
+ document.addEventListener("selectionchange",function(){
+  var text=quote();
+  if(!text){fab.style.display="none";return;}
+  show(text,window.getSelection().getRangeAt(0).getBoundingClientRect());
+ });
  document.addEventListener("mouseup",function(e){
   if(panel.contains(e.target))return;
   var text=quote();
   if(!text){fab.style.display="none";return;}
-  var r=window.getSelection().getRangeAt(0).getBoundingClientRect();
-  fab.style.left=Math.max(8,Math.min(window.innerWidth-100,r.left))+"px";
-  fab.style.top=Math.max(8,r.top-38)+"px";
-  fab.style.display="block";fab.dataset.quote=text;
+  show(text,window.getSelection().getRangeAt(0).getBoundingClientRect());
  });
  fab.addEventListener("click",function(){fab.style.display="none";add(fab.dataset.quote||"");});
  document.addEventListener("contextmenu",function(e){

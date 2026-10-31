@@ -49,7 +49,9 @@ export function urlField(s: string): string {
 	return new TextDecoder().decode(new Uint8Array(bytes));
 }
 
-function repoKey(repoPath: string): string {
+/** The one repo-name rule (Base tab and pages alike): the origin remote's basename without
+ *  ".git", else the directory's basename. */
+export function repoKey(repoPath: string): string {
 	const remote = gitRaw(repoPath, ["remote", "get-url", "origin"]).stdout.trim();
 	if (remote) {
 		const base = basename(remote.replace(/\/$/, ""));

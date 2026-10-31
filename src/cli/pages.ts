@@ -5,7 +5,7 @@ import { loadConfig } from "../core/config.ts";
 import { readExpiry, sweepPages } from "../core/pages-expiry.ts";
 import { startPagesServer } from "../core/pages.ts";
 import { pageNotesGate } from "../core/page-notes.ts";
-import { pagesOff, pagesOn, publishPage, type Runner } from "../core/pages-setup.ts";
+import { pagesOff, pagesOn, publishPage, repoForPublish, type Runner } from "../core/pages-setup.ts";
 import { realTailscale, type Tailscale } from "../core/tailscale.ts";
 
 export interface PagesDeps { home?: string; runner?: Runner; tailscale?: Tailscale; clock?: () => Date }
@@ -25,24 +25,26 @@ export async function runPages(args: string[] = [], deps: PagesDeps = {}): Promi
    return new Promise<number>(() => {});
   }
   if (args[0] === "publish" && args[1]) {
-   let force = false, keep = false, plan: string | undefined;
+   let force = false, keep = false, plan: string | undefined, repo: string | undefined;
    const rest: string[] = [];
    for (let i = 1; i < args.length; i++) {
     const arg = args[i]!;
     if (arg === "--force") force = true;
     else if (arg === "--keep") keep = true;
     else if (arg === "--plan") plan = args[++i] ?? "";
+    else if (arg === "--repo") repo = args[++i] ?? "";
     else rest.push(arg);
    }
    if (plan === "") { console.error("pages publish: --plan needs the plan file"); return 2; }
+   if (repo === "") { console.error("pages publish: --repo needs the repo name"); return 2; }
    // file first, then the optional name; flags may sit anywhere (2026-10-27: `--force <file>` used
-   // to be read as file "--force" because only args.slice(2) was scanned)
+   // to be read as file "--force" because only args.slice(2) was scanned for flags)
    const file = rest[0];
    const name = rest[1];
    if (!file || rest.length > 2) return 2;
    const now = clock();
    sweepPages(cfg.pages.dir, cfg.pages.keep_days, now);
-   const n = publishPage(file, name, force, cfg.pages.dir, { keep, keepDays: cfg.pages.keep_days, now, notes: pageNotesGate(cfg), plan });
+   const n = publishPage(file, name, force, cfg.pages.dir, { keep, keepDays: cfg.pages.keep_days, now, notes: pageNotesGate(cfg), plan, repo: repoForPublish(file, repo) });
    const host = (deps.tailscale ?? realTailscale).dnsName() ?? "tailnet";
    console.log(`http://${host}:${cfg.pages.port}/${encodeURIComponent(n)}`);
    const expires = readExpiry(cfg.pages.dir)[n]?.expires;
@@ -54,11 +56,13 @@ export async function runPages(args: string[] = [], deps: PagesDeps = {}): Promi
    const map = readExpiry(cfg.pages.dir);
    for (const f of readdirSync(cfg.pages.dir, { withFileTypes: true }).filter(e => e.isFile() && !e.name.startsWith("."))) {
     const expires = map[f.name]?.expires;
-    console.log(`${f.name}  ${expires ? `expires ${expires.slice(0, 10)}` : "kept"}`);
+    // A page published before the repo tag (plan 20261029_1436 P1) has no repo in its meta: "-"
+    // marks that, so the columns stay countable.
+    console.log(`${f.name}  ${map[f.name]?.repo ?? "-"}  ${expires ? `expires ${expires.slice(0, 10)}` : "kept"}`);
    }
    return 0;
   }
  } catch (e) { console.error(e instanceof Error ? e.message : String(e)); return 1; }
- console.error("usage: neurastream pages on [--port N] [--dir D] | off | serve | publish <file> [<name>] [--force] [--keep] | list");
+ console.error("usage: neurastream pages on [--port N] [--dir D] | off | serve | publish <file> [<name>] [--force] [--keep] [--repo <name>] | list");
  return 2;
 }

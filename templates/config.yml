@@ -156,6 +156,7 @@ ui:
   enabled: false        # the owner's phone page (neurastream ui); binds the tailnet address only
   port: 7787
   owner_login: ""       # the tailscale login that may open the page; empty = the page refuses to start
+  allow_this_machine: false   # admit this machine (loopback and its own tailnet IP) as the owner; any local process can then press the buttons
 
 
 pages:
