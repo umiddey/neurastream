@@ -1,14 +1,18 @@
-import { expect, test } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/core/config.ts";
 
 const REPO = join(import.meta.dir, "..");
 const roots: string[] = [];
+afterAll(() => {
+	for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true });
+});
 
 function configFile(text: string): { home: string; file: string } {
-	const home = mkdtempSync("/tmp/neurastream-home-notice-");
+	const home = mkdtempSync(join(tmpdir(), "neurastream-home-notice-"));
 	roots.push(home);
 	mkdirSync(join(home, ".config/neurastream"), { recursive: true });
 	const file = join(home, ".config/neurastream/config.yml");

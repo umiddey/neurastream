@@ -330,6 +330,7 @@ const WT = join(TMP, "home", "projects", "toy-wt"); // same work root as ROOT â€
 const BLOCKERS = join(TMP, "home", ".omp", "agent", "blockers");
 const INDEX = join(TMP, "home", ".omp", "agent", "INDEX.md");
 const PLAN_BASE = "20261028_1400_scoped.md";
+const SUB_BASE = "20261029_1540_sub.md";
 const scopeCfg: Config = loadConfig({
 	home: join(TMP, "home"),
 	env: {
@@ -345,7 +346,7 @@ function scopeFixture(): void {
 	mkdirSync(join(WT, "src/core"), { recursive: true });
 	mkdirSync(join(WT, "tests"), { recursive: true });
 	mkdirSync(BLOCKERS, { recursive: true });
-	writeFileSync(INDEX, `${join(ROOT, "docs/plans", PLAN_BASE)}\n`);
+	writeFileSync(INDEX, `${join(ROOT, "docs/plans", PLAN_BASE)}\n${join(ROOT, "docs/plans/immediate", SUB_BASE)}\n`);
 	const plan = [
 		"# scoped plan",
 		"",
@@ -370,6 +371,9 @@ function scopeFixture(): void {
 	].join("\n");
 	writeFileSync(join(ROOT, "docs/plans", PLAN_BASE), plan);
 	writeFileSync(join(WT, "docs/plans", PLAN_BASE), plan);
+	// The same plan kept one level deeper (oi-agent and Contractor Portal keep plans in docs/plans/immediate/).
+	mkdirSync(join(ROOT, "docs/plans/immediate"), { recursive: true });
+	writeFileSync(join(ROOT, "docs/plans/immediate", SUB_BASE), plan);
 	writeFileSync(join(WT, "src/core/guards.ts"), "export const x = 1;\n");
 	writeFileSync(join(WT, "src/core/brief-lint.ts"), "export const y = 1;\n");
 	writeFileSync(join(WT, "tests/one.test.ts"), "test('x', () => {});\n");
@@ -413,6 +417,12 @@ test("a brief naming the plan copy in a same-root worktree is refused; the index
 	expect(wtCopy.out).toContain("worktree path");
 	const mainCopy = scopeBrief("20261028_1512_main_copy.md", `Plan: ${join(ROOT, "docs/plans", PLAN_BASE)} has the phases.`);
 	expect(briefLint([mainCopy], scopeCfg)).toBe(0);
+});
+
+test("a subdir plan (docs/plans/immediate/) passes when the brief names its indexed main-checkout path", () => {
+	scopeFixture();
+	const sub = scopeBrief("20261029_1545_subdir.md", `Plan: ${join(ROOT, "docs/plans/immediate", SUB_BASE)} has the phases.`);
+	expect(briefLint([sub], scopeCfg)).toBe(0);
 });
 
 test("a src/tests path the plan's blocker ALLOWED regex rejects is refused", () => {

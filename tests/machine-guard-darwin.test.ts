@@ -1,13 +1,20 @@
-import { test, expect } from "bun:test";
+import { afterAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, chmodSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, chmodSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 const TEMPLATE = join(import.meta.dir, "..", "templates", "machine-guard.sh");
 
+// A full `bun test` must leave nothing under os.tmpdir() (plan 20261029_1530 P3).
+const DIRS: string[] = [];
+afterAll(() => {
+	for (const d of DIRS) rmSync(d, { recursive: true, force: true });
+});
+
 test.skipIf(process.platform !== "darwin")("machine-guard snapshot runs on macOS with empty stderr", () => {
   const dir = mkdtempSync(join(tmpdir(), "mg-darwin-"));
+  DIRS.push(dir);
   const heavy = join(dir, "heavy-run");
   writeFileSync(heavy, "#!/usr/bin/env bash\necho 'idle'\n");
   chmodSync(heavy, 0o755);
@@ -36,6 +43,7 @@ test.skipIf(process.platform !== "darwin")("machine-guard snapshot runs on macOS
 
 test.skipIf(process.platform !== "darwin")("machine-guard heavy-lock line runs heavy-run status through main.ts, with no HEAVY_RUN path", () => {
   const dir = mkdtempSync(join(tmpdir(), "mg-darwin-heavy-"));
+  DIRS.push(dir);
   const owner = join(dir, "owner");
   writeFileSync(owner, "");
   mkdirSync(join(dir, "home"));

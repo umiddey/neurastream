@@ -1,5 +1,5 @@
-import { expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { afterAll, expect, test } from "bun:test";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConfigError, loadConfig } from "../src/core/config.ts";
@@ -8,8 +8,15 @@ import { readExpiry, recordPublish, sweepPages } from "../src/core/pages-expiry.
 const NOW = new Date("2026-10-25T12:00:00.000Z");
 const PLUS_15 = "2026-11-09T12:00:00.000Z";
 
+// A full `bun test` must leave nothing under os.tmpdir() (plan 20261029_1530 P3).
+const DIRS: string[] = [];
+afterAll(() => {
+	for (const d of DIRS) rmSync(d, { recursive: true, force: true });
+});
+
 function pagesDir(): string {
  const dir = mkdtempSync(join(tmpdir(), "pages-expiry-"));
+ DIRS.push(dir);
  return dir;
 }
 
@@ -20,11 +27,14 @@ test("recordPublish defaults to 15 days, keep is null, and a null record stays n
  const again = recordPublish(dir, "kept.html", false, 15, new Date("2026-11-01T00:00:00.000Z"));
  expect(again.expires).toBeNull();
  expect(again.published).toBe("2026-11-01T00:00:00.000Z");
- expect(loadConfig({ home: mkdtempSync(join(tmpdir(), "pages-expiry-home-")), env: {} }).pages.keep_days).toBe(15);
+ const cfgHome = mkdtempSync(join(tmpdir(), "pages-expiry-home-"));
+ DIRS.push(cfgHome);
+ expect(loadConfig({ home: cfgHome, env: {} }).pages.keep_days).toBe(15);
 });
 
 test("sweep removes only expired regular files and backfills unrecorded ones", () => {
  const parent = mkdtempSync(join(tmpdir(), "pages-expiry-sweep-"));
+ DIRS.push(parent);
  const dir = join(parent, "pages");
  mkdirSync(dir);
  const outside = join(parent, "outside.html");
@@ -62,6 +72,7 @@ test("sweep removes only expired regular files and backfills unrecorded ones", (
 
 test("bad keep_days is a ConfigError", () => {
  const home = mkdtempSync(join(tmpdir(), "pages-expiry-cfg-"));
+ DIRS.push(home);
  const file = join(home, "config.yml");
  writeFileSync(file, "pages:\n  keep_days: 0\n");
  expect(() => loadConfig({ home, file, env: {} })).toThrow(ConfigError);

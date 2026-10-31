@@ -3,9 +3,9 @@
 // allowed roots or on a deny path, pipe-to-shell patterns. Every list comes from config; the
 // tests build the rule set directly, exactly the way actionsRules(cfg) maps it.
 
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { ompTraceSource, parseTraceFile } from "../src/adapters/omp/traces.ts";
@@ -16,6 +16,11 @@ import { readIncidents } from "../src/core/incidents.ts";
 import { runTraces } from "../src/cli/traces.ts";
 import { readEvents } from "../src/core/agent-score.ts";
 import { actionsRules, globMatch, ownedRepoOf, suspiciousActions, unreportedFindings, type ActionsRules } from "../src/core/trace-actions.ts";
+
+const DIRS: string[] = [];
+afterAll(() => {
+	for (const d of DIRS) rmSync(d, { recursive: true, force: true });
+});
 
 const HOME = "/home/agent-sandbox";
 
@@ -204,6 +209,7 @@ describe("dedupe and the config mapping", () => {
 
 	test("actionsRules maps the traces keys and falls back to the work roots", () => {
 		const home = mkdtempSync(join(tmpdir(), "ns-actions-cfg-"));
+		DIRS.push(home);
 		mkdirSync(join(home, ".config/neurastream"), { recursive: true });
 		writeFileSync(
 			join(home, ".config/neurastream/config.yml"),
@@ -242,6 +248,7 @@ traces:
 
 	test("a non-string entry in a traces list is refused", () => {
 		const home = mkdtempSync(join(tmpdir(), "ns-actions-bad-"));
+		DIRS.push(home);
 		mkdirSync(join(home, ".config/neurastream"), { recursive: true });
 		writeFileSync(
 			join(home, ".config/neurastream/config.yml"),
@@ -262,6 +269,7 @@ traces:
 const REPO = dirname(dirname(import.meta.path));
 const FIX = join(REPO, "tests", "fixtures", "traces");
 const P2 = mkdtempSync(join(tmpdir(), "ns-actions-p2-"));
+DIRS.push(P2);
 const P2SESSIONS = join(P2, ".omp/agent/sessions/actions-proj");
 mkdirSync(P2SESSIONS, { recursive: true });
 // A user config with work roots, so the out-of-scope write rule fires (the template has both
@@ -305,6 +313,7 @@ describe("fixture scan through the real trace reader", () => {
 
 describe("high findings become realtime incidents", () => {
 	const h2 = mkdtempSync(join(tmpdir(), "ns-actions-inc-"));
+	DIRS.push(h2);
 	const qs = join(h2, "state");
 	mkdirSync(join(h2, ".config/neurastream"), { recursive: true });
 	mkdirSync(qs, { recursive: true });
@@ -391,6 +400,7 @@ describe("traces actions CLI", () => {
 // ---- P4: cross-product reads of owned repos hidden behind a `Findings: none` line ----
 
 const P4 = mkdtempSync(join(tmpdir(), "ns-actions-owned-"));
+DIRS.push(P4);
 const P4SESSIONS = join(P4, ".omp/agent/sessions/actions-proj");
 mkdirSync(join(P4, ".config/neurastream"), { recursive: true });
 mkdirSync(P4SESSIONS, { recursive: true });
@@ -470,6 +480,7 @@ describe("unreported-finding: cross-product reads behind a Findings: none line (
 
 describe("unreported findings fold as traces incidents with an agent-score penalty", () => {
 	const h4 = mkdtempSync(join(tmpdir(), "ns-actions-owned-inc-"));
+	DIRS.push(h4);
 	const q4 = join(h4, "state");
 	mkdirSync(join(h4, ".config/neurastream"), { recursive: true });
 	mkdirSync(q4, { recursive: true });
@@ -527,6 +538,7 @@ describe("live wiring: a sub's Progress edit runs D6+D7 over its own session (P6
 	// root. The adapter child gets a ctx whose sessionManager hands out that file, the way the
 	// harness hands a sub its own session.
 	const P6 = mkdtempSync(join(tmpdir(), "ns-actions-p6-"));
+	DIRS.push(P6);
 	const P6AGENT = join(P6, ".omp/agent");
 	const P6REPO = join(P6, "Work/pm-mr196");
 	const P6PLAN = join(P6REPO, "docs/plans/20261025_p6wire.md");

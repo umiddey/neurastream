@@ -6,7 +6,7 @@ import { afterAll, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createOmpAdapter } from "../src/adapters/omp/index.ts";
+import { createOmpAdapter, reset as resetAdapter } from "../src/adapters/omp/index.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
@@ -50,6 +50,7 @@ const TMP = mkdtempSync(join(tmpdir(), "write-check-"));
 const queueEnvBefore = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("QUEUE_")));
 for (const k of Object.keys(queueEnvBefore)) delete process.env[k];
 afterAll(() => {
+	resetAdapter();
 	rmSync(TMP, { recursive: true, force: true });
 	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
 	Object.assign(process.env, queueEnvBefore);

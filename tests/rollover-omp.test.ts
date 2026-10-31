@@ -7,7 +7,7 @@ import { afterAll, expect, test, vi } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { createOmpAdapter } from "../src/adapters/omp/index.ts";
+import { createOmpAdapter, reset } from "../src/adapters/omp/index.ts";
 import { spawnSync } from "node:child_process";
 import { blockersDirPath, indexPath } from "../src/core/queue/lib.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
@@ -107,6 +107,14 @@ for (const k of Object.keys(queueEnvBefore)) delete process.env[k];
 // and every live repo, and the note would land in the live queue state dir.
 const baseCfg: Config = loadConfig({ home: join(TMP, "home") });
 applyQueueEnv(baseCfg);
+// autoClose (same run-end handler) must spawn no real `bin/queue-close` child: the detached bun
+// child outlives this file and writes its close log under TMP after the afterAll cleanup (and
+// spills its transpile cache into TMPDIR); "true" is the no-op stub, as in owner-ui.test.ts.
+process.env.QUEUE_CLOSE_BIN = "true";
+// Spawned bun children spill their transpile cache into $TMPDIR/node-compile-cache; point that
+// inside TMP so the afterAll rmSync takes it with the sandbox.
+const compileCacheBefore = process.env.NODE_COMPILE_CACHE;
+process.env.NODE_COMPILE_CACHE = join(TMP, "compile-cache");
 const overCfg: Config = { ...baseCfg, rollover: { enabled: true, max_session_mb: 0.000001, exit_grace_s: 20 } };
 const belowCfg: Config = { ...baseCfg, rollover: { enabled: true, max_session_mb: 1024, exit_grace_s: 20 } };
 // session_stop reads guards.ledger_command. The live ledger may show a running subagent, which would let the
@@ -124,8 +132,13 @@ let draft = "";
 let shutdowns = 0;
 
 afterAll(() => {
+	// Clear the active adapter's rollover state so a stale grace-period timer does not
+	// fire into the dirs we rmSync next or into a later test file's sandbox paths (P3c).
+	reset();
 	rmSync(TMP, { recursive: true, force: true });
 	rmSync(NOTE, { force: true });
+	if (compileCacheBefore === undefined) delete process.env.NODE_COMPILE_CACHE;
+	else process.env.NODE_COMPILE_CACHE = compileCacheBefore;
 	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
 	Object.assign(process.env, queueEnvBefore);
 });
@@ -804,4 +817,38 @@ test("main-rollover is refused; the launcher's relaunch is the only rollover pat
 	expect(newSessions.length).toBe(0);
 	expect(host.sent.length).toBe(0);
 	expect(notes.some(n => n.includes("neurastream main"))).toBe(true);
+});
+
+test("reset clears the armed grace timer so a second createOmpAdapter setup starts clean", async () => {
+	// First adapter: arm the exit-grace timer via the relaunch path (graceCfg has a 50 ms grace).
+	resetState();
+	const host1 = fakeHost();
+	createOmpAdapter(host1, graceCfg());
+	const ctx = mainCtx();
+	vi.useFakeTimers();
+	try {
+		await armReady(host1, ctx, "## In progress\nstep");
+		await host1.emit("agent_end", {}, ctx); // relaunch requested, grace timer armed (fake, 50 ms)
+		expect(shutdowns).toBe(1);
+		expect(existsSync(relaunchPath())).toBe(true);
+		// reset() must clear the armed timer and stale closure state (relaunched, flight, clearGrace).
+		reset();
+		resetState();
+		// Advance past the grace period: if the timer were still armed, exitGraceElapsed would fire
+		// with host1's stale cfg and recreate torn-down dirs / start an in-process rollover.
+		vi.advanceTimersByTime(100_000);
+	} finally {
+		vi.useRealTimers();
+	}
+	// No stale in-process rollover fired: the timer was cleared by reset().
+	expect(newSessions).toHaveLength(0);
+	expect(host1.sent).toHaveLength(0);
+	// Second adapter with a different config: no stale relaunched/flight/timer from host1.
+	const host2 = fakeHost();
+	createOmpAdapter(host2, belowCfg);
+	const ctx2 = mainCtx();
+	writeFileSync(SESSION_FILE, "x"); // below threshold
+	await host2.emit("agent_end", {}, ctx2);
+	expect(host2.messages).toHaveLength(0);
+	expect(newSessions).toHaveLength(0);
 });

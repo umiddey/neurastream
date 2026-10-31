@@ -3,7 +3,7 @@
 // page whose check fails cannot be approved — `pages publish --plan` leaves the bar disabled and the
 // server answers 409.
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkDiagram, diagramData, planItems } from "../src/core/diagram-check.ts";
@@ -15,8 +15,10 @@ import { runDiagram } from "../src/cli/diagram.ts";
 
 const LOOPBACK = [127, 0, 0, 1].join(".");
 const servers: { stop(): void }[] = [];
+const dirs: string[] = [];
 afterEach(() => {
 	for (const s of servers.splice(0)) s.stop();
+	for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 	delete process.env.QUEUE_STATE;
 });
 
@@ -70,6 +72,7 @@ test("check: a covering diagram is clean; a missing phase or path and a one-kid 
 
 test("diagram check CLI: exit 2 on usage, 1 while something is missing, 0 when it covers", () => {
 	const dir = mkdtempSync(join(tmpdir(), "diagram-check-cli-"));
+	dirs.push(dir);
 	const plan = join(dir, "plan.md");
 	writeFileSync(plan, PLAN);
 	writeFileSync(join(dir, "bad.html"), page(`{id:"a",nm:"P1",kids:[{id:"a1",nm:"x"},{id:"a2",nm:"y"}]}`));
@@ -82,6 +85,7 @@ test("diagram check CLI: exit 2 on usage, 1 while something is missing, 0 when i
 
 test("publish --plan: an incomplete diagram keeps Approve disabled and the server refuses it", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "diagram-check-pub-"));
+	dirs.push(dir);
 	process.env.QUEUE_STATE = join(dir, "state");
 	const cfg: Config = loadConfig({ file: join(dir, "missing.yml"), home: dir, env: {} });
 	cfg.paths.queue_state = join(dir, "state");

@@ -16,7 +16,7 @@ import { loadConfig } from "../src/core/config.ts";
 import { checkInject, checkPlanEdit, checkSpawn, checkTool, priorityProblem, readStaffing, recordSpawns, staffedPlans } from "../src/core/guards.ts";
 import { ownerSaid } from "../src/core/incidents.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
-import { activePlans, closeLog, stateDirPath } from "../src/core/queue/lib.ts";
+import { activePlans, closeLog, stateDirPath, type Plan } from "../src/core/queue/lib.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "nsar-guard-priority-"));
 const HOME = join(TMP, "home");
@@ -374,4 +374,36 @@ test("one batch naming HIGH and LOW needs no skip for its own higher plan; only 
 	expect(later.allow).toBe(false);
 	expect(later.reason).toContain(`higher plan ${MID} (rank 2) is idle`);
 	expect(later.reason).not.toContain(HIGH);
+});
+
+// --- P3b (plan 20261029_1530): a higher plan whose branch has an open MR is landing, not idle ---
+
+/** HIGH rewritten with the branch the cache's MR carries; activePlans() re-reads it fresh. */
+function plansWithHighMr(): Plan[] {
+	writeFileSync(HIGH, planText().replace("Branch: feat/toy", "Branch: feat/high"));
+	return activePlans();
+}
+
+/** Seed the open-MR cache the main-start sweep and pendingWorkProblem maintain, keyed by the plan's repo. */
+function writeMrCacheFile(at: number, mrs: object[] = [{ forge: "github", number: 7, token: "#7", branch: "feat/high" }]): void {
+	const repo = activePlans().find(p => p.file === HIGH)!.repo;
+	writeFileSync(join(STATE, "mr-cache.json"), JSON.stringify({ at, repos: { [repo]: mrs } }));
+}
+
+test("priorityProblem: a higher plan whose branch has an open MR in a fresh cache does not block (I-20261029-435)", () => {
+	const plans = plansWithHighMr();
+	writeMrCacheFile(NOW);
+	expect(priorityProblem(plans, [MID], [], "", [], NOW, cfg)).toBeNull();
+});
+
+test("priorityProblem: a fresh cache without the higher plan's MR still refuses the spawn", () => {
+	const plans = plansWithHighMr();
+	writeMrCacheFile(NOW, []);
+	expect(priorityProblem(plans, [MID], [], "", [], NOW, cfg)?.problem).toContain(`higher plan ${HIGH} (rank 1) is idle`);
+});
+
+test("priorityProblem: a stale cache proves no MR, forge unreachable still refuses", () => {
+	const plans = plansWithHighMr();
+	writeMrCacheFile(NOW - (cfg.review.mr_cache_minutes + 1) * 60);
+	expect(priorityProblem(plans, [MID], [], "", [], NOW, cfg)?.problem).toContain(`higher plan ${HIGH} (rank 1) is idle`);
 });

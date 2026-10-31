@@ -1,7 +1,7 @@
 // Page notes (plan 20261026_0930 P6): publish injects the block once, the page's "Submit all" posts
 // to the pages server, and each note becomes one owner-inbox row carrying page, quote and note.
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/core/config.ts";
@@ -11,8 +11,10 @@ import { startPagesServer } from "../src/core/pages.ts";
 
 const LOOPBACK = [127, 0, 0, 1].join(".");
 const servers: { stop(): void }[] = [];
+const dirs: string[] = [];
 afterEach(() => {
 	for (const s of servers.splice(0)) s.stop();
+	for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 	delete process.env.QUEUE_STATE;
 });
 
@@ -34,6 +36,7 @@ test("inject: one style, one panel and one script, before </body>, and never twi
 
 test("publish: every HTML artifact carries the block; a republish of the same source needs no --force", () => {
 	const dir = mkdtempSync(join(tmpdir(), "page-notes-pub-"));
+	dirs.push(dir);
 	const src = join(dir, "source.html");
 	const out = join(dir, "public");
 	writeFileSync(src, '<!doctype html><html><body><p>why</p></body></html>');
@@ -50,6 +53,7 @@ test("publish: every HTML artifact carries the block; a republish of the same so
 
 test("inbox: ids run n1, n2, … per page and an empty submit stores nothing", () => {
 	const dir = mkdtempSync(join(tmpdir(), "page-notes-inbox-"));
+	dirs.push(dir);
 	const inbox = join(dir, "owner-inbox.jsonl");
 	const cfg = loadConfig({ file: join(dir, "missing.yml"), home: dir, env: {} });
 	cfg.paths.queue_state = dir;
@@ -67,6 +71,7 @@ test("inbox: ids run n1, n2, … per page and an empty submit stores nothing", (
 test("pages server: POST /_notes stores quote, note and url; empty submit and a foreign origin are refused", async () => {
 	const root = mkdtempSync(join(tmpdir(), "page-notes-serve-"));
 	const state = mkdtempSync(join(tmpdir(), "page-notes-state-"));
+	dirs.push(root, state);
 	process.env.QUEUE_STATE = state;
 	writeFileSync(join(root, "why.html"), injectPageNotes("<html><body><p>diagram</p></body></html>"));
 	const cfg = loadConfig({ file: join(root, "missing.yml"), home: root, env: {} });

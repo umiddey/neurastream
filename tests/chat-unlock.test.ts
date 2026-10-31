@@ -9,7 +9,7 @@ import { afterAll, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { createOmpAdapter } from "../src/adapters/omp/index.ts";
+import { createOmpAdapter, reset as resetAdapter } from "../src/adapters/omp/index.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { relaunchPath } from "../src/core/rollover.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
@@ -98,6 +98,7 @@ const notes: string[] = [];
 let shutdowns = 0;
 
 afterAll(() => {
+	resetAdapter();
 	rmSync(TMP, { recursive: true, force: true });
 	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
 	Object.assign(process.env, queueEnvBefore);

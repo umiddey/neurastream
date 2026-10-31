@@ -12,7 +12,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { createOmpAdapter } from "../src/adapters/omp/index.ts";
+import { createOmpAdapter, reset as resetAdapter } from "../src/adapters/omp/index.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { postReply } from "../src/core/notify.ts";
 import { notePath, relaunchPath } from "../src/core/rollover.ts";
@@ -279,10 +279,28 @@ beforeAll(() => {
 	bothCfg();
 });
 
-afterAll(() => {
+// The stop path posts fire-and-forget (postReply().then chains append guard.log/metrics/incidents
+// after the await points), and postReply serializes through a module-level FIFO queue. Another
+// file's real timers (rate-limit-omp's resume waits) keep this process's loop turning past this
+// file's afterAll, so a chain landing after the rmSync would recreate the sandbox. Awaiting one
+// more enqueued post drains the FIFO: every earlier chain, its retry waits and its .then tails
+// have landed once the sentinel resolves. The sentinel targets the stopped fakes, so it returns
+// fast once the queue is empty.
+const compileCacheBefore = process.env.NODE_COMPILE_CACHE;
+process.env.NODE_COMPILE_CACHE = join(TMP, "compile-cache");
+
+afterAll(async () => {
 	discord.stop(true);
 	slack.stop(true);
+	// Clear the adapter's armed grace timer BEFORE draining the FIFO (P3c): postReply("settle")
+	// takes real I/O, and a firing grace timer during it would start an in-process rollover that
+	// spawns a bun child, which (with NODE_COMPILE_CACHE already deleted by a peer file's afterAll)
+	// would spill $TMPDIR/node-compile-cache into this file's sandbox.
+	resetAdapter();
+	await postReply("settle", bothCfg());
 	rmSync(TMP, { recursive: true, force: true });
+	if (compileCacheBefore === undefined) delete process.env.NODE_COMPILE_CACHE;
+	else process.env.NODE_COMPILE_CACHE = compileCacheBefore;
 	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
 	Object.assign(process.env, queueEnvBefore);
 });
@@ -316,6 +334,7 @@ test("the rollover-ready path relaunches and posts nothing", async () => {
 	expect(discordHits.length).toBe(0);
 	expect(slackHits.length).toBe(0);
 	expect(existsSync(relaunchPath())).toBe(true);
+	resetAdapter();
 });
 
 test("a 4500-char reply is 3 discord and 2 slack chunks, in order, nothing lost", async () => {

@@ -10,7 +10,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createOmpAdapter, type ExtensionHost } from "../src/adapters/omp/index.ts";
+import { createOmpAdapter, reset as resetAdapter, type ExtensionHost } from "../src/adapters/omp/index.ts";
 import { burdenRule } from "../src/core/repo-rules.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 
@@ -34,6 +34,7 @@ const CFG: Config = loadConfig({ home: HOME, env: {} });
 const RULE = burdenRule();
 
 afterAll(() => {
+	resetAdapter();
 	rmSync(TMP, { recursive: true, force: true });
 	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
 	Object.assign(process.env, queueEnvBefore);
