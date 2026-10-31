@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
 import { pagesDoctor } from "../core/pages-doctor.ts";
 import { ConfigError, configFile, loadConfig, type Config } from "../core/config.ts";
 import { postReply } from "../core/notify.ts";
@@ -17,7 +18,7 @@ import { runNotes } from "./notes.ts";
 import { runPages } from "./pages.ts";
 import { runUninstall } from "../core/uninstall.ts";
 import { queueMigrate } from "../core/queue-migrate.ts";
-import { allowedAgents, subagentsPath } from "../core/queue/lib.ts";
+import { allowedAgents, indexPath, readIndex, subagentsPath, writeIndex } from "../core/queue/lib.ts";
 import { allowAgents, denyAgents, invalidSlugs } from "../core/subagents.ts";
 
 const BINS = [
@@ -64,6 +65,11 @@ export function helpText(): string {
 		"  neurastream redact            filter stdin through the secret redactor: stdout gets the text,",
 		"                                stderr the hit summary (types and counts only)",
 		"  neurastream queue migrate     fold the old repo INDEX.md files into the one main index",
+		"  neurastream queue add <plan.md> [--rank N]",
+		"                                add a plan to the index (append, or insert at 1-based rank N)",
+		"  neurastream queue move <plan.md> <rank>",
+		"                                move a listed plan to rank N; the index file itself is 0444,",
+		"                                these two commands are the only agent writes to it",
 		"  neurastream config [--json]   print the merged config (defaults + file + env)",
 		"  neurastream guard <event> --json",
 		`                                (${GUARD_USAGE.slice(GUARD_USAGE.indexOf("(") + 1, -1)})`,
@@ -143,6 +149,15 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 			return 1;
 		}
 	}
+	if (cmd === "queue" && (args[0] === "add" || args[0] === "move")) {
+		try {
+			applyQueueEnv(loadConfig());
+		} catch (err) {
+			console.error(err instanceof ConfigError ? err.message : String(err));
+			return 1;
+		}
+		return args[0] === "add" ? runQueueAdd(args.slice(1)) : runQueueMove(args.slice(1));
+	}
 	if (cmd === "guard") {
 		return runGuard(args[0] ?? "");
 	}
@@ -158,6 +173,63 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 	}
 	console.error(`unknown command ${cmd}\n${helpText()}`);
 	return 2;
+}
+
+const QUEUE_EDIT_USAGE =
+	"usage: neurastream queue add <plan.md> [--rank N]   add a plan to the index (append, or insert at 1-based rank N)\n" +
+	"       neurastream queue move <plan.md> <rank>      move a listed plan to rank N";
+
+// The index file is 0444 and guard-protected (plan 20261031_0911 P2), so these two commands are the
+// only way an agent adds a plan or reorders it. Both write through writeIndex: the set of plans can
+// only grow, and the file stays read-only on disk after every write.
+function runQueueAdd(args: string[]): number {
+	const ri = args.indexOf("--rank");
+	const rest = args.filter((a, i) => a !== "--rank" && args[i - 1] !== "--rank");
+	const rankArg = ri >= 0 ? args[ri + 1] : undefined;
+	const n = Number(rankArg);
+	const rank = rankArg !== undefined && rankArg !== "" && Number.isInteger(n) && n >= 1 ? n : null;
+	if (rest.length !== 1 || (ri >= 0 && rank === null)) {
+		console.error(QUEUE_EDIT_USAGE);
+		return 2;
+	}
+	const abs = path.resolve(rest[0]!);
+	if (!existsSync(abs)) {
+		console.error(`queue add: ${abs} does not exist`);
+		return 1;
+	}
+	const lines = readIndex();
+	if (lines.includes(abs)) {
+		console.error(`queue add: ${abs} is already listed at rank ${lines.indexOf(abs) + 1} (queue move reorders it)`);
+		return 1;
+	}
+	const at = rank === null ? lines.length : Math.min(rank - 1, lines.length);
+	lines.splice(at, 0, abs);
+	writeIndex(lines);
+	console.log(`queue add: ${abs} at rank ${at + 1} of ${lines.length} in ${indexPath()}`);
+	return 0;
+}
+
+function runQueueMove(args: string[]): number {
+	const [fileArg, rankArg] = args;
+	const n = Number(rankArg);
+	const rank = rankArg !== undefined && rankArg !== "" && Number.isInteger(n) && n >= 1 ? n : null;
+	if (args.length !== 2 || rank === null) {
+		console.error(QUEUE_EDIT_USAGE);
+		return 2;
+	}
+	const abs = path.resolve(fileArg!);
+	const lines = readIndex();
+	const from = lines.indexOf(abs);
+	if (from === -1) {
+		console.error(`queue move: ${abs} is not in ${indexPath()}`);
+		return 1;
+	}
+	lines.splice(from, 1);
+	const to = Math.min(rank - 1, lines.length);
+	lines.splice(to, 0, abs);
+	writeIndex(lines);
+	console.log(`queue move: ${abs} rank ${from + 1} → ${to + 1} of ${lines.length} in ${indexPath()}`);
+	return 0;
 }
 
 const NOTIFY_USAGE = "usage: neurastream notify test";
