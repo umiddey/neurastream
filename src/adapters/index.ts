@@ -11,6 +11,8 @@ import { ompAdapter } from "./omp/adapter.ts";
 
 export interface HarnessAdapter {
 	name: string;
+	/** The command the harness runs; setup checks it is on PATH. */
+	bin: string;
 	/** Session reader: the runs and the main session (docs/adapter.md). */
 	runSource(cfg: Config): RunSource;
 	/** Completed subagent task-results announced in the newest main session file. */
@@ -52,4 +54,9 @@ export function getAdapter(cfg?: Pick<Config, "harness">): HarnessAdapter {
 	const adapter = ADAPTERS[name];
 	if (!adapter) throw new Error(`unknown harness "${name}"; known: ${Object.keys(ADAPTERS).join(", ")}`);
 	return adapter;
+}
+
+/** Every registered harness with the command it runs (setup checks those are on PATH). */
+export function harnessBins(): Pick<HarnessAdapter, "name" | "bin">[] {
+	return Object.values(ADAPTERS);
 }

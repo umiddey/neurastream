@@ -10,6 +10,23 @@ import { ConfigError, loadConfig } from "./config.ts";
 const leading = (line: string): number => line.length - line.trimStart().length;
 const isBlank = (line: string): boolean => line.trim() === "";
 
+// Leaf dotted paths: a mapping recurses; a scalar, a list or null is a leaf.
+export function leafKeys(node: unknown, prefix: string[] = []): string[] {
+	if (node === null || typeof node !== "object" || Array.isArray(node)) return [prefix.join(".")];
+	return Object.entries(node).flatMap(([k, v]) => leafKeys(v, [...prefix, k]));
+}
+
+export function valueAt(cfg: unknown, key: string): unknown {
+	let node = cfg;
+	for (const seg of key.split(".")) node = (node as Record<string, unknown>)[seg];
+	return node;
+}
+
+// A value as YAML text for setConfigKeys: lists in flow style on one line ([a, b]); scalars as JSON, which is valid YAML.
+export function yamlValue(value: unknown): string {
+	return Array.isArray(value) ? `[${value.map((x) => JSON.stringify(x)).join(", ")}]` : JSON.stringify(value);
+}
+
 // First line at or after `from` that is not part of a block whose keys sit at column `col`.
 // A block is the following lines that are blank or indented deeper than the key.
 function blockEnd(lines: string[], from: number, col: number): number {

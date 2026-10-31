@@ -1,61 +1,61 @@
 paths:
-  home: "~"
+  home: "~"   # the HOME every other path expands from
   work_roots: []   # set your own roots
-  config_dir: "~/.config/neurastream"
-  agent_dir: "~/.config/neurastream"
-  score_state: "~/.local/state/agent-score"
-  queue_state: "~/.local/state/queue"
-  queue_index: "~/.config/neurastream/INDEX.md"
-  blockers: "~/.config/neurastream/blockers"
-  notes: "~/.config/neurastream/notes"
-  ranking_board: "~/.config/neurastream/notes/subagent-ranking.md"
-  subagents: "~/.config/neurastream/notes/subagents.md"
-  cancelled: "~/.config/neurastream/CANCELLED.md"
-  unlock: "~/.config/neurastream/.guard-unlock"
-  guard_log: "~/.local/state/main-guard.log"
-  plan_guard_log: "~/.local/state/plan-guard.log"
-  heavy_lock: "~/.local/state/neurastream/heavy-run.lock"
-  heavy_owner: "~/.local/state/neurastream/heavy-run.owner"
-  heavy_log: "~/.local/state/neurastream/heavy-run.log"
-  heavy_idle_state: "~/.local/state/neurastream/heavy-run.idle-state"
-  alert_state: "~/.cache/resource-alerts"
-  snapshot_lock: "~/.cache/tmp-snapshot.lock"
+  config_dir: "~/.config/neurastream"   # the config file's dir
+  agent_dir: "~/.config/neurastream"   # the index, notes and blockers dir
+  score_state: "~/.local/state/agent-score"   # agent-score state dir
+  queue_state: "~/.local/state/queue"   # queue state dir (mr-cache.json lives here)
+  queue_index: "~/.config/neurastream/INDEX.md"   # the main queue index
+  blockers: "~/.config/neurastream/blockers"   # blocker files dir
+  notes: "~/.config/neurastream/notes"   # notes dir
+  ranking_board: "~/.config/neurastream/notes/subagent-ranking.md"   # subagent ranking board
+  subagents: "~/.config/neurastream/notes/subagents.md"   # subagent allow-list (## Allowed)
+  cancelled: "~/.config/neurastream/CANCELLED.md"   # cancelled-work log
+  unlock: "~/.config/neurastream/.guard-unlock"   # guard unlock file
+  guard_log: "~/.local/state/main-guard.log"   # main-guard log
+  plan_guard_log: "~/.local/state/plan-guard.log"   # plan-guard log
+  heavy_lock: "~/.local/state/neurastream/heavy-run.lock"   # heavy-run lock file
+  heavy_owner: "~/.local/state/neurastream/heavy-run.owner"   # heavy-run owner record
+  heavy_log: "~/.local/state/neurastream/heavy-run.log"   # heavy-run log
+  heavy_idle_state: "~/.local/state/neurastream/heavy-run.idle-state"   # heavy-run idle state
+  alert_state: "~/.cache/resource-alerts"   # resource-alert cooldown state
+  snapshot_lock: "~/.cache/tmp-snapshot.lock"   # tmp-snapshot lock
 
 # Which adapter (docs/adapter.md) serves runs, traces, launch, install and doctor.
-harness: omp
+harness: omp   # the adapter that serves runs, traces, launch, install and doctor
 
 # Live project rules (src/core/repo-rules.ts): the repo's own AGENTS.md, handed to the agent that
 # works in it — a subagent on its plan's repo, Main the first time a session touches the repo.
 # max_bytes caps the injected text; past it the text is cut and one line names the file to read.
 rules:
-  max_bytes: 24000
+  max_bytes: 24000   # cap on the injected repo-rules text
 
 score:
-  default_repo: ""
+  default_repo: ""   # default repo for agent-score (empty = none)
   default_branch: ""   # no default: pass --branch (agent-score refuses to guess a branch)
   penalties:
-    false-claim: 5
-    rule-break: 2
-    escaped-defect: 8
-    unreported-finding: 5
-  diagnose_weight: 4
-  gate_days: 7
-  board_days: 7
-  min_dollars: 0.01
+    false-claim: 5   # score penalty per false claim
+    rule-break: 2   # score penalty per rule break
+    escaped-defect: 8   # score penalty per escaped defect
+    unreported-finding: 5   # score penalty per unreported finding
+  diagnose_weight: 4   # rank weight of diagnose findings
+  gate_days: 7   # days of history the spawn gate reads
+  board_days: 7   # days of history on the board
+  min_dollars: 0.01   # spend below this is not ranked
   waste_weight: 0           # rank multiplier for wasted-call rate (0 disables)
-  min_hours: 0.05
+  min_hours: 0.05   # hours below this are not ranked
 
 ledger:
-  default_hours: 24
-  idle_show_min: 5
-  idle_not_live_min: 60
-  max_running_per_provider: 2
-  max_slots: 2
+  default_hours: 24   # the ledger's default window in hours
+  idle_show_min: 5   # idle minutes before a run is shown
+  idle_not_live_min: 60   # idle minutes before a run that is not live is flagged
+  max_running_per_provider: 2   # concurrent running agents allowed per provider
+  max_slots: 2   # concurrent agent slots
   # The owner's pick order (plan 20261025_1700 P3): agent names, first = preferred; empty = off.
   # The spawn gates refuse a later agent while an earlier one is free and under its provider cap
   # unless the brief carries "Pick note: <why>"; agent-score gate ranks inside this order.
-  prefer: []
-  providers:
+  prefer: []   # agent names in preferred order (empty = off)
+  providers:   # providers the agents run on
     - zai
     - openai-codex
     - anthropic
@@ -66,13 +66,13 @@ ledger:
 
 brief:
   method_marker: ""   # empty = no method read required
-  heavy_marker: "heavy-run"
-  max_keys: 10
-  warn_chars: 12000
-  aim_chars: 8000
-  path_prefixes: ["$HOME/"]
-  method_read: ""
-  heavy_path: "heavy-run"
+  heavy_marker: "heavy-run"   # brief text that marks a heavy run
+  max_keys: 10   # keys a brief may name
+  warn_chars: 12000   # brief length that draws a warning
+  aim_chars: 8000   # target brief length
+  path_prefixes: ["$HOME/"]   # path prefixes a brief may cite
+  method_read: ""   # method file a brief must read (empty = none)
+  heavy_path: "heavy-run"   # path of the heavy-run bin in a brief
   repo_rules: []   # optional repo-specific lint rules; each fires when `match` (regex, whole brief) hits and the body lacks `require`:
   # - match: 'legacy-api'            # trigger anywhere in the brief (case-insensitive)
   #   first: 'Refactor'              # optional: also require this on the title line
@@ -81,66 +81,66 @@ brief:
   #   message: 'legacy-api work must name its regression test'
 
 oc:
-  model_prefix: "opencode/"
-  tail_lines: 40
-  tail_chars: 600
+  model_prefix: "opencode/"   # prefix that routes a model to oc-run
+  tail_lines: 40   # output lines kept from an oc run
+  tail_chars: 600   # output chars kept from an oc run
 
 wip:
-  limit: 6
-  days: 14
+  limit: 6   # open WIP items the check allows
+  days: 14   # WIP age window in days
   backup_url: ""   # your own private backup repo; wip-backup refuses to invent one
-  backup_log: "~/.local/state/neurastream/WIP-BACKUP.md"
+  backup_log: "~/.local/state/neurastream/WIP-BACKUP.md"   # backup log file
   backup_hook_off: []   # origin name fragments whose pre-push hook wip-backup may bypass
-  backup_max_repo_mb: 1000
-  secret_gate: "~/.local/bin/git-secret-gate"
-  snapshot_max_mb: 5
-  status_log: "~/.local/state/neurastream/WIP-STATUS.md"
-  secret_file: '(?i)(^|/)(\.env(\.(?!example$|sample$|template$|dist$)[\w-]+)?|[^/]*\.env|env\.json|[^/]*\.(pem|p12|pfx|jks|keystore|key)|id_(rsa|dsa|ecdsa|ed25519)|credentials(\.json)?|\.netrc|\.pgpass|\.htpasswd|local-run\.env)$'
+  backup_max_repo_mb: 1000   # largest repo wip-backup will back up
+  secret_gate: "~/.local/bin/git-secret-gate"   # secret scanner run before a backup
+  snapshot_max_mb: 5   # largest file a snapshot keeps
+  status_log: "~/.local/state/neurastream/WIP-STATUS.md"   # WIP status file
+  secret_file: '(?i)(^|/)(\.env(\.(?!example$|sample$|template$|dist$)[\w-]+)?|[^/]*\.env|env\.json|[^/]*\.(pem|p12|pfx|jks|keystore|key)|id_(rsa|dsa|ecdsa|ed25519)|credentials(\.json)?|\.netrc|\.pgpass|\.htpasswd|local-run\.env)$'   # file names that count as secrets
 
 health:
-  warn_ctx: 150000
-  tail_calls: 50
-  default_hours: 12
+  warn_ctx: 150000   # context size that draws a health warning
+  tail_calls: 50   # calls in the health tail
+  default_hours: 12   # default health window in hours
 
 queue:
-  archive_days: 30
-  background_max_lines: 40
-  progress_keep: 6
-  priority_id: '^[A-Z]{2}[0-9]{2}$'
-  cancel_min_words: 3
-  auto_close_min: 15
-  repo_index: "INDEX.md"
-  cancelled_rel: "docs/plans/CANCELLED.md"
+  archive_days: 30   # days before a queue item is archived
+  background_max_lines: 40   # lines kept from a background job
+  progress_keep: 6   # progress entries kept
+  priority_id: '^[A-Z]{2}[0-9]{2}$'   # id pattern for priority items
+  cancel_min_words: 3   # words a cancel reason needs
+  auto_close_min: 15   # minutes before an item auto-closes
+  repo_index: "INDEX.md"   # per-repo index file name
+  cancelled_rel: "docs/plans/CANCELLED.md"   # cancelled-plans file, relative to the repo
 
 guards:
-  sub_warn_calls: 90
-  sub_max_calls: 100
-  sub_max_calls_cap: 200
+  sub_warn_calls: 90   # subagent tool calls that draw the wrap-up warning
+  sub_max_calls: 100   # subagent tool calls before refusal
+  sub_max_calls_cap: 200   # ceiling for sub_max_calls
   main_warn_calls: 12      # Main tool calls per turn that draw the wrap-up warning
   main_max_calls: 15       # Main tool calls per turn before refusal; 0 = off
   main_call_exempt_tools: [task, todo, ask, wait]   # never counted, never refused at the cap: delegating, tracking and asking stay open
-  main_edit_limit: 5
-  main_window_min: 15
-  unlock_minutes: 30
+  main_edit_limit: 5   # Main project-file edits allowed per main_window_min
+  main_window_min: 15   # window in minutes for the edit limit
+  unlock_minutes: 30   # minutes a guard unlock lasts
   chat_unlock: false   # the owner's whole chat message "unlock"/"unlock N"/"lock" moves the guard unlock file
-  plan_read_max_hours: 24
-  idle_stops: 3
+  plan_read_max_hours: 24   # hours a plan read stays valid
+  idle_stops: 3   # idle stops before the guard intervenes
   plan_offer: 'want me to (write|make) a plan|should i plan|shall i plan|if you want, i(''ll)? plan|plan it or|\bi will\b|\bi(''|’)ll\b'   # refused: don't promise or offer it — do it now, or write the plan and index it
   rate_limit:
     patterns: ["429", "rate_limit", "rate limit", "overloaded", "529"]   # error-text substrings (case-insensitive) that mark a provider rate limit
     default_wait_s: 300    # wait when the error text names no retry-after
     max_wait_s: 3600       # cap for the parsed (or doubled) wait, before slack
     slack_s: 15            # added on top of every wait
-  blocker_timeout_ms: 10000
-  skip_tools: [todo, wait, ask, web_search, job, cancel_job]
-  read_tools: [read, grep, glob, find]
-  shell_tools: [bash, eval]
-  write_tools: [write, edit, ast_edit]
-  free_ext: '\.(md|txt)$'
+  blocker_timeout_ms: 10000   # timeout for blocker checks in milliseconds
+  skip_tools: [todo, wait, ask, web_search, job, cancel_job]   # tools the guard never counts
+  read_tools: [read, grep, glob, find]   # tools counted as reads
+  shell_tools: [bash, eval]   # tools counted as shell calls
+  write_tools: [write, edit, ast_edit]   # tools counted as writes
+  free_ext: '\.(md|txt)$'   # file extensions the write guard always allows
   free_prefixes: []   # path prefixes the write guard allows without an unlock
-  bypass_spawn: ["opencode run"]
-  protected: []
-  ledger_command: "agent-ledger --hours 12"
+  bypass_spawn: ["opencode run"]   # spawn command prefixes the guard lets through
+  protected: []   # paths the write guard protects (empty = none)
+  ledger_command: "agent-ledger --hours 12"   # command the guard runs for the ledger
 
 autonomy:
   tier: opinionated        # strict | opinionated | full: how much Main does without asking; the owner moves it with `tier <name>` in chat or a button on the phone page
@@ -154,27 +154,27 @@ review:                    # plan review gate (plan 20261028_1600): reuse lines 
 
 ui:
   enabled: false        # the owner's phone page (neurastream ui); binds the tailnet address only
-  port: 7787
+  port: 7787   # owner page port (neurastream ui)
   owner_login: ""       # the tailscale login that may open the page; empty = the page refuses to start
   allow_this_machine: false   # admit this machine (loopback and its own tailnet IP) as the owner; any local process can then press the buttons
 
 
 pages:
-  enabled: false
-  port: 7788
-  dir: "~/.local/share/neurastream/pages"
+  enabled: false   # the pages server (neurastream pages on|off)
+  port: 7788   # pages server port
+  dir: "~/.local/share/neurastream/pages"   # published pages dir
   keep_days: 15        # delete a published page this many days later; publish --keep is permanent
 knowledge:               # repo-local HTML explainers (docs/knowledge/<topic>.html) on the phone page's Knowledge tab
   roots: ["$HOME/projects", "$HOME/Work"]   # scanned for git repos; $HOME expands to the config's home
   max_age_s: 300       # rebuild the topic list when older, so a git pull shows up on the next reload
 rollover:
-  enabled: true
-  max_session_mb: 5
-  exit_grace_s: 20
+  enabled: true   # session rollover on or off
+  max_session_mb: 5   # session size that triggers a rollover
+  exit_grace_s: 20   # seconds allowed for a clean exit
 
 metrics:
-  report_days: 7
-  correction_patterns: ['\bno\b', 'wrong', 'why did', 'properly', 'not what', 'stop', 'bullshit', 'fuck']
+  report_days: 7   # days in the metrics report
+  correction_patterns: ['\bno\b', 'wrong', 'why did', 'properly', 'not what', 'stop', 'bullshit', 'fuck']   # regexes that count a correction
   ci_pipelines_cmd: ""   # command run in the repo dir with {mr} replaced; stdout must be a JSON array; "" = not set
   product_cmds: {}       # {<repo path>: {<name>: shell command printing one number}}, run in that repo after every `metrics ci` merge
   # product_cmds:
@@ -195,21 +195,21 @@ incidents:
     m5: 50                     # guard blocks/day
 
 machine:
-  load_over_cores: 4
-  load_max: 0
-  avail_min_mb: 3072
-  disk_min_gb: 15
-  disk_path: "$HOME"
-  tmp_max_mb: 4096
-  idle_max_min: 20
-  idle_min_ticks: 300
-  watch_sec: 60
-  watch_streak: 3
+  load_over_cores: 4   # load per core that draws a warning
+  load_max: 0   # load ceiling (0 = off)
+  avail_min_mb: 3072   # minimum available memory in MB
+  disk_min_gb: 15   # minimum free disk in GB
+  disk_path: "$HOME"   # path whose free space is checked
+  tmp_max_mb: 4096   # /tmp size limit in MB
+  idle_max_min: 20   # minutes idle before the machine is flagged
+  idle_min_ticks: 300   # idle ticks before the flag
+  watch_sec: 60   # seconds between machine watches
+  watch_streak: 3   # consecutive watches before the flag
 
 quota:
-  reset_tz: "Asia/Shanghai"
-  reset_pattern: 'reset at (\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?)\s*(Z|UTC|GMT|[+-]\d{2}:?\d{2}|[A-Z]{2,5}\b)?'
-  label: "quota"
+  reset_tz: "Asia/Shanghai"   # timezone of the quota reset time
+  reset_pattern: 'reset at (\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?)\s*(Z|UTC|GMT|[+-]\d{2}:?\d{2}|[A-Z]{2,5}\b)?'   # regex that reads the reset time from the error text
+  label: "quota"   # label used in quota messages
 
 notify:
   discord_webhook_file: ""   # file holding the Discord webhook URL; "" = off (README: Notify the owner)
@@ -228,7 +228,7 @@ write_check:                 # write-time lint checks (src/core/write-check.ts):
   timeout_ms: 5000           # per linter run; a timeout, crash or missing linter allows the edit and logs a note
   suppress: '(#|//|/\*)\s*(noqa|type:\s*ignore|oxlint-disable|eslint-disable|biome-ignore|@ts-ignore|@ts-expect-error|@ts-nocheck)'   # a new match counts as a new problem; the word only counts inside a comment
   defer_rules: ["no-unused-vars", "F401", "F841"]   # a new finding of one of these rules is allowed with a logged note and only reported at turn end if still present (I-20261028-166); [] turns the deferral off
-  linters:
+  linters:   # linters run on each edit
     - ext: [".py"]
       argv: ["ruff", "check", "--no-cache", "--output-format=concise", "{file}"]
       pattern: '^.+?:\d+:\d+: (?<rule>\S+) (?<message>.+)$'
@@ -239,19 +239,19 @@ write_check:                 # write-time lint checks (src/core/write-check.ts):
       only_with_config: [".oxlintrc.json", ".oxlintrc.jsonc", ".oxlintrc.js", ".oxlintrc.mjs", ".oxlintrc.cjs", "eslint.config.js", "eslint.config.mjs", "eslint.config.cjs", "eslint.config.mts", "eslint.config.cts"]
 
 priority:
-  sleep_sec: 120
+  sleep_sec: 120   # seconds between priority checks
 
 alerts:
-  temp_c: 90
-  mem_psi: 30
-  io_psi: 40
-  cooldown_sec: 600
+  temp_c: 90   # temperature alert threshold in C
+  mem_psi: 30   # memory pressure alert threshold (PSI)
+  io_psi: 40   # IO pressure alert threshold (PSI)
+  cooldown_sec: 600   # seconds between repeat alerts
 
 snapshot:
-  tmp_dest: "~/.local/state/neurastream/tmp-snapshot"
+  tmp_dest: "~/.local/state/neurastream/tmp-snapshot"   # where the tmp snapshot lands
   git_repo: ""   # optional: a repo whose git worktrees get patch snapshots (git worktree list)
   git_backup: ""   # where the patch snapshot lands (only used when snapshot.git_repo is set)
-  excludes:
+  excludes:   # names the snapshot skips
     - "playwright-transform-cache-*"
     - "pytest-of-*"
     - "systemd-private-*"
@@ -270,9 +270,9 @@ traces:
     # sampled defaults live in README.md. prices maps a model to $ per million tokens; a model
     # without an entry is not priced. allow_tools: tools a run may call even when no result in
     # the run proves the tool was offered.
-    id_patterns: {}
-    prices: {}
-    allow_tools: []
+    id_patterns: {}   # provider id patterns (empty = none)
+    prices: {}   # model prices per million tokens (empty = none)
+    allow_tools: []   # tools a run may call without a proof of being offered
   allowed_hosts:        # hosts a network command may touch without a finding
     - localhost
     - 127.0.0.1
@@ -282,14 +282,14 @@ traces:
     # prompt (input + cacheRead + cacheWrite tokens) a healthy run may open with. Any call
     # whose prompt passes ratio_of_limit × its model's context_limits entry is bloat too; a
     # model without an entry is not limit-checked (the map is open: add your models).
-    first_call_max: 150000
-    ratio_of_limit: 0.8
-    context_limits: {}
+    first_call_max: 150000   # largest first-call prompt a healthy run may open with
+    ratio_of_limit: 0.8   # share of a model's context limit that counts as bloat
+    context_limits: {}   # model context limits in tokens (empty = none)
     # APIs whose usage aggregates multiple internal calls; these are not per-call sizes.
-    aggregate_apis: ["cursor-agent"]
+    aggregate_apis: ["cursor-agent"]   # APIs whose usage aggregates many calls
     # Bloat breakdown: the first capture of this regex on a tool name names its group
     # (no match = "builtin"). The leading _? keeps underscore-prefixed MCP names grouped.
-    tool_group: '^_?mcp__([A-Za-z0-9]+)_'
+    tool_group: '^_?mcp__([A-Za-z0-9]+)_'   # regex that names a tool's group
   owned_repos: []      # product names another product's run may not read quietly; the intended list lives in docs/config.md
   actions:
     secret_globs:       # a read matching any glob is a high finding; evidence is masked either way
@@ -314,8 +314,8 @@ traces:
       - "main-guard:"
     poll_pattern: '^\s*(sleep\s+\d|ps\b|pgrep\b)'   # shell commands that poll while nothing else runs
   briefs:              # brief-quality rules (src/core/trace-briefs.ts): what a spawn brief names, and the report's length buckets
-    verify_pattern: '\b(?:bun test|bun run typecheck|pytest|npm test|go test|cargo test)\b'
-    phase_pattern: '\bP\d+[a-z]?\b'
-    plan_pattern: 'docs/plans/\S+\.md'
+    verify_pattern: '\b(?:bun test|bun run typecheck|pytest|npm test|go test|cargo test)\b'   # regex that spots a verify command in a brief
+    phase_pattern: '\bP\d+[a-z]?\b'   # regex that spots a phase label
+    plan_pattern: 'docs/plans/\S+\.md'   # regex that spots a plan path
     char_buckets: [1500, 4000]   # brief length edges: <1500, 1500-3999, >=4000
     min_n: 5             # the report shows a mean only with at least this many rows on that side

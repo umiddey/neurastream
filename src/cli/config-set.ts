@@ -6,22 +6,10 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname } from "node:path";
-import { checkEdited, setConfigKeys } from "../core/config-edit.ts";
+import { checkEdited, leafKeys, setConfigKeys, valueAt, yamlValue } from "../core/config-edit.ts";
 import { TEMPLATE_PATH, configFile, loadConfig } from "../core/config.ts";
 
-// Leaf dotted paths: a mapping recurses; a scalar, a list or null is a leaf.
-function leafKeys(node: unknown, prefix: string[] = []): string[] {
-	if (node === null || typeof node !== "object" || Array.isArray(node)) return [prefix.join(".")];
-	return Object.entries(node).flatMap(([k, v]) => leafKeys(v, [...prefix, k]));
-}
-
 const VALID_KEYS = leafKeys(Bun.YAML.parse(readFileSync(TEMPLATE_PATH, "utf8")));
-
-function valueAt(cfg: unknown, key: string): unknown {
-	let node = cfg;
-	for (const seg of key.split(".")) node = (node as Record<string, unknown>)[seg];
-	return node;
-}
 
 export function runConfigKeys(args: string[], home: string = homedir()): number {
 	const [verb, key, raw] = args;
@@ -53,9 +41,7 @@ export function runConfigKeys(args: string[], home: string = homedir()): number 
 			return 1;
 		}
 		// Lists in flow style on one line ([a, b]); scalars as JSON, which is valid YAML.
-		const text = Array.isArray(parsed)
-			? `[${parsed.map((x) => JSON.stringify(x)).join(", ")}]`
-			: JSON.stringify(parsed);
+		const text = yamlValue(parsed);
 		const file = configFile(home);
 		const original = existsSync(file) ? readFileSync(file, "utf8") : null;
 		const edited = setConfigKeys(original, { [key]: text });

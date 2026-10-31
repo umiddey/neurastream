@@ -50,6 +50,7 @@ export const systemTerminal: Terminal = {
 const TAILSCALE_DOWNLOAD = "https://tailscale.com/download";
 const TAILSCALE_MISSING = "The phone page needs Tailscale (free, private network for your devices). Install it: Linux `curl -fsSL https://tailscale.com/install.sh | sh` (asks for your password), macOS: the App Store app, others: https://tailscale.com/download. Then run `neurastream ui on` again.";
 const TAILSCALE_STOPPED = "Tailscale is installed but not connected. Run `sudo tailscale up` (Linux) or open the Tailscale app (macOS), then run this again.";
+export { TAILSCALE_MISSING, TAILSCALE_STOPPED };
 
 export interface UiSetupOptions {
 	/** HOME the config file and the user unit resolve against. Default: the real home. */

@@ -70,9 +70,11 @@ function configText(home: string, invoked: string, agentDir?: string): string {
 		text = text.replace(AGENT_DIR_KEYS, (_m, key: string) => `${key}${yamlQuote(agent).slice(0, -1)}`);
 	}
 	const protectedPaths = [...installedBins(home, invoked), `${agent}/notes/`, `${agent}/blockers/`, `${agent}/queue/`];
-	const list = ["  protected:", ...protectedPaths.map(p => `    - ${yamlQuote(p)}`)].join("\n");
-	if (!text.includes("  protected: []")) throw new Error("templates/config.yml has no protected placeholder");
-	return text.replace("  protected: []", list);
+	const items = protectedPaths.map(p => `    - ${yamlQuote(p)}`);
+	const placeholder = /^  protected: \[\](.*)$/m;
+	if (!placeholder.test(text)) throw new Error("templates/config.yml has no protected placeholder");
+	// The placeholder's trailing comment stays on the `protected:` header line.
+	return text.replace(placeholder, (_m, comment: string) => ["  protected:" + comment, ...items].join("\n"));
 }
 
 function putFile(dest: string, body: string, mode: number, created: string[], unchanged: string[]): void {
@@ -161,7 +163,7 @@ export function printInit(result: InitResult): void {
 }
 
 /** One line from stdin, read synchronously; a terminal hands over a line at a time. */
-function askLine(prompt: string): string {
+export function askLine(prompt: string): string {
 	process.stdout.write(prompt);
 	const buf = Buffer.alloc(4096);
 	const n = readSync(0, buf, 0, buf.length, null);

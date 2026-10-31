@@ -7,6 +7,7 @@ import { applyQueueEnv } from "../core/queue/env.ts";
 import { getAdapter } from "../adapters/index.ts";
 import { GUARD_USAGE, runGuard } from "./guard.ts";
 import { runInit } from "./init.ts";
+import { runSetup } from "./setup.ts";
 import { PORTED, runMain, runPorted } from "./commands.ts";
 import { runMetrics } from "./metrics.ts";
 import { runIncident } from "./incident.ts";
@@ -54,6 +55,9 @@ export function helpText(): string {
 		"                                create config, index, notes, blockers, queue template, state dirs",
 		"                                (--agent-dir: keep an existing index/notes/blockers dir)",
 		"                                (--allow a,b: subagents allowed to spawn; on a terminal init asks instead)",
+		"  neurastream setup [--yes]",
+		"                                guided first run: detect this machine, ask in groups, install, doctor",
+		"                                (--yes: take the detected settings without asking)",
 		"  neurastream adapter install omp",
 		"                                link the omp extension under this HOME",
 		"  neurastream uninstall [--purge] [--yes]",
@@ -120,6 +124,7 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 	if (cmd === "notes") return runNotes(args);
 	if (cmd === "diagram") return runDiagram(args);
 	if (cmd === "adapter") return getAdapter().install(args);
+	if (cmd === "setup") return runSetup(args);
 	if (cmd === "config" && ["set", "get", "list"].includes(args[0] ?? "")) return runConfigKeys(args);
 	if (cmd === "config") {
 		try {
