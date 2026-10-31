@@ -713,9 +713,9 @@ test("a review spawn that ends with no verdict tells Main and records nothing", 
 // --- P6: review.code, the code review tick gate ---
 
 const CODE_PASS = "\n- 2026-10-31 16:00 RevC1: CODE REVIEW: PASS — phase: P1 — redundant: none — inefficient: none — insecure: none — MRs: none\n  Findings: none\n";
-const mainTick = (cfg: typeof gcfg) => {
+const mainTick = (cfg: typeof gcfg, id = "P1") => {
 	const before = readFileSync(LOCKED, "utf8");
-	return checkPlanEdit({ path: LOCKED, before, after: before.replace("- [ ] P1 ", "- [x] P1 "), agent: "main" }, cfg);
+	return checkPlanEdit({ path: LOCKED, before, after: before.replace(`- [ ] ${id} `, `- [x] ${id} `), agent: "main" }, cfg);
 };
 const codeReviewsNow = (): unknown => {
 	try {
@@ -757,4 +757,29 @@ test("a Main-written CODE REVIEW line is restored and never counts (P6)", () => 
 	const d = checkPlanEdit({ path: LOCKED, before, after: `${before.replace("- [ ] P1 ", "- [x] P1 ")}${CODE_PASS}`, agent: "main" }, { ...gcfg, review: { ...gcfg.review, code: true } });
 	expect(d).toMatchObject({ allow: false, restore: { path: LOCKED, text: before } });
 	expect(codeReviewsNow()).toBeUndefined();
+});
+
+// P6 rework (CODE REVIEW: FAIL 2026-11-01): "last entry naming the phase" is by entry time, not file order.
+
+const OLDER_IMPL = "\n- 2026-10-31 10:00 worker-1: implemented P1 — done, tests green\n  Findings: none\n";
+const NEWER_IMPL = "\n- 2026-10-31 20:00 worker-1: implemented P1 — done, tests green\n  Findings: none\n";
+
+test("the tick gate reads Progress by entry time, not file order: a newest-first plan keeps the PASS valid (P6)", () => {
+	rmSync(REVIEWS, { force: true });
+	const cfg = { ...gcfg, review: { ...gcfg.review, code: true } };
+	// Recorded against the bare fixture first (the entry must be new to record), then the plan text is arranged as live plans are, newest first: PASS (16:00) on top, an older implementer entry (10:00) below — file order alone would void the PASS.
+	writeFileSync(LOCKED, fixturePlan());
+	expect(reviewerEdit(CODE_PASS).allow).toBe(true);
+	writeFileSync(LOCKED, fixturePlan().replace("- Started.\n", CODE_PASS + OLDER_IMPL));
+	expect(mainTick(cfg).allow).toBe(true);
+});
+
+test("a newer implementer entry naming the phase voids the PASS wherever it sits (P6)", () => {
+	rmSync(REVIEWS, { force: true });
+	const cfg = { ...gcfg, review: { ...gcfg.review, code: true } };
+	// Recorded against the bare fixture first (the entry must be new to record), then the plan text is arranged newest-first: implementer entry (20:00) above the PASS (16:00) — file order alone would keep the PASS valid.
+	writeFileSync(LOCKED, fixturePlan());
+	expect(reviewerEdit(CODE_PASS).allow).toBe(true);
+	writeFileSync(LOCKED, fixturePlan().replace("- Started.\n", NEWER_IMPL + CODE_PASS));
+	expect(mainTick(cfg)).toMatchObject({ allow: false, reason: expect.stringContaining("P1") });
 });

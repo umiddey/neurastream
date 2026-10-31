@@ -1734,10 +1734,14 @@ export function findingsValue(block: string): string | null {
 	return line.slice(line.lastIndexOf("Findings:") + "Findings:".length).trim() || null;
 }
 
-/** P6 (plan 20261028_1600): the refusal for ticking `ids` with review.code on. Each phase needs a recorded CODE REVIEW: PASS from a named review spawn (the `code` map of plan-reviews.json), and its entry must still be the plan's last Progress entry naming the phase: implementer work after the review voids it. */
+/** P6 (plan 20261028_1600): the refusal for ticking `ids` with review.code on. Each phase needs a recorded CODE REVIEW: PASS from a named review spawn (the `code` map of plan-reviews.json), and its entry must still be the plan's last Progress entry naming the phase — last by the entry's `<YYYY-MM-DD HH:MM>` stamp, not file order (live plans are newest-first or appended): implementer work after the review voids it. */
 function codeReviewProblem(file: string, after: string, ids: string[]): string | null {
 	const rec = readCodeReviews()[file];
-	const entries = progressEntries(after);
+	// toSorted is stable: ties and unstamped entries ("") keep file order.
+	const entries = progressEntries(after)
+		.map(b => [b, /^\s*-\s*(\d{4}-\d{2}-\d{2} \d{2}:\d{2})/.exec(b)?.[1] ?? ""] as const)
+		.toSorted((a, b) => (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0))
+		.map(([b]) => b);
 	for (const id of ids) {
 		const last = entries.findLast(b => new RegExp(`\\b${id}\\b`).test(b));
 		const valid = last !== undefined && REVIEW_LINE.test(last) && REVIEW_LINE.exec(last)![1] === "CODE" && REVIEW_LINE.exec(last)![2] === "PASS";
