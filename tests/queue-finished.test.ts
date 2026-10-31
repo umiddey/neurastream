@@ -246,6 +246,60 @@ test("two repos with the same archived plan file name both get an entry", () => 
 	expect(text).toContain("## 2026-10-16 · other · other plan");
 });
 
+test("same title and plan basename under two repo names in two separate clones keeps one entry", () => {
+	rmSync(FINISHED, { force: true });
+	for (const name of ["toy", "toy-wt", "plain", "other", "alpha", "beta"]) {
+		rmSync(join(ROOT, name), { recursive: true, force: true });
+	}
+	const cfg = seed();
+	const DUP = "20261016_1200_dup.md";
+	for (const repo of [join(ROOT, "alpha"), join(ROOT, "beta")]) {
+		const archive = join(repo, "docs/plans/archive/202610");
+		mkdirSync(archive, { recursive: true });
+		writeFileSync(join(archive, DUP), plan("Dup plan", "complete"));
+		spawnSync("git", ["-C", repo, "init", "-q"]);
+	}
+
+	// Same title + same basename, two separate clones (no shared .git): backfill adds one only.
+	const first = logged(() => queueFinished(["--backfill"], cfg));
+	expect(first.code).toBe(0);
+	expect(first.out).toContain("added 1");
+	const text = readFileSync(FINISHED, "utf8");
+	expect(headings(text)).toHaveLength(1);
+
+	// The second prependFinished returned false: a re-backfill adds nothing.
+	const second = logged(() => queueFinished(["--backfill"], cfg));
+	expect(second.code).toBe(0);
+	expect(second.out).toContain("added 0");
+
+	// --dedupe keeps one: inject a third clone's duplicate (same title + basename) and dedupe.
+	const dupBeta = `## 2026-10-16 · beta · Dup plan\nSummary: short summary of the work\nResult: shipped the fix.\nPlan: ${join(ROOT, "beta", "docs/plans/archive/202610", DUP)}\n\n`;
+	writeFileSync(FINISHED, `${readFileSync(FINISHED, "utf8")}${dupBeta}`);
+	const dd = logged(() => queueFinished(["--dedupe"], cfg));
+	expect(dd.code).toBe(0);
+	expect(dd.out).toContain("removed 1");
+	expect(headings(readFileSync(FINISHED, "utf8"))).toHaveLength(1);
+});
+
+test("same plan basename with different titles keeps both entries", () => {
+	rmSync(FINISHED, { force: true });
+	for (const name of ["toy", "toy-wt", "plain", "other", "alpha", "beta"]) {
+		rmSync(join(ROOT, name), { recursive: true, force: true });
+	}
+	const cfg = seed();
+	const same = "20261016_1200_same.md";
+	const entry = (title: string) =>
+		`## 2026-10-16 · toy · ${title}\nSummary: short summary\nResult: shipped the fix.\nPlan: ${join(TOY, "docs/plans/archive/202610", same)}\n\n`;
+	writeFileSync(FINISHED, `# Finished plans\n\n${entry("Title One")}${entry("Title Two")}`);
+	const dd = logged(() => queueFinished(["--dedupe"], cfg));
+	expect(dd.code).toBe(0);
+	expect(dd.out).toContain("removed 0");
+	const text = readFileSync(FINISHED, "utf8");
+	expect(headings(text)).toHaveLength(2);
+	expect(text).toContain("Title One");
+	expect(text).toContain("Title Two");
+});
+
 afterAll(() => {
 	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
 	for (const [k, v] of Object.entries(queueEnvBefore)) if (v !== undefined) process.env[k] = v;
