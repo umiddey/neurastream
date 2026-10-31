@@ -100,6 +100,8 @@ watch:                         # the watcher (src/core/watch.ts): `neurastream w
     - "wip-*"
   max_posts_per_run: 3         # per run: at most this many new-incident posts, then one "+N more, see `neurastream incident list --open`" line
   interval_min: 15            # minutes between watcher runs; `neurastream watch on` installs the timer at this interval
+  noisy_min: 5                # weekly report: a detector kind with at least this many incidents in the window ...
+  noisy_ratio: 0.5            # ... and at least this dismiss rate opens one "noisy detector" incident
 
 ledger:
   default_hours: 24

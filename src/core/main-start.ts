@@ -316,6 +316,20 @@ export function runWeeklyCheck(cfg: Config, source: RunSource, now: number): str
 		const rep = buildReport(cfg, source, cfg.metrics.report_days, now);
 		mkdirSync(cfg.paths.notes, { recursive: true });
 		writeFileSync(join(cfg.paths.notes, "metrics.md"), rep.md);
+		for (const n of rep.noisy) {
+			const { incident: noisy } = addIncident(
+				cfg,
+				{
+					source: "weekly",
+					kind: n.kind,
+					summary: n.summary,
+					evidence: n.evidence,
+					fingerprint: `noisy:${n.detector}:${strftime(now, "%Y%m%d")}`,
+				},
+				now,
+			);
+			logGuard(cfg.paths.guard_log, `incident ${noisy.id} [weekly/${noisy.kind}] opened: ${noisy.summary}`);
+		}
 		const w = rep.worst;
 		if (!w || w.change === null) {
 			return `metrics: report due (last: ${last}) — wrote ${join(cfg.paths.notes, "metrics.md")}; no ranked metric moved this window`;

@@ -213,6 +213,10 @@ export interface Config {
 		max_posts_per_run: number;
 		/** Minutes between watcher runs; `neurastream watch on` writes this into the timer (plan 20261027_1430 P4). */
 		interval_min: number;
+		/** Weekly report: a detector kind with at least this many incidents in the window and a dismiss rate >= noisy_ratio opens one "noisy detector" incident (plan 20261027_1430 P6). */
+		noisy_min: number;
+		/** Dismiss-rate threshold (0 < ratio <= 1) for the noisy-detector rule (plan 20261027_1430 P6). */
+		noisy_ratio: number;
 	};
 	machine: {
 		load_over_cores: number;
@@ -588,6 +592,12 @@ function check(cfg: Config): void {
 	}
 	if (!Number.isInteger(cfg.watch.interval_min) || cfg.watch.interval_min < 1) {
 		throw new ConfigError("watch.interval_min must be an integer >= 1");
+	}
+	if (!Number.isInteger(cfg.watch.noisy_min) || cfg.watch.noisy_min < 1) {
+		throw new ConfigError("watch.noisy_min must be an integer >= 1");
+	}
+	if (typeof cfg.watch.noisy_ratio !== "number" || !(cfg.watch.noisy_ratio > 0 && cfg.watch.noisy_ratio <= 1)) {
+		throw new ConfigError("watch.noisy_ratio must be a number in (0, 1]");
 	}
 	for (const p of cfg.metrics.correction_patterns) {
 		try {

@@ -153,7 +153,7 @@ function jaccard(a: Set<string>, b: Set<string>): number {
  * first later call of the same tool, within windowSec, whose result is not an error and whose args
  * are token-similar (≥ similarity): a possible guard false positive. One finding per refused call.
  */
-export function blockThenBypass(events: TraceEvent[], windowSec: number, similarity: number): Finding[] {
+export function blockThenBypass(events: TraceEvent[], windowSec: number, similarity: number, since = -Infinity): Finding[] {
 	const results = new Map<string, TraceEvent>();
 	for (const e of events) if (e.kind === "toolResult" && e.callId) results.set(e.callId, e);
 	// A call with no timestamp cannot be placed in the window, so it is neither a block nor a bypass.
@@ -161,6 +161,8 @@ export function blockThenBypass(events: TraceEvent[], windowSec: number, similar
 	const tokens = new Map(calls.map(c => [c.callId, new Set(JSON.stringify(c.args ?? null).toLowerCase().split(/\W+/).filter(Boolean))]));
 	const out: Finding[] = [];
 	for (const block of calls) {
+		// Blocks at or before `since` were decided by an earlier gated scan (the D8 frontier).
+		if (block.ts <= since) continue;
 		const refused = results.get(block.callId!);
 		if (!refused?.isError || !GUARD_BLOCK.test(refused.text ?? "")) continue;
 		const bypass = calls.find(c => {
@@ -266,6 +268,8 @@ export interface DetectorInput {
 	unreported?: UnreportedFinding[];
 	/** D8: Main's session trace events, gathered behind the scan gate (runDetectorsGated). */
 	mainEvents?: TraceEvent[];
+	/** D8 frontier: the newest Main event time an earlier gated scan already saw (incident-scan.json mainTs). */
+	mainSince?: number;
 }
 
 /**
@@ -317,7 +321,7 @@ export function runDetectors(cfg: Config, input: DetectorInput, now = nowSec()):
 		attempt("suspicious-action", () => suspiciousAction(input.actions!));
 	}
 	if (input.mainEvents) {
-		attempt("block-then-bypass", () => blockThenBypass(input.mainEvents!, cfg.incidents.bypass_window_sec, cfg.incidents.bypass_similarity));
+		attempt("block-then-bypass", () => blockThenBypass(input.mainEvents!, cfg.incidents.bypass_window_sec, cfg.incidents.bypass_similarity, input.mainSince));
 	}
 	if (input.unreported) {
 		for (const f of input.unreported!) {
@@ -350,24 +354,38 @@ export interface GatedInputs {
 	mainEvents?: TraceEvent[];
 }
 
+/** The scan gate state in <queue_state>/incident-scan.json: `lastScan` is the time of the last gated
+ * scan; `mainTs` is the newest Main session event time that scan saw (the D8 frontier). */
+interface ScanState {
+	lastScan: number;
+	mainTs: number;
+}
+
+function readScan(file: string): ScanState {
+	const st: ScanState = { lastScan: 0, mainTs: 0 };
+	try {
+		const raw = JSON.parse(readFileSync(file, "utf8")) as { lastScan?: unknown; mainTs?: unknown };
+		if (typeof raw.lastScan === "number") st.lastScan = raw.lastScan;
+		if (typeof raw.mainTs === "number") st.mainTs = raw.mainTs;
+	} catch {}
+	return st;
+}
+
+function writeScan(file: string, st: ScanState): void {
+	mkdirSync(dirname(file), { recursive: true });
+	writeFileSync(file, `${JSON.stringify(st)}\n`);
+}
+
 /**
- * True when the expensive detectors (D1/D3) may run: at most once per
- * incidents.scan_interval_sec, tracked by a timestamp in <queue_state>/incident-scan.json. The
- * stamp is written BEFORE the inputs are read, so a slow or crashing scan cannot stack — the
- * next attempt is a full interval away (a failed scan retries then, not at the next event). An
- * unreadable state counts as never scanned; an unwritable one throws (the caller logs it and
- * runs the cheap detectors only).
+ * Whether a gated scan is due. The stamp is written BEFORE the inputs are read, so a slow or
+ * crashing scan cannot stack: the next attempt is a full interval away. An unreadable state counts
+ * as never scanned; an unwritable one throws (the caller logs it and runs the cheap detectors only).
  */
 export function scanDue(cfg: Config, now: number): boolean {
 	const file = join(cfg.paths.queue_state, "incident-scan.json");
-	let last = 0;
-	try {
-		const st = JSON.parse(readFileSync(file, "utf8")) as { lastScan?: unknown };
-		if (typeof st.lastScan === "number") last = st.lastScan;
-	} catch {}
-	if (now - last < cfg.incidents.scan_interval_sec) return false;
-	mkdirSync(dirname(file), { recursive: true });
-	writeFileSync(file, `${JSON.stringify({ lastScan: now })}\n`);
+	const st = readScan(file);
+	if (now - st.lastScan < cfg.incidents.scan_interval_sec) return false;
+	writeScan(file, { ...st, lastScan: now });
 	return true;
 }
 
@@ -376,6 +394,11 @@ export function scanDue(cfg: Config, now: number): boolean {
  * file, the ledger runs and both guard logs — seconds on a real machine — so they run at most
  * once per incidents.scan_interval_sec and `gather` is never called inside the interval. A
  * failed gate or gather is logged and the cheap detectors still run.
+ *
+ * D8 frontier: a gated scan records the newest Main event time it saw; the next scan's
+ * block-then-bypass only considers blocks after it, so a pair already seen is never raised twice.
+ * A bypass that lands only in a later scan than its block is not caught (the retry normally
+ * lands in the same turn, before the next prompt-start scan).
  */
 export function runDetectorsGated(
 	cfg: Config,
@@ -383,11 +406,20 @@ export function runDetectorsGated(
 	gather: () => GatedInputs,
 	now = nowSec(),
 ): IncidentView[] {
+	const file = join(cfg.paths.queue_state, "incident-scan.json");
 	const input: DetectorInput = { ...cheap };
+	let frontier: number | null = null;
 	try {
-		if (scanDue(cfg, now)) Object.assign(input, gather());
+		if (scanDue(cfg, now)) {
+			const since = readScan(file).mainTs;
+			const gathered = gather();
+			Object.assign(input, gathered, { mainSince: since });
+			frontier = (gathered.mainEvents ?? []).reduce((m, e) => Math.max(m, e.ts ?? 0), since);
+		}
 	} catch (err) {
 		log(cfg.paths.guard_log, `incident scan skipped: ${err instanceof Error ? err.message : String(err)}`);
 	}
-	return runDetectors(cfg, input, now);
+	const out = runDetectors(cfg, input, now);
+	if (frontier !== null) writeScan(file, { ...readScan(file), mainTs: frontier });
+	return out;
 }

@@ -307,3 +307,20 @@ test("D8 block-then-bypass: args below the similarity threshold are not a bypass
 	const events = [...evalCall("c1", 1000, BLOCKED_CODE, BLOCK_TEXT, true), ...evalCall("c2", 1060, BYPASS_CODE, "ok", false)];
 	expect(blockThenBypass(events, 600, 0.9)).toEqual([]);
 });
+
+test("D8 frontier: a block at or before the scanned frontier is not reported again", () => {
+	const events = [...evalCall("c1", 1000, BLOCKED_CODE, BLOCK_TEXT, true), ...evalCall("c2", 1060, BYPASS_CODE, "ok", false)];
+	expect(blockThenBypass(events, 600, 0.6, 1061)).toEqual([]);
+	expect(blockThenBypass(events, 600, 0.6, 999)).toHaveLength(1);
+});
+
+test("D8 frontier: the next scan over the same session does not re-raise the pair", () => {
+	const c = cfg();
+	const events = [...evalCall("c1", NOW, BLOCKED_CODE, BLOCK_TEXT, true), ...evalCall("c2", NOW + 60, BYPASS_CODE, "ok", false)];
+	const gather = () => ({ results: [], runs: [], blocks: [], mainEvents: events });
+	const first = runDetectorsGated(c, {}, gather, NOW);
+	expect(first.find(i => i.kind === "block-then-bypass")).toBeDefined();
+	const second = runDetectorsGated(c, {}, gather, NOW + c.incidents.scan_interval_sec);
+	expect(second.find(i => i.kind === "block-then-bypass")).toBeUndefined();
+	expect(readIncidents(c).find(i => i.kind === "block-then-bypass")!.count).toBe(1);
+});
