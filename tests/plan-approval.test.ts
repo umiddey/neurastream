@@ -264,3 +264,33 @@ test("chatApprove: a failed write is a problem, never an approval", () => {
 	expect(r).toEqual({ applied: false, problem: expect.stringContaining("not approved") });
 	expect(() => approvePlanFile(plan, "toy.html")).toThrow();
 });
+
+// --- Hard gate (plan 20261029_1455 P3): a plan stamped at or after approval.since needs a page and a record ---
+
+test("approvalProblem: after approval.since a plan with no page is refused; before it, or with since empty, it passes", () => {
+	const { dir, pages } = setup();
+	const body = "# Toy\n\n## Phases\n- [ ] P1 x\n";
+	mkdirSync(join(dir, "plans"), { recursive: true });
+	const late = join(dir, "plans", "20261030_0900_late.md");
+	const early = join(dir, "plans", "20261028_0900_early.md");
+	writeFileSync(late, body);
+	writeFileSync(early, body);
+	expect(approvalProblem(body, late, pages, "20261029_1455")).toContain(`neurastream pages publish <page.html> --plan ${late}`);
+	expect(approvalProblem(body, early, pages, "20261029_1455")).toBe(null);
+	expect(approvalProblem(body, late, pages, "")).toBe(null);
+});
+
+test("approvalProblem: after approval.since a page needs a record; a body edit expires it, a Progress-only edit does not", () => {
+	const { dir, cfg, pages } = setup();
+	mkdirSync(join(dir, "plans"), { recursive: true });
+	const plan = join(dir, "plans", "20261030_0900_late.md");
+	const body = "# Toy\n\n## Phases\n- [ ] P1 x\n\n## Progress\n- Started.\n";
+	writeFileSync(plan, body);
+	recordPagePlan(pages, "toy.html", { plan, missing: [], thin: [] });
+	const since = "20261029_1455";
+	expect(approvalProblem(body, plan, pages, since)).toContain("types: approve 20261030_0900");
+	writeFileSync(join(cfg.paths.queue_state, "plan-approvals.json"), JSON.stringify({ approvals: { [plan]: { hash: reviewHash(body), at: 1, via: "page", page: "toy.html" } } }));
+	expect(approvalProblem(body, plan, pages, since)).toBe(null);
+	expect(approvalProblem(body.replace("Started.", "Started, ran it."), plan, pages, since)).toBe(null);
+	expect(approvalProblem(body.replace("P1 x", "P1 y"), plan, pages, since)).toContain("has no approval record");
+});

@@ -6,12 +6,16 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { helpText } from "../src/cli/dispatch.ts";
 import type { ToolEvent } from "../src/core/adapter.ts";
-import { CANCEL_TODO, MAIN_PLAN_FILE } from "../src/core/guards.ts";
+import { CANCEL_TODO, MAIN_PLAN_FILE, planGate, reviewHash } from "../src/core/guards.ts";
 import { touchedPaths } from "../src/core/queue/lib.ts";
+import { loadConfig } from "../src/core/config.ts";
+import { recordPagePlan } from "../src/core/plan-approval.ts";
+import { applyQueueEnv } from "../src/core/queue/env.ts";
 
 const REPO = dirname(dirname(import.meta.path));
 const ORIG = "/tmp/neurastream-originals";
@@ -615,5 +619,56 @@ test("MAIN_PLAN_FILE matches plans under docs/plans subdirs but never archive", 
 	expect(MAIN_PLAN_FILE.test("/r/docs/plans/immediate/deeper/20261029_1200_x.md")).toBe(true);
 	expect(MAIN_PLAN_FILE.test("/r/docs/plans/archive/202610/20261029_1200_x.md")).toBe(false);
 	expect(MAIN_PLAN_FILE.test("/r/docs/plans/archive/20261029_1200_x.md")).toBe(false);
+});
+
+// --- Hard approval gate (plan 20261029_1455 P3): approval.since sets which plans need a page and a record ---
+describe("plan approval hard gate (planGate, 20261029_1455 P3)", () => {
+	const home = mkdtempSync(join(tmpdir(), "guards-approval-"));
+	const plan = join(home, "projects/toy/docs/plans/20261030_0900_late.md");
+	const index = join(home, "INDEX.md");
+	const state = join(home, "state");
+	const pages = join(home, "pages");
+	const blockers = join(home, "blockers");
+	const cancelled = join(home, "CANCELLED.md");
+	const saved = { ...process.env };
+	const body = "# Toy plan\n\nWorktree: -\nBranch: feat/toy\n\n## Goal\n- Toy.\n\n## Forbidden\n- Never skip tests.\n\n## Blockers\n- toy-blocker\n\n## Phases\n- [ ] P1 do the thing — verify: `test -f src/a.ts`\n\n## Done check\n`test -f src/a.ts`\n\n## Progress\nStatus: open\n\n- Started.\n";
+
+	beforeAll(() => {
+		for (const d of [dirname(plan), state, pages, blockers]) mkdirSync(d, { recursive: true });
+		writeFileSync(plan, body);
+		writeFileSync(index, `${plan}\n`);
+		writeFileSync(cancelled, "");
+		writeFileSync(join(blockers, "toy-blocker"), "#!/bin/sh\nexit 0\n");
+		chmodSync(join(blockers, "toy-blocker"), 0o755);
+	});
+	afterAll(() => {
+		rmSync(home, { recursive: true, force: true });
+		for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+		Object.assign(process.env, saved);
+	});
+	// planGate under a sandbox config: the one indexed plan, a page dir inside the sandbox.
+	const gate = (since: string): [string | null, string[]] => {
+		const cfg = loadConfig({ file: join(home, "missing.yml"), home, env: {} });
+		cfg.review.agents = [];
+		cfg.paths.queue_index = index;
+		cfg.paths.queue_state = state;
+		cfg.paths.blockers = blockers;
+		cfg.paths.cancelled = cancelled;
+		cfg.pages.dir = pages;
+		cfg.approval.since = since;
+		applyQueueEnv(cfg);
+		return planGate(`Plan: ${plan}\nP1 do the thing.`, "toy-worker", cfg);
+	};
+	test("after approval.since a plan with no page is refused; with since empty or a later since it passes", () => {
+		expect(gate("20261029_1455")[0]).toContain(`neurastream pages publish <page.html> --plan ${plan}`);
+		expect(gate("")).toEqual([null, [plan]]);
+		expect(gate("20261031_0000")).toEqual([null, [plan]]);
+	});
+	test("after approval.since a page without a record is refused, and a matching record passes", () => {
+		recordPagePlan(pages, "toy.html", { plan, missing: [], thin: [] });
+		expect(gate("20261029_1455")[0]).toContain("has no approval record");
+		writeFileSync(join(state, "plan-approvals.json"), JSON.stringify({ approvals: { [plan]: { hash: reviewHash(body), at: 1, via: "page", page: "toy.html" } } }));
+		expect(gate("20261029_1455")).toEqual([null, [plan]]);
+	});
 });
 
