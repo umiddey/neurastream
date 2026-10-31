@@ -10,7 +10,7 @@ What this is: the owner's agent-orchestration system (plan queue, guards, blocke
 
 ## Engineering
 - Runtime: Bun + TypeScript only. CLI shebangs `#!/usr/bin/env bun`. No Python.
-Green = `bun run typecheck` exit 0 AND `bun run lint` exit 0 AND `bun test` exit 0.
+- Green = `bun run typecheck` exit 0 AND `bun run lint` exit 0 AND `bun test` exit 0.
 - No hardcoded `/home/ukd`, repo paths, branch names, provider names, models or prices in code. All from `~/.config/neurastream/config.yml` (defaults documented in README.md).
 - Every ported command matches the original script it replaces (same exit codes, same refusal rules). Golden tests compare against recorded output of the original.
 - Never read, copy or commit secrets: `~/.config/gateforge/**`, `*.env*`, `*keys*.txt`, `mcp.json`, keyrings.

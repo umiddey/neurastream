@@ -603,7 +603,7 @@ export function writeTargets(toolName: string, input: Record<string, unknown>, c
 			continue;
 		}
 		const noQuotedRedirect = withoutQuotedRedirects(s);
-	for (const m of noQuotedRedirect.matchAll(/(?:^|[^0-9&>=-])>{1,2}\s*([^\s&|;)<>]+)/g)) {
+		for (const m of noQuotedRedirect.matchAll(/(?:^|[^0-9&>=-])>{1,2}\s*([^\s&|;)<>]+)/g)) {
 			// A target with no letter, digit, `.` or `/` (`>,`) is prose, not a file.
 			const target = (m[1] ?? "").replace(/^["']|["']$/g, "");
 			if (/[\p{L}\p{N}./]/u.test(target)) add(target, dir);
