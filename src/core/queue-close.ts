@@ -272,14 +272,26 @@ export function queueClose(args: string[], cfg: Config): number {
 		delete s[file];
 		writeFileSync(sp, JSON.stringify(s, null, 1));
 	} catch {}
-	// Incidents this plan fixes (plan P5): each INCIDENT <id> in a closing plan gets a fixed
-	// record, so the guards stop pushing a bug whose fix just shipped. Cancelled plans did not
-	// ship their fix — the owner records a dismissal instead. A refusal (unknown id, already
-	// resolved) is logged into the close log and never fails the close.
+	// Incidents this plan fixes (plan P5): each INCIDENT <id> cited outside ## Progress gets a
+	// fixed record, so the guards stop pushing a bug whose fix just shipped. Progress is
+	// narrative, not fix work (I-20261031-349, P5b): an id Main only filed there ("needs a phase
+	// here") was never fixed by a phase — it stays open and the close logs it. Cancelled plans
+	// did not ship their fix — the owner records a dismissal instead. A refusal (unknown id,
+	// already resolved) is logged into the close log and never fails the close.
 	if (!cancelling) {
+		// Cut ## Progress (until the next heading) before lifting ids: an id cited in the Goal or
+		// a phase counts whether or not the INCIDENT keyword prefixes it; an id whose only
+		// citation sits in Progress does not.
+		let inProgress = false;
+		const body = plan.text.split("\n").filter(l => {
+			if (l.startsWith("## ")) inProgress = l.trim() === "## Progress";
+			return !inProgress;
+		}).join("\n");
+		const ids = new Set([...body.matchAll(/\bI-\d{8}-\d+\b/g)].map(m => m[0]));
+		for (const id of new Set([...plan.text.matchAll(/\bINCIDENT\s+(I-\d{8}-\d+)\b/g)].map(m => m[1]!)))
+			if (!ids.has(id)) result(`queue-close: still open: ${id} (cited only in ## Progress)`);
 		const recorded: string[] = [];
 		// A plan may cite one incident several times; record it once so the second citation is not a refusal.
-		const ids = new Set([...plan.text.matchAll(/\bINCIDENT\s+(I-\d{8}-\d+)\b/g)].map(m => m[1]!));
 		for (const id of ids) {
 			const why = fixedIncident(cfg, id, file);
 			if (why) result(`queue-close: not recording fixed for ${id}: ${why}`);
