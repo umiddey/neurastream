@@ -9,7 +9,7 @@ import { fileClaimStore } from "../core/claims.ts";
 import { nowSec, strftime } from "../core/clock.ts";
 import { mainId } from "../core/guards.ts";
 import { applyQueueEnv } from "../core/queue/env.ts";
-import { activePlans } from "../core/queue/lib.ts";
+import { activePlans, openWaits } from "../core/queue/lib.ts";
 import type { Config } from "../core/config.ts";
 
 const USAGE = [
@@ -29,12 +29,7 @@ export function claimCli(args: string[], cfg: Config): number {
 		const plans = activePlans();
 		const rank = new Map(plans.map((p, i) => [p.file, i + 1] as const));
 		for (const p of plans) {
-			if (p.status !== "open" || p.waiting) continue;
-			const waits = p.waitsOn.some(f => {
-				const at = rank.get(f);
-				return at !== undefined && plans[at - 1]!.status === "open";
-			});
-			if (waits) continue;
+			if (p.status !== "open" || p.waiting || openWaits(p, plans, rank).length) continue;
 			const h = store.holder(p.file);
 			if (h && h.main !== me) continue;
 			const c = store.claim(p.file, me);
@@ -47,10 +42,10 @@ export function claimCli(args: string[], cfg: Config): number {
 	}
 
 	if (args[0] === "list") {
-		const now = nowSec();
+		// holder() applies the store's own liveness rule (claim_ttl_min), so list and next agree.
 		const live = store
 			.list()
-			.filter(c => now - c.beat < cfg.queue.claim_ttl_min * 60)
+			.filter(c => store.holder(c.plan)?.main === c.main)
 			.toSorted((a, b) => a.since - b.since || a.plan.localeCompare(b.plan));
 		if (!live.length) console.log("claim: no live claims");
 		for (const c of live) console.log(`${c.plan} — held by Main ${c.main} since ${strftime(c.since, "%H:%M")}`);

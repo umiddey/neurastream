@@ -332,10 +332,9 @@ ledger:
 	refresh();
 	const d = checkSpawn({ ...spawnEv(), agent: "glm" }, cfg);
 	expect(d.allow).toBe(false);
-	// The wrapper names the agent again (I-20261031-277/-278/-279); the pick tail is
-	// preferProblem's own text, pinned in tests/provider-state-enforce.test.ts.
-	expect(d.reason).toContain("main-guard: glm: ");
-	expect(d.reason).toContain("ahead is ahead of glm in ledger.prefer and free");
+	expect(d.reason).toBe(
+		`main-guard: glm: ahead is ahead of glm in ledger.prefer and free (under its provider cap) — spawn ahead, or add "Pick note: <why>" to the brief.`,
+	);
 });
 
 test("a refused claim gate releases the claims this call created (review finding 2a)", () => {

@@ -1006,6 +1006,12 @@ export function queueProblems(index = INDEX, blockersDir = BLOCKERS_DIR, reviewA
 	return probs;
 }
 
+/** Queue ranks of the open queue plans an open plan waits on (I-20261025-208); empty when it is free to start. */
+export function openWaits(p: Plan, plans: Plan[], rank: Map<string, number>): number[] {
+	if (p.status !== "open") return [];
+	return p.waitsOn.map(f => rank.get(f)).filter((at): at is number => at !== undefined && plans[at - 1]!.status === "open");
+}
+
 export function queueSummary(index = INDEX, reviewAgents: string[] = [], claimStore?: ClaimStore): string {
 	// Index order IS priority (20261025_0215_index_priority): the list is flat and ranked,
 	// rank 1 = the index's top line; repos only surface through each plan's own path.
@@ -1016,14 +1022,7 @@ export function queueSummary(index = INDEX, reviewAgents: string[] = [], claimSt
 	plans.forEach((p, i) => {
 		const status = awaitingMerge(p) ? "complete, awaiting merge" : (p.status ?? "INVALID");
 		const hold = p.waiting ? `WAITING on owner: ${(p.waitingLine ?? "").slice(0, 80)}` : "";
-		// I-20261025-208: an open plan waiting on an open plan of the queue shows the target's rank.
-		const waits: string[] = [];
-		if (p.status === "open")
-			for (const f of p.waitsOn) {
-				const at = rank.get(f);
-				if (at === undefined || plans[at - 1]!.status !== "open") continue;
-				waits.push(`waits on #${at}`);
-			}
+		const waits = openWaits(p, plans, rank).map(at => `waits on #${at}`);
 		const done = p.phases.total ? `${p.phases.done}/${p.phases.total} done` : "";
 		// P4 multi-main (20261027_1300): with the claim store handed in (guards' inject and
 		// queue-check pass it), every plan shows `held by <id> since HH:MM` or `free`.
