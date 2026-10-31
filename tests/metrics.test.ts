@@ -1,4 +1,4 @@
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -210,6 +210,30 @@ test("metrics ci runs the configured command in the repo and records tries = arr
 	expect(recordCi(cfg, TMP, "42", NOW)).toBe(0);
 	const ci = readMetricEvents(cfg).filter((e) => e.type === "ci");
 	expect(ci).toEqual([{ type: "ci", mr: "42", repo: TMP, tries: 3, ts: NOW }]);
+});
+
+test("metrics ci re-runs every hold check after recording and prints the stale holds", () => {
+	const cfg = cfgWith(join(TMP, "home-ci-holds"), "printf '[1,2,3]' # {mr}");
+	const file = join(TMP, "ci-holds", "20261027_0008_hold.md");
+	mkdirSync(dirname(file), { recursive: true });
+	writeFileSync(file, "# Hold\n\n## Progress\nStatus: open\nWAITING on owner: keep the rollover paused — still true if: `exit 1 # metrics-ci`\n");
+	mkdirSync(dirname(cfg.paths.queue_index), { recursive: true });
+	writeFileSync(cfg.paths.queue_index, `${file}\n`);
+	const printed: string[] = [];
+	const ran: string[] = [];
+	const log = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+		printed.push(args.join(" "));
+	});
+	try {
+		expect(recordCi(cfg, TMP, "42", NOW, cmd => {
+			ran.push(cmd);
+			return { code: 1 };
+		})).toBe(0);
+	} finally {
+		log.mockRestore();
+	}
+	expect(ran).toEqual(["exit 1 # metrics-ci"]);
+	expect(printed).toContain(`STALE HOLD: ${file}: keep the rollover paused — check \`exit 1 # metrics-ci\` exited 1`);
 });
 
 test("metrics ci with an empty command template exits 2", () => {

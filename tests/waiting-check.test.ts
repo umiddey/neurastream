@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { readIncidents } from "../src/core/incidents.ts";
 import { parsePlan, type Plan } from "../src/core/queue/lib.ts";
-import { recheckHolds } from "../src/core/waiting-check.ts";
+import { recheckHolds, staleHoldLines } from "../src/core/waiting-check.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "ns-waitcheck-"));
 const HOME = join(TMP, "home");
@@ -107,4 +107,23 @@ test("a plan without a check, or not open and waiting, is not run at all", () =>
 	const r = recorder(0);
 	expect(recheckHolds(cfg, [noCheck], r.run, NOW)).toEqual([]);
 	expect(r.calls).toHaveLength(0);
+});
+
+test("staleHoldLines: one STALE HOLD line per stale hold, naming the ask and the exit code", () => {
+	const p = plan("20261027_0006_stale_line.md", "exit 3");
+	expect(staleHoldLines([{ plan: p.file, state: "stale", code: 3, ms: 1 }, { plan: "other.md", state: "holds", code: 0, ms: 1 }], [p])).toEqual([
+		`STALE HOLD: ${p.file}: hold until the owner says go — check \`exit 3\` exited 3`,
+	]);
+});
+
+test("fresh runs the check inside the TTL, and a cached stale result does not re-open its incident", () => {
+	const p = plan("20261027_0007_fresh.md", "exit 1 # fresh");
+	const r = recorder(1);
+	recheckHolds(cfg, [p], r.run, NOW);
+	recheckHolds(cfg, [p], r.run, NOW + 1);
+	expect(r.calls).toHaveLength(1);
+	expect(staleIncidents(p.file)[0]?.count).toBe(1);
+	recheckHolds(cfg, [p], r.run, NOW + 2, true);
+	expect(r.calls).toHaveLength(2);
+	expect(staleIncidents(p.file)[0]?.count).toBe(2);
 });

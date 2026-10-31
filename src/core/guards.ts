@@ -34,6 +34,7 @@ import { openIncidents, ownerMessagesFile, ownerSaid, readOwnerMessages, type In
 import { notifyProtectedPaths, notifySecretReadHit } from "./notify.ts";
 import { defaultRunner, listOpenMrs, mentioned, type CommandRunner, type OpenMr } from "./mr-sweep.ts";
 import { unlandedRows } from "./wip-check.ts";
+import { recheckHolds, staleFiles } from "./waiting-check.ts";
 import * as q from "./queue/lib.ts";
 import type { Plan } from "./queue/lib.ts";
 
@@ -1678,7 +1679,7 @@ export function checkInject(e: InjectEvent, cfg: Config): Decision {
 	recordOwnerMessage(e.inject, cfg);
 	let summary: string;
 	try {
-		summary = q.queueSummary(undefined, cfg.review.agents);
+		summary = q.queueSummary(undefined, cfg.review.agents, staleFiles(recheckHolds(cfg, q.activePlans())));
 	} catch (err) {
 		summary = `Queue unreadable (${q.INDEX}): ${err}`;
 	}

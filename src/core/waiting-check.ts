@@ -62,9 +62,16 @@ function readCache(file: string): Record<string, CacheRec> {
 /**
  * Runs the `still true if` command of every open, waiting plan that has one. `now` is epoch seconds
  * (the TTL and the incident stamps are seconds); a plan whose cached key still matches and is inside
- * queue.waiting_check_ttl_sec is returned without running the command.
+ * queue.waiting_check_ttl_sec is returned without running the command. `fresh` skips that cache read
+ * (metrics ci re-checks after a new CI record) but still writes the result back.
  */
-export function recheckHolds(cfg: Config, plans: q.Plan[], run: HoldRunner, now = nowSec()): HoldResult[] {
+export function recheckHolds(
+	cfg: Config,
+	plans: q.Plan[],
+	run: HoldRunner = spawnHoldRunner(cfg.queue.waiting_check_timeout_sec),
+	now = nowSec(),
+	fresh = false,
+): HoldResult[] {
 	const file = join(cfg.paths.queue_state, "waiting-check.json");
 	const cache = readCache(file);
 	const ttl = cfg.queue.waiting_check_ttl_sec;
@@ -79,30 +86,46 @@ export function recheckHolds(cfg: Config, plans: q.Plan[], run: HoldRunner, now 
 		} catch {}
 		const key = q.sha(`${mtime}\n${cmd}\n${gitHead(cwd)}`);
 		const hit = cache[p.file];
-		let rec = hit && hit.key === key && now - hit.at < ttl ? hit : undefined;
+		let rec = !fresh && hit && hit.key === key && now - hit.at < ttl ? hit : undefined;
 		if (!rec) {
 			const started = Date.now();
 			const code = run(cmd, cwd).code;
 			const state: HoldState = code === 0 ? "holds" : code === null ? "unknown" : "stale";
 			rec = { key, state, code, ms: Date.now() - started, at: now };
+			if (state === "stale") {
+				addIncident(
+					cfg,
+					{
+						source: "realtime",
+						kind: "stale-hold",
+						summary: `stale hold: ${p.file} — \`${cmd}\` exited ${code}`,
+						evidence: `WAITING on owner: ${p.waitingAsk ?? ""} — still true if: \`${cmd}\` (exit ${code}) ran in ${cwd}`,
+						fingerprint: q.sha(`stale-hold|${p.file}|${cmd}`),
+					},
+					now,
+				);
+			}
 		}
 		cache[p.file] = rec;
-		if (rec.state === "stale") {
-			addIncident(
-				cfg,
-				{
-					source: "realtime",
-					kind: "stale-hold",
-					summary: `stale hold: ${p.file} — \`${cmd}\` exited ${rec.code}`,
-					evidence: `WAITING on owner: ${p.waitingAsk ?? ""} — still true if: \`${cmd}\` (exit ${rec.code}) ran in ${cwd}`,
-					fingerprint: q.sha(`stale-hold|${p.file}|${cmd}`),
-				},
-				now,
-			);
-		}
 		out.push({ plan: p.file, state: rec.state, code: rec.code, ms: rec.ms });
 	}
 	mkdirSync(dirname(file), { recursive: true });
 	writeFileSync(file, `${JSON.stringify(cache)}\n`);
 	return out;
+}
+
+/** The plan files whose hold is stale: the queue summary and the owner page hide their owner line. */
+export function staleFiles(holds: HoldResult[]): Set<string> {
+	return new Set(holds.filter(h => h.state === "stale").map(h => h.plan));
+}
+
+/** One line per stale hold for queue-check and metrics ci: the ask, the check, and its exit code. */
+export function staleHoldLines(holds: HoldResult[], plans: q.Plan[]): string[] {
+	const byFile = new Map(plans.map(p => [p.file, p]));
+	return holds
+		.filter(h => h.state === "stale")
+		.map(h => {
+			const p = byFile.get(h.plan);
+			return `STALE HOLD: ${h.plan}: ${p?.waitingAsk ?? ""} — check \`${p?.waitingCheck ?? ""}\` exited ${h.code}`;
+		});
 }

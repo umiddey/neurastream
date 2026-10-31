@@ -14,7 +14,8 @@ import { providerFindings } from "../core/trace-provider.ts";
 import { bloatRules } from "../core/trace-bloat.ts";
 import { getAdapter } from "../adapters/index.ts";
 import { featuresReport, gatherTags, loadPlans, releasesReport, type FeaturesReport, type ReleasesReport } from "../core/results.ts";
-import { gitTop } from "../core/queue/lib.ts";
+import { activePlans, gitTop } from "../core/queue/lib.ts";
+import { recheckHolds, spawnHoldRunner, staleHoldLines, type HoldRunner } from "../core/waiting-check.ts";
 import { assignDumps, bloatReport } from "./traces.ts";
 import { withHeartbeat } from "../core/heartbeat.ts";
 
@@ -33,7 +34,7 @@ function flagValue(args: string[], name: string): string | undefined {
 }
 
 /** Runs the configured CI command in the repo and records how many pipelines the MR needed. */
-export function recordCi(cfg: Config, repoDir: string, mr: string, now: number): number {
+export function recordCi(cfg: Config, repoDir: string, mr: string, now: number, run: HoldRunner = spawnHoldRunner(cfg.queue.waiting_check_timeout_sec)): number {
 	if (!repoDir || !mr) {
 		console.error(METRICS_USAGE);
 		return 2;
@@ -49,6 +50,9 @@ export function recordCi(cfg: Config, repoDir: string, mr: string, now: number):
 	}
 	console.log(`ci: ${mr} needed ${r.tries} pipeline(s)`);
 	for (const s of r.skipped) console.error(s);
+	// A new CI record can change what a hold check sees, so every hold is re-checked now, not on its TTL.
+	const plans = activePlans(cfg.paths.queue_index);
+	for (const line of staleHoldLines(recheckHolds(cfg, plans, run, now, true), plans)) console.log(line);
 	return 0;
 }
 

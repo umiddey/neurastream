@@ -1146,7 +1146,7 @@ export function queueProblems(index = INDEX, blockersDir = BLOCKERS_DIR, reviewA
 // and passes `cap = Infinity`.
 export const SUMMARY_CAP = 10;
 
-export function queueSummary(index = INDEX, reviewAgents: string[] = [], cap: number = SUMMARY_CAP): string {
+export function queueSummary(index = INDEX, reviewAgents: string[] = [], stale: ReadonlySet<string> = new Set(), cap: number = SUMMARY_CAP): string {
 	// Index order IS priority (20261025_0215_index_priority): the list is flat and ranked,
 	// rank 1 = the index's top line; repos only surface through each plan's own path.
 	const plans = activePlans(index);
@@ -1155,7 +1155,8 @@ export function queueSummary(index = INDEX, reviewAgents: string[] = [], cap: nu
 	const lines = [`Queue (${index}): ${plans.length ? `${plans.length} plan(s) in ${repos.length} repo(s)` : "empty, no open work"}`];
 	plans.slice(0, cap).forEach((p, i) => {
 		const status = awaitingMerge(p) ? "complete, awaiting merge" : (p.status ?? "INVALID");
-		const hold = p.waiting ? `WAITING on owner: ${(p.waitingLine ?? "").slice(0, 80)}` : "";
+		const ask = (p.waitingLine ?? "").slice(0, 80);
+		const hold = p.waiting ? (stale.has(p.file) ? `[STALE?] ${ask}` : `WAITING on owner: ${ask}`) : "";
 		// I-20261025-208: an open plan waiting on an open plan of the queue shows the target's rank.
 		const waits: string[] = [];
 		if (p.status === "open")

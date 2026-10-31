@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
-import { parsePlan, splitWaiting } from "../src/core/queue/lib";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { parsePlan, queueSummary, splitWaiting } from "../src/core/queue/lib";
 
 const CHECK = " — still true if: ";
 
@@ -52,4 +55,20 @@ test("parsePlan carries the check as waitingCheck, and null when the line has no
 	expect(without.waitingCheck).toBeNull();
 	const none = parsePlan("/repo", "c.md", "## Progress\nStatus: open\n");
 	expect(none.waitingCheck).toBeNull();
+});
+
+test("queueSummary labels a stale hold [STALE?] instead of WAITING on owner", () => {
+	const dir = mkdtempSync(join(tmpdir(), "queue-stale-"));
+	try {
+		const ask = "keep the rollover paused until the owner says go";
+		const file = join(dir, "20261027_0009_stale.md");
+		writeFileSync(file, `# Stale\n\n## Progress\nStatus: open\nWAITING on owner: ${ask}\n`);
+		const index = join(dir, "INDEX.md");
+		writeFileSync(index, `${file}\n`);
+		expect(queueSummary(index, [], new Set([file]))).toContain(`[open, [STALE?] ${ask}]`);
+		expect(queueSummary(index, [], new Set([file]))).not.toContain("WAITING on owner");
+		expect(queueSummary(index)).toContain(`WAITING on owner: ${ask}`);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
 });
