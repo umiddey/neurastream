@@ -6,6 +6,7 @@
 import { dirname } from "node:path";
 import { readFileSync, statSync } from "node:fs";
 import { configFile, type Config } from "./config.ts";
+import { mainId } from "./guards.ts";
 import { loadKnownSecrets, redactSecrets } from "./secret-redact.ts";
 
 export type NotifyProviderName = "discord" | "slack";
@@ -206,7 +207,7 @@ const enqueuePost = <T>(operation: () => Promise<T>): Promise<T> => {
 export function postReply(text: string, cfg: Config): Promise<NotifyPostResult[]> {
 	return enqueuePost(async () => {
 		const providers = notifyProviders(cfg);
-		const body = cfg.notify.prefix ? `${cfg.notify.prefix} ${text}` : text;
+		const body = cfg.notify.prefix ? `${cfg.notify.prefix} [${mainId()}] ${text}` : `[${mainId()}] ${text}`;
 		if (body.trim() === "") return providers.map(p => ({ provider: p.name, posted: false, chunks: 0, error: "empty reply; nothing posted" }));
 		// The chat is where a secret does its damage (plan 20261025_2204): a reply can carry a value
 		// the owner pasted or one the redactor's tool_result pass never saw, so the post is scrubbed

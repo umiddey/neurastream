@@ -22,7 +22,7 @@
 //     the stop is refused; an incident with a plan no longer blocks
 
 import { execFileSync } from "node:child_process";
-import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Decision, InjectEvent, PlanEditEvent, SpawnEvent, StopEvent, ToolEvent } from "./adapter.ts";
 import { currentTier, takeGo } from "./autonomy.ts";
@@ -61,10 +61,10 @@ function isPlanName(raw: string): boolean {
 }
 const PLAN_WRITE_TOOLS: Record<string, true> = { edit: true, write: true, ast_edit: true };
 
-/** Guard-log line, `<ISO UTC> <line>`; a failed append is swallowed. */
+/** Guard-log line, `<ISO UTC> [<main id>] <line>`; a failed append is swallowed. */
 export function log(file: string, line: string): void {
 	try {
-		appendFileSync(file, `${new Date().toISOString()} ${line}\n`);
+		appendFileSync(file, `${new Date().toISOString()} [${mainId()}] ${line}\n`);
 	} catch {}
 }
 
@@ -86,8 +86,39 @@ interface EditWindow {
 	mainCallsStart?: number;
 }
 
+// --- this Main's identity (plan 20261027_1300_multi_main P2) ---
+
+/** What `neurastream main --name` accepts and what `NEURASTREAM_MAIN_ID` may hold. */
+export const MAIN_ID_RE = /^[a-z0-9-]{1,24}$/;
+
+/** This Main's id: the launcher sets `NEURASTREAM_MAIN_ID` (default `main`); a bogus value falls back to `main`. */
+export function mainId(): string {
+	const id = process.env.NEURASTREAM_MAIN_ID ?? "main";
+	return MAIN_ID_RE.test(id) ? id : "main";
+}
+
+/** One-time move of the pre-multi-main top-level state into `mains/main/` (renameSync, idempotent). */
+function moveLegacyState(stateDir: string, dir: string): void {
+	if (existsSync(dir)) return;
+	mkdirSync(dir, { recursive: true });
+	for (const name of ["edit-window.json", "rollover"]) {
+		try {
+			renameSync(path.join(stateDir, name), path.join(dir, name));
+		} catch {}
+	}
+}
+
+/** This Main's own state dir, `<queue_state>/mains/<id>/`: edit window, rollover notes, running lock. */
+export function mainStateDir(cfg?: Config): string {
+	const stateDir = cfg ? cfg.paths.queue_state : q.stateDirPath();
+	const id = mainId();
+	const dir = path.join(stateDir, "mains", id);
+	if (id === "main") moveLegacyState(stateDir, dir);
+	return dir;
+}
+
 function windowFile(): string {
-	return path.join(q.STATE_DIR, "edit-window.json");
+	return path.join(mainStateDir(), "edit-window.json");
 }
 
 export function readWindow(): EditWindow {
@@ -101,7 +132,7 @@ export function readWindow(): EditWindow {
 
 export function writeWindow(w: EditWindow): void {
 	try {
-		mkdirSync(q.STATE_DIR, { recursive: true });
+		mkdirSync(path.dirname(windowFile()), { recursive: true });
 		writeFileSync(windowFile(), JSON.stringify(w, null, 1));
 	} catch (err) {
 		log(`${q.STATE_DIR}/../main-guard.log`, `cannot write ${windowFile()}: ${err}`);
@@ -1266,7 +1297,7 @@ export function checkTool(e: ToolEvent, cfg: Config): Decision {
 	}
 	// Main writes its own rollover note unattended (the note turn has nobody to ask). Only a Write
 	// of a .md directly in <state>/rollover/ is exempt; shell writes, subagents and relaunch.json stay refused.
-	const rolloverDir = path.join(q.stateDirPath(), "rollover");
+	const rolloverDir = path.join(mainStateDir(cfg), "rollover");
 	const openWrites =
 		e.agent === "main" && e.tool === "write"
 			? writes.filter(p => !(path.extname(p) === ".md" && path.dirname(path.resolve(p)) === rolloverDir))

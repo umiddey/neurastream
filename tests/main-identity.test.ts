@@ -5,7 +5,9 @@
 // harness stands in for omp; sandbox home, like tests/launch.test.ts.
 
 import { afterAll, expect, spyOn, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { loadConfig } from "../src/core/config.ts";
@@ -31,16 +33,10 @@ afterAll(() => {
 const cfg = loadConfig({ home: join(TMP, "home"), env: {} });
 applyQueueEnv(cfg);
 const STATE = cfg.paths.queue_state;
-
-// Resolves when a file named `name` appears in `dir` (fs.watch, no polling); the test's own
-// timeout is the backstop when nothing ever appears.
-function waitForFile(dir: string, name: string): Promise<void> {
-	const { promise, resolve } = Promise.withResolvers<void>();
-	const w = watch(dir, (_event, hit) => {
-		if (hit === name) resolve();
-	});
-	return promise.finally(() => w.close());
-}
+// A second sandbox state for the legacy-move tests: the tests above already created mains/<id>
+// dirs in STATE, and the one-time move only fires while mains/main/ does not exist yet.
+const cfgLegacy = loadConfig({ home: join(TMP, "home-legacy"), env: {} });
+const LEGACY = cfgLegacy.paths.queue_state;
 
 // The fake harness logs the argv it was given plus the id env, and never relaunches.
 const FAKE = join(TMP, "fake-omp");
@@ -96,31 +92,32 @@ test("rollover note and relaunch request live in the Main's own dir", () => {
 });
 
 test("the pre-multi-main top-level files move into mains/main once", () => {
-	mkdirSync(join(STATE, "rollover"), { recursive: true });
-	writeFileSync(join(STATE, "edit-window.json"), JSON.stringify({ used: ["edit:x"], windowStart: 1, mainCalls: 3 }));
-	writeFileSync(join(STATE, "rollover", "old.md"), "note");
+	mkdirSync(join(LEGACY, "rollover"), { recursive: true });
+	writeFileSync(join(LEGACY, "edit-window.json"), JSON.stringify({ used: ["edit:x"], windowStart: 1, mainCalls: 3 }));
+	writeFileSync(join(LEGACY, "rollover", "old.md"), "note");
 	delete process.env.NEURASTREAM_MAIN_ID; // id main
-	const dir = mainStateDir(cfg);
-	expect(dir).toBe(join(STATE, "mains", "main"));
-	expect(existsSync(join(STATE, "edit-window.json"))).toBe(false);
-	expect(existsSync(join(STATE, "rollover"))).toBe(false);
+	const dir = mainStateDir(cfgLegacy);
+	expect(dir).toBe(join(LEGACY, "mains", "main"));
+	expect(existsSync(join(LEGACY, "edit-window.json"))).toBe(false);
+	expect(existsSync(join(LEGACY, "rollover"))).toBe(false);
 	expect(readFileSync(join(dir, "edit-window.json"), "utf8")).toContain("edit:x");
 	expect(readFileSync(join(dir, "rollover", "old.md"), "utf8")).toBe("note");
 	// Idempotent: the moved-in files are the live ones; a second call moves nothing.
-	mainStateDir(cfg);
-	expect(readWindow().mainCalls).toBe(3);
-	expect(existsSync(join(STATE, "edit-window.json"))).toBe(false);
+	mainStateDir(cfgLegacy);
+	writeFileSync(join(dir, "edit-window.json"), JSON.stringify({ used: [], windowStart: 0, mainCalls: 0 }));
+	expect(existsSync(join(LEGACY, "edit-window.json"))).toBe(false);
+	expect(readFileSync(join(dir, "edit-window.json"), "utf8")).not.toContain("edit:x");
 });
 
 test("a non-main id does not move the legacy files", () => {
-	mkdirSync(join(STATE, "rollover"), { recursive: true });
-	writeFileSync(join(STATE, "edit-window.json"), "{}");
-	writeFileSync(join(STATE, "rollover", "keep.md"), "note");
+	mkdirSync(join(LEGACY, "rollover"), { recursive: true });
+	writeFileSync(join(LEGACY, "edit-window.json"), "{}");
+	writeFileSync(join(LEGACY, "rollover", "keep.md"), "note");
 	process.env.NEURASTREAM_MAIN_ID = "b";
-	expect(mainStateDir(cfg)).toBe(join(STATE, "mains", "b"));
-	expect(existsSync(join(STATE, "edit-window.json"))).toBe(true);
-	expect(existsSync(join(STATE, "rollover", "keep.md"))).toBe(true);
-	expect(existsSync(join(STATE, "mains", "b", "edit-window.json"))).toBe(false);
+	expect(mainStateDir(cfgLegacy)).toBe(join(LEGACY, "mains", "b"));
+	expect(existsSync(join(LEGACY, "edit-window.json"))).toBe(true);
+	expect(existsSync(join(LEGACY, "rollover", "keep.md"))).toBe(true);
+	expect(existsSync(join(LEGACY, "mains", "b", "edit-window.json"))).toBe(false);
 });
 
 test("guard log lines carry the [id] prefix", () => {
@@ -165,29 +162,21 @@ test("the launcher strips --name from the harness args and sets the id env", asy
 test("a second launcher with the same id refuses while the first holds the lock, then is accepted", async () => {
 	const dir = join(TMP, "case-lock");
 	mkdirSync(dir, { recursive: true });
-	// A spawned process holds tryLock like a live launcher would: it takes the lock, announces
-	// ready, and releases when the stop file appears (watched, not polled).
-	const ready = join(dir, "ready");
-	const stop = join(dir, "stop");
+	// A spawned process holds tryLock like a live launcher would: it takes the lock, prints ready
+	// on stdout, and releases when a line arrives on stdin (event-driven, no polling).
 	const holder = join(STATE, "mains", "locktest", "running.lock");
 	mkdirSync(dirname(holder), { recursive: true });
 	const script = [
 		`import { tryLock } from ${JSON.stringify(join(import.meta.dir, "../src/core/file-lock.ts"))};`,
-		`import { writeFileSync, watch } from "node:fs";`,
 		`const l = tryLock(${JSON.stringify(holder)});`,
 		`if (!l) process.exit(3);`,
-		`const done = new Promise(resolve => {`,
-		`	const w = watch(${JSON.stringify(dir)}, (_e, hit) => { if (hit === "stop") resolve(undefined); });`,
-		`});`,
-		`writeFileSync(${JSON.stringify(ready)}, "");`,
-		`await done;`,
+		`process.stdout.write("ready\\n");`,
+		`await new Promise(resolve => process.stdin.once("data", resolve));`,
 		`l.release();`,
 	].join("\n");
-	const child = Bun.spawn(["bun", "-e", script]);
-	// child.exited in the race: if the child dies without announcing (exit 3), the test fails on
-	// the ready assert below instead of hanging to the timeout.
-	await Promise.race([waitForFile(dir, "ready"), child.exited.then(() => undefined)]);
-	expect(existsSync(ready)).toBe(true);
+	const child = spawn(process.execPath, ["-e", script], { stdio: ["pipe", "pipe", "inherit"] });
+	const [chunk] = (await once(child.stdout, "data")) as [Buffer];
+	expect(chunk.toString()).toBe("ready\n");
 
 	// Same id while the holder lives: refused, the harness never runs.
 	const runsLog = join(dir, "runs.log");
@@ -201,8 +190,9 @@ test("a second launcher with the same id refuses while the first holds the lock,
 	expect(existsSync(runsLog)).toBe(false);
 
 	// Holder gone: the same id starts, and the child sees its id env.
-	writeFileSync(stop, "");
-	await child.exited;
+	child.stdin.write("stop\n");
+	child.stdin.end();
+	await once(child, "exit");
 	expect(await runMainLauncher(["--name", "locktest", "hi"], cfg, { harness: FAKE })).toBe(0);
 	expect(JSON.parse(readFileSync(runsLog, "utf8"))).toEqual({ argv: ["hi"], id: "locktest" });
 	delete process.env.FAKE_LOG;

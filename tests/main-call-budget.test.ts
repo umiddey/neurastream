@@ -198,7 +198,7 @@ const h = {}; const sent = [];
 const mod = await import(${JSON.stringify(ADAPTER)});
 mod.default({ on: (ev, cb) => { (h[ev] ??= []).push(cb); }, registerCommand: () => {}, sendUserMessage: (c) => { sent.push(c); } });
 const fs = await import("node:fs");
-const win = ${JSON.stringify(join(OMP_HOME, "state/edit-window.json"))};
+const win = ${JSON.stringify(join(OMP_HOME, "state/mains/main/edit-window.json"))};
 fs.writeFileSync(win, JSON.stringify({ used: [], windowStart: 0, mainCalls: 5 }));
 const ctx = Object.assign(${JSON.stringify({ agent: { kind: "main", id: "main" }, cwd: "/tmp" })}, { sessionManager: { getSessionId: () => "s1", getSessionFile: () => "/tmp/s1.jsonl" }, getAsyncJobSnapshot: () => ({ running: ${JSON.stringify(jobs.map(j => ({ label: j })))} }) });
 for (const cb of h["agent_end"] ?? []) await cb(${JSON.stringify(event)}, ctx);
