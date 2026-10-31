@@ -2,9 +2,10 @@
 // Base is approved there: the Approve bar records a hash of the plan text in the queue state
 // (plan-approvals.json). The plan file is never edited. main-guard refuses a spawn on a plan whose page
 // has no record with the plan's current hash; a plan with no page predates the convention and is left alone.
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { appendFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
 import * as q from "./queue/lib.ts";
+import type { Config } from "./config.ts";
 
 /** Lines only Main may write: the status, owner parking, plan waits, owner cancellation, cancelled-list clearance. */
 export const MAIN_ONLY_LINE = /^\s*(?:[-*]\s+)?(Status:|WAITING on owner:|Waits on:|Cancelled by owner:|False positive:)/;
@@ -78,7 +79,7 @@ export function pageOfPlan(dir: string, file: string): string | null {
 export interface PlanApproval {
 	hash: string;
 	at: number;
-	via: "page";
+	via: "page" | "chat";
 	page: string;
 }
 
@@ -95,12 +96,13 @@ function readPlanApprovals(): Record<string, PlanApproval> {
 	return {};
 }
 
-function writePlanApprovals(approvals: Record<string, PlanApproval>): void {
+function writePlanApprovals(approvals: Record<string, PlanApproval>): boolean {
 	try {
 		mkdirSync(q.STATE_DIR, { recursive: true });
 		writeFileSync(planApprovalsFile(), JSON.stringify({ approvals }, null, 1));
+		return true;
 	} catch {
-		// plan approval is best-effort: if the state dir is not writable, the guard simply refuses the spawn
+		return false;
 	}
 }
 
@@ -108,13 +110,48 @@ function readPlanApproval(file: string): PlanApproval | null {
 	return readPlanApprovals()[file] ?? null;
 }
 
+/** Record one approval. Throws when the queue state cannot be written, so nobody reports "approved" for a record that is not there. */
+function recordApproval(file: string, approval: PlanApproval): void {
+	const approvals = readPlanApprovals();
+	approvals[file] = approval;
+	if (!writePlanApprovals(approvals)) throw new Error(`cannot write ${planApprovalsFile()}`);
+}
+
 /** The owner's click on a plan page: record a hash of the plan text in the queue state and return the page it approved. The plan file itself is never edited. */
 export function approvePlanFile(file: string, page: string, now = new Date()): string {
 	const text = readFileSync(file, "utf8");
-	const approvals = readPlanApprovals();
-	approvals[file] = { hash: reviewHash(text), at: now.getTime(), via: "page", page };
-	writePlanApprovals(approvals);
+	recordApproval(file, { hash: reviewHash(text), at: now.getTime(), via: "page", page });
 	return `approved ${page}`;
+}
+
+export type ChatApproveResult = { applied: true; plan: string } | { applied: false; problem?: string };
+
+const APPROVE_CMD = /^approve (\d{8}_\d{4})$/;
+
+/**
+ * The owner's own chat `approve <YYYYMMDD_HHMM>` (same trust rules as chatGo): the one open indexed
+ * plan whose file stamp matches records a chat approval and is logged to plan_guard_log. Any other
+ * text is not an approval. A stamp that matches none, or several, or a record that cannot be saved,
+ * is a problem for the owner to read; nothing is approved.
+ */
+export function chatApprove(text: string, cfg: Config, source: string): ChatApproveResult {
+	if (!cfg.guards.chat_unlock) return { applied: false };
+	const m = APPROVE_CMD.exec(text.trim());
+	if (!m) return { applied: false };
+	const stamp = m[1];
+	const matches = q.activePlans().filter(p => p.status === "open" && basename(p.file).startsWith(`${stamp}_`));
+	if (matches.length === 0) return { applied: false, problem: `no open plan ${stamp}` };
+	if (matches.length > 1) return { applied: false, problem: `${matches.length} open plans match ${stamp}; nothing approved` };
+	const [plan] = matches;
+	try {
+		recordApproval(plan.file, { hash: reviewHash(plan.text), at: Date.now(), via: "chat", page: pageOfPlan(cfg.pages.dir, plan.file) ?? "" });
+	} catch (e) {
+		return { applied: false, problem: `plan ${stamp} not approved: ${e instanceof Error ? e.message : String(e)}` };
+	}
+	try {
+		appendFileSync(cfg.paths.plan_guard_log, `${new Date().toISOString()} APPROVE chat source=${source} plan=${plan.file}\n`);
+	} catch {}
+	return { applied: true, plan: plan.file };
 }
 
 /** Why a spawn may not run on this plan, or null; only a plan with a page in Base is gated. */

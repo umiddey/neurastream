@@ -41,7 +41,11 @@ export function startPagesServer(opts: PagesOptions): PagesServer {
     if (unproven.length > 0) return Response.json({ error: `the diagram is not complete (${unproven.slice(0, 3).join("; ")})` }, { status: 409 });
     const plan = record.plan;
     if (!existsSync(plan)) return plain("not found: the plan file is gone", 404);
-    return Response.json({ approved: approvePlanFile(plan, page) });
+    try {
+      return Response.json({ approved: approvePlanFile(plan, page) });
+    } catch (e) {
+      return plain(`not approved: ${e instanceof Error ? e.message : String(e)}`, 500);
+    }
    }
    if (url.pathname !== "/_notes") return plain("method not allowed", 405);
    if (req.headers.get("origin") !== `http://${req.headers.get("host")}`) return plain("forbidden: origin is not this page", 403);
