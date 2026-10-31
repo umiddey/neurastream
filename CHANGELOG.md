@@ -3,6 +3,7 @@
 ### Added
 - Every scheduled job beats: `withHeartbeat` wraps wip-snapshot, wip-backup and `metrics report`, the pages server and the owner page server write `pages-serve` / `ui` heartbeats — `{name, at, ok, detail}` JSON under `<queue_state>/heartbeats/<name>.json`, detail cut to 200 chars; a crash beats ok:false with the first error line, then re-throws so exit codes are unchanged. Hidden `neurastream heartbeat <name> [--fail "<text>"]` beats once by hand (live check, your own cron jobs).
 - `neurastream watch` (hidden): one watcher pass — failed and stale heartbeats, failed user units filtered by `watch.units` globs, and the gated incident detectors fold into `source: watch` incidents under `watch.expect` staleness budgets (wip-snapshot 2h, wip-backup 26h, metrics-report 8 days); a watch incident whose problem recovers is closed again via `incident dismiss`. Each NEW incident posts one ⚠ message ("⚠ <job>: <state> at <time> — <first error line> (incident <id>)") through the configured notify providers — at most `watch.max_posts_per_run` (default 3) per run, then one "+N more, see `neurastream incident list --open`" line; nothing when no provider is configured, every post scrubbed by the secret redactor.
+- `neurastream watch on|off` installs or removes the watcher timer: a systemd user timer `neurastream-watch.{service,timer}` on Linux or a LaunchAgent plist on macOS, running every `watch.interval_min` (default 15). The service manager is probed first; a failed probe writes nothing. `neurastream doctor` prints `watch: on|off, last run N min ago`; the preflight prints `watch: last run N min ago`, or `watch: NOT RUNNING since <time>` with a `watch:not-running` incident once the last run is older than 3 intervals. Interactive `neurastream init` offers to turn the watcher on.
 
 ## 0.2.62
 ### Changed
@@ -41,7 +42,6 @@
 - Owner page: the Base tab lists published pages under their repo (one card per repo, newest first, expired pages gone); `pages publish` records each page's repo.
 - Owner page: the Add note button works on a phone long-press.
 - `ui.allow_this_machine` admits this machine as the owner on the owner page.
-
 
 ### Changed
 - CI fails on any oxlint warning (`bun run lint`).
