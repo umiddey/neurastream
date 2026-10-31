@@ -79,6 +79,8 @@ incidents:
   contradiction_grace_min: 3   # minutes after a finished task-result before a RUNNING/WAITING ledger row is a contradiction (detector D1)
   block_repeat: 20             # same guard BLOCK reason within 60 minutes that means a block loop (detector D3)
   scan_interval_sec: 120       # seconds between scans of the expensive detectors (D1 ledger, D3 block loop); the cheap ones run on every event
+  bypass_window_sec: 600       # seconds after a guard block within which a similar call of the same tool is a bypass (detector D8)
+  bypass_similarity: 0.6       # token-set Jaccard similarity (0, 1] between the blocked call's args and the bypass (detector D8)
   daily_worse_pct: 25          # a daily metric must be worse than the 7-day mean by at least this percent
   daily_floor:                 # per-metric daily floors: a regression below the floor is noise
     m1: 0.5                    # $ per merge

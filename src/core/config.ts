@@ -198,6 +198,10 @@ export interface Config {
 		daily_worse_pct: number;
 		/** Per-metric daily floors (keys: m1, m2, m3, m4_corrections, m4_questions, m5): a regression below the floor is noise. */
 		daily_floor: Record<string, number>;
+		/** D8: seconds after a guard block within which a similar call of the same tool counts as a bypass. */
+		bypass_window_sec: number;
+		/** D8: token-set Jaccard similarity in (0, 1] between a blocked call's args and the bypass. */
+		bypass_similarity: number;
 	};
 	/** The watcher (src/core/watch.ts, plan 20261027_1430 P2): job heartbeats, failed units, detectors. */
 	watch: {
@@ -637,6 +641,12 @@ function check(cfg: Config): void {
 		new RegExp(cfg.traces.bloat.tool_group);
 	} catch {
 		throw new ConfigError(`traces.bloat.tool_group: not a valid regex: ${cfg.traces.bloat.tool_group}`);
+	}
+	if (!Number.isInteger(cfg.incidents.bypass_window_sec) || cfg.incidents.bypass_window_sec < 1) {
+		throw new ConfigError("incidents.bypass_window_sec must be an integer >= 1");
+	}
+	if (typeof cfg.incidents.bypass_similarity !== "number" || !(cfg.incidents.bypass_similarity > 0) || cfg.incidents.bypass_similarity > 1) {
+		throw new ConfigError("incidents.bypass_similarity must be a number in (0, 1]");
 	}
 	for (const rule of cfg.brief.repo_rules) {
 		for (const key of ["match", "require", "first", "unless"] as const) {

@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "no
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { RunSource } from "./adapter.ts";
+import type { RunSource, TraceEvent } from "./adapter.ts";
 import { readEvents } from "./agent-score.ts";
 import type { Config } from "./config.ts";
 import { nowSec, strftime } from "./clock.ts";
@@ -227,6 +227,8 @@ function fmtMetric(v: number | null): string {
 export interface DetectorSeam {
 	runSource(cfg: Config): RunSource;
 	completedResults(cfg: Config): TaskResult[];
+	/** D8 input. A seam without it gives the detectors no main events, so D8 stays silent. */
+	mainEvents?(cfg: Config): TraceEvent[];
 }
 
 /**
@@ -239,6 +241,7 @@ export function defaultGather(cfg: Config, seam: DetectorSeam): () => GatedInput
 		results: seam.completedResults(cfg),
 		runs: seam.runSource(cfg).listRuns(nowSec() - 2 * 86400),
 		blocks: readBlocks(cfg),
+		mainEvents: seam.mainEvents?.(cfg) ?? [],
 	});
 }
 

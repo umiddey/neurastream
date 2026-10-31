@@ -18,7 +18,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import { appendFileSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, join, resolve } from "node:path";
-import type { Decision } from "../../core/adapter.ts";
+import type { Decision, TraceEvent } from "../../core/adapter.ts";
 import { AGENTS_TEMPLATE, renderBlock } from "../../core/agents-md.ts";
 import { chatGo, chatTier, type Tier } from "../../core/autonomy.ts";
 import { chatApprove } from "../../core/plan-approval.ts";
@@ -47,6 +47,16 @@ import { pinModel, providerOfModel, recordOut, resetEpochFromText } from "../../
 import { annotateResetTimes } from "../../core/reset-time.ts";
 // Registers the plugin-command matcher into core's writeTargets (side effect).
 import "./package-ops.ts";
+
+/** TraceEvents of the newest Main session file (D8's input); [] when there is none or it cannot be read. */
+function defaultMainEvents(cfg: Config): TraceEvent[] {
+	try {
+		const s = defaultRunSource(cfg).mainSession();
+		return s ? parseTraceFile(s.file, runIdOf(s.file)) : [];
+	} catch {
+		return [];
+	}
+}
 
 /** Subset of the harness extension host the adapter needs. */
 export interface ExtensionHost {
@@ -801,7 +811,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		// A turn the harness starts from the guard's own stop continuation is not an owner
 		// message: D4 (owner-correction) only sees real prompts; D1/D3 run either way.
 		// Machine prompts (guard continuation, rollover note request, handoff note) are not owner messages.
-		mainDetectors(cfg, { runSource: defaultRunSource, completedResults: defaultCompletedResults }, { prompt: ownerText(prompt) });
+		mainDetectors(cfg, { runSource: defaultRunSource, completedResults: defaultCompletedResults, mainEvents: defaultMainEvents }, { prompt: ownerText(prompt) });
 		// The rules of a repo this session has just worked in (P3): one hand-over per repo per file
 		// version — rulesChanged holds the hash, and the set holds only what was touched.
 		const rules: string[] = [];
@@ -1007,7 +1017,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		}
 		// Real-time detectors after each Main bash result, crashes included (D2 wants the stack).
 		if ((!c.hasAgent || c.kind === "main") && asString(e.toolName) === "bash") {
-			mainDetectors(cfg, { runSource: defaultRunSource, completedResults: defaultCompletedResults }, {
+			mainDetectors(cfg, { runSource: defaultRunSource, completedResults: defaultCompletedResults, mainEvents: defaultMainEvents }, {
 				bash: { command: asString(asRecord(e.input).command), output: content.map(p => asString(asRecord(p).text)).join("\n") },
 			});
 		}
