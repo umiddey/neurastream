@@ -2,7 +2,10 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { pagesDoctor } from "../core/pages-doctor.ts";
 import { ConfigError, configFile, loadConfig, type Config } from "../core/config.ts";
-import { beat } from "../core/heartbeat.ts";
+import { beat, withHeartbeat } from "../core/heartbeat.ts";
+import { watchOnce, systemUnitLister } from "../core/watch.ts";
+import { defaultGather } from "../core/main-start.ts";
+import { nowSec } from "../core/clock.ts";
 import { postReply } from "../core/notify.ts";
 import { loadKnownSecrets, redactSecrets, redactSummary } from "../core/secret-redact.ts";
 import { applyQueueEnv } from "../core/queue/env.ts";
@@ -161,6 +164,25 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 			return 1;
 		}
 		return 0;
+	}
+	// One watcher pass (plan 20261027_1430 P2); the P4 timer calls this every watch interval.
+	// Beats its own "watch" heartbeat AFTER the pass: ok only when the watcher itself ran.
+	if (cmd === "watch") {
+		if (args.length) {
+			console.error("usage: neurastream watch");
+			return 2;
+		}
+		try {
+			const cfg = loadConfig();
+			return withHeartbeat(cfg, "watch", () => {
+				const report = watchOnce(cfg, { now: nowSec, listUnits: systemUnitLister, gather: defaultGather(cfg, getAdapter(cfg)) });
+				console.log(`watch: ${report.opened.length} opened, ${report.deduped.length} deduped, ${report.closed.length} recovered, ${report.detectors.length} detector findings`);
+				return 0;
+			});
+		} catch (err) {
+			console.error(err instanceof ConfigError ? err.message : String(err));
+			return 1;
+		}
 	}
 	if (cmd === "uninstall") return runUninstall(args);
 	if (cmd === "queue" && args[0] === "migrate") {

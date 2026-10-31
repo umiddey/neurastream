@@ -105,10 +105,12 @@ test("a beat older than watch.expect[name] hours is stale", () => {
 test("a job with no heartbeat ever is stale only when listed in watch.expect", () => {
 	const cfg = tempCfg("never");
 	healthy(cfg);
+	// metrics-report must never have beaten: drop the beat healthy() wrote for it. Only +1h so
+	// the fresh wip-snapshot beat (real clock, expect 2h) stays healthy at this clock.
+	rmSync(join(cfg.paths.queue_state, "heartbeats", "metrics-report.json"));
 	// ui beats but is not listed in expect: a long-old heartbeat is not an incident.
 	hbFile(cfg, { name: "ui", ok: true, detail: "", at: new Date((nowSec() - 30 * 86400) * 1000).toISOString() });
-	// metrics-report is listed but has never beaten: stale.
-	const report = watchOnce(cfg, deps(nowSec() + 3 * 3600));
+	const report = watchOnce(cfg, deps(nowSec() + 3600));
 	expect(report.opened).toHaveLength(1);
 	expect(report.opened[0]!.kind).toBe("beat-stale");
 	expect(report.opened[0]!.summary).toContain("metrics-report");

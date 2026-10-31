@@ -88,6 +88,15 @@ incidents:
     m4_questions: 3            # Main questions/day
     m5: 50                     # guard blocks/day
 
+watch:                         # the watcher (src/core/watch.ts): `neurastream watch` runs one pass
+  expect:                      # hours after which a job's last heartbeat is stale (beat-stale); only listed jobs must beat at all
+    wip-snapshot: 2            # hourly snapshot
+    wip-backup: 26             # nightly 23:30 backup; one missed day is not yet stale
+    metrics-report: 192        # 8 days; the weekly report job
+  units:                       # user units the watcher reports when failed (unit-failed), as globs
+    - "neurastream-*"
+    - "wip-*"
+
 ledger:
   default_hours: 24
   idle_show_min: 5

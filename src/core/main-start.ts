@@ -6,7 +6,7 @@ import type { RunSource } from "./adapter.ts";
 import { readEvents } from "./agent-score.ts";
 import type { Config } from "./config.ts";
 import { nowSec, strftime } from "./clock.ts";
-import { runDetectors, type TaskResult } from "./incident-detectors.ts";
+import { runDetectors, runDetectorsGated, type GatedInputs, type TaskResult } from "./incident-detectors.ts";
 import { addIncident, type IncidentView } from "./incidents.ts";
 import { log as logGuard } from "./guards.ts";
 import { dailyChecks, readBlocks, readMetricEvents, worseThanMean } from "./metrics.ts";
@@ -193,6 +193,43 @@ function dailyStateFile(cfg: Config): string {
 
 function fmtMetric(v: number | null): string {
 	return v === null ? "n/a" : v >= 10 ? String(Math.round(v)) : v.toFixed(2);
+}
+
+/** Where the expensive detector inputs come from: the harness adapter's session readers
+ *  (src/adapters/<harness>; core never imports one — the caller hands the seam in). */
+export interface DetectorSeam {
+	runSource(cfg: Config): RunSource;
+	completedResults(cfg: Config): TaskResult[];
+}
+
+/**
+ * The gather the prompt-time detectors and the watcher (src/core/watch.ts) share: fresh
+ * completed task-results, the last two days of ledger runs and the guard-log blocks — read
+ * only when runDetectorsGated's scan gate opens (incidents.scan_interval_sec).
+ */
+export function defaultGather(cfg: Config, seam: DetectorSeam): () => GatedInputs {
+	return () => ({
+		results: seam.completedResults(cfg),
+		runs: seam.runSource(cfg).listRuns(nowSec() - 2 * 86400),
+		blocks: readBlocks(cfg),
+	});
+}
+
+/**
+ * Real-time incident detectors (plan 20261022_2330 P3) at Main's prompt and after each Main bash
+ * result, plus the once-per-day metrics check (P4, retried until it marks the day). The cheap
+ * detectors (D2 bash, D4 prompt) run on every call; D1/D3 and their inputs — Main's session
+ * file, the ledger runs, both guard logs — are gathered behind the scan interval
+ * (incidents.scan_interval_sec, see runDetectorsGated). Best effort: a failed check is logged,
+ * never thrown.
+ */
+export function mainDetectors(cfg: Config, seam: DetectorSeam, extra: { prompt?: string; bash?: { command: string; output: string } }): void {
+	try {
+		runDetectorsGated(cfg, extra, defaultGather(cfg, seam));
+		runDailyCheck(cfg, seam.runSource(cfg), nowSec());
+	} catch (err) {
+		logGuard(cfg.paths.guard_log, `incident detectors failed: ${err instanceof Error ? err.message : String(err)}`);
+	}
 }
 
 /**

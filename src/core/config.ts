@@ -199,6 +199,13 @@ export interface Config {
 		/** Per-metric daily floors (keys: m1, m2, m3, m4_corrections, m4_questions, m5): a regression below the floor is noise. */
 		daily_floor: Record<string, number>;
 	};
+	/** The watcher (src/core/watch.ts, plan 20261027_1430 P2): job heartbeats, failed units, detectors. */
+	watch: {
+		/** Per job: hours after which its last heartbeat is stale. Only listed jobs are expected to beat at all. */
+		expect: Record<string, number>;
+		/** Globs of the user units the watcher reports when failed. */
+		units: string[];
+	};
 	machine: {
 		load_over_cores: number;
 		load_max: number;
@@ -562,6 +569,12 @@ function check(cfg: Config): void {
 		if (typeof r !== "string" || r.length === 0) throw new ConfigError("knowledge.roots entries must be non-empty paths");
 	}
 	if (!Number.isInteger(cfg.knowledge.max_age_s) || cfg.knowledge.max_age_s < 1) throw new ConfigError("knowledge.max_age_s must be an integer >= 1");
+	for (const [job, hours] of Object.entries(cfg.watch.expect)) {
+		if (typeof hours !== "number" || !(hours > 0)) throw new ConfigError(`watch.expect.${job} must be a positive number of hours`);
+	}
+	if (!Array.isArray(cfg.watch.units) || cfg.watch.units.some(u => typeof u !== "string" || u === "")) {
+		throw new ConfigError("watch.units must be a list of non-empty glob strings");
+	}
 	for (const p of cfg.metrics.correction_patterns) {
 		try {
 			new RegExp(p, "i");
