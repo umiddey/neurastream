@@ -35,7 +35,7 @@ import { inboxPath } from "../../core/owner-ui.ts";
 import { realTailscale } from "../../core/tailscale.ts";
 import { actionsRules, ownedRepoOf, suspiciousActions, unreportedFindings } from "../../core/trace-actions.ts";
 import { applyQueueEnv } from "../../core/queue/env.ts";
-import { mainStartText } from "../../core/main-start.ts";
+import { mainDetectors, mainStartText } from "../../core/main-start.ts";
 
 import { buildHandoff, holdsBlock, notePath, noteRequest, OWNER_AWAY, ownerText, relaunchPath, rolloverState, spawnRefusal, type RolloverState } from "../../core/rollover.ts";
 import { defaultCompletedResults, defaultRunSource, runIdOf } from "./sessions.ts";
