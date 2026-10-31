@@ -174,6 +174,8 @@ export interface Config {
 		/** Minutes the spawn gate caches a repo's open-MR list in <queue_state>/mr-cache.json; 0 = no cache. */
 		mr_cache_minutes: number;
 	};
+	/** Plan approval hard gate (plan 20261029_1455 P3): a plan stamped at or after `since` needs a page and an approval record. "" = off. */
+	approval: { since: string };
 	/** Static pages hosted over the tailnet. */
 	pages: { enabled: boolean; port: number; dir: string; keep_days: number };
 	/** Repo-local HTML explainers under docs/knowledge/ (owner page Knowledge tab). */
@@ -525,6 +527,8 @@ function check(cfg: Config): void {
 		throw new ConfigError('review.agents must be a list of agent names allowed to run review spawns (default ["reviewer"])');
 	if (!Number.isInteger(cfg.review.mr_cache_minutes) || cfg.review.mr_cache_minutes < 0)
 		throw new ConfigError("review.mr_cache_minutes must be an integer >= 0 (minutes the spawn gate caches a repo's open-MR list; 0 = no cache)");
+	if (typeof cfg.approval.since !== "string" || (cfg.approval.since !== "" && !/^\d{8}_\d{4}$/.test(cfg.approval.since)))
+		throw new ConfigError('approval.since must be "" or a plan stamp YYYYMMDD_HHMM (plans stamped at or after it need a page and an approval record)');
 	if (cfg.autonomy.tier !== "strict" && cfg.autonomy.tier !== "opinionated" && cfg.autonomy.tier !== "full")
 		throw new ConfigError('autonomy.tier must be "strict", "opinionated" or "full"');
 	if (!Number.isInteger(cfg.autonomy.strict_edit_limit) || cfg.autonomy.strict_edit_limit < 1)

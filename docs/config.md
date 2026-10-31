@@ -323,6 +323,8 @@ traces:
 
 `review.agents` (default `["reviewer"]`) lists the agents a review spawn may run under: the reviewer-PASS gate exempts a spawn whose agent is on this list and whose brief carries the `Plan review: <plan>` line naming the plan. Everyone else needs the recorded PASS, and only a subagent's `PLAN REVIEW: PASS|FAIL` progress entry can record one (`<queue_state>/plan-reviews.json`; Main's plan edits never record). An EMPTY list turns both review gates off (plan 20261028_1600 P5): no plan needs a `## Reuse` section or a reviewer PASS; any other value gates every plan — plans are no longer exempted by their filename stamp, the old cutover key is gone.
 
+`approval.since` (default `""`, off) is the plan approval hard gate (plan 20261029_1455 P3). A plan whose file stamp (`YYYYMMDD_HHMM`) is at or after `since` needs a page in Base: with no page, a spawn is refused until `neurastream pages publish <page.html> --plan <file>` runs. A plan with a page needs its approval record (the Approve button or `approve <stamp>` in chat) for its current text; a Progress-only edit keeps the record. Plans stamped before `since`, and every plan while it is `""`, keep the old behaviour: a plan with no page is not gated. A plan file with no stamp counts as after `since` once it is set. Must be `""` or a `YYYYMMDD_HHMM` stamp; anything else fails config load.
+
 Doctor and `queue-check` fail when no `review.agents` entry is in `## Allowed` of `notes/subagents.md` (`neurastream agents allow <name>`), and warn for each entry that is not, since such an entry can never run a review spawn. An empty `review.agents` list is valid and silent: both review gates are off, so there is no review spawn to allow.
 
 `score.default_branch` has no default. It is config, not a core literal: set it here or pass `--branch`; with `score.default_repo` empty, `accept` / `check` require `--repo` and `--branch`.
@@ -371,6 +373,7 @@ The loader rejects:
 - a `metrics.product_cmds` that is not `{<repo path>: {<name>: non-empty shell command}}`
 - `ui.port` outside 1..65535
 - `pages.keep_days` below 1, or not an integer
+- `approval.since` that is not `""` or a `YYYYMMDD_HHMM` stamp
 - `knowledge.roots` that is not a non-empty list of non-empty paths, or `knowledge.max_age_s` below 1 or not an integer
 - a `brief.repo_rules` entry whose `match`, `require`, `first` or `unless` does not compile as a case-insensitive regex, or whose `message` is empty
 - `secrets.proxy` that is not `none` or `secretgate`, a `secrets.known_value_files` entry that is not a non-empty path, or a `secrets.extra_patterns` entry without a non-empty `type` and a `regex` that compiles

@@ -122,7 +122,7 @@ function approveBlock(chrome: ApproveChrome): string {
  <script>(function(){var page="${page}",btn=document.getElementById("ns-approve-btn"),status=document.getElementById("ns-approve-status");
   function set(open,problems){var bad=(problems||[]);btn.disabled=open.length>0||bad.length>0;status.textContent=open.length>0?"Answer every note first ("+open.join(", ")+")":bad.length>0?"The diagram is not complete yet ("+bad.length+"): "+bad.slice(0,3).join("; "):"Approve and go \u2014 the plan records it.";}
   fetch("/_approve?page="+page).then(function(r){return r.json();}).then(function(d){set(d.open||[],d.problems);}).catch(function(){set(["?"],[]);});
-  btn.addEventListener("click",function(){btn.disabled=true;fetch("/_approve?page="+page,{method:"POST",headers:{"content-type":"application/json"},body:"{}"}).then(function(r){return r.json().then(function(d){return {ok:r.ok,body:d};});}).then(function(res){status.textContent=res.ok?"Approved: "+res.body.approved:"Not approved: "+res.body.error;btn.disabled=!res.ok;}).catch(function(){status.textContent="Not approved: the pages server did not answer.";btn.disabled=false;});});
+  btn.addEventListener("click",function(){btn.disabled=true;fetch("/_approve?page="+page,{method:"POST",headers:{"content-type":"application/json"},body:"{}"}).then(function(r){return r.json().then(function(d){return {ok:r.ok,body:d};});}).then(function(res){status.textContent=res.ok?res.body.approved:"Not approved: "+res.body.error;btn.disabled=!res.ok;}).catch(function(){status.textContent="Not approved: the pages server did not answer.";btn.disabled=false;});});
  })();</script>
 </section>`;
 }

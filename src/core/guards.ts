@@ -26,7 +26,8 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSy
 import path from "node:path";
 import type { Decision, InjectEvent, PlanEditEvent, SpawnEvent, StopEvent, ToolEvent } from "./adapter.ts";
 import { currentTier, takeGo } from "./autonomy.ts";
-import { approvalProblem } from "./plan-approval.ts";
+import { approvalProblem, MAIN_ONLY_LINE, reviewHash } from "./plan-approval.ts";
+export { reviewHash };
 import type { Config } from "./config.ts";
 import { addIncident, openIncidents, ownerMessagesFile, ownerSaid, readOwnerMessages, type IncidentView, type OwnerMessage } from "./incidents.ts";
 import { notifyProtectedPaths, notifySecretReadHit } from "./notify.ts";
@@ -197,18 +198,6 @@ function writePlanReviews(reviews: Record<string, PlanReview>, cfg: Config): voi
 	} catch (err) {
 		log(cfg.paths.plan_guard_log, `cannot write ${planReviewsFile()}: ${err}`);
 	}
-}
-
-/** What a PASS covers: the plan text outside "## Progress" without the Main-only lines, so progress notes never expire a review. */
-export function reviewHash(text: string): string {
-	return q.sha(
-		q
-			.outsideProgress(text)
-			.split("\n")
-			.filter(l => !MAIN_ONLY_LINE.test(l))
-			.map(l => l.replace(/^(\s*[-*]\s+)\[[xX]\]/, "$1[ ]")) // a ticked phase box hashes as unticked: ticking never expires a PASS
-			.join("\n"),
-	);
 }
 
 /** The progress entry that records a review; only a subagent's edit can carry one. The verdict is the match, never a substring. */
@@ -629,7 +618,7 @@ export function planGate(text: string, label: string, cfg?: Config): [string | n
 				[],
 			];
 		if (cfg) {
-			const approval = approvalProblem(p.text, p.file, cfg.pages.dir);
+			const approval = approvalProblem(p.text, p.file, cfg.pages.dir, cfg.approval.since);
 			if (approval) return [approval, []];
 		}
 		const open = unticked(p);
@@ -1633,9 +1622,6 @@ export function checkInject(e: InjectEvent, cfg: Config): Decision {
 		...(continuation ? {} : { state: { callsSinceStop: 0, idleStops: 0 } }),
 	};
 }
-
-// Lines only Main may write: the status, owner parking, plan waits, owner cancellation, cancelled-list clearance.
-const MAIN_ONLY_LINE = /^\s*(?:[-*]\s+)?(Status:|WAITING on owner:|Waits on:|Cancelled by owner:|False positive:)/;
 
 function mainOnlyLines(text: string): string {
 	return text.split("\n").filter(l => MAIN_ONLY_LINE.test(l)).join("\n");
