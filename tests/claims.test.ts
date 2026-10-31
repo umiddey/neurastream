@@ -117,6 +117,29 @@ test("a non-holder's heartbeat is false and its release is a no-op", () => {
 	expect(existsSync(claimFile(dir, PLAN))).toBe(false);
 });
 
+test("list sweeps a stale .tmp claim file left by a crashed writer", () => {
+	now = 1_000_000;
+	const dir = sandbox();
+	const s = store(dir);
+	const c = asClaim(s.claim(PLAN, "a"));
+	writeFileSync(join(dir, "claims", "junk.4242.tmp"), '{"plan":"x"}');
+	expect(s.list()).toEqual([c]);
+	expect(existsSync(join(dir, "claims", "junk.4242.tmp"))).toBe(false);
+});
+
+test("holder returns the live claim for a plan, null when free or expired", () => {
+	now = 1_000_000;
+	const dir = sandbox();
+	const s = store(dir);
+	expect(s.holder(PLAN)).toBeNull();
+	s.claim(PLAN, "a");
+	expect(s.holder(PLAN)?.main).toBe("a");
+	now += 29 * 60;
+	expect(s.holder(PLAN)?.main).toBe("a");
+	now += 60;
+	expect(s.holder(PLAN)).toBeNull();
+});
+
 // Five independent rounds; every round's eight children spawn together (no await inside a
 // loop), so up to 40 processes race and each round's state dir must still end with exactly
 // one Claim and seven Held.

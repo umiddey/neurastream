@@ -58,6 +58,11 @@ test("stripNameFlag removes --name <id> and --name=<id>, keeps everything else",
 	expect(stripNameFlag(["--model", "m", "hi"])).toEqual({ args: ["--model", "m", "hi"], name: undefined });
 });
 
+test("a bare --name with no value falls back instead of eating the next flag (I-20261031-225)", () => {
+	expect(stripNameFlag(["--name"])).toEqual({ args: [], name: undefined });
+	expect(stripNameFlag(["--name", "--model", "m", "hi"])).toEqual({ args: ["--model", "m", "hi"], name: undefined });
+});
+
 test("mainId defaults to main and falls back to main on a bogus env value", () => {
 	delete process.env.NEURASTREAM_MAIN_ID;
 	expect(mainId()).toBe("main");

@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileClaimStore } from "../src/core/claims.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { refreshQueuePaths } from "../src/core/queue/lib.ts";
 import { queueClose } from "../src/core/queue-close.ts";
@@ -96,7 +97,14 @@ test("a complete close writes one short entry; a cancel writes none; a second cl
 	writeFileSync(COMPLETE, plan("Done plan", "complete", []));
 	writeFileSync(CANCELLED, plan("Dropped plan", "cancelled", ['Cancelled by owner: 2026-10-27 "stop this work now"']));
 
+	// Multi-main P3: a close frees the closer's own claim; another Main's claim survives it
+	// (release is holder-keyed). The id here is "main": NEURASTREAM_MAIN_ID is unset.
+	const savedId = process.env.NEURASTREAM_MAIN_ID;
+	process.env.NEURASTREAM_MAIN_ID = "main";
+	const claims = fileClaimStore(QUEUE_STATE, () => 0, 30);
+	claims.claim(COMPLETE, "main");
 	expect(queueClose([COMPLETE], cfg)).toBe(0);
+	expect(claims.list()).toEqual([]);
 	const month = new Date().toISOString().slice(0, 7).replace("-", "");
 	const archived = join(TOY, "docs/plans/archive", month, "20261020_1200_done.md");
 	const text = readFileSync(FINISHED, "utf8");
@@ -114,11 +122,15 @@ test("a complete close writes one short entry; a cancel writes none; a second cl
 	expect(queueClose([COMPLETE], cfg)).toBe(0);
 	expect(headings(readFileSync(FINISHED, "utf8"))).toHaveLength(1);
 
+	claims.claim(CANCELLED, "other");
 	expect(queueClose([CANCELLED], cfg)).toBe(0);
 	const after = readFileSync(FINISHED, "utf8");
 	expect(headings(after)).toHaveLength(1);
 	expect(after).not.toContain("Dropped plan");
 	expect(after).not.toContain("20261020_1300_drop.md");
+	expect(claims.list().map(c => c.main)).toEqual(["other"]);
+	if (savedId === undefined) delete process.env.NEURASTREAM_MAIN_ID;
+	else process.env.NEURASTREAM_MAIN_ID = savedId;
 	const cancelledList = readFileSync(join(TOY, "docs/plans/CANCELLED.md"), "utf8");
 	expect(cancelledList).toContain("20261020_1300_drop.md");
 });
