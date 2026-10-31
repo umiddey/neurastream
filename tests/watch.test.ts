@@ -73,8 +73,9 @@ test("recovery closes the open incident via dismissIncident", () => {
 	beat(cfg, "wip-backup", { ok: true });
 	const report = watchOnce(cfg, deps(nowSec() + 60));
 	expect(report.closed).toHaveLength(1);
-	expect(report.closed[0]!.resolution?.type).toBe("dismiss");
-	expect(report.closed[0]!.resolution?.why).toContain("recovered");
+	const res = report.closed[0]!.resolution;
+	expect(res?.type).toBe("dismiss");
+	expect(res && "why" in res ? res.why : "").toContain("recovered");
 	expect(openIncidents(cfg)).toHaveLength(0);
 });
 
