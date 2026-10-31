@@ -36,7 +36,7 @@ Status: open
      A hold is one line: `WAITING on owner: <what to do> — blocked: <what stays stuck until then> — why you: <why Main cannot do it>` (blocked and why you may be omitted).
      Every new entry ends with a Findings line: "Findings: none", or one item per finding (bug,
      workaround, improvement — any repo) with file:line evidence, items separated by ";". Plan-guard
-     restores an entry without it, and each item becomes an incident Main must plan or dismiss.
+     restores an entry without it. Findings stay notes: Main reads them, they never become incidents.
      Main reviews the work and then writes "Status: complete"; main-guard auto-runs queue-close, which
      closes the plan once the branch is on main and the done check passes (else reopens it), then removes
      the plan's worktree with a plain git worktree remove when it is clean and its branch landed — a dirty,
