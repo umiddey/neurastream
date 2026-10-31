@@ -252,3 +252,43 @@ test("ui on: a config that cannot load exits 1 and leaves the file byte-for-byte
 	expect(readConfig()).toBe(before);
 	expect(r.calls).toEqual([]);
 });
+
+// --- (l) tailscale state is checked first: missing or stopped writes and runs nothing and names the fix ---
+
+const OFF_CONFIG = `ui:\n  enabled: false\n  owner_login: ""\n`;
+
+test("ui on: tailscale missing exits 1 with the install command, writes and runs nothing", () => {
+	writeConfig(OFF_CONFIG);
+	const r = doOn({ tailscale: fixtureTailscale({ state: () => "missing" }) });
+	expect(r.code).toBe(1);
+	expect(r.err.join("\n")).toContain("curl -fsSL https://tailscale.com/install.sh | sh");
+	expect(readConfig()).toBe(OFF_CONFIG);
+	expect(r.calls).toEqual([]);
+});
+
+test("ui on: tailscale installed but stopped exits 1 with the connect command, writes and runs nothing", () => {
+	writeConfig(OFF_CONFIG);
+	const r = doOn({ tailscale: fixtureTailscale({ state: () => "stopped" }) });
+	expect(r.code).toBe(1);
+	expect(r.err.join("\n")).toContain("sudo tailscale up");
+	expect(readConfig()).toBe(OFF_CONFIG);
+	expect(r.calls).toEqual([]);
+});
+
+test("ui on: tailscale running but the login is not on the tailnet exits 1 naming the logins, writes and runs nothing", () => {
+	writeConfig(OFF_CONFIG);
+	const r = doOn({ tailscale: fixtureTailscale({ state: () => "running", logins: () => OTHER_LOGINS }) });
+	expect(r.code).toBe(1);
+	for (const login of OTHER_LOGINS) expect(r.err.join("\n")).toContain(login);
+	expect(readConfig()).toBe(OFF_CONFIG);
+	expect(r.calls).toEqual([]);
+});
+
+test("ui on: tailscale running with the owner's login writes the config, runs the unit and prints the link", () => {
+	writeConfig(OFF_CONFIG);
+	const r = doOn({ tailscale: fixtureTailscale({ state: () => "running" }) });
+	expect(r.code).toBe(0);
+	expect(readConfig()).toContain(LOGIN);
+	expect(r.calls.length).toBe(3);
+	expect(r.out.join("\n")).toContain(`http://${DNS_NAME}:`);
+});
