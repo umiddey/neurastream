@@ -1,4 +1,7 @@
 # Changelog
+## 0.2.59
+### Changed
+- Plan pages are forced onto the architecture-drilldown template: `pages publish --plan` refuses anything but the template with its DATA block edited, and refuses to publish an incomplete diagram; the page's approve tap now lands in the owner inbox as one approval row, and doctor fails when neurastream-pages.service predates the installed package (plan 20261031_0917).
 ## 0.2.58
 ### Changed
 - Guard diet (plan 20261031_1207): agent `Findings:` lines stay notes instead of becoming spawn-blocking incidents; only realtime incidents gate spawns and stop.

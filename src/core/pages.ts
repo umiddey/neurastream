@@ -1,9 +1,11 @@
-import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { basename, extname, resolve } from "node:path";
 import type { Config } from "./config.ts";
-import { isLoopback, isTailnet, type UiHttpServer } from "./owner-ui.ts";
+import { isLoopback, isTailnet, inboxPath, type UiHttpServer } from "./owner-ui.ts";
+import { nowSec } from "./clock.ts";
 import { appendPageNotes, openNoteIds } from "./page-notes.ts";
 import { approvePlanFile, readPagePlan } from "./plan-approval.ts";
+import { stateDirPath } from "./queue/lib.ts";
 import type { RunSource } from "./adapter.ts";
 import type { Tailscale } from "./tailscale.ts";
 
@@ -42,7 +44,12 @@ export function startPagesServer(opts: PagesOptions): PagesServer {
     const plan = record.plan;
     if (!existsSync(plan)) return plain("not found: the plan file is gone", 404);
     try {
-      return Response.json({ approved: approvePlanFile(plan, page) });
+      const approved = approvePlanFile(plan, page);
+      // P5 (plan 20261031_0917): the tap must reach Main at once — one owner-inbox row, the same
+      // direct append the message POST uses; never a page note, which would 409 the next tap.
+      mkdirSync(stateDirPath(), { recursive: true });
+      appendFileSync(inboxPath(), `${JSON.stringify({ ts: nowSec(), kind: "approval", page, plan, login })}\n`);
+      return Response.json({ approved });
     } catch (e) {
       return plain(`not approved: ${e instanceof Error ? e.message : String(e)}`, 500);
     }

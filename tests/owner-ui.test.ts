@@ -9,7 +9,7 @@ import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { Run, RunSource, ToolEvent } from "../src/core/adapter.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { nowSec, strftime } from "../src/core/clock.ts";
@@ -863,6 +863,13 @@ test("ownerInboxMessage formats unlock, lock, answer, reorder and rejects unknow
 	);
 	expect(ownerInboxMessage({ ts: nowSec(), kind: "reorder", plan: PLAN_W, to: 2, login: OWNER })).toBe(null);
 	expect(ownerInboxMessage({ ts: nowSec(), kind: "bogus", login: OWNER })).toBe(null);
+});
+
+// P5 (plan 20261031_0917): the approval row the approve tap writes maps to the one line Main acts on.
+test("ownerInboxMessage formats an approval row", () => {
+	expect(ownerInboxMessage({ ts: nowSec(), kind: "approval", page: "toy.html", plan: PLAN_W, login: OWNER })).toBe(
+		`Owner approved ${basename(PLAN_W)} on page toy.html.`,
+	);
 });
 
 const mainCtx = { agent: { kind: "main" } };

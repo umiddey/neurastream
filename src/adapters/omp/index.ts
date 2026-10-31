@@ -469,6 +469,12 @@ export function ownerInboxMessage(rec: Record<string, unknown>): string | ({ typ
 		}
 		case "lock":
 			return "Owner locked the guards from the phone page.";
+		case "approval": {
+			const page = asString(rec.page);
+			const plan = asString(rec.plan);
+			if (page === "" || plan === "") return null;
+			return `Owner approved ${basename(plan)} on page ${page}.`;
+		}
 		case "reorder": {
 			const plan = asString(rec.plan);
 			const from = num(rec.from);
