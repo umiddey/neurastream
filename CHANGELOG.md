@@ -5,6 +5,7 @@
 - `pages on|off` validate the edited config before writing it, as `ui on|off` already did.
 - `ui on` checks Tailscale first: a missing binary prints the install steps and, on a terminal, asks `Open the Tailscale download page now? [y/N]`; installed but not connected prints `sudo tailscale up`. Nothing is written or started until Tailscale runs. `neurastream doctor` reports `tailscale: ok`, `tailscale: missing` or `tailscale: logged out` when the owner page is enabled.
 - `neurastream setup [--yes]` is the guided first run: it detects this machine (harness, Tailscale, pages, notify, secrets), asks the settings in groups with the detected values as defaults, installs the adapter, runs the doctor and prints `Next: neurastream main` only when it passes. Re-running it offers the current values. `--yes` takes the detected settings without asking; with no terminal and no `--yes` it refuses (exit 2) and writes nothing. Config changes go through the same byte-for-byte editor as `config set`.
+- `neurastream setup` offers a test post when the owner has set a notify webhook file: after the questions it asks `send a test message now? [y/N]`; yes runs `neurastream notify test` and prints its per-provider lines. No, or `--yes`, skips it, and a failed test does not fail setup.
 ## 0.2.56
 ### Added
 - Owner page: the Base tab lists published pages under their repo (one card per repo, newest first, expired pages gone); `pages publish` records each page's repo.

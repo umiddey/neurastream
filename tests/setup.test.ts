@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { treeHash } from "../src/cli/init.ts";
@@ -41,9 +41,10 @@ function seams(home: string, state: TailscaleState = "running"): SetupSeams {
 	};
 }
 
-// Answers are matched by the key the prompt starts with ("autonomy.tier: ...").
-// A prompt with no matching queue gets Enter (keep the proposal).
-function run(
+// Answers are matched by the key the prompt starts with ("autonomy.tier: ..."; a yes/no offer
+// keys on its whole text, "send a test message now? [y/N]"). A prompt with no matching queue gets
+// Enter (keep the proposal). notifyTest is the injected `neurastream notify test`: no real post.
+async function run(
 	args: string[],
 	home: string,
 	opts: {
@@ -52,13 +53,14 @@ function run(
 		state?: TailscaleState;
 		install?: () => number;
 		doctor?: () => number;
+		notifyTest?: () => Promise<number>;
 	} = {},
 ) {
 	const out: string[] = [];
 	const asked: string[] = [];
 	const rules: Record<string, string[]> = {};
 	for (const [key, list] of Object.entries(opts.answers ?? {})) rules[key] = [...list];
-	const code = runSetup(args, {
+	const code = await runSetup(args, {
 		home,
 		env: {},
 		invoked: "",
@@ -71,16 +73,17 @@ function run(
 		seams: seams(home, opts.state),
 		install: opts.install ?? (() => 0),
 		doctor: opts.doctor ?? (() => 0),
+		notifyTest: opts.notifyTest ?? (async () => 0),
 		say: (line) => out.push(line),
 	});
 	return { code, out: out.join("\n"), asked };
 }
 
-test("fresh HOME with --yes: init layout, adapter install and doctor run, protected list and agent-dir keys kept", () => {
+test("fresh HOME with --yes: init layout, adapter install and doctor run, protected list and agent-dir keys kept", async () => {
 	const home = fixtureHome();
 	let installs = 0;
 	let doctors = 0;
-	const result = run(["--yes"], home, {
+	const result = await run(["--yes"], home, {
 		terminal: false,
 		install: () => {
 			installs++;
@@ -102,11 +105,11 @@ test("fresh HOME with --yes: init layout, adapter install and doctor run, protec
 	expect(text).toMatch(/^  agent_dir: /m);
 });
 
-test("scripted answers change exactly the answered config lines", () => {
+test("scripted answers change exactly the answered config lines", async () => {
 	const home = fixtureHome();
-	run(["--yes"], home, { terminal: false });
+	await run(["--yes"], home, { terminal: false });
 	const before = readFileSync(cfg(home), "utf8").split("\n");
-	const result = run([], home, { answers: { "autonomy.tier": ["strict"] } });
+	const result = await run([], home, { answers: { "autonomy.tier": ["strict"] } });
 	expect(result.code).toBe(0);
 	const after = readFileSync(cfg(home), "utf8").split("\n");
 	expect(after.length).toBe(before.length);
@@ -115,49 +118,84 @@ test("scripted answers change exactly the answered config lines", () => {
 	expect(changed[0]).toMatch(/^  tier: "strict"/);
 });
 
-test("a bad answer is asked again and nothing is written for that answer", () => {
+test("a bad answer is asked again and nothing is written for that answer", async () => {
 	const home = fixtureHome();
-	run(["--yes"], home, { terminal: false });
-	const result = run([], home, { answers: { "autonomy.tier": ["bogus", ""] } });
+	await run(["--yes"], home, { terminal: false });
+	const result = await run([], home, { answers: { "autonomy.tier": ["bogus", ""] } });
 	expect(result.code).toBe(0);
 	expect(result.asked.filter((q) => q.startsWith("autonomy.tier:"))).toHaveLength(2);
 	expect(result.out).toContain("opinionated");
 	expect(readFileSync(cfg(home), "utf8")).toMatch(/^  tier: opinionated/m);
 });
 
-test("a second run with every Enter changes no byte", () => {
+test("a second run with every Enter changes no byte", async () => {
 	const home = fixtureHome();
-	run(["--yes"], home, { terminal: false });
+	await run(["--yes"], home, { terminal: false });
 	const first = treeHash(home);
-	const result = run([], home);
+	const result = await run([], home);
 	expect(result.code).toBe(0);
 	expect(treeHash(home)).toBe(first);
 });
 
-test("without a terminal and without --yes setup refuses with exit 2", () => {
+test("without a terminal and without --yes setup refuses with exit 2", async () => {
 	const home = fixtureHome();
-	const result = run([], home, { terminal: false });
+	const result = await run([], home, { terminal: false });
 	expect(result.code).toBe(2);
 	expect(result.out).toContain("setup needs a terminal or --yes");
 	expect(existsSync(cfg(home))).toBe(false);
 });
 
-test("phone page on with Tailscale stopped prints the message and keeps ui.enabled false", () => {
+test("phone page on with Tailscale stopped prints the message and keeps ui.enabled false", async () => {
 	const home = fixtureHome();
-	const result = run([], home, { state: "stopped", answers: { "ui.enabled": ["y"] } });
+	const result = await run([], home, { state: "stopped", answers: { "ui.enabled": ["y"] } });
 	expect(result.code).toBe(0);
 	expect(result.out).toMatch(/Tailscale/);
 	expect(result.asked.some((q) => q.startsWith("ui.owner_login:"))).toBe(false);
 	expect(readFileSync(cfg(home), "utf8")).toMatch(/^  enabled: false/m);
 });
 
-test("secretgate is refused as a proxy answer when it is not on PATH", () => {
+test("secretgate is refused as a proxy answer when it is not on PATH", async () => {
 	const home = fixtureHome();
-	const result = run([], home, { answers: { "secrets.proxy": ["secretgate", "none"] } });
+	const result = await run([], home, { answers: { "secrets.proxy": ["secretgate", "none"] } });
 	expect(result.code).toBe(0);
 	expect(result.asked.filter((q) => q.startsWith("secrets.proxy:"))).toHaveLength(2);
 	expect(result.out).toContain("not on PATH");
 	expect(readFileSync(cfg(home), "utf8")).toMatch(/^  proxy: "none"/m);
+});
+
+test("a set webhook file offers the notify test: yes runs it through the seam, no and --yes do not", async () => {
+	const hook = join(TMP, "discord.url");
+	// A home whose Discord webhook file is already set (the --yes run lays the template down first).
+	const setHook = async (home: string) => {
+		await run(["--yes"], home, { terminal: false });
+		writeFileSync(cfg(home), readFileSync(cfg(home), "utf8").replace('discord_webhook_file: ""', `discord_webhook_file: "${hook}"`));
+	};
+	const offer = "send a test message now? [y/N]";
+	let posts = 0;
+	const notifyTest = async () => {
+		posts++;
+		return 0;
+	};
+
+	const yesHome = fixtureHome();
+	await setHook(yesHome);
+	const yes = await run([], yesHome, { answers: { [offer]: ["y"] }, notifyTest });
+	expect(yes.code).toBe(0);
+	expect(yes.asked.some((q) => q.startsWith("send a test message now?"))).toBe(true);
+	expect(posts).toBe(1);
+
+	const noHome = fixtureHome();
+	await setHook(noHome);
+	const no = await run([], noHome, { answers: { [offer]: ["n"] }, notifyTest });
+	expect(no.code).toBe(0);
+	expect(posts).toBe(1);
+
+	const autoHome = fixtureHome();
+	await setHook(autoHome);
+	const auto = await run(["--yes"], autoHome, { terminal: false, notifyTest });
+	expect(auto.code).toBe(0);
+	expect(auto.asked).toEqual([]);
+	expect(posts).toBe(1);
 });
 
 test("every key setup can ask has a non-empty trailing comment in templates/config.yml", () => {
@@ -167,17 +205,17 @@ test("every key setup can ask has a non-empty trailing comment in templates/conf
 	expect(missing).toEqual([]);
 });
 
-test("the summary lists changed keys old -> new and ends with Next: neurastream main", () => {
+test("the summary lists changed keys old -> new and ends with Next: neurastream main", async () => {
 	const home = fixtureHome();
-	const result = run([], home, { answers: { "autonomy.tier": ["strict"] } });
+	const result = await run([], home, { answers: { "autonomy.tier": ["strict"] } });
 	expect(result.code).toBe(0);
 	expect(result.out).toContain('autonomy.tier: "opinionated" → "strict"');
 	expect(result.out).toContain("Next: neurastream main");
 });
 
-test("a failing doctor exits with its code and prints no Next line", () => {
+test("a failing doctor exits with its code and prints no Next line", async () => {
 	const home = fixtureHome();
-	const result = run(["--yes"], home, { terminal: false, doctor: () => 1 });
+	const result = await run(["--yes"], home, { terminal: false, doctor: () => 1 });
 	expect(result.code).toBe(1);
 	expect(result.out).not.toContain("Next: neurastream main");
 });

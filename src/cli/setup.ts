@@ -26,10 +26,12 @@ export interface SetupDeps {
 	install: () => number;
 	doctor: () => number;
 	say: (line: string) => void;
+	// `neurastream notify test`, injected by dispatch (setup.ts does not import dispatch.ts).
+	notifyTest: () => Promise<number>;
 }
 
 /** The production deps: the real home, terminal, PATH, Tailscale, adapter install and doctor. */
-export function realSetupDeps(): SetupDeps {
+export function realSetupDeps(notifyTest: () => Promise<number>): SetupDeps {
 	const home = homedir();
 	return {
 		home,
@@ -44,6 +46,7 @@ export function realSetupDeps(): SetupDeps {
 			return getAdapter().doctor();
 		},
 		say: (line) => console.log(line),
+		notifyTest,
 	};
 }
 
@@ -98,9 +101,11 @@ interface Ctx {
 	changed: Change[];
 	// none: ask every key. group: accept proposals until this group ends (s). all: accept every proposal (q, --yes).
 	auto: "none" | "group" | "all";
+	// set when the Notify group was asked and a webhook file is set; runSetup then offers the test.
+	testOffer: boolean;
 }
 
-export function runSetup(args: string[], deps: SetupDeps = realSetupDeps()): number {
+export async function runSetup(args: string[], deps: SetupDeps): Promise<number> {
 	const yes = args.includes("--yes");
 	if (!yes && !deps.terminal) {
 		deps.say("neurastream setup needs a terminal or --yes");
@@ -116,6 +121,7 @@ export function runSetup(args: string[], deps: SetupDeps = realSetupDeps()): num
 		text: "",
 		changed: [],
 		auto: yes ? "all" : "none",
+		testOffer: false,
 	};
 	const allow = yes ? [] : askSubagents(deps);
 	const made = initHome(deps.home, { invoked: deps.invoked, env: deps.env, allow: allow.length > 0 ? allow : undefined });
@@ -129,6 +135,7 @@ export function runSetup(args: string[], deps: SetupDeps = realSetupDeps()): num
 		const open = deps.ask(`Show the ${advanced.length} advanced settings? [y/N]: `).trim();
 		if (/^y(es)?$/i.test(open) && runGroup(ctx, "Advanced", advanced) !== 0) return 1;
 	}
+	if (ctx.testOffer) await offerTest(ctx);
 	const installed = deps.install();
 	if (installed !== 0) {
 		deps.say("adapter install failed");
@@ -171,18 +178,22 @@ function printChanges(deps: SetupDeps, changed: Change[]): void {
 }
 
 // Asks one group, then writes the changed keys once through the editor. Returns non-zero only
-// when the edited file would not load (nothing is written then).
+// when the edited file would not load (nothing is written then). A Notify group the owner was
+// asked, with a webhook file set, sets ctx.testOffer so runSetup offers the test.
 function runGroup(ctx: Ctx, name: string, keys: string[]): number {
 	ctx.deps.say(`\n${name}`);
 	const now = Bun.YAML.parse(ctx.text);
 	const picks: Record<string, unknown> = {};
+	const asking = ctx.auto === "none";
 	for (const key of keys) {
 		if (key === "ui.owner_login" && picks["ui.enabled"] !== true) continue;
 		const proposed = proposal(ctx, key, valueAt(now, key));
 		let value = askKey(ctx, key, kindOf(key), proposed);
 		if (key === "ui.enabled" && value === true && !phoneReady(ctx)) value = false;
-		if (key.startsWith("notify.") && value !== "") ctx.deps.say("  send a test with: neurastream notify test");
 		picks[key] = value;
+	}
+	if (asking && Object.keys(picks).some((key) => key.startsWith("notify.") && picks[key] !== "")) {
+		ctx.testOffer = true;
 	}
 	if (ctx.auto === "group") ctx.auto = "none";
 	const changes: Record<string, string> = {};
@@ -198,6 +209,13 @@ function runGroup(ctx: Ctx, name: string, keys: string[]): number {
 	writeFileSync(ctx.file, edited);
 	ctx.text = edited;
 	return 0;
+}
+
+// The notify test offer. A yes runs `neurastream notify test` through the injected seam. A failed
+// test is printed by that command and setup goes on: the webhook is the owner's to fix.
+async function offerTest(ctx: Ctx): Promise<void> {
+	const answer = ctx.deps.ask("send a test message now? [y/N]: ").trim();
+	if (/^y(es)?$/i.test(answer)) await ctx.deps.notifyTest();
 }
 
 // The value offered for Enter. A fresh home offers what this machine has; a re-run offers the

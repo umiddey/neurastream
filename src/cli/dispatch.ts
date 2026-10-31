@@ -7,7 +7,7 @@ import { applyQueueEnv } from "../core/queue/env.ts";
 import { getAdapter } from "../adapters/index.ts";
 import { GUARD_USAGE, runGuard } from "./guard.ts";
 import { runInit } from "./init.ts";
-import { runSetup } from "./setup.ts";
+import { realSetupDeps, runSetup } from "./setup.ts";
 import { PORTED, runMain, runPorted } from "./commands.ts";
 import { runMetrics } from "./metrics.ts";
 import { runIncident } from "./incident.ts";
@@ -124,7 +124,7 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 	if (cmd === "notes") return runNotes(args);
 	if (cmd === "diagram") return runDiagram(args);
 	if (cmd === "adapter") return getAdapter().install(args);
-	if (cmd === "setup") return runSetup(args);
+	if (cmd === "setup") return runSetup(args, realSetupDeps(async () => runNotify(["test"])));
 	if (cmd === "config" && ["set", "get", "list"].includes(args[0] ?? "")) return runConfigKeys(args);
 	if (cmd === "config") {
 		try {

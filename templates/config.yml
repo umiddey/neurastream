@@ -104,13 +104,13 @@ health:
 
 queue:
   archive_days: 30   # days before a queue item is archived
-  background_max_lines: 40   # lines kept from a background job
+  background_max_lines: 40   # declared only; no code reads it yet
   progress_keep: 6   # progress entries kept
-  priority_id: '^[A-Z]{2}[0-9]{2}$'   # id pattern for priority items
-  cancel_min_words: 3   # words a cancel reason needs
+  priority_id: '^[A-Z]{2}[0-9]{2}$'   # declared only; no code reads it yet
+  cancel_min_words: 3   # declared only; no code reads it yet
   auto_close_min: 15   # minutes before an item auto-closes
-  repo_index: "INDEX.md"   # per-repo index file name
-  cancelled_rel: "docs/plans/CANCELLED.md"   # cancelled-plans file, relative to the repo
+  repo_index: "INDEX.md"   # declared only; no code reads it yet
+  cancelled_rel: "docs/plans/CANCELLED.md"   # declared only; no code reads it yet
 
 guards:
   sub_warn_calls: 90   # subagent tool calls that draw the wrap-up warning
@@ -195,8 +195,8 @@ incidents:
     m5: 50                     # guard blocks/day
 
 machine:
-  load_over_cores: 4   # load per core that draws a warning
-  load_max: 0   # load ceiling (0 = off)
+  load_over_cores: 4   # load above the core count that draws a warning (used when load_max is 0)
+  load_max: 0   # load ceiling; 0 = core count + load_over_cores
   avail_min_mb: 3072   # minimum available memory in MB
   disk_min_gb: 15   # minimum free disk in GB
   disk_path: "$HOME"   # path whose free space is checked
