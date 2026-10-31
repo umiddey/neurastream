@@ -1004,14 +1004,19 @@ export function queueProblems(index = INDEX, blockersDir = BLOCKERS_DIR, reviewA
 	return probs;
 }
 
-export function queueSummary(index = INDEX, reviewAgents: string[] = []): string {
+// P5b (plan 20261031_1207, I-20261031-330): the summary rides every Main prompt and the stop
+// refusal repeats on every blocked stop, so both cap their lists; queue-check prints everything
+// and passes `cap = Infinity`.
+export const SUMMARY_CAP = 10;
+
+export function queueSummary(index = INDEX, reviewAgents: string[] = [], cap: number = SUMMARY_CAP): string {
 	// Index order IS priority (20261025_0215_index_priority): the list is flat and ranked,
 	// rank 1 = the index's top line; repos only surface through each plan's own path.
 	const plans = activePlans(index);
 	const rank = new Map(plans.map((p, i) => [p.file, i + 1] as const));
 	const repos = [...new Set(plans.map(p => p.repo))];
 	const lines = [`Queue (${index}): ${plans.length ? `${plans.length} plan(s) in ${repos.length} repo(s)` : "empty, no open work"}`];
-	plans.forEach((p, i) => {
+	plans.slice(0, cap).forEach((p, i) => {
 		const status = awaitingMerge(p) ? "complete, awaiting merge" : (p.status ?? "INVALID");
 		const hold = p.waiting ? `WAITING on owner: ${(p.waitingLine ?? "").slice(0, 80)}` : "";
 		// I-20261025-208: an open plan waiting on an open plan of the queue shows the target's rank.
@@ -1029,7 +1034,13 @@ export function queueSummary(index = INDEX, reviewAgents: string[] = []): string
 	});
 	const nCancelled = repos.reduce((n, repo) => n + readCancelled(repo).length, 0);
 	if (nCancelled) lines.push(`Cancelled rules: ${nCancelled}`);
+	const more = plans.length - Math.min(plans.length, cap);
+	if (more > 0) lines.push(`… ${more} more plans (queue-check lists all)`);
 	const probs = queueProblems(index, BLOCKERS_DIR, reviewAgents);
-	if (probs.length) lines.push(`Problems (fix first):`, ...probs.map(q => `  - ${q.where}: ${q.problem}`));
+	const shown = new Set(plans.slice(0, cap).map(p => p.file));
+	const planProbs = probs.filter(x => shown.has(x.where));
+	const hidden = probs.length - planProbs.length;
+	if (planProbs.length) lines.push(`Problems (fix first):`, ...planProbs.map(x => `  - ${x.where}: ${x.problem}`));
+	if (hidden > 0) lines.push(`… ${hidden} more problems (queue-check)`);
 	return lines.join("\n");
 }

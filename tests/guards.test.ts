@@ -183,16 +183,17 @@ test("help names the guard command", () => {
 	expect(helpText()).toContain("guard <event>");
 });
 
-test("denied command: a sub's bash matching a deny-command blocker is refused; clean command allowed", () => {
+test("denied command: a mutating bash matching a deny-command blocker is refused; read-only shell is allowed (P5c)", () => {
 	fresh();
-	const bad = "bun test --grep thing test.skip";
-	const refused = guardCli("pre-tool", toolEvent("bash", { command: bad }, "sub"));
+	// P5c: a read-only shell call skips the blockers, so the pattern match alone no longer refuses it.
+	const allowed = guardCli("pre-tool", toolEvent("bash", { command: "bun test --grep thing test.skip" }, "sub"));
+	expect(allowed.code).toBe(0);
+	expect(allowed.d).toEqual({ allow: true, reason: "" });
+	// A mutating command still meets the blocker, and the refusal names the pattern.
+	const refused = guardCli("pre-tool", toolEvent("bash", { command: "touch test.skip" }, "sub"));
 	expect(refused.code).toBe(2);
 	expect(refused.d.allow).toBe(false);
 	expect(refused.d.reason).toContain("deny-command: command matches forbidden pattern /test\\.skip/");
-	const allowed = guardCli("pre-tool", toolEvent("bash", { command: "bun test --grep thing" }, "sub"));
-	expect(allowed.code).toBe(0);
-	expect(allowed.d).toEqual({ allow: true, reason: "" });
 });
 
 test("denied path: a write under a deny-path glob is refused; other writes allowed", () => {

@@ -1,4 +1,12 @@
 # Changelog
+## 0.2.58
+### Changed
+- Guard diet (plan 20261031_1207): agent `Findings:` lines stay notes instead of becoming spawn-blocking incidents; only realtime incidents gate spawns and stop.
+- Owner-cancel detection reads only owner prose (shared `isOwnerProse`); INCIDENT lines never flag a cancel.
+- One numbered spawn verdict lists every problem at once; brief-lint and the ledger cap are advice only.
+- Review spawns may run read-only shell; secret paths judged under both config home and OS home; stop is released at `main_max_calls`; `approval.since: ""` turns approval fully off.
+- Injected queue summary and stop refusal show the top 10 plans plus "… N more".
+- Read tools and non-writing shell skip blocker scripts; a denial names the hit paths and the script's output.
 ## 0.2.57
 ### Changed
 - Plan approval records a hash of the plan text in `<queue_state>/plan-approvals.json` instead of writing an `Approved:` line into the plan; the plan file is never edited, and `Approval: self` is gone (P1, plan 20261029_1455). main-guard refuses a spawn until the record matches the plan's current text.

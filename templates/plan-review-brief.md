@@ -21,7 +21,7 @@ Append one entry to the plan's `## Progress` — the PASS is recorded by plan-gu
 
 - <date> <time> <YourName>: PLAN REVIEW: PASS|FAIL — redundant: <finding or none, file:line> — inefficient: <finding or none, file:line> — insecure: <finding or none, file:line>
 
-ending with a `Findings:` line — `Findings: none`, or one item per finding with `file:line` evidence (a FAIL finding opens an incident like any other).
+ending with a `Findings:` line — `Findings: none`, or one item per finding with `file:line` evidence (findings stay notes: they never become incidents).
 
 ## Acceptance
 - the plan's `## Progress` holds the one `PLAN REVIEW:` entry with all three fields and a `Findings:` line

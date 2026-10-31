@@ -23,13 +23,14 @@
 
 import { execFileSync } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import type { Decision, InjectEvent, PlanEditEvent, SpawnEvent, StopEvent, ToolEvent } from "./adapter.ts";
 import { currentTier, takeGo } from "./autonomy.ts";
 import { approvalProblem, MAIN_ONLY_LINE, reviewHash } from "./plan-approval.ts";
 export { reviewHash };
 import type { Config } from "./config.ts";
-import { addIncident, openIncidents, ownerMessagesFile, ownerSaid, readOwnerMessages, type IncidentView, type OwnerMessage } from "./incidents.ts";
+import { openIncidents, ownerMessagesFile, ownerSaid, readOwnerMessages, type IncidentView, type OwnerMessage } from "./incidents.ts";
 import { notifyProtectedPaths, notifySecretReadHit } from "./notify.ts";
 import { defaultRunner, listOpenMrs, mentioned, type CommandRunner, type OpenMr } from "./mr-sweep.ts";
 import { unlandedRows } from "./wip-check.ts";
@@ -38,6 +39,7 @@ import type { Plan } from "./queue/lib.ts";
 
 import { nowSec } from "./clock.ts";
 import { outUntil, pinModel, providerOfModel, readOut } from "./provider-state.ts";
+import { lint } from "./brief-lint.ts";
 const ALLOW: Decision = { allow: true, reason: "" };
 
 /**
@@ -304,13 +306,14 @@ function matchReviewSpawn(spawns: Record<string, ReviewSpawn>, agentId: string):
 	return null;
 }
 
-/** P4f: the secret-read deny: credential dirs under home, and env files. */
+/** P4f: the secret-read deny: credential dirs under a home, and env files. Shell text expands `~` to the process home (queue lib) while config points at the sandbox home in tests, so both roots are judged; they are the same directory in production. */
 function secretPath(p: string, cfg: Config, cwd: string): boolean {
-	const home = cfg.paths.home;
-	const abs = path.resolve(cwd, p.startsWith("~/") ? path.join(home, p.slice(2)) : p);
+	const abs = path.resolve(cwd, p.startsWith("~/") ? path.join(cfg.paths.home, p.slice(2)) : p);
 	const base = path.basename(abs);
-	const inCredDir = [".config", ".ssh", ".gnupg", ".aws"].some(d => abs.startsWith(path.join(home, d) + path.sep));
-	return inCredDir || base.startsWith(".env") || base.endsWith(".env");
+	if (base.startsWith(".env") || base.endsWith(".env")) return true;
+	return [cfg.paths.home, homedir()].some(home =>
+		[".config", ".ssh", ".gnupg", ".aws"].some(d => abs.startsWith(path.join(path.resolve(home), d) + path.sep)),
+	);
 }
 
 /** P4f: a named review spawn may read, use todo, and edit only its own plan. Shell, spawn, cancel and MCP tools are denied; so are secret reads. */
@@ -324,6 +327,15 @@ function reviewLockProblem(e: ToolEvent, cfg: Config): string | null {
 		return `review spawn ${e.agentId} may edit only its plan ${plan}.`;
 	}
 	if (cfg.guards.read_tools.includes(e.tool) || e.tool === "todo") {
+		const reads = [...(e.paths ?? []), ...q.touchedPaths(e.tool, input, e.cwd)];
+		return reads.some(p => secretPath(p, cfg, e.cwd)) ? `review spawn ${e.agentId} may not read credentials or env files.` : null;
+	}
+	// P5 (plan 20261031_1207): a shell call gets the read tools' deny — allowed when it writes
+	// nothing and its text carries no landing/mutating/spawn command and no secret path.
+	if (cfg.guards.shell_tools.includes(e.tool)) {
+		const writes = [...(e.writes ?? []), ...q.writeTargets(e.tool, input, e.cwd, [])];
+		if (writes.length || writesShellText(input, cfg))
+			return `review spawn ${e.agentId} may only read, use todo, and edit its plan; shell writes, landing and mutating commands are denied.`;
 		const reads = [...(e.paths ?? []), ...q.touchedPaths(e.tool, input, e.cwd)];
 		return reads.some(p => secretPath(p, cfg, e.cwd)) ? `review spawn ${e.agentId} may not read credentials or env files.` : null;
 	}
@@ -341,8 +353,13 @@ function staffingFile(): string {
 // The owner-message store (owner-messages.jsonl) and its matcher live in src/core/incidents.ts
 // (20261028_0900 P3): dismissIncident needs them too, and guards already imports incidents.
 
+/** P3 (plan 20261031_1207): the text is owner prose — not Main's own guard output, a system notice, a task result — so its words are the owner's. Gates both the owner-message store and the cancel flag. */
+function isOwnerProse(text: string): boolean {
+	return !(text.trimStart().startsWith("main-guard:") || text.trimStart().startsWith("<system-notice>") || text.includes("<task-result"));
+}
+
 function recordOwnerMessage(text: string, cfg: Config): void {
-	if (text.trimStart().startsWith("main-guard:") || text.trimStart().startsWith("<system-notice>") || text.includes("<task-result")) return;
+	if (!isOwnerProse(text)) return;
 	const file = ownerMessagesFile();
 	try {
 		mkdirSync(q.STATE_DIR, { recursive: true });
@@ -549,6 +566,12 @@ function unticked(p: Plan): string[] {
 	return [...phases.matchAll(/^\s*[-*]\s+\[ \]\s+(P\d+[a-z]?)\b/gm)].map(m => m[1]!);
 }
 
+/** The open plans the text names — a `Priority skip: <path> — <why>` line names a plan it does NOT run on (20261025_0215 P3), so only the remaining text decides. planGate's targeting, shared with the spawn verdict's brief-lint and cap notes (plan 20261031_1207 P4). */
+function briefPlans(text: string, cfg?: Config): Plan[] {
+	const body = text.replace(/^\s*(?:[-*]\s+)?priority skip:.*$/gim, "");
+	return q.activePlans(undefined, undefined, cfg?.review.agents ?? []).filter(p => body.includes(p.file));
+}
+
 // Plans an implementer brief may run on; returns [reason, null] or [null, plan files].
 export function planGate(text: string, label: string, cfg?: Config): [string | null, string[]] {
 	const plans = q.activePlans(undefined, undefined, cfg?.review.agents ?? []);
@@ -558,10 +581,7 @@ export function planGate(text: string, label: string, cfg?: Config): [string | n
 			`${label}: ${unclosed.map(p => `${p.file} (${p.status})`).join(", ")} is still indexed. Verify it and run \`queue-close <plan>\` before any new spawn.`,
 			[],
 		];
-	// A `Priority skip: <path> — <why>` line names a plan it does NOT run on (20261025_0215 P3);
-	// only the remaining text decides which plans this brief targets.
-	const body = text.replace(/^\s*(?:[-*]\s+)?priority skip:.*$/gim, "");
-	const named = plans.filter(p => body.includes(p.file));
+	const named = briefPlans(text, cfg);
 	if (!named.length)
 		return [
 			`${label}: an implementer needs an open plan. Name the plan's absolute path in the brief; the plan must be listed in ${q.INDEX}.`,
@@ -769,6 +789,37 @@ export function preferProblem(agent: string, brief: string, runningJobs: readonl
 	return null;
 }
 
+/** P4 (plan 20261031_1207): `agent-ledger --cap`'s FULL line at spawn time — the agent's provider already runs its full share of live subagents. Counted from the caller's running job labels, the live data preferProblem counts (a caller without job info counts 0). */
+function ledgerCapProblem(agent: string, runningJobs: readonly string[] | undefined, cfg: Config): string | null {
+	const provider = providerOfModel(pinModel(cfg, agent));
+	if (provider === null || outUntil(cfg, provider) !== null) return null;
+	const sharers = [agent, ...cfg.ledger.prefer.filter(a => providerOfModel(pinModel(cfg, a)) === provider)];
+	const running = (runningJobs ?? []).filter(l => sharers.some(n => l.toLowerCase().includes(n.toLowerCase()))).length;
+	if (running < cfg.ledger.max_running_per_provider) return null;
+	return `provider ${provider} is at its cap (${running} live of ${cfg.ledger.max_running_per_provider} running); stop or wait for one before spawning more.`;
+}
+
+/**
+ * The one spawn verdict (plan 20261031_1207 P4): every refusal in one numbered list, so Main fixes
+ * all of them in one round trip. The named plans' brief-lint errors and the provider-cap note (the
+ * advice Main gathered by hand through `brief-lint` and `agent-ledger --cap`) ride along on an
+ * already-refused spawn — alone they never refuse: real plans carry lint nits, and a full provider
+ * is the prefer order's to weigh, not a gate of its own.
+ */
+function spawnVerdict(agent: string, problems: string[], lintFiles: string[], runningJobs: readonly string[] | undefined, cfg: Config): string | null {
+	if (!problems.length) return null;
+	const advice: string[] = [];
+	for (const f of new Set(lintFiles)) {
+		try {
+			for (const e of lint(f, cfg).errs) advice.push(`${f}: ${e}`);
+		} catch {} // an unreadable plan's refusal is planGate's to name
+	}
+	const cap = ledgerCapProblem(agent, runningJobs, cfg);
+	if (cap) advice.push(cap);
+	const all = [...problems, ...advice];
+	return `${agent}: ${all.length} ${all.length === 1 ? "problem" : "problems"}:\n${all.map((p, i) => `${i + 1}. ${p}`).join("\n")}`;
+}
+
 /**
  * Who is rate-limited comes from live data (plan 20261025_1700 P1): refuse a brief that asserts a
  * provider shown free by providerStatus is rate-limited — named directly or through a prefer
@@ -794,7 +845,7 @@ export function providerClaimProblem(text: string, cfg: Config): string | null {
 	return `${name === provider ? provider : `${name} (provider ${provider})`} is free per the recorded provider state — do not claim it is rate-limited; read the providers line from agent-ledger --cap.`;
 }
 
-/** Reason to refuse a `task` brief, or null; `files` receives the plans to record, `budgets` every named task's call budget (null = none), `staffing` each plan's named tasks of this call, `runningJobs` the caller's running job labels (undefined = no job info). */
+/** Reason to refuse a `task` brief, or null; `files` receives the plans to record, `budgets` every named task's call budget (null = none), `staffing` each plan's named tasks of this call, `runningJobs` the caller's running job labels (undefined = no job info). Every refusal lands in one numbered verdict (plan 20261031_1207 P4). */
 export function spawnProblem(
 	input: Record<string, unknown>,
 	cfg: Config,
@@ -810,30 +861,43 @@ export function spawnProblem(
 	const context = String(input?.context ?? "");
 	const allowed = q.allowedAgents();
 	const shared = briefBudget(context);
+	const problems: string[] = [];
 	const named: Record<string, number | null> = {};
 	for (const t of tasks) {
 		const agent = String(t?.agent ?? "task");
 		const label = String(t?.name ?? agent);
-		if (!allowed.has(agent)) return `${label}: agent "${agent}" is not in "## Allowed" of ${q.SUBAGENTS_MD} (no expensive or unpinned models).`;
-		const [why, plans] = planGate(`${context}\n${String(t?.task ?? "")}`, label, cfg);
-		if (why) return why;
+		const text = `${context}\n${String(t?.task ?? "")}`;
+		if (!allowed.has(agent)) {
+			problems.push(`${label}: agent "${agent}" is not in "## Allowed" of ${q.SUBAGENTS_MD} (no expensive or unpinned models).`);
+			continue;
+		}
+		const [why, plans] = planGate(text, label, cfg);
+		if (why) {
+			problems.push(why);
+			continue;
+		}
 		// P3 (plan 20261028_1600): the task tool is the live spawn path; every task carries its own
-		// pending-work check, before the call-wide gates below.
-		const pending = pendingWorkProblem(plans, `${context}\n${String(t?.task ?? "")}`, cfg, runner);
-		if (pending) return `${label}: ${pending}`;
-		// The task's own `Call budget:` line wins over the shared context's.
-		const role = reviewRole(t?.name, plans, `${context}\n${String(t?.task ?? "")}`, String(t?.agent ?? ""), cfg, spawner);
-		if (role.problem) return `${label}: ${role.problem}`;
-		if (t?.name) roles[label] = role.plan;
-		const review = reviewPassProblem(plans, `${context}\n${String(t?.task ?? "")}`, String(t?.agent ?? ""), cfg, spawner);
-		if (review) return `${label}: ${review}`;
+		// pending-work check, before the call-wide gates below. The task's own `Call budget:` line
+		// wins over the shared context's.
+		const role = reviewRole(t?.name, plans, text, agent, cfg, spawner);
+		const taskProblems = [
+			pendingWorkProblem(plans, text, cfg, runner),
+			role.problem,
+			reviewPassProblem(plans, text, agent, cfg, spawner),
+		];
 		const budget = briefBudget(String(t?.task ?? "")) ?? shared;
 		if (budget !== null) {
-			if (!t?.name) return `${label}: "Call budget: ${budget}" needs a task name (the budget is keyed by it).`;
-			if (budget < 10 || budget > cfg.guards.sub_max_calls_cap)
-				return `${label}: call budget ${budget} is outside the allowed range 10..${cfg.guards.sub_max_calls_cap}.`;
+			if (!t?.name) taskProblems.push(`${label}: "Call budget: ${budget}" needs a task name (the budget is keyed by it).`);
+			else if (budget < 10 || budget > cfg.guards.sub_max_calls_cap)
+				taskProblems.push(`call budget ${budget} is outside the allowed range 10..${cfg.guards.sub_max_calls_cap}.`);
+		}
+		const own = taskProblems.filter((p): p is string => p !== null).map(p => (p.startsWith(`${label}:`) ? p : `${label}: ${p}`));
+		if (own.length) {
+			problems.push(...own);
+			continue;
 		}
 		if (t?.name) {
+			roles[label] = role.plan;
 			named[label] = budget;
 			for (const f of plans) staffing[f] = [...(staffing[f] ?? []), label];
 		}
@@ -842,22 +906,33 @@ export function spawnProblem(
 	Object.assign(budgets, named);
 	// Who is limited and who goes first come from live data and ledger.prefer (plan 20261025_1700
 	// P3): the same rules checkSpawn applies to single-spawn events, per task.
-	const claim = providerClaimProblem(`${context}\n${tasks.map(t => String(t?.task ?? "")).join("\n")}`, cfg);
-	if (claim) return claim;
+	const joined = `${context}\n${tasks.map(t => String(t?.task ?? "")).join("\n")}`;
+	const claim = providerClaimProblem(joined, cfg);
+	if (claim) problems.push(claim);
 	for (const t of tasks) {
 		const pick = preferProblem(String(t?.agent ?? "task"), `${context}\n${String(t?.task ?? "")}`, runningJobs, cfg);
-		if (pick) return `${String(t?.name ?? t?.agent ?? "task")}: ${pick}`;
+		if (pick) problems.push(`${String(t?.name ?? t?.agent ?? "task")}: ${pick}`);
 	}
 	// Priority gate (20261025_0215 P3): once per `task` call, over the plans this call names; the
 	// skip lines may sit in the shared context or any task text.
 	const gate = priorityGate(
 		files,
 		runningJobs,
-		`${context}\n${tasks.map(t => String(t?.task ?? "")).join("\n")}`,
+		joined,
 		cfg,
 		String((tasks[0] && (tasks[0].name ?? tasks[0].agent)) ?? "task"),
 	);
-	if (gate) return gate;
+	if (gate) problems.push(gate);
+	const inc = incidentSpawnProblem("spawn", JSON.stringify(input), files, cfg);
+	if (inc) problems.push(inc);
+	const verdict = spawnVerdict(
+		String((tasks[0] && (tasks[0].name ?? tasks[0].agent)) ?? "task"),
+		problems,
+		files.length ? files : briefPlans(joined, cfg).map(p => p.file),
+		runningJobs,
+		cfg,
+	);
+	if (verdict) return verdict;
 	for (const [name, plan] of Object.entries(roles)) recordReviewSpawn(name, plan);
 	return null;
 }
@@ -877,10 +952,15 @@ function runBlockers(plan: Plan, hit: string[], e: ToolEvent, cfg: Config): stri
 				stdio: ["pipe", "pipe", "pipe"],
 			});
 		} catch (err) {
+			// P5c (plan 20261031_1207): the deny names the hit paths and the script's own output
+			// (stdout+stderr, first 300 chars) so the worker can fix the named file instead of
+			// retrying blind; the Error message is the last resort for a script with no output.
+			const stdout = typeof err === "object" && err !== null && "stdout" in err && typeof err.stdout === "string" ? err.stdout.trim() : "";
 			const stderr = typeof err === "object" && err !== null && "stderr" in err && typeof err.stderr === "string" ? err.stderr.trim() : "";
 			const message = err instanceof Error ? err.message : String(err);
-			const why = stderr || `${path.basename(b.script)} failed (${message})`;
-			return `blocked by plan ${path.basename(plan.file)}: ${why}`;
+			const detail = `${stdout}\n${stderr}`.trim().slice(0, 300);
+			const why = detail || `${path.basename(b.script)} failed (${message})`;
+			return `blocked by plan ${path.basename(plan.file)} (${hit.join(", ")}): ${why}`;
 		}
 	}
 	return null;
@@ -942,6 +1022,19 @@ function landingCommand(input: Record<string, unknown>): boolean {
 	});
 }
 
+// P5/P5c (plan 20261031_1207): the shell text a read-only fast path may never carry — a landing
+// command (push / MR merge), git add or commit, npm publish, a bypass_spawn launch, or a MUTATING
+// write. Landing and commit commands produce no write targets, so this text filter — not
+// writeTargets — is what keeps them out of the review lock's shell allow and the blocker skip.
+// One predicate for both callers; reviewLockProblem denies it, subRules keeps the blockers on it.
+function writesShellText(input: Record<string, unknown>, cfg: Config): boolean {
+	if (landingCommand(input)) return true;
+	const text = q.withoutQuotedRedirects(Object.values(input).filter((v): v is string => typeof v === "string").join("\n"));
+	if (/\bgit\s+(add|commit)\b/.test(text) || /\bnpm\s+publish\b/.test(text)) return true;
+	if (cfg.guards.bypass_spawn.some(entry => bypassRegExp(entry).test(text))) return true;
+	return q.MUTATING.test(text);
+}
+
 // The read tool's stand-in for a value it hid. A file may hold one only where it is produced
 // (secret-redact.ts) or exercised (its tests).
 const PLACEHOLDER = "[REDACTED:";
@@ -991,8 +1084,14 @@ function subRules(e: ToolEvent, input: Record<string, unknown>, paths: string[],
 		const hit = paths.filter(p => !q.isOrchestrationPath(p, plans) && q.planCovers(plan, p, plans));
 		if (!hit.length) continue;
 		if (plan.errors.length) return `plan ${plan.file} is invalid (${plan.errors.join("; ")}). Stop and report to Main.`;
-		const why = runBlockers(plan, hit, e, cfg);
-		if (why) return why;
+		// P5c (plan 20261031_1207): reads and read-only shell calls skip the phase-0 blockers — a
+		// failing blocker used to deny every read of a covered path and send the worker back blind.
+		// The shell filter is the review lock's (writesShellText), so landing text keeps its blocker.
+		const readOnly = cfg.guards.read_tools.includes(e.tool) || (cfg.guards.shell_tools.includes(e.tool) && !writes.length && !writesShellText(input, cfg));
+		if (!readOnly) {
+			const why = runBlockers(plan, hit, e, cfg);
+			if (why) return why;
+		}
 	}
 	return null;
 }
@@ -1054,12 +1153,13 @@ export function incidentLine(i: IncidentView): string {
 }
 
 /**
- * While an incident is open, a launch must be fix work: its brief (or a plan the brief names)
- * cites `INCIDENT <id>` of an open incident. Anything else is refused until every open incident
- * has a plan or a dismissal. Returns the refusal reason, or null; `label` names the log line.
+ * While an owner-correction incident (source "realtime") is open, a launch must be fix work: its
+ * brief (or a plan the brief names) cites `INCIDENT <id>` of an open one. Notes from worker
+ * findings/traces never refuse a spawn (plan 20261031_1207 P2). Returns the refusal reason, or
+ * null; `label` names the log line.
  */
 function incidentSpawnProblem(label: string, brief: string, namedPlans: string[], cfg: Config): string | null {
-	const open = openIncidentList(cfg);
+	const open = openIncidentList(cfg).filter(i => i.source === "realtime");
 	if (!open.length) return null;
 	const texts = [brief];
 	for (const f of namedPlans) {
@@ -1088,6 +1188,8 @@ function taskLaunch(input: Record<string, unknown>, cfg: Config, runningJobs: st
 		log(cfg.paths.guard_log, `BLOCK spawn: cancel pending (${pending.words})`);
 		return `${CANCEL_TODO} Flagged: "${pending.words}"`;
 	}
+	// P4 (plan 20261031_1207): spawnProblem's verdict now carries the incident check too, so one
+	// deny lists every problem.
 	const files: string[] = [];
 	const budgets: Record<string, number | null> = {};
 	const staffing: Record<string, string[]> = {};
@@ -1096,8 +1198,6 @@ function taskLaunch(input: Record<string, unknown>, cfg: Config, runningJobs: st
 		log(cfg.paths.guard_log, `BLOCK spawn: ${why}`);
 		return why;
 	}
-	const inc = incidentSpawnProblem("spawn", JSON.stringify(input), files, cfg);
-	if (inc) return inc;
 	recordSpawns(files, staffing);
 	recordBudgets(budgets);
 	return null;
@@ -1413,44 +1513,34 @@ export function checkSpawn(e: SpawnEvent, cfg: Config, runner: CommandRunner = d
 		return deny(`main-guard: ${e.agent}: agent "${e.agent}" is not in "## Allowed" of ${q.SUBAGENTS_MD} (no expensive or unpinned models).`);
 	if (e.invocationKind !== "task")
 		return deny("main-guard: spawn implementers with the task tool (the plan gate checks its brief).");
+	// P4 (plan 20261031_1207): every gate's refusal lands in one numbered verdict; nothing
+	// short-circuits, so Main sees all the problems in one round trip.
+	const problems: string[] = [];
 	const [why, named] = planGate(e.brief, e.agent, cfg);
-	if (why) {
-		log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${why}`);
-		return deny(`main-guard: ${why}`);
-	}
+	if (why) problems.push(why);
 	const gate = priorityGate(named, e.runningJobs, e.brief, cfg, e.agent);
-	if (gate) {
-		log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${gate}`);
-		return deny(`main-guard: ${gate}`);
-	}
+	if (gate) problems.push(gate);
 	const pendingWork = pendingWorkProblem(named, e.brief, cfg, runner);
-	if (pendingWork) {
-	log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${pendingWork}`)
-	return deny(`main-guard: ${pendingWork}`)
-}
+	if (pendingWork) problems.push(pendingWork);
 	const role = reviewRole(e.name, named, e.brief, e.agent, cfg, "main");
-	if (role.problem) {
-		log(cfg.paths.plan_guard_log, `BLOCK ${e.agent} ${e.name ?? "(unnamed)"} review spawn: ${role.problem}`);
-		return deny(`main-guard: ${role.problem}`);
-	}
+	if (role.problem) problems.push(role.problem);
 	const review = reviewPassProblem(named, e.brief, e.agent, cfg, "main");
-	if (review) {
-		log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${review}`);
-		return deny(`main-guard: ${review}`);
-	}
+	if (review) problems.push(review);
 	const inc = incidentSpawnProblem(`spawn ${e.agent}`, e.brief, named, cfg);
-	if (inc) return deny(`main-guard: ${inc}`);
-	// The owner's pick order and live provider state (plan 20261025_1700 P3), before the spawn records.
+	if (inc) problems.push(inc);
 	const claim = providerClaimProblem(e.brief, cfg);
-	if (claim) {
-		log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${claim}`);
-		return deny(`main-guard: ${e.agent}: ${claim}`);
-	}
+	if (claim) problems.push(`${e.agent}: ${claim}`);
 	const pick = preferProblem(e.agent, e.brief, e.runningJobs, cfg);
-	if (pick) {
-		log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${pick}`);
-		return deny(`main-guard: ${e.agent}: ${pick}`);
+	if (pick) problems.push(`${e.agent}: ${pick}`);
+	const verdict = spawnVerdict(e.agent, problems, named.length ? named : briefPlans(e.brief, cfg).map(p => p.file), e.runningJobs, cfg);
+	if (verdict) {
+		for (const p of problems) {
+			if (p === role.problem) log(cfg.paths.plan_guard_log, `BLOCK ${e.agent} ${e.name ?? "(unnamed)"} review spawn: ${p}`);
+			else log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${p}`);
+		}
+		return deny(`main-guard: ${verdict}`);
 	}
+	// The owner's pick order and live provider state (plan 20261025_1700 P3), before the spawn records.
 	const staffing: Record<string, string[]> = {};
 	for (const f of named) staffing[f] = [e.agent];
 	recordSpawns(named, staffing);
@@ -1496,7 +1586,11 @@ export function checkInject(e: InjectEvent, cfg: Config): Decision {
 	} catch (err) {
 		summary = `Queue unreadable (${q.INDEX}): ${err}`;
 	}
-	const cancel = continuation ? "" : flagCancel(e.inject, cfg);
+	// P3 (plan 20261031_1207): only owner prose flags cancel, and incident lines pasted into a
+	// prompt (guard output quoting "stop …") never do — their words are not the owner's.
+	const cancel = continuation || !isOwnerProse(e.inject)
+		? ""
+		: flagCancel(e.inject.split("\n").filter(l => !l.startsWith("INCIDENT I-")).join("\n"), cfg);
 	const incidents = openIncidentList(cfg);
 	const incidentText = incidents.length ? `\n${incidents.map(incidentLine).join("\n")}` : "";
 	// 20261025_1940 P2: the injected line names the autonomy tier and what Main does without asking in it.
@@ -1559,31 +1653,8 @@ export function checkPlanEdit(e: PlanEditEvent, cfg: Config): PlanEditDecision {
 		log(cfg.paths.plan_guard_log, `RESTORE ${e.path} review line from a spawn that is not its named review spawn`);
 		return { allow: false, reason: `plan-guard: a PLAN REVIEW line counts only from the named review spawn of ${e.path}; the file was restored.`, restore: { path: e.path, text: e.before } };
 	}
-	recordFindings(e, cfg);
 	recordReviews(e, cfg);
 	return ALLOW;
-}
-
-/**
- * Each finding item of an allowed plan edit becomes an incident (source "findings", evidence =
- * plan path + agent; the default fingerprint dedupes the same item text). A subagent's items are
- * kind "agent-finding"; Main's own are kind "main-finding" (20261028_0900 P1: a bug Main writes
- * down must block the stop like a subagent's). A store failure is logged and swallowed: it must
- * not break the verified edit.
- */
-function recordFindings(e: PlanEditEvent, cfg: Config, kind: "agent-finding" | "main-finding" = "agent-finding"): void {
-	try {
-		const evidence = `${e.path} (${e.agent})`;
-		for (const block of newProgressEntries(e.before, e.after)) {
-			const value = findingsValue(block);
-			if (!value || /^none\.?$/i.test(value)) continue;
-			for (const item of value.split(";")) {
-				if (item.trim()) addIncident(cfg, { source: "findings", kind, summary: item.trim(), evidence });
-			}
-		}
-	} catch (err) {
-		log(cfg.paths.plan_guard_log, `findings: cannot record incidents for ${e.path}: ${err}`);
-	}
 }
 
 /** One "## Progress" entry: its "- " line plus indented continuation lines (trimProgressBody's entry rule). */
@@ -1632,7 +1703,6 @@ function checkMainPlan(e: PlanEditEvent, cfg: Config): PlanEditDecision {
 		};
 	}
 	if (q.outsideProgress(e.after) === q.outsideProgress(e.before)) {
-		recordFindings(e, cfg, "main-finding");
 		return ALLOW;
 	}
 	// A cited file Main did read lands in the list instead of the refusal (I-20261025-208): fix the
@@ -1644,7 +1714,6 @@ function checkMainPlan(e: PlanEditEvent, cfg: Config): PlanEditDecision {
 	const known = new Set(e.before ? planReadProblems(e.before, e.path, cfg) : []);
 	const problems = planReadProblems(fixed, e.path, cfg).filter(p => p === NO_SECTION || !known.has(p));
 	if (!problems.length) {
-		recordFindings(e, cfg, "main-finding");
 		if (!fix) return ALLOW;
 		const list = fix.paths.join(", ");
 		log(cfg.paths.plan_guard_log, `AUTO-LIST ${e.path}: ${list}`);
@@ -1823,8 +1892,9 @@ export const STOP_PLAN_OFFER_REFUSAL = "main-guard: don't promise it — do it n
 
 /**
  * stop: Main may not stop while an open plan is not parked "WAITING on owner" (or the queue has a
- * problem) and no subagent is alive to wake it; an open incident (no plan, no dismissal) blocks
- * the stop regardless of live subagents. Three stop attempts in a row with zero tool calls
+ * problem) and no subagent is alive to wake it; an open owner-correction incident (source
+ * "realtime", no plan, no dismissal) blocks the stop regardless of live subagents. Three stop
+ * attempts in a row with zero tool calls
  * in between are let through. Returns the next counters in `state`.
  */
 export function checkStop(e: StopEvent, cfg: Config): Decision {
@@ -1835,6 +1905,16 @@ export function checkStop(e: StopEvent, cfg: Config): Decision {
 	if (e.reply && new RegExp(cfg.guards.plan_offer, "i").test(e.reply)) {
 		log(cfg.paths.guard_log, "BLOCK stop: reply offers or promises instead of doing it");
 		return { allow: false, reason: STOP_PLAN_OFFER_REFUSAL, state };
+	}
+	// P5 (plan 20261031_1207): once the turn spent its call budget, the stop is the release —
+	// refusing it would order a capped Main to keep making calls the cap itself refuses. The
+	// 15-min window expiry restarts the count, and the keep-working rule with it.
+	if (cfg.guards.main_max_calls > 0) {
+		const w = readWindow();
+		if (w.mainCalls >= cfg.guards.main_max_calls && !mainCallsExpired(w)) {
+			log(cfg.paths.guard_log, `ALLOW stop: turn spent ${w.mainCalls}/${cfg.guards.main_max_calls} calls`);
+			return { ...ALLOW, state };
+		}
 	}
 	let open: string[];
 	try {
@@ -1852,7 +1932,8 @@ export function checkStop(e: StopEvent, cfg: Config): Decision {
 	}
 	// Same release valve as cancel-pending: an idle Main that cannot act is let out after two
 	// empty stop attempts instead of looping forever. Live subagents do not clear this block.
-	const incidents = openIncidentList(cfg);
+	// Findings/traces stay notes: only owner corrections (source "realtime") block the stop.
+	const incidents = openIncidentList(cfg).filter(i => i.source === "realtime");
 	if (incidents.length && state.idleStops < 2) {
 		if (state.callsSinceStop === 0) state.idleStops++;
 		state.callsSinceStop = 0;
@@ -1879,6 +1960,9 @@ export function checkStop(e: StopEvent, cfg: Config): Decision {
 		log(cfg.paths.guard_log, `ALLOW stop after ${state.idleStops} idle stop attempts; open: ${open.join(" | ")}`);
 		return { allow: true, reason: "", state: { callsSinceStop: 0, idleStops: 0 } };
 	}
+	// P5b (plan 20261031_1207): the refusal repeats on every blocked stop; name the first 10 only.
+	const listed = open.slice(0, q.SUMMARY_CAP);
+	const moreOpen = open.length - listed.length;
 	log(cfg.paths.guard_log, `BLOCK stop; open: ${open.join(" | ")}`);
 	return {
 		allow: false,
@@ -1886,7 +1970,8 @@ export function checkStop(e: StopEvent, cfg: Config): Decision {
 			`main-guard: the queue has ${open.length} open item${open.length === 1 ? "" : "s"} and no subagent is ` +
 			`running to wake you. Owner rule: keep working while the queue has items. Start the next step (spawn an ` +
 			`agent), close a finished plan with queue-close, or, if a plan truly waits on the owner, add a line ` +
-			`"WAITING on owner: <what>" to that plan. Open: ${open.join(" | ")}`,
+			`"WAITING on owner: <what>" to that plan. Open: ${listed.join(" | ")}` +
+			(moreOpen > 0 ? ` … ${moreOpen} more (queue-check lists all)` : ""),
 		state,
 	};
 }

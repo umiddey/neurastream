@@ -1,7 +1,6 @@
-// Findings become incidents: every finding item ("Findings:" value split on ";", not "none") of
-// an allowed subagent plan edit is recorded through addIncident as source "findings", kind
-// "agent-finding", evidence = plan path + agent; the same item text again dedupes into the open
-// incident; "none" and refused edits record nothing (src/core/guards.ts checkPlanEdit).
+// Findings stay notes (plan 20261031_1207 P2): no finding item of an allowed subagent plan edit
+// becomes an incident — the entry's `Findings:` value is text the plan-guard only checks for
+// presence ("none" or items; src/core/guards.ts checkPlanEdit restores an entry without it).
 
 import { afterAll, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -75,28 +74,14 @@ function entry(body: string): string {
 	return BEFORE.replace(OLD, `${OLD}\n${body}`);
 }
 
-test("an allowed edit's finding items become open agent-finding incidents", () => {
+test("an allowed edit's finding items stay notes: no incidents", () => {
 	fresh();
 	const after = entry(
 		"- 2026-10-24 15:40 (w1): worked the mock check.\n  Findings: src/core/guards.ts:613 skips the mock for an undeclared kind; tests/progress-trim.test.ts:10 drops continuation lines.",
 	);
 	const d = checkPlanEdit({ path: PLAN, before: BEFORE, after, agent: "sub" }, cfg);
 	expect(d.allow).toBe(true);
-	const open = openIncidents(cfg);
-	expect(open).toHaveLength(2);
-	expect(open[0]).toMatchObject({
-		source: "findings",
-		kind: "agent-finding",
-		summary: "src/core/guards.ts:613 skips the mock for an undeclared kind",
-		evidence: `${PLAN} (sub)`,
-		resolution: null,
-	});
-	expect(open[1]).toMatchObject({
-		source: "findings",
-		kind: "agent-finding",
-		summary: "tests/progress-trim.test.ts:10 drops continuation lines.",
-		evidence: `${PLAN} (sub)`,
-	});
+	expect(openIncidents(cfg)).toHaveLength(0);
 });
 
 test("Findings: none records nothing", () => {
@@ -112,23 +97,7 @@ test("only the entry's last Findings: counts; a quoted one mid-text is resume te
 		'- 2026-10-25 08:40 (sub): resume: check the final text "…commit follows.\\n\\nFindings: none" (if false, print char codes); then commit.\n  Findings: src/a.ts:1 one; src/b.ts:2 two',
 	);
 	expect(checkPlanEdit({ path: PLAN, before: BEFORE, after, agent: "sub" }, cfg).allow).toBe(true);
-	expect(openIncidents(cfg).map(i => i.summary)).toEqual(["src/a.ts:1 one", "src/b.ts:2 two"]);
-});
-
-test("the same finding text again dedupes into the open incident", () => {
-	fresh();
-	const FINDING = "src/core/guards.ts:613 skips the mock for an undeclared kind";
-	const first = entry(`- 2026-10-24 15:40 (sub): worked the mock check.\n  Findings: ${FINDING}.`);
-	expect(checkPlanEdit({ path: PLAN, before: BEFORE, after: first, agent: "sub" }, cfg).allow).toBe(true);
-	const second = first.replace(
-		`  Findings: ${FINDING}.`,
-		`  Findings: ${FINDING}.\n- 2026-10-24 16:10 (sub): hit it again. Findings: ${FINDING}.`,
-	);
-	expect(checkPlanEdit({ path: PLAN, before: first, after: second, agent: "sub" }, cfg).allow).toBe(true);
-	const open = openIncidents(cfg);
-	expect(open).toHaveLength(1);
-	expect(open[0]?.count).toBe(2);
-	expect(open[0]?.summary).toBe(`${FINDING}.`);
+	expect(openIncidents(cfg)).toHaveLength(0);
 });
 
 test("a refused edit records no incidents", () => {

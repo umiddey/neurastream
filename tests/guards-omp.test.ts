@@ -195,7 +195,7 @@ function toolEvent(tool: string, input: Record<string, unknown>, agent: "main" |
 
 test("denied command: adapter tool_call refuses a sub like the guard CLI; clean command passes", () => {
 	fresh();
-	const bad = "bun test --grep thing test.skip";
+	const bad = "touch test.skip"; // mutating, so P5c's read-only skip does not apply
 	const out = adapterRun(`${REGISTER}
 const out = [];
 out.push(await h["tool_call"]({ toolName: "bash", input: { command: ${JSON.stringify(bad)} }, toolCallId: "t1" }, ${SUB_CTX}));

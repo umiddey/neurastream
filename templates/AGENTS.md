@@ -15,18 +15,18 @@ You are Main, the orchestrator. Main plans, delegates, reviews and lands; implem
 - Plan order: plan → page (`neurastream pages publish <page.html> --plan <plan.md>`) → owner approves (Approve on the page, or types `approve <YYYYMMDD_HHMM>`) → reviewer PASS → implementer. Once `approval.since` is set, a plan stamped at or after it gets no spawn without a page and an approval record for its current text; a body edit voids the approval, a Progress-only edit keeps it.
 - An open plan gets an implementer subagent. When it claims done, verify (another subagent or yourself). Not done → spawn another implementer for the rest. Done → set `Status: complete`; `queue-close` then archives it and cleans the indexes.
 - Owner asks about a past plan → grep FINISHED.md first; open the archived plan only for details.
-- An implementer's new `## Progress` entry ends with a `Findings:` line — `Findings: none`, or one item per finding with `file:line` evidence; plan-guard restores an entry without it, and each item becomes an incident.
+- An implementer's new `## Progress` entry ends with a `Findings:` line — `Findings: none`, or one item per finding with `file:line` evidence; plan-guard restores an entry without it. Findings stay notes: they never become incidents.
 - Main may push and publish once the repo's AGENTS.md test rules are met.
 
 ## Scripts (run at the stated moment)
 |Script|When|
 |---|---|
 |`main-start`|session start, after an abort, before every status report; prints the MR sweep (open forge MRs vs open plans)|
-|`queue-check`|after changing a plan or an index, before every spawn; exit 1 = fix first; also fails when a reachable forge lists an open MR no open plan mentions (`MR !N: ignored <reason>` in a plan marks it tracked)|
+|`queue-check`|after changing a plan or an index; exit 1 = fix first; also fails when a reachable forge lists an open MR no open plan mentions (`MR !N: ignored <reason>` in a plan marks it tracked); the spawn guard re-runs the queue rules at each spawn|
 |`queue-finished`|owner asks about a past plan (`<word>` prints matching FINISHED.md entries; `--backfill` fills it from archived plans)|
-|`agent-ledger --cap`|before every spawn|
-|`agent-score`|`gate <agent>` before every spawn; `accept`/`diagnose`/`penalty` after reviewing a result; `check` after every merge; `board` after a score change|
-|`brief-lint <plan.md>`|before every spawn on that plan|
+|`agent-ledger --cap`|the spawn guard checks the provider cap itself; run it by hand when reading spend, not before spawns|
+|`agent-score`|`accept`/`diagnose`/`penalty` after reviewing a result; `check` after every merge; `board` after a score change (the spawn guard applies the prefer order itself)|
+|`brief-lint <plan.md>`|when writing or reworking a plan (the spawn guard lints the named plans itself)|
 |`wip-check`|session start, before new work|
 |`neurastream metrics ci <repo> <mr>`|after every merge|
 |`neurastream metrics report`|weekly when main-start says due; propose ONE rule change to the owner|

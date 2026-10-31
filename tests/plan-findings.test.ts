@@ -1,7 +1,7 @@
-// Main cannot walk away from a bug it found (plan 20261028_0900_main_findings_force_plan).
-// P1: Main's own new Progress entries record their Findings items as incidents too — kind
-// "main-finding", evidence = plan path + "main" — so a bug Main writes down blocks the stop
-// like a subagent's (src/core/guards.ts checkMainPlan -> recordFindings).
+// Main's plan-edit guard surface around Findings lines: a plan edit records no incidents — Main's
+// own Findings items stay notes like a subagent's (plan 20261031_1207 P2; src/core/guards.ts
+// checkMainPlan). The stop-offer block and the owner-word dismissal gate for finding kinds
+// (20261028_0900 P2 + P3) stay as they are.
 
 import { afterAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
@@ -76,19 +76,11 @@ afterAll(() => {
 	rmSync(ROOT, { recursive: true, force: true });
 });
 
-test("Main's own Findings item becomes an open main-finding incident", () => {
+test("Main's own Findings item stays a note: no incident", () => {
 	fresh();
 	const after = BEFORE.replace(OLD, `${OLD}\n- 2026-10-28 09:20 (Main): looked again. Findings: bucket missing.`);
 	expect(checkPlanEdit({ path: PLAN, before: BEFORE, after, agent: "main" }, cfg).allow).toBe(true);
-	const open = openIncidents(cfg);
-	expect(open).toHaveLength(1);
-	expect(open[0]).toMatchObject({
-		source: "findings",
-		kind: "main-finding",
-		summary: "bucket missing.",
-		evidence: `${PLAN} (main)`,
-		resolution: null,
-	});
+	expect(openIncidents(cfg)).toHaveLength(0);
 });
 
 // P2: a stop reply that offers to plan instead of planning is refused (guards.plan_offer), and
@@ -137,9 +129,7 @@ test("a stop reply that predicts the future is not a promise", () => {
 // 24 h (<queue_state>/owner-messages.jsonl); other kinds keep --why only.
 test("a main-finding refuses --why alone and dismisses with a real owner quote", () => {
 	fresh();
-	const after = BEFORE.replace(OLD, `${OLD}\n- 2026-10-28 09:20 (Main): looked again. Findings: bucket missing.`);
-	checkPlanEdit({ path: PLAN, before: BEFORE, after, agent: "main" }, cfg);
-	const inc = openIncidents(cfg)[0]!;
+	const inc = addIncident(cfg, { source: "findings", kind: "main-finding", summary: "bucket missing", evidence: `${PLAN} (main)` }).incident;
 	expect(dismissIncident(cfg, inc.id, "not a bug")).toContain("refused");
 	writeFileSync(
 		join(STATE, "owner-messages.jsonl"),
@@ -151,9 +141,7 @@ test("a main-finding refuses --why alone and dismisses with a real owner quote",
 
 test("an owner quote the inject hook never saw refuses; other kinds keep --why only", () => {
 	fresh();
-	const after = BEFORE.replace(OLD, `${OLD}\n- 2026-10-28 09:20 (Main): looked again. Findings: bucket missing.`);
-	checkPlanEdit({ path: PLAN, before: BEFORE, after, agent: "main" }, cfg);
-	const inc = openIncidents(cfg)[0]!;
+	const inc = addIncident(cfg, { source: "findings", kind: "main-finding", summary: "bucket missing", evidence: `${PLAN} (main)` }).incident;
 	writeFileSync(
 		join(STATE, "owner-messages.jsonl"),
 		`${JSON.stringify({ at: nowSec(), text: "the backup plan is parked, keep going" })}\n`,
