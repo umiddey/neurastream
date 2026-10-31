@@ -5,7 +5,7 @@ import { dirname, join, basename, extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { configFile, loadConfig } from "./config.ts";
 import { repoKey } from "./knowledge.ts";
-import { injectPageNotes, type NotesGate } from "./page-notes.ts";
+import { injectPageNotes, stripPageNotes, type NotesGate } from "./page-notes.ts";
 import { recordPagePlan } from "./plan-approval.ts";
 import { checkDiagram } from "./diagram-check.ts";
 import { gitRaw } from "./proc.ts";
@@ -13,6 +13,8 @@ import { recordPublish } from "./pages-expiry.ts";
 import { realTailscale, type Tailscale } from "./tailscale.ts";
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const PAGES_UNIT_TEMPLATE = join(HERE, "../../templates/systemd/neurastream-pages.service");
+const DATA_MARK = "/* === DATA === */";
+const END_DATA_MARK = "/* === END DATA === */";
 export interface RunnerResult { status: number | null; stderr: string }
 export type Runner = (args: string[]) => RunnerResult;
 export const systemRunner: Runner = args => { const r = spawnSync("systemctl", args, { encoding:"utf8" }); return { status:r.status, stderr:r.stderr ?? "" }; };
@@ -74,6 +76,23 @@ export interface PublishOptions {
 	plan?: string;
 	/** The repo the page belongs to in the pages meta (Base tab); resolved by the CLI when absent. */
 	repo?: string;
+	/** The drilldown template a plan page must match (P2, plan 20261031_0917); the CLI passes the installed package's copy. */
+	templatePath?: string;
+}
+
+/** P2 (plan 20261031_0917): a plan page is the drilldown skill's engine with only its DATA block
+ * edited — the owner approves a diagram the skill drew, not a hand-rolled page. The injected notes
+ * chrome is stripped first, so a republished page still compares clean against the template. */
+export function assertDrilldown(html: string, templatePath: string = join(HERE, "../../templates/skills/architecture-drilldown/template.html")): void {
+	const template = readFileSync(templatePath, "utf8");
+	const clean = stripPageNotes(html);
+	const at = clean.indexOf(DATA_MARK), end = clean.indexOf(END_DATA_MARK);
+	const part =
+		at < 0 || end < 0 ? "no DATA block"
+		: clean.slice(0, at) !== template.slice(0, template.indexOf(DATA_MARK)) ? "the part before DATA"
+		: clean.slice(end + END_DATA_MARK.length) !== template.slice(template.indexOf(END_DATA_MARK) + END_DATA_MARK.length) ? "the part after END DATA"
+		: null;
+	if (part !== null) throw new Error(`pages: a plan page must be built from ${templatePath}: copy it and edit only the DATA block (${part})`);
 }
 
 export function publishPage(file: string, name: string | undefined, force: boolean, dir: string, opts: PublishOptions = {}): string {
@@ -88,6 +107,7 @@ export function publishPage(file: string, name: string | undefined, force: boole
  let diagram: { missing: string[]; thin: string[] } | null = null;
  if (opts.plan !== undefined) {
   if (extname(source).toLowerCase() !== ".html") throw new Error(`pages: --plan needs an HTML artifact, not ${source}`);
+  assertDrilldown(readFileSync(file, "utf8"), opts.templatePath);
   diagram = checkDiagram(readFileSync(file, "utf8"), readFileSync(opts.plan, "utf8"));
  }
  const approve = opts.plan === undefined || diagram === null ? undefined : { page: targetName, open, problems: [...diagram.missing, ...diagram.thin] };

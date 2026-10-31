@@ -97,6 +97,15 @@ export interface AnsweredNote {
 
 const ANSWERED_RE = /<section id="ns-answered"[\s\S]*?<\/section>\n?/i;
 const APPROVE_RE = /<section id="ns-approve"[\s\S]*?<\/section>\n?/i;
+const STYLE_RE = /<style data-ns-page-notes>[\s\S]*?<\/style>\n?/i;
+const PANEL_RE = /<section id="ns-notes"[\s\S]*?<\/section>\n?/i;
+const FAB_RE = /<button id="ns-note-fab"[\s\S]*?<\/button>\n?/i;
+const SCRIPT_RE = /<script data-ns-page-notes>[\s\S]*?<\/script>\n?/i;
+
+/** The html with the injected notes chrome gone, so a publish-time check sees the built page again (plan 20261031_0917 P2). */
+export function stripPageNotes(html: string): string {
+	return [STYLE_RE, PANEL_RE, APPROVE_RE, ANSWERED_RE, FAB_RE, SCRIPT_RE].reduce((text, re) => text.replace(re, ""), html);
+}
 
 /** What the Approve bar needs: the page it approves, the notes still open on it and what the
  * diagram check found (P9, P10). */
