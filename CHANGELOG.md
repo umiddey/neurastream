@@ -2,6 +2,7 @@
 ## Unreleased
 ### Added
 - Every scheduled job beats: `withHeartbeat` wraps wip-snapshot, wip-backup and `metrics report`, the pages server and the owner page server write `pages-serve` / `ui` heartbeats — `{name, at, ok, detail}` JSON under `<queue_state>/heartbeats/<name>.json`, detail cut to 200 chars; a crash beats ok:false with the first error line, then re-throws so exit codes are unchanged. Hidden `neurastream heartbeat <name> [--fail "<text>"]` beats once by hand (live check, your own cron jobs).
+- `neurastream watch` (hidden): one watcher pass — failed and stale heartbeats, failed user units filtered by `watch.units` globs, and the gated incident detectors fold into `source: watch` incidents under `watch.expect` staleness budgets (wip-snapshot 2h, wip-backup 26h, metrics-report 8 days); a watch incident whose problem recovers is closed again via `incident dismiss`.
 
 ## 0.2.62
 ### Changed
@@ -40,6 +41,7 @@
 - Owner page: the Base tab lists published pages under their repo (one card per repo, newest first, expired pages gone); `pages publish` records each page's repo.
 - Owner page: the Add note button works on a phone long-press.
 - `ui.allow_this_machine` admits this machine as the owner on the owner page.
+
 ### Changed
 - CI fails on any oxlint warning (`bun run lint`).
 - Write-check: a linter with `only_with_config` is skipped when no repo lint config file is found walking up to the git top; the shipped ruff argv drops `--select`/`--ignore` and oxlint drops `-D` group flags so a repo's own config governs (P10, I-20261031-93).
