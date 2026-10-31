@@ -1826,6 +1826,8 @@ export function liveSubagents(ledgerOut: string): string[] {
 		.map(l => l.split(/\s+/)[0] ?? "");
 }
 
+export const STOP_PLAN_OFFER_REFUSAL = "main-guard: don't promise it — do it now, or write the plan and index it";
+
 /**
  * stop: Main may not stop while an open plan is not parked "WAITING on owner" (or the queue has a
  * problem) and no subagent is alive to wake it; an open incident (no plan, no dismissal) blocks
@@ -1838,8 +1840,8 @@ export function checkStop(e: StopEvent, cfg: Config): Decision {
 	// 20261028_0900 P2: a reply that offers to plan instead of planning is refused for the offer
 	// itself; the two-empty-stops valves below never release this block.
 	if (e.reply && new RegExp(cfg.guards.plan_offer, "i").test(e.reply)) {
-		log(cfg.paths.guard_log, "BLOCK stop: reply offers to plan instead of planning it");
-		return { allow: false, reason: "main-guard: don't offer it — write the plan and index it", state };
+		log(cfg.paths.guard_log, "BLOCK stop: reply offers or promises instead of doing it");
+		return { allow: false, reason: STOP_PLAN_OFFER_REFUSAL, state };
 	}
 	let open: string[];
 	try {
