@@ -18,7 +18,7 @@ import { runNotes } from "./notes.ts";
 import { runPages } from "./pages.ts";
 import { runUninstall } from "../core/uninstall.ts";
 import { queueMigrate } from "../core/queue-migrate.ts";
-import { allowedAgents, indexPath, readIndex, subagentsPath, writeIndex } from "../core/queue/lib.ts";
+import { allowedAgents, enforceReadOnlyIndex, indexPath, readIndex, subagentsPath, writeIndex } from "../core/queue/lib.ts";
 import { allowAgents, denyAgents, invalidSlugs } from "../core/subagents.ts";
 
 const BINS = [
@@ -136,6 +136,10 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 	}
 	if (cmd === "doctor") {
 		for (const warning of pagesDoctor()) console.warn(`warning: ${warning}`);
+		try {
+			const was = enforceReadOnlyIndex(loadConfig().paths.queue_index);
+			if (was) console.warn(`warning: ${indexPath()} — was ${was}, set 0444 (the plan index is read-only on disk)`);
+		} catch {} // a broken config is doctor's own report; the adapter doctor names it
 		return getAdapter().doctor();
 	}
 	if (cmd === "notify") return runNotify(args);

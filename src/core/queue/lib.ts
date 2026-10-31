@@ -121,6 +121,19 @@ export function writeIndex(lines: string[], why?: { removed?: "close" | "cancel"
 	chmodSync(index, 0o444);
 }
 
+// Doctor's enforcement half of the same plan: the live index must sit at 0444 between writes, so
+// no program — not just an agent tool call — can rewrite it. Returns the mode it had to fix.
+export function enforceReadOnlyIndex(index = indexPath()): string | null {
+	try {
+		const mode = statSync(index).mode & 0o777;
+		if (mode === 0o444) return null;
+		chmodSync(index, 0o444);
+		return `0${mode.toString(8)}`;
+	} catch {
+		return null;
+	}
+}
+
 export function sections(text: string): Map<string, string> {
 	const out = new Map<string, string>();
 	const parts = text.split(/^## /m);
