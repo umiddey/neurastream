@@ -37,6 +37,8 @@ function seed(): Config {
 	const blocker = join(AGENT, "blockers/no-push");
 	writeFileSync(blocker, "#!/bin/sh\nexit 0\n");
 	chmodSync(blocker, 0o755);
+	// queueClose leaves the index 0444 (plan 20261031_0911 P2); reseed fresh instead of writing over it.
+	rmSync(join(AGENT, "INDEX.md"), { force: true });
 	writeFileSync(join(AGENT, "INDEX.md"), `${join(TOY, "docs/plans/20261020_1200_fix.md")}\n`);
 	writeFileSync(
 		join(HOME, ".config/neurastream/config.yml"),

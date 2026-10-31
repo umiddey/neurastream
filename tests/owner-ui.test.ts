@@ -1264,6 +1264,8 @@ function reorderIndex(): string {
 	writeFileSync(PLAN_B, PLAN_TEXT("open", false));
 	writeFileSync(PLAN_C, PLAN_TEXT("open", false));
 	const index = join(TMP, "reorder-index.md");
+	// A reorder leaves the index 0444 (plan 20261031_0911 P2); reseed fresh instead of writing over it.
+	rmSync(index, { force: true });
 	writeFileSync(
 		index,
 		[
@@ -1287,6 +1289,8 @@ function mixedIndex(): string {
 	writeFileSync(PLAN_C, PLAN_TEXT("open", false));
 	writeFileSync(PLAN_E, PLAN_TEXT("open", true));
 	const index = join(TMP, "reorder-index-open.md");
+	// A reorder leaves the index 0444 (plan 20261031_0911 P2); reseed fresh instead of writing over it.
+	rmSync(index, { force: true });
 	writeFileSync(
 		index,
 		[
@@ -1375,6 +1379,8 @@ function waitsIndex(): string {
 	writeFileSync(PLAN_B, PLAN_TEXT("open", false));
 	writeFileSync(PLAN_C, PLAN_TEXT("open", false));
 	const index = join(TMP, "reorder-index-waits.md");
+	// A reorder leaves the index 0444 (plan 20261031_0911 P2); reseed fresh instead of writing over it.
+	rmSync(index, { force: true });
 	writeFileSync(index, [PLAN_B, PLAN_C, PLAN_A, ""].join("\n"));
 	return index;
 }

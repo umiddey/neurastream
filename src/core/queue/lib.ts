@@ -104,9 +104,10 @@ export function readIndex(file = indexPath(), base = process.cwd()): string[] {
 // disappear without an explicit close/cancel/migrate reason throws before anything is written, and
 // every write lands temp+rename then chmods the file to 0444. No 0o644 before the rename: rename(2)
 // replaces a read-only target with directory-write permission only, so the file is never writable —
-// not even between the rename and the chmod.
-export function writeIndex(lines: string[], why?: { removed?: "close" | "cancel" | "migrate" }): void {
-	const index = indexPath();
+// not even between the rename and the chmod. `file` defaults to the env index; the owner page
+// reorders the cfg's queue_index, which tests point away from the env index.
+export function writeIndex(lines: string[], why?: { removed?: "close" | "cancel" | "migrate" }, file = indexPath()): void {
+	const index = file;
 	const newSet = new Set(
 		lines.filter(l => l.trim()).map(l => path.resolve(expandHome(l.trim().replace(/^[-*]\s+/, "").replace(/`/g, "").trim()))),
 	);
