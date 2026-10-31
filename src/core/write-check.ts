@@ -4,13 +4,16 @@
 
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { rmSync, writeFileSync } from "node:fs";
-import { basename, dirname, extname, join } from "node:path";
+import { existsSync, rmSync, writeFileSync } from "node:fs";
+import { basename, dirname, extname, join, resolve } from "node:path";
+
+import { gitTop } from "./queue/lib.ts";
 
 export interface WriteCheckLinter {
 	ext: string[];
 	argv: string[];
 	pattern: string;
+	only_with_config?: string[];
 }
 
 export interface WriteCheckConfig {
@@ -50,10 +53,22 @@ function add(f: Findings, k: string, rule: string, sample: string): void {
 	if (!f.rules.has(k)) f.rules.set(k, rule);
 }
 
+// Walks up from dirname(file) to the git top (inclusive: a repo-root config counts), looking for one
+// of `names`; never above it. Outside a git repo only the file's own directory is checked.
+function hasConfig(file: string, names: string[]): boolean {
+	const start = resolve(dirname(file));
+	const top = gitTop(start)?.top;
+	for (let dir = start; ; dir = dirname(dir)) {
+		if (names.some((name) => existsSync(join(dir, name)))) return true;
+		if (top === undefined || dir === top || dir === dirname(dir)) return false;
+	}
+}
+
 // Runs each linter on `path` and counts its findings. Throws when a linter did not finish
 // (missing binary, timeout, signal); the caller turns that into an allowed edit with a note.
 function lint(path: string, linters: WriteCheckLinter[], wc: WriteCheckConfig, f: Findings): void {
 	for (const l of linters) {
+		if (l.only_with_config && !hasConfig(path, l.only_with_config)) continue;
 		const argv = l.argv.map((a) => (a === "{file}" ? path : a));
 		const [cmd = "", ...args] = argv;
 		const r = spawnSync(cmd, args, {
@@ -100,6 +115,9 @@ function refusal(file: string, now: Findings, old: Findings, newKeys: string[]):
 
 export function checkWrite(file: string, before: string | null, after: string | null, wc: WriteCheckConfig): WriteCheckResult {
 	if (after === null || before === after) return { allow: true };
+	if (typeof before === "string" && /^(<<<<<<<|>>>>>>>)/m.test(before)) {
+		return { allow: true, note: `write-check: ${file} had conflict markers in the before text; the edit was allowed` };
+	}
 	const linters = wc.linters.filter((l) => l.ext.includes(extname(file)));
 	if (linters.length === 0) return { allow: true };
 	const old: Findings = { counts: new Map(), samples: new Map(), rules: new Map() };

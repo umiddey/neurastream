@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/core/config.ts";
@@ -157,6 +157,65 @@ describe("checkWrite", () => {
 		writeFileSync(file, "lint:E1\nlint:E2 lint:E3\n");
 		checkWrite(file, "lint:E1\nlint:E2\n", "lint:E1\nlint:E2 lint:E3\n", wc());
 		expect(readdirSync(d)).toEqual(["a.ts"]);
+	});
+	test("a linter with only_with_config is skipped when no config file is in the walk-up (P10)", () => {
+		const dir = mkdtempSync(join(tmpdir(), "neurastream-wc-"));
+		const file = join(dir, "a.ts");
+		writeFileSync(file, "lint:E1\n");
+		const r = checkWrite(file, "clean\n", "lint:E1\n", wc({
+			linters: [{ ext: [".ts"], argv: [process.execPath, FAKE, "{file}"], pattern: "^.+?:\\d+:\\d+: (?<rule>\\S+) (?<message>.+)$", only_with_config: ["ruff.toml"] }],
+		}));
+		expect(r.allow).toBe(true);
+	});
+
+	test("a linter with only_with_config runs when its config file is found (P10)", () => {
+		const dir = mkdtempSync(join(tmpdir(), "neurastream-wc-"));
+		const file = join(dir, "a.ts");
+		writeFileSync(join(dir, "ruff.toml"), "# repo config");
+		writeFileSync(file, "lint:E1\n");
+		const r = checkWrite(file, "clean\n", "lint:E1\n", wc({
+			linters: [{ ext: [".ts"], argv: [process.execPath, FAKE, "{file}"], pattern: "^.+?:\\d+:\\d+: (?<rule>\\S+) (?<message>.+)$", only_with_config: ["ruff.toml"] }],
+		}));
+		expect(r.allow).toBe(false);
+		if (r.allow) return;
+		expect(r.reason).toContain("E1");
+	});
+
+	test("only_with_config stops at the git top: a config above it does not count (P10, I-20261031-89)", () => {
+		const outer = mkdtempSync(join(tmpdir(), "neurastream-wc-"));
+		const repo = join(outer, "repo");
+		mkdirSync(join(repo, ".git"), { recursive: true });
+		const sub = join(repo, "sub");
+		mkdirSync(sub, { recursive: true });
+		writeFileSync(join(outer, "ruff.toml"), "# above the git top");
+		const file = join(sub, "a.ts");
+		writeFileSync(file, "lint:E1\n");
+		const r = checkWrite(file, "clean\n", "lint:E1\n", wc({
+			linters: [{ ext: [".ts"], argv: [process.execPath, FAKE, "{file}"], pattern: "^.+?:\\d+:\\d+: (?<rule>\\S+) (?<message>.+)$", only_with_config: ["ruff.toml"] }],
+		}));
+		expect(r.allow).toBe(true);
+	});
+
+	test("only_with_config finds a config at the git top itself (the usual repo-root pyproject/oxlintrc)", () => {
+		const repo = mkdtempSync(join(tmpdir(), "neurastream-wc-"));
+		mkdirSync(join(repo, ".git"));
+		writeFileSync(join(repo, "ruff.toml"), "# repo root config");
+		const sub = join(repo, "sub");
+		mkdirSync(sub, { recursive: true });
+		const file = join(sub, "a.ts");
+		writeFileSync(file, "lint:E1\n");
+		const r = checkWrite(file, "clean\n", "lint:E1\n", wc({
+			linters: [{ ext: [".ts"], argv: [process.execPath, FAKE, "{file}"], pattern: "^.+?:\\d+:\\d+: (?<rule>\\S+) (?<message>.+)$", only_with_config: ["ruff.toml"] }],
+		}));
+		expect(r.allow).toBe(false);
+	});
+
+	test("an edit whose before text holds git conflict markers is allowed with a note (P11, I-20261029-450)", () => {
+		const before = "<<<<<<< HEAD\nlint:E1 old finding\n=======\nlint:E2 other\n>>>>>>> branch\n";
+		const r = run(before, "lint:E1 old finding\n");
+		expect(r.allow).toBe(true);
+		if (!r.allow) return;
+		expect(r.note).toContain("conflict");
 	});
 });
 

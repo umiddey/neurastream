@@ -203,4 +203,14 @@ describe("write_check config", () => {
 		const file = withFile('write_check:\n  defer_rules: [""]\n');
 		expect(() => loadConfig({ file, home, env: {} })).toThrow("write_check.defer_rules");
 	});
+	test("only_with_config with a bad entry names the key (P10)", () => {
+		const file = withFile('write_check:\n  linters: [{ext: [".py"], argv: ["ruff", "{file}"], pattern: "(?<rule>\\\\S+)", only_with_config: [""]}]\n');
+		expect(() => loadConfig({ file, home, env: {} })).toThrow("write_check.linters[0].only_with_config");
+	});
+
+	test("only_with_config accepts a list of file names (P10)", () => {
+		const file = withFile('write_check:\n  linters: [{ext: [".py"], argv: ["ruff", "{file}"], pattern: "(?<rule>\\\\S+)", only_with_config: ["ruff.toml", ".ruff.toml"]}]\n');
+		const cfg = loadConfig({ file, home, env: {} });
+		expect(cfg.write_check.linters[0]!.only_with_config).toEqual(["ruff.toml", ".ruff.toml"]);
+	});
 });

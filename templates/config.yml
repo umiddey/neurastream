@@ -229,11 +229,13 @@ write_check:                 # write-time lint checks (src/core/write-check.ts):
   defer_rules: ["no-unused-vars", "F401", "F841"]   # a new finding of one of these rules is allowed with a logged note and only reported at turn end if still present (I-20261028-166); [] turns the deferral off
   linters:
     - ext: [".py"]
-      argv: ["ruff", "check", "--no-cache", "--output-format=concise", "--select", "E,F,B,S,C90,PERF,SIM", "--ignore", "E501,S101", "{file}"]
+      argv: ["ruff", "check", "--no-cache", "--output-format=concise", "{file}"]
       pattern: '^.+?:\d+:\d+: (?<rule>\S+) (?<message>.+)$'
+      only_with_config: ["pyproject.toml", "ruff.toml", ".ruff.toml"]
     - ext: [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"]
-      argv: ["oxlint", "-f", "unix", "-D", "correctness", "-D", "suspicious", "-D", "perf", "{file}"]
+      argv: ["oxlint", "-f", "unix", "{file}"]
       pattern: '^.+?:\d+:\d+: (?<message>.+) \[(?:Error|Warning)/(?<rule>[^\]]+)\]'
+      only_with_config: [".oxlintrc.json", ".oxlintrc.jsonc", ".oxlintrc.js", ".oxlintrc.mjs", ".oxlintrc.cjs", "eslint.config.js", "eslint.config.mjs", "eslint.config.cjs", "eslint.config.mts", "eslint.config.cts"]
 
 priority:
   sleep_sec: 120

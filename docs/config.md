@@ -230,11 +230,13 @@ write_check:
   defer_rules: ["no-unused-vars", "F401", "F841"]
   linters:
     - ext: [".py"]
-      argv: ["ruff", "check", "--no-cache", "--output-format=concise", "--select", "E,F,B,S,C90,PERF,SIM", "--ignore", "E501,S101", "{file}"]
+      argv: ["ruff", "check", "--no-cache", "--output-format=concise", "{file}"]
       pattern: '^.+?:\d+:\d+: (?<rule>\S+) '
+      only_with_config: ["pyproject.toml", "ruff.toml", ".ruff.toml"]
     - ext: [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"]
-      argv: ["oxlint", "-f", "unix", "-D", "correctness", "-D", "suspicious", "-D", "perf", "{file}"]
+      argv: ["oxlint", "-f", "unix", "{file}"]
       pattern: '^.+?:\d+:\d+: .*\[(?:Error|Warning)/(?<rule>[^\]]+)\]'
+      only_with_config: [".oxlintrc.json", ".oxlintrc.jsonc", ".oxlintrc.js", ".oxlintrc.mjs", ".oxlintrc.cjs", "eslint.config.js", "eslint.config.mjs", "eslint.config.cjs", "eslint.config.mts", "eslint.config.cts"]
 
 priority:
   sleep_sec: 120
@@ -370,7 +372,7 @@ The loader rejects:
 - `knowledge.roots` that is not a non-empty list of non-empty paths, or `knowledge.max_age_s` below 1 or not an integer
 - a `brief.repo_rules` entry whose `match`, `require`, `first` or `unless` does not compile as a case-insensitive regex, or whose `message` is empty
 - `secrets.proxy` that is not `none` or `secretgate`, a `secrets.known_value_files` entry that is not a non-empty path, or a `secrets.extra_patterns` entry without a non-empty `type` and a `regex` that compiles
-- `write_check.applies_to` that is not `sub` or `all`, `write_check.timeout_ms` that is not above 0, a `write_check.suppress` that is empty or does not compile, a `write_check.defer_rules` that is not a list of non-empty rule names, or a `write_check.linters` entry whose `ext` is not a list of dotted extensions, whose `argv` lacks `{file}`, or whose `pattern` lacks a `(?<rule>` group or does not compile
+- `write_check.applies_to` that is not `sub` or `all`, `write_check.timeout_ms` that is not above 0, a `write_check.suppress` that is empty or does not compile, a `write_check.defer_rules` that is not a list of non-empty rule names, or a `write_check.linters` entry whose `ext` is not a list of dotted extensions, whose `argv` lacks `{file}`, or whose `pattern` lacks a `(?<rule>` group or does not compile, or whose `only_with_config`, if present, is not a list of non-empty file names
 - YAML that does not parse
 
 Missing keys are filled from the defaults above. A present key replaces the default. Objects merge one level (`score.penalties` merges per kind; an omitted kind keeps the default). Arrays replace.
@@ -381,7 +383,7 @@ Write-time lint (`src/core/write-check.ts`, applied by the omp adapter). With `e
 
 A pattern may name a `(?<message>` group next to `rule`; findings are then compared by `(rule, message)` multiset, so the refusal names each new finding's own line and a rule's old debt can neither be blamed for a refusal nor hide the new finding behind one merged count (INCIDENT I-20261028-150, I-20261028-151). A pattern without a `message` group keeps the older per-rule counting.
 
-The shipped `suppress` regex only counts a marked word: a comment marker (`#`, `//` or `/*`) must sit before it, so a test fixture or string that merely contains `noqa` is not a suppression (INCIDENT I-20261028-113). The shipped ruff run adds `--ignore E501,S101` after its `--select`: ruff's `--select` overrides a repo's own ignore list, and long lines and `assert` in tests are style, not defects an edit may not add (INCIDENT I-20261028-112).
+The shipped `suppress` regex only counts a marked word: a comment marker (`#`, `//` or `/*`) must sit before it, so a test fixture or string that merely contains `noqa` is not a suppression (INCIDENT I-20261028-113). The shipped linters set `only_with_config`: the linter runs only when one of those files is found walking up to the git top, so the repo's own lint config governs instead of the shipped argv overriding it, and a directory with no config is not linted at all (INCIDENT I-20261028-112).
 
 A new finding whose rule is in `defer_rules` does not refuse the edit: it is allowed with a logged note, and the omp adapter re-lints the file at the turn's end — one steer lists the deferred findings still present, a file fixed or deleted later in the turn steers nothing (INCIDENT I-20261028-166, so a declare-then-use refactor works with plain edits). A missing or crashed linter steers nothing too. `defer_rules: []` turns the deferral off.
 
