@@ -175,22 +175,27 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 		}
 		try {
 			const cfg = loadConfig();
-			return withHeartbeat(cfg, "watch", () => {
+			// main.ts calls process.exit right after run() returns, so every post is awaited
+			// before the exit; a failed provider lands in guard.log, never crashes the watcher.
+			const sends: Promise<void>[] = [];
+			const code = withHeartbeat(cfg, "watch", () => {
 				const report = watchOnce(cfg, {
 					now: nowSec,
 					listUnits: systemUnitLister,
 					gather: defaultGather(cfg, getAdapter(cfg)),
-					// Fire-and-forget like the stop path: postReply serializes and retries
-					// internally; a failed provider lands in guard.log, never crashes the watcher.
 					notify: text => {
-						void postReply(text, cfg).then(rs => {
-							for (const r of rs) if (!r.posted) log(cfg.paths.guard_log, `watch notify failed [${r.provider}]: ${r.error}`);
-						});
+						sends.push(
+							postReply(text, cfg).then(rs => {
+								for (const r of rs) if (!r.posted) log(cfg.paths.guard_log, `watch notify failed [${r.provider}]: ${r.error}`);
+							}),
+						);
 					},
 				});
 				console.log(`watch: ${report.opened.length} opened, ${report.deduped.length} deduped, ${report.closed.length} recovered, ${report.detectors.length} detector findings`);
 				return 0;
 			});
+			await Promise.allSettled(sends);
+			return code;
 		} catch (err) {
 			console.error(err instanceof ConfigError ? err.message : String(err));
 			return 1;
