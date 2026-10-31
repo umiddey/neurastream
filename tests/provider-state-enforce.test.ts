@@ -78,6 +78,8 @@ adapter:
   sessions: "${join(home, ".omp/agent/sessions")}"
   pins: "${join(agentDir, "agents")}"
   extensions: "${join(home, ".omp/agent/extensions")}"
+review:
+  agents: []
 ${prefer ? 'ledger:\n  prefer:\n    - glm\n    - deepseek\n    - haiku\n' : ""}`,
 	);
 	return loadConfig({ home, env: {} });

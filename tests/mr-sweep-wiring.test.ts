@@ -39,6 +39,9 @@ Branch: feat/other
 ## Code read by Main
 - \`src/core/mr-sweep.ts\`
 
+## Reuse
+- new: none — checked: docs/plans/20261026_1530_fixture.md:1 — reuse: nothing new
+
 ## Progress
 Status: open
 ${extra}

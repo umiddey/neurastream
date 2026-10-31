@@ -9,6 +9,7 @@ import type { ToolEvent } from "../src/core/adapter.ts";
 import { loadConfig, reloadingConfig } from "../src/core/config.ts";
 import { checkPlanEdit, checkSpawn, checkTool, reviewHash, reviewSpawnEnd } from "../src/core/guards.ts";
 import type { CommandRunner } from "../src/core/mr-sweep.ts";
+import { queueCheck } from "../src/core/queue-check.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { parsePlan, queueProblems, queueSummary, reviewAgentsProblem, type Plan } from "../src/core/queue/lib.ts";
 import { fixturePlan } from "./fixtures/plan.ts";
@@ -16,7 +17,8 @@ import { fixturePlan } from "./fixtures/plan.ts";
 const TMP = mkdtempSync(join(tmpdir(), "plan-review-"));
 const REPO = join(TMP, "repo");
 const BLOCKERS = join(TMP, "blockers");
-const SINCE = "2026-10-28";
+/** A non-empty review.agents list: the reuse gate applies (P5: the gates are off only on an empty list). */
+const AGENTS = ["reviewer"];
 
 mkdirSync(join(REPO, ".git"), { recursive: true }); // planRepo walks up to .git; without it planGate resolves citations under docs/plans
 mkdirSync(join(REPO, "docs/plans"), { recursive: true });
@@ -35,7 +37,7 @@ function planFile(stamp: string, reuse?: string): string {
 }
 
 function parsed(file: string): Plan {
-	return parsePlan(REPO, file, readFileSync(file, "utf8"), BLOCKERS, SINCE);
+	return parsePlan(REPO, file, readFileSync(file, "utf8"), BLOCKERS, AGENTS);
 }
 
 // --- P1: reuse lines ---
@@ -59,9 +61,9 @@ test("a valid reuse line (including new: none) is clean", () => {
 	expect(parsed(planFile("20261029_0104")).errors).toEqual([]);
 });
 
-test("a plan stamped before review.since is exempt", () => {
+test("a plan stamped before the old cutover is no longer exempt (P5)", () => {
 	const p = parsed(planFile("20261020_0100", ""));
-	expect(p.errors).toEqual([]);
+	expect(p.errors.join("\n")).toMatch(/## Reuse/);
 });
 
 test("Reuse is an allowed plan section", () => {
@@ -73,7 +75,7 @@ test("queueProblems reports the missing Reuse section under the plan's file", ()
 	const file = planFile("20261029_0106", "");
 	const index = join(TMP, "INDEX.md");
 	writeFileSync(index, `${file}\n`);
-	const probs = queueProblems(index, BLOCKERS, SINCE);
+	const probs = queueProblems(index, BLOCKERS, AGENTS);
 	expect(probs.map(q => `${q.where}: ${q.problem}`).join("\n")).toMatch(new RegExp(file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + ".*## Reuse"));
 });
 
@@ -108,7 +110,6 @@ writeFileSync(
   guard_log: "${join(GHOME, "main-guard.log")}"
   plan_guard_log: "${join(GHOME, "plan-guard.log")}"
 review:
-  since: "2026-10-28"
   agents: ["reviewer"]
 `,
 );
@@ -204,19 +205,22 @@ test("a review spawn is exempt without a record", () => {
 	expect(gspawn(`Plan review: ${LOCKED}\nReview P1 against its phases.`, "reviewer", gcfg, "rev1")).toMatchObject({ allow: true });
 });
 
-// --- P4c: the PASS gate honours review.since (plans stamped before the cutover are exempt) ---
+// --- P5 (plan 20261028_1600): the cutover is gone; every plan needs a current PASS ---
 
 const PRE_SINCE = join(REPO, "docs/plans/20261020_0100_presince.md");
 writeFileSync(join(GAGENT, "INDEX.md"), `${LOCKED}\n${PRE_SINCE}\n`);
 writeFileSync(PRE_SINCE, fixturePlan());
 
-test("a plan stamped before review.since spawns with no PASS", () => {
+test("a plan stamped before the old cutover is refused with no PASS (P5)", () => {
 	rmSync(REVIEWS, { force: true });
 	freshProgress();
-	expect(gspawn(`Work ${PRE_SINCE} on P1`)).toMatchObject({ allow: true });
+	expect(gspawn(`Work ${PRE_SINCE} on P1`)).toMatchObject({
+		allow: false,
+		reason: expect.stringContaining("no current reviewer PASS"),
+	});
 });
 
-test("a plan stamped on/after review.since is still refused with no PASS", () => {
+test("a plan with no PASS is refused however it is stamped", () => {
 	rmSync(REVIEWS, { force: true });
 	freshProgress();
 	expect(gspawn(`Work ${LOCKED} on P1`)).toMatchObject({
@@ -225,12 +229,36 @@ test("a plan stamped on/after review.since is still refused with no PASS", () =>
 	});
 });
 
-test(`since: "" turns the PASS gate off`, () => {
+test("review.agents [] turns the PASS gate off", () => {
+	rmSync(REVIEWS, { force: true });
+	rmSync(join(GSTATE, "incidents.jsonl"), { force: true }); // the FAIL tests' findings are open incidents; this test is about the off-switch
+	freshProgress();
+	expect(gspawn(`Work ${LOCKED} on P1`, "worker", withAgents([]))).toMatchObject({ allow: true });
+});
+
+test("review.agents [glm] still refuses a plan with no PASS", () => {
 	rmSync(REVIEWS, { force: true });
 	freshProgress();
-	expect(gspawn(`Work ${LOCKED} on P1`, "worker", { ...gcfg, review: { ...gcfg.review, since: "" } })).toMatchObject({
-		allow: true,
+	expect(gspawn(`Work ${PRE_SINCE} on P1`, "worker", withAgents(["glm"]))).toMatchObject({
+		allow: false,
+		reason: expect.stringContaining("no current reviewer PASS"),
 	});
+});
+
+test("review.agents [] is a valid config even when Allowed names agents (I-20261030-5)", () => {
+	expect(reviewAgentsProblem(withAgents([]), new Set(["worker", "reviewer"])).problem).toBeNull();
+});
+
+test("queue-check passes with review.agents [] even for a plan without Reuse (I-20261030-5)", () => {
+	const plan = planFile("20261031_0100", "");
+	const index = join(GAGENT, "INDEX.md");
+	const before = readFileSync(index, "utf8");
+	writeFileSync(index, `${before}${plan}\n`);
+	try {
+		expect(queueCheck(["--no-mr-sweep"], withAgents([]))).toBe(0);
+	} finally {
+		writeFileSync(index, before);
+	}
 });
 
 // --- P4g: the review line is matched exactly; a PLAN REVIEW line outside that form is restored ---
@@ -297,7 +325,7 @@ test("the queue summary shows N/M done for a plan's phases", () => {
 	writeFileSync(file, THREE_PHASES);
 	const index = join(TMP, "INDEX3.md");
 	writeFileSync(index, `${file}\n`);
-	expect(queueSummary(index, SINCE)).toMatch(/\[open, 2\/3 done\]/);
+	expect(queueSummary(index, AGENTS)).toMatch(/\[open, 2\/3 done\]/);
 });
 
 test("ticking a phase box does not change the review hash", () => {

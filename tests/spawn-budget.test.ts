@@ -97,6 +97,8 @@ function fresh(): void {
   plan_guard_log: "${join(HOME, "plan-guard.log")}"
 guards:
   free_prefixes: ["${join(HOME, "Work/heavy-run.sh")}"]
+review:
+  agents: []
 `,
 	);
 	spawnSync("git", ["init", "-q"], { cwd: TOY });

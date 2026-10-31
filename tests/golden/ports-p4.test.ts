@@ -61,6 +61,8 @@ snapshot:
   tmp_dest: "${join(home, "Work/tmp-snapshot")}"
   git_repo: "${join(home, "Work/gateforge")}"
   git_backup: "${join(home, "Work/gf-backups/latest")}"
+review:
+  agents: []
 `;
 	writeFileSync(join(home, ".config/neurastream/config.yml"), yml);
 }

@@ -231,28 +231,13 @@ function headerField(text: string, name: string): string | null {
 	return v ? v.replace(/`/g, "").trim() || null : null;
 }
 
-/** A plan filename stamp (YYYYMMDD_HHMM) as an ISO-ish string ("2026-10-29T01:00") that sorts lexically; "" when unstamped. */
-export function stampIso(file: string): string {
-	const m = /^(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})/.exec(path.basename(file));
-	return m ? `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}` : "";
-}
-
-/**
- * The review gates (P1 reuse lines, P2 reviewer PASS) apply to a plan stamped at or after the
- * `review.since` cutover — a bare date counts as midnight; `since` "" switches them off.
- */
-export function reviewApplies(file: string, since: string): boolean {
-	const cutover = since.length === 10 ? `${since}T00:00` : since;
-	return cutover.length > 0 && stampIso(file) >= cutover;
-}
-
 /**
  * P1 (plan 20261028_1600): every new thing a plan adds carries a reuse line with a checked
- * `path:line` citation that exists relative to the plan's repo. Plans stamped before the
- * `review.since` cutover are exempt.
+ * `path:line` citation that exists relative to the plan's repo. Applies to every plan (P5
+ * removed the cutover); an empty `review.agents` list turns the gate off (P5c).
  */
-function reuseProblems(repo: string, file: string, secs: Map<string, string>, since: string): string[] {
-	if (!reviewApplies(file, since)) return [];
+function reuseProblems(repo: string, file: string, secs: Map<string, string>, reviewAgents: string[]): string[] {
+	if (!reviewAgents.length) return [];
 	const lines = items(secs.get("reuse") ?? "");
 	if (!lines.length)
 		return [`missing or empty "## Reuse" section (one line per new thing: - new: <thing> — checked: <path>:<line> — reuse: <how, or why not>; "- new: none — ..." when nothing is new)`];
@@ -265,7 +250,7 @@ function reuseProblems(repo: string, file: string, secs: Map<string, string>, si
 	return probs;
 }
 
-export function parsePlan(repo: string, file: string, text: string | null, blockersDir = blockersDirPath(), reviewSince = ""): Plan {
+export function parsePlan(repo: string, file: string, text: string | null, blockersDir = blockersDirPath(), reviewAgents: string[] = []): Plan {
 	const empty = { repo, file, text: "", status: null, blockers: [], doneCheck: null, worktree: null, branch: null, appliesTo: [], waiting: false, waitingLine: null, waitingAsk: null, waitingBlocked: null, waitingWhy: null, waitsOn: [], priorityId: null, title: path.basename(file), goal: [], summary: null, phases: { done: 0, total: 0 }, started: false };
 	if (text === null) return { ...empty, errors: ["plan file listed in the index does not exist"] };
 	const errors: string[] = [];
@@ -277,7 +262,7 @@ export function parsePlan(repo: string, file: string, text: string | null, block
 	const stamp = /^(\d{8}_\d{4})/.exec(path.basename(file))?.[1] ?? "";
 	if (stamp >= READ_CUTOVER && !items(secs.get("code read by main") ?? "").length)
 		errors.push(`missing or empty "## Code read by Main" section (plans stamped ${READ_CUTOVER} or later list each file they cite)`);
-	for (const problem of reuseProblems(repo, file, secs, reviewSince)) errors.push(problem);
+	for (const problem of reuseProblems(repo, file, secs, reviewAgents)) errors.push(problem);
 	const known = new Set([...REQUIRED, "applies to", "background", "code read by main", "reuse"]);
 	for (const s of secs.keys()) if (!known.has(s)) errors.push(`unknown section "## ${s}" (allowed: ${[...known].join(", ")})`);
 	const status = statusOf(text);
@@ -339,18 +324,18 @@ export function planRepo(file: string): string {
 	return m?.[1] ? m[1].replace(/\/$/, "") : dir;
 }
 
-export function readPlans(files: string[], blockersDir = blockersDirPath(), reviewSince = ""): Plan[] {
+export function readPlans(files: string[], blockersDir = blockersDirPath(), reviewAgents: string[] = []): Plan[] {
 	return files.map(file => {
 		let text: string | null = null;
 		try {
 			text = readFileSync(file, "utf8");
 		} catch {}
-		return parsePlan(planRepo(file), file, text, blockersDir, reviewSince);
+		return parsePlan(planRepo(file), file, text, blockersDir, reviewAgents);
 	});
 }
 
-export function activePlans(index = indexPath(), blockersDir = blockersDirPath(), reviewSince = ""): Plan[] {
-	return readPlans(readIndex(index), blockersDir, reviewSince);
+export function activePlans(index = indexPath(), blockersDir = blockersDirPath(), reviewAgents: string[] = []): Plan[] {
+	return readPlans(readIndex(index), blockersDir, reviewAgents);
 }
 
 /** Owner holds: one line per plan with a WAITING on owner line. The only real holds; the summary, the rollover context and the handoff all read them here. */
@@ -789,14 +774,16 @@ export function allowedAgents(file = subagentsPath()): Set<string> {
 
 // P4d (plan 20261028_1600): a review spawn runs under a review.agents entry that Main may spawn
 // (## Allowed of the subagents file). When Allowed names agents and none of them is a review.agents
-// entry, every review spawn is refused: a problem. When Allowed is empty (a fresh install), no subagent
-// can spawn at all yet, so there is no review spawn to refuse. An entry not allowed is a warning.
+// entry, every review spawn is refused: a problem. An empty review.agents list turns both review
+// gates off (P5c, I-20261030-5), so it is valid whatever Allowed holds. When Allowed is empty (a
+// fresh install), no subagent can spawn at all yet, so there is no review spawn to refuse. An
+// entry not allowed is a warning.
 export function reviewAgentsProblem(cfg: Config, allowed: Set<string>): { problem: string | null; warnings: string[] } {
 	const agents = cfg.review.agents;
 	const warnings = agents
 		.filter(a => !allowed.has(a))
 		.map(a => `review.agents lists "${a}", which is not in "## Allowed" of ${cfg.paths.subagents}; it cannot run a review spawn`);
-	const problem = allowed.size === 0 || agents.some(a => allowed.has(a))
+	const problem = agents.length === 0 || allowed.size === 0 || agents.some(a => allowed.has(a))
 		? null
 		: `no review.agents entry is in "## Allowed" of ${cfg.paths.subagents}: set review.agents to an allowed agent in config.yml`;
 	return { problem, warnings };
@@ -984,10 +971,10 @@ export interface QueueProblem {
 	problem: string;
 }
 
-export function queueProblems(index = INDEX, blockersDir = BLOCKERS_DIR, reviewSince = ""): QueueProblem[] {
+export function queueProblems(index = INDEX, blockersDir = BLOCKERS_DIR, reviewAgents: string[] = []): QueueProblem[] {
 	const probs: QueueProblem[] = [];
 	if (!existsSync(index)) probs.push({ where: index, problem: "main index missing: create it (empty = no open work)" });
-	const plans = readPlans(readIndex(index), blockersDir, reviewSince);
+	const plans = readPlans(readIndex(index), blockersDir, reviewAgents);
 	const byWorktree = new Map<string, Plan[]>();
 	for (const p of plans) {
 		for (const e of p.errors) probs.push({ where: p.file, problem: e });
@@ -1014,7 +1001,7 @@ export function queueProblems(index = INDEX, blockersDir = BLOCKERS_DIR, reviewS
 	return probs;
 }
 
-export function queueSummary(index = INDEX, reviewSince = ""): string {
+export function queueSummary(index = INDEX, reviewAgents: string[] = []): string {
 	// Index order IS priority (20261025_0215_index_priority): the list is flat and ranked,
 	// rank 1 = the index's top line; repos only surface through each plan's own path.
 	const plans = activePlans(index);
@@ -1039,7 +1026,7 @@ export function queueSummary(index = INDEX, reviewSince = ""): string {
 	});
 	const nCancelled = repos.reduce((n, repo) => n + readCancelled(repo).length, 0);
 	if (nCancelled) lines.push(`Cancelled rules: ${nCancelled}`);
-	const probs = queueProblems(index, BLOCKERS_DIR, reviewSince);
+	const probs = queueProblems(index, BLOCKERS_DIR, reviewAgents);
 	if (probs.length) lines.push(`Problems (fix first):`, ...probs.map(q => `  - ${q.where}: ${q.problem}`));
 	return lines.join("\n");
 }
