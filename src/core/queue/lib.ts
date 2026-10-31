@@ -866,7 +866,7 @@ export function finishedKey(entry: string): string {
 	return `${title}\n${path.basename(plan)}`;
 }
 
-/** Inserts the entry above older ones. Returns false when that repo's plan file is already listed. */
+/** Inserts the entry above older ones. Returns false when the same plan (title + file name) is already listed. */
 export function prependFinished(entry: string, file = finishedPath()): boolean {
 	let current = "";
 	try {
