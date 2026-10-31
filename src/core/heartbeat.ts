@@ -60,8 +60,8 @@ export function readBeats(cfg: Config): Record<string, Heartbeat> {
 
 /** Extract the first line of an unknown thrown value — used as the heartbeat detail on crash. */
 export function errorLine(e: unknown): string {
-	if (e instanceof Error) return e.message.split("\n")[0];
-	return String(e).split("\n")[0];
+	if (e instanceof Error) return e.message.split("\n")[0] ?? "";
+	return String(e).split("\n")[0] ?? "";
 }
 
 /** Wrap a synchronous job so it beats AFTER the job — ok = (exit code === 0) — and

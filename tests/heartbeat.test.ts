@@ -22,8 +22,8 @@ test("a job that throws still leaves ok:false with the first error line", () => 
 	const cfg = loadConfig({ home: tempHome("throw"), env: {} });
 	expect(() => withHeartbeat(cfg, "throwy-job", () => { throw new Error("boom\nsecond line"); })).toThrow("boom");
 	const beats = readBeats(cfg);
-	expect(beats["throwy-job"].ok).toBe(false);
-	expect(beats["throwy-job"].detail).toBe("boom");
+	expect(beats["throwy-job"]?.ok).toBe(false);
+	expect(beats["throwy-job"]?.detail).toBe("boom");
 });
 
 test("detail is cut to 200 chars", () => {
@@ -31,7 +31,7 @@ test("detail is cut to 200 chars", () => {
 	const long = "x".repeat(300);
 	beat(cfg, "long-detail", { ok: false, detail: long });
 	const beats = readBeats(cfg);
-	expect(beats["long-detail"].detail).toHaveLength(200);
+	expect(beats["long-detail"]?.detail).toHaveLength(200);
 });
 
 test("the hidden heartbeat CLI writes ok:false with --fail", async () => {
@@ -48,8 +48,8 @@ test("the hidden heartbeat CLI writes ok:false with --fail", async () => {
 		expect(code).toBe(0);
 		const cfg = loadConfig({ home, env: {} });
 		const beats = readBeats(cfg);
-		expect(beats["test-job"].ok).toBe(false);
-		expect(beats["test-job"].detail).toBe("error text");
+		expect(beats["test-job"]?.ok).toBe(false);
+		expect(beats["test-job"]?.detail).toBe("error text");
 	} finally {
 		if (savedHome === undefined) delete process.env.HOME;
 		else process.env.HOME = savedHome;
