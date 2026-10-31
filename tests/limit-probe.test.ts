@@ -89,7 +89,7 @@ describe("runProbe", () => {
 		dir = mkdtempSync(join(tmpdir(), "nlp-probe-"));
 		cfg = loadConfig({ home: "/nonexistent-limit-probe-home" });
 		cfg.paths.queue_state = dir;
-		cfg.guards.rate_limit.probe_cmd = "omp -p --model {model} 'reply ok'";
+		cfg.guards.rate_limit.probe_cmd = "omp -p --no-extensions --no-session --model {model} 'reply ok'";
 		cfg.guards.rate_limit.probe_timeout_s = 90;
 	});
 
@@ -102,7 +102,7 @@ describe("runProbe", () => {
 		runProbe(cfg, "it's-m", run);
 		expect(calls).toHaveLength(1);
 		expect(calls[0]!.file).toBe("sh");
-		expect(calls[0]!.args).toEqual(["-c", "omp -p --model 'it'\\''s-m' 'reply ok'"]);
+		expect(calls[0]!.args).toEqual(["-c", "omp -p --no-extensions --no-session --model 'it'\\''s-m' 'reply ok'"]);
 		expect(calls[0]!.opts.timeout).toBe(90_000);
 	});
 

@@ -29,8 +29,13 @@ import { nowSec, strftime } from "../../core/clock.ts";
 import { runDetectors, type DetectorInput } from "../../core/incident-detectors.ts";
 import { appendOwnerAnswer, readOwnerAnswers, readOwnerMessages } from "../../core/incidents.ts";
 import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, newProgressEntries, planReadNote, recordMainResult, resetMainCalls, revertMainEdit, rekeySpawnFile, reviewSpawnEnd, STOP_PLAN_OFFER_REFUSAL } from "../../core/guards.ts";
+<<<<<<< HEAD
 import { rateLimitWait } from "../../core/rate-limit.ts";
 import { notifyProviders, ownerAnswerHandback, ownerAnswerSteer, postReply } from "../../core/notify.ts";
+=======
+import { rateLimited } from "../../core/rate-limit.ts";
+import { notifyProviders, postReply } from "../../core/notify.ts";
+>>>>>>> 92ff65e (feat(limit-probe): probe loop pure core and rateLimited reshape (P2))
 import { loadKnownSecrets, redactSecrets, redactSummary } from "../../core/secret-redact.ts";
 import { inboxPath } from "../../core/owner-ui.ts";
 import { realTailscale } from "../../core/tailscale.ts";
@@ -601,7 +606,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 	let stopBlocked = false;
 	// Rate-limit wait-it-out (plan 20261025_0640): consecutive turn ends on a provider rate limit
 	// form one episode. Named provider retry-after values remain authoritative; otherwise the
-	// attempt doubles the default wait. The owner chat is told once per episode, and ONE timer
+	// wait is probe_interval_s (P3 replaces it with the probe loop). The owner chat is told once per episode, and ONE timer
 	// gives Main a new turn when the wait is over; a new Main turn before expiry takes over and
 	// cancels it. Inputs that do not start a turn leave it armed. Any turn that ends without a
 	// limit resets the episode and disarms it.
@@ -653,8 +658,14 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		armRateResume(untilMs);
 	};
 	// The rate-limit decision for one turn end, from the event's own last assistant message.
-	const rateLimitOf = (reply: EventReply | null): { untilMs: number; waitMs: number } | null =>
-		rateLimitWait(reply?.stopReason ?? null, reply?.errorMessage ?? null, Date.now(), cfg.guards.rate_limit, rateAttempt + 1);
+	const rateLimitOf = (reply: EventReply | null): { untilMs: number; waitMs: number } | null => {
+		const rl = cfg.guards.rate_limit;
+		const hit = rateLimited(reply?.stopReason ?? null, reply?.errorMessage ?? null, rl);
+		if (!hit) return null;
+		// Until the probe loop is wired (P3): a named retry-after is waited for, otherwise probe_interval_s.
+		const waitMs = (hit.retryAfterMs ?? rl.probe_interval_s * 1000) + rl.slack_s * 1000;
+		return { untilMs: Date.now() + waitMs, waitMs };
+	};
 	// One guard-log line per notify decision: `notify: posted|skipped (<why>)`. Fire-and-forget:
 	// the decision never awaits the post; a failed or slow post logs one line and never blocks
 	// or retries.

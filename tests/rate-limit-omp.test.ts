@@ -60,7 +60,7 @@ function writeConfig(): Config {
   plan_guard_log: "${join(TMP, "plan-guard.log")}"
 guards:
   rate_limit:
-    default_wait_s: 5
+    probe_interval_s: 5
     slack_s: 0
 notify:
   discord_webhook_file: "${DISCORD_FILE}"
@@ -132,11 +132,6 @@ const err429 = (retryMs: number): Record<string, unknown> =>
 	msg({
 		stopReason: "error",
 		errorMessage: `429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_x"} retry-after-ms=${retryMs}`,
-	});
-const err429WithoutRetryAfter = (): Record<string, unknown> =>
-	msg({
-		stopReason: "error",
-		errorMessage: `429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."},"request_id":"req_x"}`,
 	});
 
 const stopEvent = (m: Record<string, unknown>): Record<string, unknown> => ({ last_assistant_message: m, messages: [m] });
@@ -285,6 +280,7 @@ test("a 429 stop is allowed with one episode post and one resume timer that send
 	expect(logLines().filter(l => l.includes("RATE-LIMIT resume"))).toHaveLength(1);
 }, 30_000);
 
+<<<<<<< HEAD
 // (b) a second 429 after the resume → doubled wait, no second post in the same episode; ONE
 // timer (the doubled one) — the earlier arm is replaced, so exactly two messages in total.
 test("a second 429 in the episode doubles the wait, replaces the timer, posts nothing", async () => {
@@ -329,6 +325,8 @@ test("resumes quote unanswered owner messages; a real turn end clears them", asy
 	expect(host.sent[3]).toMatch(/^main-guard: the provider rate limit is over \(waited until \d\d:\d\d\)\. Continue the queue where you stopped\.$/);
 }, 40_000);
 
+=======
+>>>>>>> 92ff65e (feat(limit-probe): probe loop pure core and rateLimited reshape (P2))
 // A non-turn input leaves the resume armed; only an actual Main turn takes it over.
 test("slash command input leaves the resume armed until it fires", async () => {
 	reset();

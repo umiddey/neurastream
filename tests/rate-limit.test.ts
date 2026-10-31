@@ -4,6 +4,9 @@
 // The error text below is the real one returned by the provider at 2026-10-25 02:07:49Z.
 
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { rateLimited, type RateLimitConfig } from "../src/core/rate-limit.ts";
 import { ConfigError, loadConfig } from "../src/core/config.ts";
 
@@ -73,29 +76,35 @@ describe("guards.rate_limit config", () => {
 	});
 
 	test("a user override loads", () => {
-		const dir = `/tmp/neurastream-home-rl-${process.pid}-${Date.now()}`;
-		const { mkdirSync, writeFileSync } = require("node:fs");
-		mkdirSync(`${dir}/.config/neurastream`, { recursive: true });
-		writeFileSync(
-			`${dir}/.config/neurastream/config.yml`,
-			'guards:\n  rate_limit:\n    patterns: ["429"]\n    probe_interval_s: 60\n    max_probes: 10\n    probe_timeout_s: 30\n    probe_cmd: "echo {model}"\n    slack_s: 5\n',
-		);
-		const loaded = loadConfig({ home: dir });
-		expect(loaded.guards.rate_limit).toEqual({
-			patterns: ["429"],
-			probe_interval_s: 60,
-			max_probes: 10,
-			probe_timeout_s: 30,
-			probe_cmd: "echo {model}",
-			slack_s: 5,
-		});
+		const dir = mkdtempSync(join(tmpdir(), "nl-rl-"));
+		try {
+			mkdirSync(join(dir, ".config/neurastream"), { recursive: true });
+			writeFileSync(
+				join(dir, ".config/neurastream/config.yml"),
+				'guards:\n  rate_limit:\n    patterns: ["429"]\n    probe_interval_s: 60\n    max_probes: 10\n    probe_timeout_s: 30\n    probe_cmd: "echo {model}"\n    slack_s: 5\n',
+			);
+			const loaded = loadConfig({ home: dir });
+			expect(loaded.guards.rate_limit).toEqual({
+				patterns: ["429"],
+				probe_interval_s: 60,
+				max_probes: 10,
+				probe_timeout_s: 30,
+				probe_cmd: "echo {model}",
+				slack_s: 5,
+			});
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	test("bad values are refused", () => {
-		const dir = `/tmp/neurastream-home-rl-bad-${process.pid}-${Date.now()}`;
-		const { mkdirSync, writeFileSync } = require("node:fs");
-		mkdirSync(`${dir}/.config/neurastream`, { recursive: true });
-		writeFileSync(`${dir}/.config/neurastream/config.yml`, "guards:\n  rate_limit:\n    probe_interval_s: 0\n");
-		expect(() => loadConfig({ home: dir })).toThrow(ConfigError);
+		const dir = mkdtempSync(join(tmpdir(), "nl-rl-bad-"));
+		try {
+			mkdirSync(join(dir, ".config/neurastream"), { recursive: true });
+			writeFileSync(join(dir, ".config/neurastream/config.yml"), "guards:\n  rate_limit:\n    probe_interval_s: 0\n");
+			expect(() => loadConfig({ home: dir })).toThrow(ConfigError);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

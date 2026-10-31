@@ -188,9 +188,11 @@ guards:
   plan_offer: 'want me to (write|make) a plan|should i plan|shall i plan|if you want, i(''ll)? plan|plan it or|\bi will\b|\bi(''|’)ll\b'   # refused: don't promise or offer it — do it now, or write the plan and index it
   rate_limit:
     patterns: ["429", "rate_limit", "rate limit", "overloaded", "529"]   # error-text substrings (case-insensitive) that mark a provider rate limit
-    default_wait_s: 300    # wait when the error text names no retry-after
-    max_wait_s: 3600       # cap for the parsed (or doubled default) wait, before slack
-    slack_s: 15            # added on top of every wait
+    probe_interval_s: 300  # probe the provider this often (s) while it names no reset
+    max_probes: 288        # probes before the episode gives up (288 x 300 s = 24 h)
+    probe_timeout_s: 90    # kill a probe that runs longer than this (s)
+    probe_cmd: "omp -p --no-extensions --no-session --model {model} 'reply ok'"   # {model} is replaced by the shell-quoted model; exit 0 = the provider answered
+    slack_s: 15            # added on top of every wait (s)
   blocker_timeout_ms: 10000
   skip_tools: [todo, wait, ask, web_search, job, cancel_job]
   read_tools: [read, grep, glob, find]
