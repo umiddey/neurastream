@@ -21,6 +21,7 @@ import { basename, dirname, extname, join, resolve } from "node:path";
 import type { Decision } from "../../core/adapter.ts";
 import { AGENTS_TEMPLATE, renderBlock } from "../../core/agents-md.ts";
 import { chatGo, chatTier, type Tier } from "../../core/autonomy.ts";
+import { chatApprove } from "../../core/plan-approval.ts";
 import { burdenRule, repoRules, rulesChanged } from "../../core/repo-rules.ts";
 import { configFile, loadConfig, reloadingConfig, type Config } from "../../core/config.ts";
 import { checkWrite, deferSteer, type WriteCheckConfig } from "../../core/write-check.ts";
@@ -1459,6 +1460,15 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		const g = chatGo(text, cfg, "interactive");
 		if (g.applied) {
 			notifyGo(ctx, g);
+			return { handled: true };
+		}
+		const a = chatApprove(text, cfg, "interactive");
+		if (a.applied) {
+			asRolloverCtx(ctx)?.notify(`approved ${basename(a.plan)}`);
+			return { handled: true };
+		}
+		if (a.problem !== undefined) {
+			asRolloverCtx(ctx)?.notify(a.problem);
 			return { handled: true };
 		}
 		const r = q.chatUnlock(asString(e.text), cfg, "interactive");
