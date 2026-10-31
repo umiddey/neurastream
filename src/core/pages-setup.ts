@@ -109,6 +109,10 @@ export function publishPage(file: string, name: string | undefined, force: boole
   if (extname(source).toLowerCase() !== ".html") throw new Error(`pages: --plan needs an HTML artifact, not ${source}`);
   assertDrilldown(readFileSync(file, "utf8"), opts.templatePath);
   diagram = checkDiagram(readFileSync(file, "utf8"), readFileSync(opts.plan, "utf8"));
+  // P7 (plan 20261031_0917): an incomplete diagram must not publish at all — the Approve bar only
+  // disables itself, and once a link the owner could not approve went out (I-20261031-329).
+  const unproven = [...diagram.missing, ...diagram.thin];
+  if (unproven.length > 0) throw new Error(`pages: ${targetName} diagram is not complete (${unproven.length}): ${unproven.join("; ")}`);
  }
  const approve = opts.plan === undefined || diagram === null ? undefined : { page: targetName, open, problems: [...diagram.missing, ...diagram.thin] };
  if(open.length>0) throw new Error(`pages: ${targetName} has ${open.length} open note(s) (${open.join(", ")}); answer each one before publishing (see \`neurastream notes check ${targetName}\`)`);
