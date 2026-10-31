@@ -2,6 +2,7 @@
 ## Unreleased
 ### Changed
 - Plan approval records a hash of the plan text in `<queue_state>/plan-approvals.json` instead of writing an `Approved:` line into the plan; the plan file is never edited, and `Approval: self` is gone (P1, plan 20261029_1455). main-guard refuses a spawn until the record matches the plan's current text.
+- The owner can approve a plan from chat with `approve <YYYYMMDD_HHMM>` (P2, plan 20261029_1455): it matches the one open indexed plan whose file stamp is that prefix, records the approval like the page's Approve button, and is logged to `plan_guard_log`. No match, several matches, or an approval that cannot be saved is answered with a notice and nothing is approved. A failed approval write from the page now answers 500 instead of "approved".
 ## 0.2.56
 ### Added
 - Owner page: the Base tab lists published pages under their repo (one card per repo, newest first, expired pages gone); `pages publish` records each page's repo.
