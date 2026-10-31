@@ -79,11 +79,11 @@ function refresh(): void {
 	writeFileSync(PLAN, planText(`\n- note ${note}: more progress. Findings: none.`));
 }
 
-function buildCfg(): Config {
+function buildCfg(extra = ""): Config {
 	for (const d of [join(AGENT, "blockers"), join(AGENT, "notes"), join(TOY, "docs/plans"), join(TOY, "src"), join(HOME, ".config/neurastream"), STATE])
 		mkdirSync(d, { recursive: true });
 	writeFileSync(join(AGENT, "INDEX.md"), `${PLAN}\n`);
-	writeFileSync(join(AGENT, "notes/subagents.md"), "## Allowed\n\n- `toy-worker`\n");
+	writeFileSync(join(AGENT, "notes/subagents.md"), "## Allowed\n\n- `toy-worker`\n- `glm`\n");
 	writeFileSync(join(AGENT, "CANCELLED.md"), "");
 	writeFileSync(join(TOY, "src/a.ts"), "export const a = 1;\n");
 	writeFileSync(PLAN, planText());
@@ -108,7 +108,7 @@ function buildCfg(): Config {
   plan_guard_log: "${join(HOME, "plan-guard.log")}"
 review:
   agents: []
-`,
+${extra}`,
 	);
 	return loadConfig({ home: HOME, env: {} });
 }
@@ -290,4 +290,100 @@ test("the adapter heartbeats every held claim every 60 s while the Main session 
 	const listed = store.list();
 	expect(listed.find(c => c.plan === PLAN)?.beat).toBe(NOW + 60);
 	expect(listed.find(c => c.plan === otherPlan)?.beat).toBe(NOW);
+});
+
+// --- P4 carry-overs: I-20261031-277/-278/-279 (prefer wrapper text), claim leak (review
+// finding 2), I-20261031-280 (bypass launches claim, too) ---
+
+const PLAN2 = join(TOY, "docs/plans/20261020_0105_claim2.md");
+
+/** Both toy plans indexed, the second with a fresh plan text. */
+function indexBoth(): void {
+	writeFileSync(join(AGENT, "INDEX.md"), `${PLAN}\n${PLAN2}\n`);
+	writeFileSync(PLAN2, planText());
+}
+
+function spawnBoth(): SpawnEvent {
+	return { agent: "toy-worker", invocationKind: "task", brief: `Work ${PLAN} and ${PLAN2} on P1`, runningJobs: [] };
+}
+
+function bashEv(command: string): ToolEvent {
+	return { tool: "bash", input: { command }, cwd: TOY, agent: "main", agentId: "m", calls: 0, paths: [], writes: [], command, runningJobs: [] };
+}
+
+test("checkSpawn's preferProblem refusal keeps the wrapper: main-guard: <agent>: <pick> (I-20261031-277/-278/-279)", () => {
+	const cfg = buildCfg(
+		`adapter:
+  name: omp
+  pins: "${join(AGENT, "agents")}"
+ledger:
+  prefer:
+    - ahead
+    - glm
+`,
+	);
+	mkdirSync(join(AGENT, "agents"), { recursive: true });
+	writeFileSync(join(AGENT, "agents/ahead.md"), "---\nname: ahead\nmodel: zai/glm-5.3-flash\n---\n\nBody.\n");
+	applyQueueEnv(cfg);
+	fresh();
+	as("a");
+	refresh();
+	const d = checkSpawn({ ...spawnEv(), agent: "glm" }, cfg);
+	expect(d.allow).toBe(false);
+	expect(d.reason).toBe(
+		`main-guard: glm: ahead is ahead of glm in ledger.prefer and free (under its provider cap) — spawn ahead, or add "Pick note: <why>" to the brief.`,
+	);
+});
+
+test("a refused claim gate releases the claims this call created (review finding 2a)", () => {
+	const cfg = buildCfg();
+	applyQueueEnv(cfg);
+	fresh();
+	indexBoth();
+	claims().claim(PLAN2, "b"); // another Main holds file 2
+	as("a");
+	refresh();
+	const d = checkSpawn(spawnBoth(), cfg);
+	expect(d.allow).toBe(false);
+	expect(d.reason).toContain(`plan ${PLAN2} is held by Main b since ${SINCE}`);
+	expect(claims().holder(PLAN)).toBeNull(); // file 1's fresh claim is released again
+	expect(claims().holder(PLAN2)!.main).toBe("b");
+});
+
+test("a refused claim gate keeps a claim this Main already held (review finding 2b)", () => {
+	const cfg = buildCfg();
+	applyQueueEnv(cfg);
+	fresh();
+	indexBoth();
+	claims().claim(PLAN, "a"); // A already held file 1 before the call
+	claims().claim(PLAN2, "b");
+	refresh();
+	const d = checkSpawn(spawnBoth(), cfg);
+	expect(d.allow).toBe(false);
+	expect(d.reason).toContain(`plan ${PLAN2} is held by Main b since ${SINCE}`);
+	expect(claims().holder(PLAN)!.main).toBe("a"); // A still holds file 1
+	expect(claims().holder(PLAN2)!.main).toBe("b");
+});
+
+test("a bypass launch claims the free plan it names (I-20261031-280)", () => {
+	const cfg = buildCfg();
+	applyQueueEnv(cfg);
+	fresh();
+	as("a");
+	refresh();
+	const d = checkTool(bashEv(`opencode run "Work ${PLAN} on P1"`), cfg);
+	expect(d.allow).toBe(true);
+	expect(claims().holder(PLAN)!.main).toBe("a");
+});
+
+test("a bypass launch refuses a plan another Main holds, with the held text (I-20261031-280)", () => {
+	const cfg = buildCfg();
+	applyQueueEnv(cfg);
+	fresh();
+	as("a");
+	refresh();
+	claims().claim(PLAN, "b");
+	const d = checkTool(bashEv(`opencode run "Work ${PLAN} on P1"`), cfg);
+	expect(d.allow).toBe(false);
+	expect(d.reason).toBe(`main-guard: plan ${PLAN} is held by Main b since ${SINCE}`);
 });
