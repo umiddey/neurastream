@@ -341,8 +341,13 @@ function staffingFile(): string {
 // The owner-message store (owner-messages.jsonl) and its matcher live in src/core/incidents.ts
 // (20261028_0900 P3): dismissIncident needs them too, and guards already imports incidents.
 
+/** P3 (plan 20261031_1207): the text is owner prose — not Main's own guard output, a system notice, a task result — so its words are the owner's. Gates both the owner-message store and the cancel flag. */
+function isOwnerProse(text: string): boolean {
+	return !(text.trimStart().startsWith("main-guard:") || text.trimStart().startsWith("<system-notice>") || text.includes("<task-result"));
+}
+
 function recordOwnerMessage(text: string, cfg: Config): void {
-	if (text.trimStart().startsWith("main-guard:") || text.trimStart().startsWith("<system-notice>") || text.includes("<task-result")) return;
+	if (!isOwnerProse(text)) return;
 	const file = ownerMessagesFile();
 	try {
 		mkdirSync(q.STATE_DIR, { recursive: true });
@@ -1497,7 +1502,11 @@ export function checkInject(e: InjectEvent, cfg: Config): Decision {
 	} catch (err) {
 		summary = `Queue unreadable (${q.INDEX}): ${err}`;
 	}
-	const cancel = continuation ? "" : flagCancel(e.inject, cfg);
+	// P3 (plan 20261031_1207): only owner prose flags cancel, and incident lines pasted into a
+	// prompt (guard output quoting "stop …") never do — their words are not the owner's.
+	const cancel = continuation || !isOwnerProse(e.inject)
+		? ""
+		: flagCancel(e.inject.split("\n").filter(l => !l.startsWith("INCIDENT I-")).join("\n"), cfg);
 	const incidents = openIncidentList(cfg);
 	const incidentText = incidents.length ? `\n${incidents.map(incidentLine).join("\n")}` : "";
 	// 20261025_1940 P2: the injected line names the autonomy tier and what Main does without asking in it.
