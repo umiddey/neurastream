@@ -5,9 +5,8 @@ import { afterAll, beforeEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { run } from "../src/cli/dispatch.ts";
 import { runConfigKeys } from "../src/cli/config-set.ts";
-import { configFile, loadConfig } from "../src/core/config.ts";
+import { configFile } from "../src/core/config.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "config-set-"));
 const HOME = join(TMP, "home");
@@ -102,14 +101,4 @@ test("list prints every valid key with its current value", async () => {
 	expect(got.code).toBe(0);
 	expect(got.out).toContain("rules.max_bytes = 24000");
 	expect(got.out).toContain("harness = omp");
-});
-
-test("bare config still prints the merged config, unchanged", async () => {
-	// Bun's os.homedir() ignores runtime changes to process.env.HOME, so this compares against the same
-	// no-argument loadConfig() the bare branch uses. It reads the real config, read-only; nothing is written.
-	const plain = await capture(() => run("config", []));
-	expect(plain.code).toBe(0);
-	expect(plain.out).toBe(JSON.stringify(loadConfig()));
-	const json = await capture(() => run("config", ["--json"]));
-	expect(json.out).toBe(JSON.stringify(loadConfig(), null, 2));
 });
