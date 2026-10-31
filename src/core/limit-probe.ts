@@ -1,11 +1,12 @@
 // The probe loop (plan 20261027_1500, P2): when the provider rate-limits the main agent, wait for
 // the named reset if the provider gave one; otherwise probe it every probe_interval_s until it
 // answers, up to max_probes. The state transitions are pure (onLimited, onProbe); runProbe runs the
-// configured probe command under the main-limit lock. Persisting the episode and acting on the
-// outcome belong to the adapter (P3). Harness-neutral: nothing here names a harness or a provider.
+// configured probe command under the main-limit lock. The episode file (main-limit.json) and
+// probeStep (one tick of the loop) live here too. Harness-neutral: nothing here names a harness or a provider.
 
 import { spawnSync } from "node:child_process";
-import { join } from "node:path";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { Config } from "./config.ts";
 import { tryLock } from "./file-lock.ts";
 import { loadKnownSecrets, redactSecrets } from "./secret-redact.ts";
@@ -106,4 +107,58 @@ export function runProbe(cfg: Config, model: string, run: ProbeRunner = defaultR
 	} finally {
 		lock.release();
 	}
+}
+
+/** Where the open episode lives: one JSON file in queue_state, replaced atomically. */
+export function limitStatePath(cfg: Config): string {
+	return join(cfg.paths.queue_state, "main-limit.json");
+}
+
+/** The open episode, or null when there is none (or the file cannot be parsed). */
+export function readLimitState(cfg: Config): LimitState | null {
+	try {
+		return JSON.parse(readFileSync(limitStatePath(cfg), "utf8")) as LimitState;
+	} catch {
+		return null;
+	}
+}
+
+export function writeLimitState(cfg: Config, state: LimitState): void {
+	const path = limitStatePath(cfg);
+	mkdirSync(dirname(path), { recursive: true });
+	writeFileSync(`${path}.tmp`, `${JSON.stringify(state)}\n`);
+	renameSync(`${path}.tmp`, path);
+}
+
+export function clearLimitState(cfg: Config): void {
+	rmSync(limitStatePath(cfg), { force: true });
+}
+
+export function timingOf(cfg: Config): ProbeTiming {
+	const rl = cfg.guards.rate_limit;
+	return { probe_interval_s: rl.probe_interval_s, max_probes: rl.max_probes, slack_s: rl.slack_s };
+}
+
+/**
+ * One tick of the probe loop at `now`. Returns "idle" when no episode is open, the episode is
+ * already back, or the next probe is not due; "busy" when another probe holds the lock. Otherwise
+ * runs one probe and records its outcome. If the episode was closed (turn-end disarm) or replaced
+ * while the probe ran, the result is dropped instead of written back.
+ */
+export function probeStep(
+	cfg: Config,
+	now: number,
+	run: ProbeRunner = defaultRun,
+): "idle" | "busy" | ProbeOutcome["kind"] {
+	const st = readLimitState(cfg);
+	if (!st || st.back_at !== null || now < st.next_probe_at) return "idle";
+	const r = runProbe(cfg, st.model, run);
+	if (r === "busy") return "busy";
+	const current = readLimitState(cfg);
+	if (!current || current.since !== st.since) return "idle";
+	const step = onProbe(current, r.ok, r.stderr, now, timingOf(cfg));
+	if (step.outcome.kind === "give_up") clearLimitState(cfg);
+	else if (step.outcome.kind === "resume") writeLimitState(cfg, { ...step.state, back_at: now });
+	else writeLimitState(cfg, step.state);
+	return step.outcome.kind;
 }
