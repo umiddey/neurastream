@@ -1,4 +1,7 @@
 # Changelog
+## Unreleased
+### Changed
+- CI fails on any oxlint warning (`bun run lint`).
 ## 0.2.55
 ### Changed
 - `guards.plan_offer` (templates/config.yml, docs/config.md) now also refuses a Main stop reply that promises instead of offering — "I will", "I'll" — with the refusal "don't promise it — do it now, or write the plan and index it"; checkStop's reason and log moved to the exported `STOP_PLAN_OFFER_REFUSAL` const (I-20261030-25, I-20261030-32).

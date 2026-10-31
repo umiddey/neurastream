@@ -8,7 +8,7 @@ import { afterAll, expect, spyOn, test } from "bun:test";
 import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { InjectEvent, Run, RunSource, SpawnEvent, StopEvent, ToolEvent } from "../src/core/adapter.ts";
+import type { Run, RunSource, StopEvent, ToolEvent } from "../src/core/adapter.ts";
 import { agentLedger } from "../src/core/agent-ledger.ts";
 import type { Config } from "../src/core/config.ts";
 import { loadConfig } from "../src/core/config.ts";

@@ -89,7 +89,7 @@ test("validate refuses a missing plan and a missing evidence file", () => {
 	const r = run(h, ["validate", "WorkerV", "--plan", join(h, "nope.md"), "--phase", "P1", "--evidence", join(h, "x.md"), "--section", "## CP"]);
 	expect(r.code).toBe(1);
 	expect(r.stderr).toBe(`plan not found: ${join(h, "nope.md")}\n`);
-	const ev = writeEvidence(h, "report.md", `ran ${LABEL} green\n`);
+	writeEvidence(h, "report.md", `ran ${LABEL} green\n`);
 	const r2 = run(h, ["validate", "WorkerV", "--plan", plan, "--phase", "P1", "--evidence", join(h, "gone.md"), "--section", "## CP"]);
 	expect(r2.code).toBe(1);
 	expect(r2.stderr).toContain("refused:");

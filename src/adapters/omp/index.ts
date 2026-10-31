@@ -832,7 +832,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 
 	// The spawn event carries no brief, so the plan gate runs at the task tool call (original
 	// behaviour); here only the allow-list and the task-only rule apply, with the original texts.
-	pi.on("before_subagent_spawn", (event, ctx) => {
+	pi.on("before_subagent_spawn", (event, _ctx) => {
 		cfg = freshConfig();
 		const agent = asString(asRecord(event).agent);
 		const kind = asString(asRecord(event).invocationKind);

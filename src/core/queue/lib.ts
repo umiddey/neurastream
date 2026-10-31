@@ -168,7 +168,7 @@ export function splitWaiting(line: string): { ask: string; blocked: string | nul
 /** Keep the first `keep` entries (the file lists them newest first) and move the rest. Pure. */
 export function trimProgressBody(body: string, keep: number, pointer: string): ProgressTrim | undefined {
 	const lines = body.split("\n").filter(l => !l.startsWith(POINTER_PREFIX));
-	const starts = lines.flatMap((l, i) => (/^- /.test(l) && !MAIN_ONLY_LINE.test(l) ? [i] : []));
+	const starts = lines.flatMap((l, i) => (l.startsWith('- ') && !MAIN_ONLY_LINE.test(l) ? [i] : []));
 	if (starts.length <= keep) return undefined;
 	const cut = starts[keep];
 	const tail = lines.slice(cut);
@@ -280,7 +280,7 @@ export function parsePlan(repo: string, file: string, text: string | null, block
 	if (secs.has("phases") && !phaseLines.length) errors.push('"## Phases" needs checkbox lines: "- [ ] P1 <what> — verify: `<command>`"');
 	for (const p of phaseLines) if (!/verify:\s*`[^`]+`/.test(p)) errors.push(`phase without "verify: \`<command>\`": ${p.slice(0, 60)}`);
 	const phases = { total: phaseLines.length, done: phaseLines.filter(l => /^\[[xX]\]/.test(l)).length };
-	const started = phases.done > 0 || progressBody(text).split("\n").some(l => /^- /.test(l) && !l.startsWith(POINTER_PREFIX) && !MAIN_ONLY_LINE.test(l));
+	const started = phases.done > 0 || progressBody(text).split("\n").some(l => l.startsWith('- ') && !l.startsWith(POINTER_PREFIX) && !MAIN_ONLY_LINE.test(l));
 	const dc = (secs.get("done check") ?? "").match(/```[a-z]*\n([\s\S]*?)```|`([^`\n]+)`/);
 	const doneCheck = dc ? (dc[1] ?? dc[2] ?? "").trim() : null;
 	if (secs.has("done check") && !doneCheck) errors.push('"## Done check" needs one command in backticks (exit 0 = done)');
@@ -451,7 +451,7 @@ export function touchedPaths(toolName: string, input: Record<string, unknown>, c
 }
 
 export const MUTATING =
-	/(\brm\b|\bmv\b|\bcp\b|\btouch\b|\btruncate\b|\bchmod\b|\bln\b|\bsed\s+(-\w*\s+)*-i|\bperl\s+(-\w*\s+)*-[a-z]*i|\btee\b|(^|[^0-9&>=\-])>{1,2}\s*[^\s&>]|\bgit\s+(rm|mv|checkout|restore|apply|am|stash|reset|clean)\b|\bpatch\b|\binstall\b|\bdd\b|writeFile|appendFile|Bun\.write|unlink|rmSync|\.write_text\(|\.write_bytes\(|\bopen\([^)]*,\s*["'][wax]b?\+?["']|shutil\.|os\.(remove|rename|replace|unlink|chmod)|\.writelines\()/;
+	/(\brm\b|\bmv\b|\bcp\b|\btouch\b|\btruncate\b|\bchmod\b|\bln\b|\bsed\s+(-\w*\s+)*-i|\bperl\s+(-\w*\s+)*-[a-z]*i|\btee\b|(^|[^0-9&>=-])>{1,2}\s*[^\s&>]|\bgit\s+(rm|mv|checkout|restore|apply|am|stash|reset|clean)\b|\bpatch\b|\binstall\b|\bdd\b|writeFile|appendFile|Bun\.write|unlink|rmSync|\.write_text\(|\.write_bytes\(|\bopen\([^)]*,\s*["'][wax]b?\+?["']|shutil\.|os\.(remove|rename|replace|unlink|chmod)|\.writelines\()/;
 
 export function withoutQuotedRedirects(code: string): string {
 	return code.replace(/'[^']*'/g, m => m.replace(/>/g, " ")).replace(/"(?:[^"\\]|\\.)*"/g, m => m.replace(/>/g, " "));
@@ -603,7 +603,7 @@ export function writeTargets(toolName: string, input: Record<string, unknown>, c
 			continue;
 		}
 		const noQuotedRedirect = withoutQuotedRedirects(s);
-		for (const m of noQuotedRedirect.matchAll(/(?:^|[^0-9&>=\-])>{1,2}\s*([^\s&|;)<>]+)/g)) {
+		for (const m of noQuotedRedirect.matchAll(/(?:^|[^0-9&>=-])>{1,2}\s*([^\s&|;)<>]+)/g)) {
 			// A target with no letter, digit, `.` or `/` (`>,`) is prose, not a file.
 			const target = (m[1] ?? "").replace(/^["']|["']$/g, "");
 			if (/[\p{L}\p{N}./]/u.test(target)) add(target, dir);
@@ -941,7 +941,7 @@ export function lastCloseResult(file: string): string | null {
 }
 
 export function awaitingMerge(p: Plan): boolean {
-	return p.status === "complete" && /^queue-close: AWAITING merge/.test(lastCloseResult(p.file) ?? "");
+	return p.status === "complete" && (lastCloseResult(p.file) ?? "").startsWith("queue-close: AWAITING merge");
 }
 
 /**
