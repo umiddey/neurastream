@@ -197,8 +197,8 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 					},
 					runner: defaultRunner,
 					plans: () => activePlans(),
-					// Plans staffing.json records a spawn for: a timer run has no live job list to ask.
-					staffed: timerStaffedPlans,
+					// Plans whose newest spawn (staffing.json) is inside the watch.ci_red_hours window: a timer run has no live job list to ask.
+					staffed: now => timerStaffedPlans(now, cfg.watch.ci_red_hours),
 				});
 				console.log(`watch: ${report.opened.length} opened, ${report.deduped.length} deduped, ${report.closed.length} recovered, ${report.detectors.length} detector findings`);
 				return 0;

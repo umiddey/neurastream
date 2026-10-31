@@ -18,7 +18,7 @@ import { Glob } from "bun";
 import type { Config } from "./config.ts";
 import { readBeats, type Heartbeat } from "./heartbeat.ts";
 import { runDetectorsGated, type GatedInputs } from "./incident-detectors.ts";
-import { log, readStaffing } from "./guards.ts";
+import { log, readStaffingEntries } from "./guards.ts";
 import { notifyProviders } from "./notify.ts";
 import { addIncident, dismissIncident, openIncidents, readIncidents, type IncidentView } from "./incidents.ts";
 import { loadKnownSecrets, redactSecrets } from "./secret-redact.ts";
@@ -82,8 +82,8 @@ export interface WatchDeps {
 	runner: CommandRunner;
 	/** The active plans: the CI check reads their repos and the MRs they name. */
 	plans: () => { file: string; repo: string; text: string }[];
-	/** Plan files with a running agent right now. A timer run has no live job list, so it passes timerStaffedPlans() instead. */
-	staffed: () => string[];
+	/** Plan files held back from ci-red-mr: a running agent right now (a timer run passes timerStaffedPlans, the spawn record). `now` is this pass's clock. */
+	staffed: (now: number) => string[];
 }
 
 export interface WatchReport {
@@ -184,7 +184,7 @@ function unitProblems(cfg: Config, listUnits: UnitLister, now: number): WatchPro
 /** One watcher pass: heartbeats, failed units, gated detectors — in that order. */
 export function watchOnce(cfg: Config, deps: WatchDeps): WatchReport {
 	const now = deps.now();
-	const ci = ciScan(cfg, { run: deps.runner, now, plans: deps.plans(), staffed: deps.staffed() });
+	const ci = ciScan(cfg, { run: deps.runner, now, plans: deps.plans(), staffed: deps.staffed(now) });
 	for (const s of ci.skipped) log(cfg.paths.guard_log, `ci: skipped ${s}`);
 	if (ci.recorded) log(cfg.paths.guard_log, `ci: recorded M3 for ${ci.recorded} merged MR(s)`);
 	if (ci.flaky) log(cfg.paths.guard_log, `ci: recorded ${ci.flaky} flaky commit(s)`);
@@ -250,9 +250,10 @@ export function watchOnce(cfg: Config, deps: WatchDeps): WatchReport {
 	return { opened, deduped, closed, detectors };
 }
 
-/** The plan files a timer run treats as staffed: every plan staffing.json records a spawn for. A timer run has no live job list, so the spawn record is the only signal it has. */
-export function timerStaffedPlans(): string[] {
-	return Object.entries(readStaffing()).filter(([, names]) => names.length > 0).map(([file]) => file);
+/** The plan files a timer run treats as staffed: a plan whose newest spawn (staffing.json) names tasks and is newer than `ciRedHours` before `now`. An older spawn's agent is gone, so its red MR is not held back (I-20261031-265). A timer run has no live job list, so the spawn record is the only signal it has. */
+export function timerStaffedPlans(now: number, ciRedHours: number): string[] {
+	const since = now - ciRedHours * 3600;
+	return Object.entries(readStaffingEntries()).filter(([, e]) => e.names.length > 0 && e.at > since).map(([file]) => file);
 }
 
 /** The watcher's unit files under one home: the systemd user service and timer on Linux, the
