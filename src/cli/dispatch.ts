@@ -12,6 +12,7 @@ import { runMetrics } from "./metrics.ts";
 import { runIncident } from "./incident.ts";
 import { runTraces } from "./traces.ts";
 import { runUi } from "./ui.ts";
+import { runConfigKeys } from "./config-set.ts";
 import { runDiagram } from "./diagram.ts";
 import { runNotes } from "./notes.ts";
 import { runPages } from "./pages.ts";
@@ -65,6 +66,7 @@ export function helpText(): string {
 		"                                stderr the hit summary (types and counts only)",
 		"  neurastream queue migrate     fold the old repo INDEX.md files into the one main index",
 		"  neurastream config [--json]   print the merged config (defaults + file + env)",
+		"  neurastream config set|get|list <key> [value]   read or write one key (ui.port, paths.work_roots, ...)",
 		"  neurastream guard <event> --json",
 		`                                (${GUARD_USAGE.slice(GUARD_USAGE.indexOf("(") + 1, -1)})`,
 		"  neurastream main [args]       run omp under the launcher (automatic session rollover)",
@@ -118,6 +120,7 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 	if (cmd === "notes") return runNotes(args);
 	if (cmd === "diagram") return runDiagram(args);
 	if (cmd === "adapter") return getAdapter().install(args);
+	if (cmd === "config" && ["set", "get", "list"].includes(args[0] ?? "")) return runConfigKeys(args);
 	if (cmd === "config") {
 		try {
 			const cfg = loadConfig();

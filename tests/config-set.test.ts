@@ -105,15 +105,11 @@ test("list prints every valid key with its current value", async () => {
 });
 
 test("bare config still prints the merged config, unchanged", async () => {
-	const saved = process.env.HOME;
-	process.env.HOME = HOME;
-	try {
-		const plain = await capture(() => run("config", []));
-		expect(plain.code).toBe(0);
-		expect(plain.out).toBe(JSON.stringify(loadConfig({ home: HOME })));
-		const json = await capture(() => run("config", ["--json"]));
-		expect(json.out).toBe(JSON.stringify(loadConfig({ home: HOME }), null, 2));
-	} finally {
-		process.env.HOME = saved;
-	}
+	// Bun's os.homedir() ignores runtime changes to process.env.HOME, so this compares against the same
+	// no-argument loadConfig() the bare branch uses. It reads the real config, read-only; nothing is written.
+	const plain = await capture(() => run("config", []));
+	expect(plain.code).toBe(0);
+	expect(plain.out).toBe(JSON.stringify(loadConfig()));
+	const json = await capture(() => run("config", ["--json"]));
+	expect(json.out).toBe(JSON.stringify(loadConfig(), null, 2));
 });
