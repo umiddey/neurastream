@@ -165,6 +165,6 @@ export function approvalProblem(text: string, file: string, pagesDir: string, si
 	}
 	const rec = readPlanApproval(file);
 	if (rec !== null && rec.hash === reviewHash(text)) return null;
-	const hint = gated && stamp !== null ? `, or types: approve ${stamp}` : "";
+	const hint = stamp !== null ? `, or types: approve ${stamp}` : "";
 	return `plan ${file} has no approval record. The owner approves it from ${page} in Base${hint}.`;
 }
