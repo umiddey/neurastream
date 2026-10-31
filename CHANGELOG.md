@@ -56,8 +56,7 @@
 - A higher plan with an open MR on its branch no longer blocks spawns on lower plans.
 ### Fixed
 - A plan copied into separate clones (no shared `.git`) now appears once in `FINISHED.md`: `finishedKey` keys on the heading title plus the plan file basename, so per-clone repo names no longer multiply an entry (`bun run typecheck`, `bun test tests/queue-finished.test.ts`).
-- Plans under `docs/plans/<subdir>/` count as live plans (Main plan-file match, brief-lint, plan roots).
-- The test suite leaves no temp files behind: every temp dir is removed in teardown, and a new omp adapter clears the previous one's armed grace timer.
+5: @ours
 ## 0.2.55
 ### Changed
 - `guards.plan_offer` (templates/config.yml, docs/config.md) now also refuses a Main stop reply that promises instead of offering — "I will", "I'll" — with the refusal "don't promise it — do it now, or write the plan and index it"; checkStop's reason and log moved to the exported `STOP_PLAN_OFFER_REFUSAL` const (I-20261030-25, I-20261030-32).
