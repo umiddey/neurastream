@@ -572,10 +572,8 @@ test("a non-review spawn reusing the review name drops the entry and its lock", 
 	expect(checkTool(spawnedAs("bash", { command: "echo hi" }, "rev1"), gcfg)).toMatchObject({ allow: true });
 });
 
-test("a review spawn's shell, spawn, cancel and MCP tools are denied", () => {
+test("a review spawn's spawn, cancel and MCP tools are denied; read-only shell is allowed (P5)", () => {
 	for (const [tool, input] of [
-		["bash", { command: "echo hi" }],
-		["eval", { code: "1" }],
 		["node_repl", { code: "1" }],
 		["task", { tasks: [] }],
 		["cancel_job", {}],
@@ -586,6 +584,9 @@ test("a review spawn's shell, spawn, cancel and MCP tools are denied", () => {
 		expect(`${tool}: ${d.allow}`).toBe(`${tool}: false`);
 		expect(d.reason).toMatch(/review spawn/);
 	}
+	registerReviewer();
+	expect(checkTool(spawnedAs("bash", { command: "echo hi" }, "rev1"), gcfg).allow).toBe(true);
+	expect(checkTool(spawnedAs("eval", { code: "1" }, "rev1"), gcfg).allow).toBe(true);
 });
 
 test("a review spawn may edit only its own plan", () => {
@@ -616,7 +617,7 @@ test("a review spawn may not read credentials or env files", () => {
 
 test("a review spawn's suffixed sub agent id (rev1-2) keeps the review lock", () => {
 	registerReviewer();
-	const d = checkTool(spawnedAs("bash", { command: "echo hi" }, "rev1-2"), gcfg);
+	const d = checkTool(spawnedAs("task", { tasks: [] }, "rev1-2"), gcfg);
 	expect(d).toMatchObject({ allow: false });
 	expect(d.reason).toMatch(/review spawn/);
 });

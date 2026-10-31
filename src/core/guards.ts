@@ -1949,6 +1949,9 @@ export function checkStop(e: StopEvent, cfg: Config): Decision {
 		log(cfg.paths.guard_log, `ALLOW stop after ${state.idleStops} idle stop attempts; open: ${open.join(" | ")}`);
 		return { allow: true, reason: "", state: { callsSinceStop: 0, idleStops: 0 } };
 	}
+	// P5b (plan 20261031_1207): the refusal repeats on every blocked stop; name the first 10 only.
+	const listed = open.slice(0, q.SUMMARY_CAP);
+	const moreOpen = open.length - listed.length;
 	log(cfg.paths.guard_log, `BLOCK stop; open: ${open.join(" | ")}`);
 	return {
 		allow: false,
@@ -1956,7 +1959,8 @@ export function checkStop(e: StopEvent, cfg: Config): Decision {
 			`main-guard: the queue has ${open.length} open item${open.length === 1 ? "" : "s"} and no subagent is ` +
 			`running to wake you. Owner rule: keep working while the queue has items. Start the next step (spawn an ` +
 			`agent), close a finished plan with queue-close, or, if a plan truly waits on the owner, add a line ` +
-			`"WAITING on owner: <what>" to that plan. Open: ${open.join(" | ")}`,
+			`"WAITING on owner: <what>" to that plan. Open: ${listed.join(" | ")}` +
+			(moreOpen > 0 ? ` … ${moreOpen} more (queue-check lists all)` : ""),
 		state,
 	};
 }
