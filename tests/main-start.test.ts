@@ -75,5 +75,7 @@ test("a fresh watch heartbeat prints the healthy last-run line and no incident",
 test("with no watch installed the preflight says nothing about the watch", async () => {
 	const { cfg } = sandbox("off", false);
 	const text = await mainStartText([], cfg, { inheritStdin: false });
-	expect(text).not.toContain("watch:");
+	// The doctor section runs `neurastream doctor`, which always prints its own watch line; only the
+	// main-start health lines (last run / NOT RUNNING) must be absent when nothing is installed.
+	expect(text).not.toMatch(/^watch: (last run|NOT RUNNING)/m);
 });

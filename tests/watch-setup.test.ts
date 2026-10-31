@@ -53,7 +53,7 @@ test("on on macOS writes the LaunchAgent with StartInterval in seconds and loads
 	expect(text).toContain("<integer>420</integer>");
 	expect(text).toContain(`${home}/.bun/bin/neurastream`);
 	expect(text).not.toContain("__HOME__");
-	expect(calls).toEqual([["list"], ["load", "-w", plist!]]);
+	expect(calls).toEqual([["list"], ["unload", "-w", plist!], ["load", "-w", plist!]]);
 });
 
 test("a failed probe returns 1 and writes nothing", () => {

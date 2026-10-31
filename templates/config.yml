@@ -208,6 +208,7 @@ watch:                       # the watcher (src/core/watch.ts): heartbeats, fail
     - "neurastream-*"
     - "wip-*"
   max_posts_per_run: 3       # per run: at most this many new-incident posts, then one "+N more" line
+  interval_min: 15          # minutes between watcher runs; `neurastream watch on` installs the timer at this interval
 
 machine:
   load_over_cores: 4

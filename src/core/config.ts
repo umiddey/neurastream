@@ -207,6 +207,8 @@ export interface Config {
 		units: string[];
 		/** Per watcher run: at most this many new-incident posts; the rest fold into one "+N more" line. */
 		max_posts_per_run: number;
+		/** Minutes between watcher runs; `neurastream watch on` writes this into the timer (plan 20261027_1430 P4). */
+		interval_min: number;
 	};
 	machine: {
 		load_over_cores: number;
@@ -579,6 +581,9 @@ function check(cfg: Config): void {
 	}
 	if (!Number.isInteger(cfg.watch.max_posts_per_run) || cfg.watch.max_posts_per_run < 1) {
 		throw new ConfigError("watch.max_posts_per_run must be an integer >= 1");
+	}
+	if (!Number.isInteger(cfg.watch.interval_min) || cfg.watch.interval_min < 1) {
+		throw new ConfigError("watch.interval_min must be an integer >= 1");
 	}
 	for (const p of cfg.metrics.correction_patterns) {
 		try {

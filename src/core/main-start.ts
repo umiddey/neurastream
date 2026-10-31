@@ -14,6 +14,7 @@ import { buildReport } from "./report.ts";
 import { loadavgLine } from "./host.ts";
 import { providersLine } from "./provider-state.ts";
 import { mrSweep } from "./mr-sweep.ts";
+import { watchHealth } from "./watch.ts";
 
 function bin(name: string, cfg: Config): string {
 	return join(cfg.paths.home, ".local/bin", name);
@@ -111,6 +112,32 @@ export async function mainStartText(args: string[], cfg: Config, opts: { inherit
 		// Weekly self-metrics: nudge the owner's report when notes/metrics.md is missing or older than the window.
 		const due = metricsDueLine(cfg, Date.now());
 		if (due) say(due);
+	}
+	// Watcher health (plan 20261027_1430 P4): silent unless `watch on` installed the timer. A run older
+	// than 3 intervals (or never) prints NOT RUNNING and opens a watch incident; watchOnce closes it
+	// again on the next successful pass.
+	const watchState = watchHealth(cfg, Date.now());
+	if (watchState.installed) {
+		if (watchState.lastRunMin !== null && watchState.lastRunMin <= 3 * watchState.intervalMin) {
+			say(`watch: last run ${watchState.lastRunMin} min ago`);
+		} else {
+			say(`watch: NOT RUNNING since ${watchState.lastRunAt ?? "never"}`);
+			try {
+				addIncident(
+					cfg,
+					{
+						source: "watch",
+						kind: "not-running",
+						summary: `watcher has not run since ${watchState.lastRunAt ?? "install"} (interval ${watchState.intervalMin} min)`,
+						evidence: `last watch heartbeat: ${watchState.lastRunAt ?? "none"}`,
+						fingerprint: "watch:not-running",
+					},
+					nowSec(),
+				);
+			} catch (err) {
+				logGuard(cfg.paths.guard_log, `watch incident failed: ${err instanceof Error ? err.message : String(err)}`);
+			}
+		}
 	}
 	say("=== machine");
 	const mg = await run(bin("machine-guard", cfg), [], { stderr: "ignore" });

@@ -3,7 +3,7 @@ import path from "node:path";
 import { pagesDoctor } from "../core/pages-doctor.ts";
 import { ConfigError, configFile, loadConfig, type Config } from "../core/config.ts";
 import { beat, withHeartbeat } from "../core/heartbeat.ts";
-import { watchOnce, systemUnitLister } from "../core/watch.ts";
+import { watchOnce, systemUnitLister, watchDoctorLine, watchHealth } from "../core/watch.ts";
 import { defaultGather } from "../core/main-start.ts";
 import { nowSec } from "../core/clock.ts";
 import { postReply } from "../core/notify.ts";
@@ -21,6 +21,7 @@ import { runUi } from "./ui.ts";
 import { runDiagram } from "./diagram.ts";
 import { runNotes } from "./notes.ts";
 import { runPages } from "./pages.ts";
+import { watchOn, watchOff } from "./watch-setup.ts";
 import { runUninstall } from "../core/uninstall.ts";
 import { queueMigrate } from "../core/queue-migrate.ts";
 import { allowedAgents, enforceReadOnlyIndex, indexPath, readIndex, subagentsPath, writeIndex } from "../core/queue/lib.ts";
@@ -144,6 +145,7 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 		try {
 			const was = enforceReadOnlyIndex(loadConfig().paths.queue_index);
 			if (was) console.warn(`warning: ${indexPath()} — was ${was}, set 0444 (the plan index is read-only on disk)`);
+			console.log(watchDoctorLine(watchHealth(loadConfig(), Date.now())));
 		} catch {} // a broken config is doctor's own report; the adapter doctor names it
 		return getAdapter().doctor();
 	}
@@ -169,8 +171,10 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 	// One watcher pass (plan 20261027_1430 P2); the P4 timer calls this every watch interval.
 	// Beats its own "watch" heartbeat AFTER the pass: ok only when the watcher itself ran.
 	if (cmd === "watch") {
+		if (args.length === 1 && args[0] === "on") return watchOn();
+		if (args.length === 1 && args[0] === "off") return watchOff();
 		if (args.length) {
-			console.error("usage: neurastream watch");
+			console.error("usage: neurastream watch [on|off]");
 			return 2;
 		}
 		try {

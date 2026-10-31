@@ -9,6 +9,8 @@
 // temp queue_state, never a real home, network or service manager.
 
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { Glob } from "bun";
 import type { Config } from "./config.ts";
 import { readBeats, type Heartbeat } from "./heartbeat.ts";
@@ -230,4 +232,35 @@ export function watchOnce(cfg: Config, deps: WatchDeps): WatchReport {
 	// (d) the gated detectors fold their own incidents (D1/D3 behind incidents.scan_interval_sec).
 	const detectors = runDetectorsGated(cfg, {}, deps.gather, now);
 	return { opened, deduped, closed, detectors };
+}
+
+/** The watcher's unit files under one home: the systemd user service and timer on Linux, the
+ *  LaunchAgent plist on macOS. `watch on|off` (src/cli/watch-setup.ts) writes and removes them. */
+export function watchUnitPaths(home: string, platform: NodeJS.Platform = process.platform): string[] {
+	if (platform === "darwin") return [join(home, "Library/LaunchAgents/neurastream-watch.plist")];
+	return [join(home, ".config/systemd/user/neurastream-watch.service"), join(home, ".config/systemd/user/neurastream-watch.timer")];
+}
+
+/** Whether the watcher timer is installed, and when its "watch" heartbeat last beat. */
+export interface WatchHealth {
+	installed: boolean;
+	/** ISO time of the last watch run, or null when it never beat. */
+	lastRunAt: string | null;
+	/** Whole minutes since lastRunAt, or null when it never beat. */
+	lastRunMin: number | null;
+	/** watch.interval_min: the timer's period, the basis of the stale rule. */
+	intervalMin: number;
+}
+
+/** Read-only: unit files present and the "watch" heartbeat age. No service-manager call. */
+export function watchHealth(cfg: Config, nowMs: number, platform: NodeJS.Platform = process.platform): WatchHealth {
+	const installed = watchUnitPaths(cfg.paths.home, platform).every(p => existsSync(p));
+	const lastRunAt = readBeats(cfg).watch?.at ?? null;
+	const lastRunMin = lastRunAt === null ? null : Math.max(0, Math.floor((nowMs - Date.parse(lastRunAt)) / 60000));
+	return { installed, lastRunAt, lastRunMin, intervalMin: cfg.watch.interval_min };
+}
+
+/** The doctor line: `watch: on, last run 5 min ago`, or `watch: off, last run never`. */
+export function watchDoctorLine(h: WatchHealth): string {
+	return `watch: ${h.installed ? "on" : "off"}, last run ${h.lastRunMin === null ? "never" : `${h.lastRunMin} min ago`}`;
 }
