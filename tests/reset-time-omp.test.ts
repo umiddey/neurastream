@@ -2,7 +2,7 @@ import { afterAll, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createOmpAdapter } from "../src/adapters/omp/index.ts";
+import { createOmpAdapter, reset as resetAdapter } from "../src/adapters/omp/index.ts";
 import { loadConfig } from "../src/core/config.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
 
@@ -35,7 +35,10 @@ async function context(messages: unknown[], ctx = mainCtx): Promise<unknown[]> {
 	return result;
 }
 
-afterAll(() => rmSync(TMP, { recursive: true, force: true }));
+afterAll(() => {
+	resetAdapter();
+	rmSync(TMP, { recursive: true, force: true });
+});
 
 test("annotates reset times in message text before Main sees context", async () => {
 	const before = process.env.TZ;

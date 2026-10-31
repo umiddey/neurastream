@@ -292,9 +292,12 @@ process.env.NODE_COMPILE_CACHE = join(TMP, "compile-cache");
 afterAll(async () => {
 	discord.stop(true);
 	slack.stop(true);
-	await postReply("settle", bothCfg());
-	// Clear the active adapter's rollover state before the sandbox dirs are removed (P3c).
+	// Clear the adapter's armed grace timer BEFORE draining the FIFO (P3c): postReply("settle")
+	// takes real I/O, and a firing grace timer during it would start an in-process rollover that
+	// spawns a bun child, which (with NODE_COMPILE_CACHE already deleted by a peer file's afterAll)
+	// would spill $TMPDIR/node-compile-cache into this file's sandbox.
 	resetAdapter();
+	await postReply("settle", bothCfg());
 	rmSync(TMP, { recursive: true, force: true });
 	if (compileCacheBefore === undefined) delete process.env.NODE_COMPILE_CACHE;
 	else process.env.NODE_COMPILE_CACHE = compileCacheBefore;
@@ -331,6 +334,7 @@ test("the rollover-ready path relaunches and posts nothing", async () => {
 	expect(discordHits.length).toBe(0);
 	expect(slackHits.length).toBe(0);
 	expect(existsSync(relaunchPath())).toBe(true);
+	resetAdapter();
 });
 
 test("a 4500-char reply is 3 discord and 2 slack chunks, in order, nothing lost", async () => {

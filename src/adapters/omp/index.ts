@@ -1210,6 +1210,8 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		relaunched = false;
 		flight = null;
 	};
+	// Clear the previous adapter's armed grace timer before this one overwrites the pointer (P3c).
+	activeAdapterReset?.();
 	activeAdapterReset = clearRolloverState;
 	// The launcher restarts omp: the request file carries the note and the editor draft, and omp
 	// shuts down only after the file is written. A failed write keeps the session running.

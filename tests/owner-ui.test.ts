@@ -17,7 +17,7 @@ import { addIncident } from "../src/core/incidents.ts";
 import { appendMetric } from "../src/core/metrics.ts";
 import { checkTool } from "../src/core/guards.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
-import { createOmpAdapter, ownerInboxCursorPath, ownerInboxMessage, type ExtensionHost } from "../src/adapters/omp/index.ts";
+import { createOmpAdapter, reset as resetAdapter, ownerInboxCursorPath, ownerInboxMessage, type ExtensionHost } from "../src/adapters/omp/index.ts";
 import { inboxPath, agentRows, buildPageData, ciRows, dropSlot, edgeScrollStep, incidentRows, machineRow, nowStats, questionRows, queueRows, renderPage, resultsCachePath, scoresData, startOwnerUi, type OwnerUiOptions, type OwnerUiServer, type PageData, type ResultsData } from "../src/core/owner-ui.ts";
 import type { ChainRow, FeaturesReport, ReleaseRow, ReleaseSideStats } from "../src/core/results.ts";
 import { runUi } from "../src/cli/ui.ts";
@@ -143,6 +143,7 @@ afterEach(() => {
 });
 
 afterAll(() => {
+	resetAdapter();
 	rmSync(TMP, { recursive: true, force: true });
 	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
 	Object.assign(process.env, queueEnvBefore);

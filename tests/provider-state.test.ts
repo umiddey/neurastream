@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "../src/core/config.ts";
 import type { ExtensionHost } from "../src/adapters/omp/index.ts";
-import { createOmpAdapter } from "../src/adapters/omp/index.ts";
+import { createOmpAdapter, reset as resetAdapter } from "../src/adapters/omp/index.ts";
 import { loadConfig } from "../src/core/config.ts";
 import { nowSec } from "../src/core/clock.ts";
 import { outUntil, pinModel, providerOfModel, providerStatus, readOut, recordOut, resetEpochFromText } from "../src/core/provider-state.ts";
@@ -21,6 +21,7 @@ const TMP = mkdtempSync(join(tmpdir(), "provider-state-"));
 const roots: string[] = [];
 
 afterAll(() => {
+	resetAdapter();
 	rmSync(TMP, { recursive: true, force: true });
 	for (const root of roots) rmSync(root, { recursive: true, force: true });
 });

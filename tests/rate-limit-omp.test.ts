@@ -14,7 +14,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { createOmpAdapter } from "../src/adapters/omp/index.ts";
+import { createOmpAdapter, reset as resetAdapter } from "../src/adapters/omp/index.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { blockersDirPath, indexPath } from "../src/core/queue/lib.ts";
@@ -253,6 +253,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+	resetAdapter();
 	discord.stop(true);
 	if (compileCacheBefore === undefined) delete process.env.NODE_COMPILE_CACHE;
 	else process.env.NODE_COMPILE_CACHE = compileCacheBefore;
