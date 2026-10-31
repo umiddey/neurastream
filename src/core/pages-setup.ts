@@ -76,15 +76,14 @@ export interface PublishOptions {
 	plan?: string;
 	/** The repo the page belongs to in the pages meta (Base tab); resolved by the CLI when absent. */
 	repo?: string;
-	/** The drilldown template a plan page must match (P2, plan 20261031_0917); the CLI passes the installed package's copy. */
-	templatePath?: string;
 }
 
 /** P2 (plan 20261031_0917): a plan page is the drilldown skill's engine with only its DATA block
  * edited — the owner approves a diagram the skill drew, not a hand-rolled page. The injected notes
  * chrome is stripped first, so a republished page still compares clean against the template. */
-export function assertDrilldown(html: string, templatePath: string = join(HERE, "../../templates/skills/architecture-drilldown/template.html")): void {
-	const template = readFileSync(templatePath, "utf8");
+const DRILLDOWN_TEMPLATE = join(HERE, "../../templates/skills/architecture-drilldown/template.html");
+export function assertDrilldown(html: string): void {
+	const template = readFileSync(DRILLDOWN_TEMPLATE, "utf8");
 	const clean = stripPageNotes(html);
 	const at = clean.indexOf(DATA_MARK), end = clean.indexOf(END_DATA_MARK);
 	const part =
@@ -92,7 +91,7 @@ export function assertDrilldown(html: string, templatePath: string = join(HERE, 
 		: clean.slice(0, at) !== template.slice(0, template.indexOf(DATA_MARK)) ? "the part before DATA"
 		: clean.slice(end + END_DATA_MARK.length) !== template.slice(template.indexOf(END_DATA_MARK) + END_DATA_MARK.length) ? "the part after END DATA"
 		: null;
-	if (part !== null) throw new Error(`pages: a plan page must be built from ${templatePath}: copy it and edit only the DATA block (${part})`);
+	if (part !== null) throw new Error(`pages: a plan page must be built from ${DRILLDOWN_TEMPLATE}: copy it and edit only the DATA block (${part})`);
 }
 
 export function publishPage(file: string, name: string | undefined, force: boolean, dir: string, opts: PublishOptions = {}): string {
@@ -107,7 +106,7 @@ export function publishPage(file: string, name: string | undefined, force: boole
  let diagram: { missing: string[]; thin: string[] } | null = null;
  if (opts.plan !== undefined) {
   if (extname(source).toLowerCase() !== ".html") throw new Error(`pages: --plan needs an HTML artifact, not ${source}`);
-  assertDrilldown(readFileSync(file, "utf8"), opts.templatePath);
+  assertDrilldown(readFileSync(file, "utf8"));
   diagram = checkDiagram(readFileSync(file, "utf8"), readFileSync(opts.plan, "utf8"));
   // P7 (plan 20261031_0917): an incomplete diagram must not publish at all — the Approve bar only
   // disables itself, and once a link the owner could not approve went out (I-20261031-329).

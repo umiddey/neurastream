@@ -25,6 +25,12 @@ afterEach(() => {
 	delete process.env.QUEUE_STATE;
 });
 
+// A plan page is the drilldown template with only DATA edited (plan 20261031_0917 P2); this DATA
+// covers the toy plan: its one phase in a box, the path its line names, 2+ kids per box.
+const TEMPLATE = readFileSync(join(REPO, "templates/skills/architecture-drilldown/template.html"), "utf8");
+const DATA_AT = TEMPLATE.indexOf("/* === DATA === */") + "/* === DATA === */".length;
+const TOY_PAGE = `${TEMPLATE.slice(0, DATA_AT)}\nconst T={id:"root",nm:"toy",kids:[{id:"a",nm:"P1 do the thing",files:"src/a.ts",kids:[{id:"a1",nm:"x"},{id:"a2",nm:"y"}]},{id:"b",nm:"later",kids:[{id:"b1",nm:"z"},{id:"b2",nm:"w"}]}]};\n${TEMPLATE.slice(TEMPLATE.indexOf("/* === END DATA === */"))}`;
+
 function setup(): { dir: string; cfg: Config; pages: string } {
 	const dir = mkdtempSync(join(tmpdir(), "plan-approval-"));
 	dirs.push(dir);
@@ -87,7 +93,7 @@ test("publish --plan: the bar is on a plan page, absent on a built thing, and it
 	const plan = join(dir, "20261027_toy.md");
 	writeFileSync(plan, "# Toy\n\n## Phases\n- [ ] P1 x\n");
 	const html = join(dir, "toy-architecture.html");
-	writeFileSync(html, "<html><body><p>diagram</p></body></html>");
+	writeFileSync(html, TOY_PAGE);
 	expect(publishPage(html, "Toy", false, pages, { plan })).toBe("toy.html");
 	const page = readFileSync(join(pages, "toy.html"), "utf8");
 	expect(page).toContain('id="ns-approve"');
@@ -111,7 +117,7 @@ test("server: approve records the plan, plan bytes unchanged", async () => {
 	writeFileSync(plan, original);
 	// A diagram that covers the plan: its one phase in a box, the path its line names, 2+ kids per box.
 	const html = join(dir, "toy-architecture.html");
-	writeFileSync(html, '<html><body><p>toy</p><script>const T={id:"root",nm:"toy",kids:[{id:"a",nm:"P1 do the thing",files:"src/a.ts",kids:[{id:"a1",nm:"x"},{id:"a2",nm:"y"}]},{id:"b",nm:"later",kids:[{id:"b1",nm:"z"},{id:"b2",nm:"w"}]}]};</script></body></html>');
+	writeFileSync(html, TOY_PAGE);
 	expect(publishPage(html, "Toy", false, pages, { plan })).toBe("toy.html");
 	appendPageNotes({ page: "/toy.html", notes: [{ quote: "level 3", note: "label it" }] }, cfg, "owner-login");
 	const tailscale = { ip4: () => "", dnsName: () => null, whois: () => "owner@example.test", logins: () => [] };

@@ -2,7 +2,6 @@ import { readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { getAdapter } from "../adapters/index.ts";
-import { PACKAGE_ROOT } from "../adapters/omp/package-root.ts";
 import { loadConfig } from "../core/config.ts";
 import { readExpiry, sweepPages } from "../core/pages-expiry.ts";
 import { startPagesServer } from "../core/pages.ts";
@@ -46,7 +45,7 @@ export async function runPages(args: string[] = [], deps: PagesDeps = {}): Promi
    if (!file || rest.length > 2) return 2;
    const now = clock();
    sweepPages(cfg.pages.dir, cfg.pages.keep_days, now);
-   const n = publishPage(file, name, force, cfg.pages.dir, { keep, keepDays: cfg.pages.keep_days, now, notes: pageNotesGate(cfg), plan, repo: repoForPublish(file, repo), templatePath: join(PACKAGE_ROOT, "templates/skills/architecture-drilldown/template.html") });
+   const n = publishPage(file, name, force, cfg.pages.dir, { keep, keepDays: cfg.pages.keep_days, now, notes: pageNotesGate(cfg), plan, repo: repoForPublish(file, repo) });
    const host = (deps.tailscale ?? realTailscale).dnsName() ?? "tailnet";
    console.log(`http://${host}:${cfg.pages.port}/${encodeURIComponent(n)}`);
    const expires = readExpiry(cfg.pages.dir)[n]?.expires;
