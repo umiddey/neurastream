@@ -45,9 +45,11 @@ export interface CiScan {
 	flaky: number;
 	/** Repos or steps the check could not read, with the reason. */
 	skipped: string[];
+	/** ci-red-mr fingerprints a staffed plan held back this run: still red, so their incidents stay open. */
+	held: string[];
 }
 
-export type CiRecord = { ok: true; tries: number } | { ok: false; code: number; error: string };
+export type CiRecord = { ok: true; tries: number; skipped: string[] } | { ok: false; code: number; error: string };
 
 /** Newest merged MRs one run reads per repo. The ledger is the cursor, so an MR is never recorded twice; this only bounds the first backfill. */
 const MERGED_LIST = 20;
@@ -57,7 +59,7 @@ const PIPELINE_LIST = 100;
 const iso = (sec: number): string => new Date(sec * 1000).toISOString();
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
 
-/** Runs the configured CI command for one MR and records how many pipelines it needed (M3). The CLI and the watcher show the error their own way. */
+/** Runs the configured CI command for one MR and records how many pipelines it needed (M3), then the repo's product numbers. The CLI and the watcher show the error their own way. */
 export function recordCiMr(cfg: Config, repoDir: string, mr: string, now: number, run: CommandRunner = defaultRunner): CiRecord {
 	const template = cfg.metrics.ci_pipelines_cmd;
 	if (!template) return { ok: false, code: 2, error: "metrics.ci_pipelines_cmd not set" };
@@ -71,7 +73,30 @@ export function recordCiMr(cfg: Config, repoDir: string, mr: string, now: number
 	}
 	if (!Array.isArray(pipelines)) return { ok: false, code: 1, error: "ci command must print a JSON array on stdout" };
 	appendMetric(cfg, { type: "ci", mr, repo: repoDir, tries: pipelines.length, ts: now });
-	return { ok: true, tries: pipelines.length };
+	return { ok: true, tries: pipelines.length, skipped: recordProducts(cfg, repoDir, now) };
+}
+
+const PRODUCT_TIMEOUT_MS = 10_000;
+
+/**
+ * Runs the repo's configured product numbers once each (metrics.product_cmds) and appends one
+ * product record per number. A command that fails, times out or prints anything but one finite
+ * number is skipped and returned as a message; the ci record itself never fails on a product number.
+ */
+function recordProducts(cfg: Config, repoDir: string, now: number): string[] {
+	const skipped: string[] = [];
+	for (const [name, cmd] of Object.entries(cfg.metrics.product_cmds[repoDir] ?? {})) {
+		const proc = Bun.spawnSync(["sh", "-c", cmd], { cwd: repoDir, stdout: "pipe", stderr: "pipe", timeout: PRODUCT_TIMEOUT_MS });
+		const out = proc.stdout.toString().trim();
+		const value = Number(out);
+		if (proc.exitCode !== 0 || out === "" || !Number.isFinite(value)) {
+			const why = proc.exitCode !== 0 ? `exit ${proc.exitCode ?? "signal"}` : `not one number: "${out.slice(0, 40)}"`;
+			skipped.push(`product_cmds.${name}: skipped (${why})`);
+			continue;
+		}
+		appendMetric(cfg, { type: "product", repo: repoDir, name, value, ts: now });
+	}
+	return skipped;
 }
 
 /** The default branch from origin's HEAD; null when origin has no HEAD ref. */
@@ -110,7 +135,8 @@ function mergedMrs(repo: string, forge: Forge, run: CommandRunner): number[] | n
 			: run(["gh", "pr", "list", "--state", "merged", "--limit", String(MERGED_LIST), "--json", "number"], { cwd: repo });
 	const rows = r.code === 0 ? parseList(r.stdout) : null;
 	if (!rows) return null;
-	return rows.map(row => (typeof row.iid === "number" ? row.iid : row.number)).filter((n): n is number => typeof n === "number" && n > 0);
+	// The cap holds here too: the forge's own limit flag is only a hint, and the first backfill must stay bounded.
+	return rows.map(row => (typeof row.iid === "number" ? row.iid : row.number)).filter((n): n is number => typeof n === "number" && n > 0).slice(0, MERGED_LIST);
 }
 
 /** When the newest finished run of a ref started failing: the oldest failure of the unbroken red streak at the head. Null when the newest passed. */
@@ -160,10 +186,15 @@ function redProblems(cfg: Config, repo: string, pipes: Pipeline[], inp: CiInputs
 		const hours = (inp.now - since) / 3600;
 		if (hours <= cfg.watch.ci_red_hours) continue;
 		const staffed = inp.plans.some(p => p.repo === repo && inp.staffed.includes(p.file) && mentioned(mr.token, mr.branch, [p.text]));
-		if (staffed) continue;
+		const fingerprint = `watch:ci-red-mr:${repo}#${mr.number}`;
+		if (staffed) {
+			// Held back, not recovered: the MR is still red, so its incident stays open.
+			scan.held.push(fingerprint);
+			continue;
+		}
 		const h = hours.toFixed(1);
 		out.push({
-			fingerprint: `watch:ci-red-mr:${repo}#${mr.number}`,
+			fingerprint,
 			kind: "ci-red-mr",
 			job: `${repo} ${mr.token}`,
 			at: iso(since),
@@ -175,8 +206,11 @@ function redProblems(cfg: Config, repo: string, pipes: Pipeline[], inp: CiInputs
 	return out;
 }
 
-/** Records M3 `ci` for merged MRs with no ledger row. Stops at the first CI error; the rest waits for the next run. */
-function recordMerged(cfg: Config, repo: string, forge: Forge, done: Set<string>, inp: CiInputs, scan: CiScan): void {
+/**
+ * Records M3 `ci` for merged MRs with no ledger row. A CI error skips only that MR, so the rest still
+ * record. Its skip is logged once (a ci-skip record) and the MR is retried on the next run.
+ */
+function recordMerged(cfg: Config, repo: string, forge: Forge, done: Set<string>, skipLogged: Set<string>, inp: CiInputs, scan: CiScan): void {
 	if (!cfg.metrics.ci_pipelines_cmd) return;
 	const merged = mergedMrs(repo, forge, inp.run);
 	if (!merged) {
@@ -188,11 +222,16 @@ function recordMerged(cfg: Config, repo: string, forge: Forge, done: Set<string>
 		if (done.has(key)) continue;
 		const rec = recordCiMr(cfg, repo, String(mr), inp.now, inp.run);
 		if (!rec.ok) {
-			scan.skipped.push(`${repo} (ci command for !${mr}: ${rec.error})`);
-			return;
+			if (!skipLogged.has(key)) {
+				scan.skipped.push(`${repo} (ci command for !${mr}: ${rec.error})`);
+				appendMetric(cfg, { type: "ci-skip", repo, mr: String(mr), ts: inp.now });
+				skipLogged.add(key);
+			}
+			continue;
 		}
 		done.add(key);
 		scan.recorded++;
+		for (const s of rec.skipped) scan.skipped.push(`${repo} (${s})`);
 	}
 }
 
@@ -208,10 +247,11 @@ function recordFlaky(cfg: Config, repo: string, pipes: Pipeline[], flagged: Set<
 
 /** One watcher pass over CI: red default branch, red open MRs, M3 for merged MRs, flaky commits. Repos come from the active plans, as mr-sweep does. */
 export function ciScan(cfg: Config, inp: CiInputs): CiScan {
-	const scan: CiScan = { problems: [], recorded: 0, flaky: 0, skipped: [] };
+	const scan: CiScan = { problems: [], recorded: 0, flaky: 0, skipped: [], held: [] };
 	const events = readMetricEvents(cfg);
 	const ciDone = new Set(events.filter(e => e.type === "ci").map(e => `${e.repo}#${e.mr}`));
 	const flagged = new Set(events.filter(e => e.type === "ci-flaky").map(e => `${e.repo}@${e.sha}`));
+	const skipLogged = new Set(events.filter(e => e.type === "ci-skip").map(e => `${e.repo}#${e.mr}`));
 	for (const repo of new Set(inp.plans.map(p => p.repo))) {
 		const found = repoForge(repo, inp.run);
 		if ("why" in found) {
@@ -224,7 +264,7 @@ export function ciScan(cfg: Config, inp: CiInputs): CiScan {
 			continue;
 		}
 		scan.problems.push(...redProblems(cfg, repo, pipes, inp, scan));
-		recordMerged(cfg, repo, found.forge, ciDone, inp, scan);
+		recordMerged(cfg, repo, found.forge, ciDone, skipLogged, inp, scan);
 		recordFlaky(cfg, repo, pipes, flagged, inp, scan);
 	}
 	return scan;

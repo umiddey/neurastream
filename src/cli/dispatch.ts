@@ -3,7 +3,7 @@ import path from "node:path";
 import { pagesDoctor } from "../core/pages-doctor.ts";
 import { ConfigError, configFile, loadConfig, type Config } from "../core/config.ts";
 import { beat, withHeartbeat } from "../core/heartbeat.ts";
-import { watchOnce, systemUnitLister, watchDoctorLine, watchHealth } from "../core/watch.ts";
+import { watchOnce, systemUnitLister, watchDoctorLine, watchHealth, timerStaffedPlans } from "../core/watch.ts";
 import { defaultGather } from "../core/main-start.ts";
 import { nowSec } from "../core/clock.ts";
 import { postReply } from "../core/notify.ts";
@@ -197,8 +197,8 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 					},
 					runner: defaultRunner,
 					plans: () => activePlans(),
-					// A timer run has no live job info, so no plan is known to be staffed.
-					staffed: () => [],
+					// Plans staffing.json records a spawn for: a timer run has no live job list to ask.
+					staffed: timerStaffedPlans,
 				});
 				console.log(`watch: ${report.opened.length} opened, ${report.deduped.length} deduped, ${report.closed.length} recovered, ${report.detectors.length} detector findings`);
 				return 0;

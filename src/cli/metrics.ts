@@ -48,29 +48,8 @@ export function recordCi(cfg: Config, repoDir: string, mr: string, now: number):
 		return r.code;
 	}
 	console.log(`ci: ${mr} needed ${r.tries} pipeline(s)`);
-	recordProducts(cfg, repoDir, now);
+	for (const s of r.skipped) console.error(s);
 	return 0;
-}
-
-const PRODUCT_TIMEOUT_MS = 10_000;
-
-/**
- * Runs the repo's configured product numbers once each (metrics.product_cmds) and appends one
- * product record per number. A command that fails, times out or prints anything but one finite
- * number is skipped with a stderr line; the ci record itself never fails on a product number.
- */
-function recordProducts(cfg: Config, repoDir: string, now: number): void {
-	for (const [name, cmd] of Object.entries(cfg.metrics.product_cmds[repoDir] ?? {})) {
-		const proc = Bun.spawnSync(["sh", "-c", cmd], { cwd: repoDir, stdout: "pipe", stderr: "pipe", timeout: PRODUCT_TIMEOUT_MS });
-		const out = proc.stdout.toString().trim();
-		const value = Number(out);
-		if (proc.exitCode !== 0 || out === "" || !Number.isFinite(value)) {
-			const why = proc.exitCode !== 0 ? `exit ${proc.exitCode ?? "signal"}` : `not one number: "${out.slice(0, 40)}"`;
-			console.error(`product_cmds.${name}: skipped (${why})`);
-			continue;
-		}
-		appendMetric(cfg, { type: "product", repo: repoDir, name, value, ts: now });
-	}
 }
 
 /** Marks one guard BLOCK line (by its ISO timestamp) as a false alarm. */

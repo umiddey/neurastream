@@ -18,7 +18,7 @@ import { Glob } from "bun";
 import type { Config } from "./config.ts";
 import { readBeats, type Heartbeat } from "./heartbeat.ts";
 import { runDetectorsGated, type GatedInputs } from "./incident-detectors.ts";
-import { log } from "./guards.ts";
+import { log, readStaffing } from "./guards.ts";
 import { notifyProviders } from "./notify.ts";
 import { addIncident, dismissIncident, openIncidents, readIncidents, type IncidentView } from "./incidents.ts";
 import { loadKnownSecrets, redactSecrets } from "./secret-redact.ts";
@@ -82,7 +82,7 @@ export interface WatchDeps {
 	runner: CommandRunner;
 	/** The active plans: the CI check reads their repos and the MRs they name. */
 	plans: () => { file: string; repo: string; text: string }[];
-	/** Plan files with a running agent right now. A timer run has no live job info, so production passes none. */
+	/** Plan files with a running agent right now. A timer run has no live job list, so it passes timerStaffedPlans() instead. */
 	staffed: () => string[];
 }
 
@@ -189,7 +189,8 @@ export function watchOnce(cfg: Config, deps: WatchDeps): WatchReport {
 	if (ci.recorded) log(cfg.paths.guard_log, `ci: recorded M3 for ${ci.recorded} merged MR(s)`);
 	if (ci.flaky) log(cfg.paths.guard_log, `ci: recorded ${ci.flaky} flaky commit(s)`);
 	const problems = [...beatProblems(cfg, readBeats(cfg), now), ...unitProblems(cfg, deps.listUnits, now), ...ci.problems];
-	const current = new Set(problems.map(p => p.fingerprint));
+	// A ci-red-mr a staffed plan held back is still red: it stays open, it is not dismissed as recovered.
+	const current = new Set([...problems.map(p => p.fingerprint), ...ci.held]);
 
 	// Recovery first, so a problem that recovers and re-fails between two runs opens a new
 	// incident instead of sighting the old one: dedup counts open incidents only. Views are
@@ -247,6 +248,11 @@ export function watchOnce(cfg: Config, deps: WatchDeps): WatchReport {
 	// (d) the gated detectors fold their own incidents (D1/D3 behind incidents.scan_interval_sec).
 	const detectors = runDetectorsGated(cfg, {}, deps.gather, now);
 	return { opened, deduped, closed, detectors };
+}
+
+/** The plan files a timer run treats as staffed: every plan staffing.json records a spawn for. A timer run has no live job list, so the spawn record is the only signal it has. */
+export function timerStaffedPlans(): string[] {
+	return Object.entries(readStaffing()).filter(([, names]) => names.length > 0).map(([file]) => file);
 }
 
 /** The watcher's unit files under one home: the systemd user service and timer on Linux, the
