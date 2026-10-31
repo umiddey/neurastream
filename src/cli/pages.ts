@@ -1,6 +1,5 @@
 import { readdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
 import { getAdapter } from "../adapters/index.ts";
 import { loadConfig } from "../core/config.ts";
 import { readExpiry, sweepPages } from "../core/pages-expiry.ts";
