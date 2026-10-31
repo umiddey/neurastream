@@ -207,6 +207,7 @@ watch:                       # the watcher (src/core/watch.ts): heartbeats, fail
   units:                     # user units the watcher reports when failed
     - "neurastream-*"
     - "wip-*"
+  max_posts_per_run: 3       # per run: at most this many new-incident posts, then one "+N more" line
 
 machine:
   load_over_cores: 4

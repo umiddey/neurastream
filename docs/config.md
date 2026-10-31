@@ -96,6 +96,7 @@ watch:                         # the watcher (src/core/watch.ts): `neurastream w
   units:                       # user units the watcher reports when failed (unit-failed), as globs
     - "neurastream-*"
     - "wip-*"
+  max_posts_per_run: 3         # per run: at most this many new-incident posts, then one "+N more, see `neurastream incident list --open`" line
 
 ledger:
   default_hours: 24

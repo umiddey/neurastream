@@ -3,9 +3,10 @@
 // Main session open. Every problem folds into the incident store with source "watch" and a
 // fingerprint per job+state, so a still-failing job dedupes into one open incident and a new
 // failure after recovery opens a fresh one; a watch incident whose problem is gone is closed
-// again via dismissIncident. The watcher reports — it never restarts a service or edits plans.
-// The clock, the unit lister and the detector gather are injected: tests touch only a temp
-// queue_state, never a real home, network or service manager.
+// again via dismissIncident. Each NEW incident also posts one ⚠ message (P3) through the
+// injected notifier — the watcher pushes, it never restarts a service or edits plans. The
+// clock, the unit lister, the detector gather and the notifier are injected: tests touch only a
+// temp queue_state, never a real home, network or service manager.
 
 import { spawnSync } from "node:child_process";
 import { Glob } from "bun";
@@ -13,7 +14,9 @@ import type { Config } from "./config.ts";
 import { readBeats, type Heartbeat } from "./heartbeat.ts";
 import { runDetectorsGated, type GatedInputs } from "./incident-detectors.ts";
 import { log } from "./guards.ts";
+import { notifyProviders } from "./notify.ts";
 import { addIncident, dismissIncident, openIncidents, readIncidents, type IncidentView } from "./incidents.ts";
+import { loadKnownSecrets, redactSecrets } from "./secret-redact.ts";
 
 /** One failed user unit, as the lister reports it. */
 export interface FailedUnit {
@@ -64,6 +67,10 @@ export interface WatchDeps {
 	listUnits: UnitLister;
 	/** Expensive detector inputs; the same gather mainDetectors uses (src/core/main-start.ts). */
 	gather: () => GatedInputs;
+	/** The chat notifier, e.g. a fire-and-forget postReply — injected so tests never post for
+	 *  real. Called at most watch.max_posts_per_run times per run plus one overflow line, and
+	 *  only when a notify provider is configured. */
+	notify: (text: string) => void;
 }
 
 export interface WatchReport {
@@ -77,10 +84,17 @@ export interface WatchReport {
 	detectors: IncidentView[];
 }
 
-/** One problem the watcher found: exactly one addIncident input. */
+/** One problem the watcher found: exactly one addIncident input plus the fields its ⚠ post
+ *  needs — the job it is about, when it happened, and the first error line. */
 interface WatchProblem {
 	fingerprint: string;
 	kind: string;
+	/** The job or unit the problem is about: the post's subject. */
+	job: string;
+	/** When it happened: the heartbeat time, or the run time when there is none. */
+	at: string;
+	/** The first error line (a heartbeat detail or a journal line, already cut to 200). */
+	line: string;
 	summary: string;
 	evidence: string;
 }
@@ -97,6 +111,9 @@ function beatProblems(cfg: Config, beats: Record<string, Heartbeat>, now: number
 		out.push({
 			fingerprint: `watch:beat-failed:${name}`,
 			kind: "beat-failed",
+			job: name,
+			at: hb.at,
+			line: detail,
 			summary: `${name} heartbeat failed: ${detail}`,
 			evidence: `heartbeat at ${hb.at}: ${detail}`,
 		});
@@ -107,6 +124,9 @@ function beatProblems(cfg: Config, beats: Record<string, Heartbeat>, now: number
 			out.push({
 				fingerprint: `watch:beat-stale:${name}`,
 				kind: "beat-stale",
+				job: name,
+				at: new Date(now * 1000).toISOString(),
+				line: `no heartbeat ever (watch.expect ${hours}h)`,
 				summary: `${name}: no heartbeat ever (watch.expect ${hours}h)`,
 				evidence: `listed in watch.expect (${hours}h), no heartbeats/${name}.json`,
 			});
@@ -118,6 +138,9 @@ function beatProblems(cfg: Config, beats: Record<string, Heartbeat>, now: number
 		out.push({
 			fingerprint: `watch:beat-stale:${name}`,
 			kind: "beat-stale",
+			job: name,
+			at: hb.at,
+			line: `last beat ${Math.round(ageH * 10) / 10}h ago, expect ${hours}h`,
 			summary: `${name} heartbeat stale: last beat ${Math.round(ageH * 10) / 10}h ago, expect ${hours}h`,
 			evidence: `heartbeat at ${hb.at} (watch.expect: ${hours}h)`,
 		});
@@ -126,7 +149,7 @@ function beatProblems(cfg: Config, beats: Record<string, Heartbeat>, now: number
 }
 
 /** (c) failed units from the injected lister, filtered by the watch.units globs. */
-function unitProblems(cfg: Config, listUnits: UnitLister): WatchProblem[] {
+function unitProblems(cfg: Config, listUnits: UnitLister, now: number): WatchProblem[] {
 	const globs = cfg.watch.units.map(p => new Glob(p));
 	const out: WatchProblem[] = [];
 	for (const unit of listUnits()) {
@@ -135,6 +158,9 @@ function unitProblems(cfg: Config, listUnits: UnitLister): WatchProblem[] {
 		out.push({
 			fingerprint: `watch:unit-failed:${unit.name}`,
 			kind: "unit-failed",
+			job: unit.name,
+			at: new Date(now * 1000).toISOString(),
+			line: err,
 			summary: `${unit.name} unit failed: ${err}`,
 			evidence: `failed user unit (watch.units: ${cfg.watch.units.join(", ")}); last error line: ${err}`,
 		});
@@ -145,7 +171,7 @@ function unitProblems(cfg: Config, listUnits: UnitLister): WatchProblem[] {
 /** One watcher pass: heartbeats, failed units, gated detectors — in that order. */
 export function watchOnce(cfg: Config, deps: WatchDeps): WatchReport {
 	const now = deps.now();
-	const problems = [...beatProblems(cfg, readBeats(cfg), now), ...unitProblems(cfg, deps.listUnits)];
+	const problems = [...beatProblems(cfg, readBeats(cfg), now), ...unitProblems(cfg, deps.listUnits, now)];
 	const current = new Set(problems.map(p => p.fingerprint));
 
 	// Recovery first, so a problem that recovers and re-fails between two runs opens a new
@@ -175,6 +201,7 @@ export function watchOnce(cfg: Config, deps: WatchDeps): WatchReport {
 
 	const opened: IncidentView[] = [];
 	const deduped: IncidentView[] = [];
+	const posts: string[] = [];
 	for (const p of problems) {
 		const { incident, deduped: seen } = addIncident(
 			cfg,
@@ -183,6 +210,21 @@ export function watchOnce(cfg: Config, deps: WatchDeps): WatchReport {
 		);
 		log(cfg.paths.guard_log, `incident ${incident.id} [watch/${p.kind}]${seen ? ` sighting #${incident.count}` : " opened"}: ${p.summary}`);
 		(seen ? deduped : opened).push(incident);
+		// Push, not pull (P3): one ⚠ post per NEW incident only — a deduped sighting stays silent.
+		if (!seen) posts.push(`⚠ ${p.job}: ${p.kind} at ${p.at} — ${p.line} (incident ${incident.id})`);
+	}
+
+	// At most watch.max_posts_per_run posts per run; the rest fold into one "+N more" line.
+	// Nothing at all when no notify provider is configured (the incidents still opened above).
+	// The seam is injected; the text goes through the same redactor the notify path applies,
+	// since the injected notifier may not scrub by itself (redactSecrets is idempotent, so a
+	// postReply hand-off scrubbing again is stable).
+	if (posts.length > 0 && notifyProviders(cfg).length > 0) {
+		const overflow = posts.splice(cfg.watch.max_posts_per_run);
+		if (overflow.length > 0) posts.push(`+${overflow.length} more, see \`neurastream incident list --open\``);
+		for (const post of posts) {
+			deps.notify(cfg.secrets.redact ? redactSecrets(post, loadKnownSecrets(cfg), cfg.secrets.extra_patterns).text : post);
+		}
 	}
 
 	// (d) the gated detectors fold their own incidents (D1/D3 behind incidents.scan_interval_sec).

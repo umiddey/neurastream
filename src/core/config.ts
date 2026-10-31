@@ -205,6 +205,8 @@ export interface Config {
 		expect: Record<string, number>;
 		/** Globs of the user units the watcher reports when failed. */
 		units: string[];
+		/** Per watcher run: at most this many new-incident posts; the rest fold into one "+N more" line. */
+		max_posts_per_run: number;
 	};
 	machine: {
 		load_over_cores: number;
@@ -574,6 +576,9 @@ function check(cfg: Config): void {
 	}
 	if (!Array.isArray(cfg.watch.units) || cfg.watch.units.some(u => typeof u !== "string" || u === "")) {
 		throw new ConfigError("watch.units must be a list of non-empty glob strings");
+	}
+	if (!Number.isInteger(cfg.watch.max_posts_per_run) || cfg.watch.max_posts_per_run < 1) {
+		throw new ConfigError("watch.max_posts_per_run must be an integer >= 1");
 	}
 	for (const p of cfg.metrics.correction_patterns) {
 		try {

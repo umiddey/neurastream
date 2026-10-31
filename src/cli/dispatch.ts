@@ -7,6 +7,7 @@ import { watchOnce, systemUnitLister } from "../core/watch.ts";
 import { defaultGather } from "../core/main-start.ts";
 import { nowSec } from "../core/clock.ts";
 import { postReply } from "../core/notify.ts";
+import { log } from "../core/guards.ts";
 import { loadKnownSecrets, redactSecrets, redactSummary } from "../core/secret-redact.ts";
 import { applyQueueEnv } from "../core/queue/env.ts";
 import { getAdapter } from "../adapters/index.ts";
@@ -175,7 +176,18 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 		try {
 			const cfg = loadConfig();
 			return withHeartbeat(cfg, "watch", () => {
-				const report = watchOnce(cfg, { now: nowSec, listUnits: systemUnitLister, gather: defaultGather(cfg, getAdapter(cfg)) });
+				const report = watchOnce(cfg, {
+					now: nowSec,
+					listUnits: systemUnitLister,
+					gather: defaultGather(cfg, getAdapter(cfg)),
+					// Fire-and-forget like the stop path: postReply serializes and retries
+					// internally; a failed provider lands in guard.log, never crashes the watcher.
+					notify: text => {
+						void postReply(text, cfg).then(rs => {
+							for (const r of rs) if (!r.posted) log(cfg.paths.guard_log, `watch notify failed [${r.provider}]: ${r.error}`);
+						});
+					},
+				});
 				console.log(`watch: ${report.opened.length} opened, ${report.deduped.length} deduped, ${report.closed.length} recovered, ${report.detectors.length} detector findings`);
 				return 0;
 			});

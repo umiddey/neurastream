@@ -24,9 +24,10 @@ function tempCfg(label: string): Config {
 	return loadConfig({ home: dir, env: {} });
 }
 
-/** Injected deps: a frozen clock, no failed units, empty detector inputs. */
+/** Injected deps: a frozen clock, no failed units, empty detector inputs, a notifier that
+ * swallows the posts (P2 tests assert the incident store, not the chat). */
 function deps(at: number, units: FailedUnit[] = [], gather: () => GatedInputs = () => ({ results: [], runs: [], blocks: [] })): WatchDeps {
-	return { now: () => at, listUnits: () => units, gather };
+	return { now: () => at, listUnits: () => units, gather, notify: () => {} };
 }
 
 /** The jobs the default watch.expect lists: all fresh, so nothing is stale. */
