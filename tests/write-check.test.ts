@@ -181,10 +181,11 @@ describe("checkWrite", () => {
 		expect(r.reason).toContain("E1");
 	});
 
-	test("only_with_config walks up to the git top and no further (P10, I-20261031-89)", () => {
+	test("only_with_config stops at the git top: a config above it does not count (P10, I-20261031-89)", () => {
 		const outer = mkdtempSync(join(tmpdir(), "neurastream-wc-"));
-		mkdirSync(join(outer, ".git"));
-		const sub = join(outer, "sub");
+		const repo = join(outer, "repo");
+		mkdirSync(join(repo, ".git"), { recursive: true });
+		const sub = join(repo, "sub");
 		mkdirSync(sub, { recursive: true });
 		writeFileSync(join(outer, "ruff.toml"), "# above the git top");
 		const file = join(sub, "a.ts");
@@ -193,6 +194,20 @@ describe("checkWrite", () => {
 			linters: [{ ext: [".ts"], argv: [process.execPath, FAKE, "{file}"], pattern: "^.+?:\\d+:\\d+: (?<rule>\\S+) (?<message>.+)$", only_with_config: ["ruff.toml"] }],
 		}));
 		expect(r.allow).toBe(true);
+	});
+
+	test("only_with_config finds a config at the git top itself (the usual repo-root pyproject/oxlintrc)", () => {
+		const repo = mkdtempSync(join(tmpdir(), "neurastream-wc-"));
+		mkdirSync(join(repo, ".git"));
+		writeFileSync(join(repo, "ruff.toml"), "# repo root config");
+		const sub = join(repo, "sub");
+		mkdirSync(sub, { recursive: true });
+		const file = join(sub, "a.ts");
+		writeFileSync(file, "lint:E1\n");
+		const r = checkWrite(file, "clean\n", "lint:E1\n", wc({
+			linters: [{ ext: [".ts"], argv: [process.execPath, FAKE, "{file}"], pattern: "^.+?:\\d+:\\d+: (?<rule>\\S+) (?<message>.+)$", only_with_config: ["ruff.toml"] }],
+		}));
+		expect(r.allow).toBe(false);
 	});
 
 	test("an edit whose before text holds git conflict markers is allowed with a note (P11, I-20261029-450)", () => {

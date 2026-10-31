@@ -7,7 +7,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, join, resolve } from "node:path";
 
-import { gitTop } from "./queue/lib";
+import { gitTop } from "./queue/lib.ts";
 
 export interface WriteCheckLinter {
 	ext: string[];
@@ -53,21 +53,17 @@ function add(f: Findings, k: string, rule: string, sample: string): void {
 	if (!f.rules.has(k)) f.rules.set(k, rule);
 }
 
-// Walks up from dirname(file) to (not including) the git top, looking for one of `names`.
-// When there is no git top, only the file's own directory is checked.
+// Walks up from dirname(file) to the git top (inclusive: a repo-root config counts), looking for one
+// of `names`; never above it. Outside a git repo only the file's own directory is checked.
 function hasConfig(file: string, names: string[]): boolean {
 	const start = resolve(dirname(file));
 	const top = gitTop(start)?.top;
-	if (top === undefined) {
-		for (const name of names) if (existsSync(join(start, name))) return true;
-		return false;
+	for (let dir = start; ; dir = dirname(dir)) {
+		if (names.some((name) => existsSync(join(dir, name)))) return true;
+		if (top === undefined || dir === top || dir === dirname(dir)) return false;
 	}
-	for (let dir = start; dir !== top; dir = dirname(dir)) {
-		for (const name of names) if (existsSync(join(dir, name))) return true;
-		if (dir === dirname(dir)) break;
-	}
-	return false;
 }
+
 // Runs each linter on `path` and counts its findings. Throws when a linter did not finish
 // (missing binary, timeout, signal); the caller turns that into an allowed edit with a note.
 function lint(path: string, linters: WriteCheckLinter[], wc: WriteCheckConfig, f: Findings): void {
