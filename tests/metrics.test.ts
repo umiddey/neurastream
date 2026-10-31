@@ -202,6 +202,9 @@ test("M5 groups every open: <plan list> block reason into one key", () => {
 function cfgWith(home: string, ciCmd: string) {
 	const cfg = loadConfig({ home });
 	cfg.metrics.ci_pipelines_cmd = ciCmd;
+	cfg.paths.score_state = join(home, "score");
+	cfg.paths.queue_state = join(home, "state");
+	cfg.paths.queue_index = join(home, "INDEX.md");
 	return cfg;
 }
 
