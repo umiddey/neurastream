@@ -738,9 +738,9 @@ test("every request logs UI <method> <path> login=<l> → <code> to the guard lo
 	await get(stranger);
 	const lines = guardLogLines();
 	expect(lines.length).toBe(3);
-	expect(lines[0]).toMatch(/^\S+ UI GET \/ login=owner@example\.com → 200$/);
-	expect(lines[1]).toMatch(/^\S+ UI GET \/nope login=owner@example\.com → 404$/);
-	expect(lines[2]).toMatch(/^\S+ UI GET \/ login=- → 403$/);
+	expect(lines[0]).toMatch(/^\S+ \[main\] UI GET \/ login=owner@example\.com → 200$/);
+	expect(lines[1]).toMatch(/^\S+ \[main\] UI GET \/nope login=owner@example\.com → 404$/);
+	expect(lines[2]).toMatch(/^\S+ \[main\] UI GET \/ login=- → 403$/);
 });
 
 // --- resilience ---

@@ -32,6 +32,9 @@ const SESSION_FILE = join(TMP, "session.jsonl");
 const SESSION_ID = `notify-test-${process.pid}`;
 const REPLY = "the final reply to the owner";
 const BLOCKED_REPLY = "a reply written while the stop was blocked";
+// postReply prepends the Main's id to everything it posts (multi-main P2).
+const POSTED_REPLY = `[main] ${REPLY}`;
+const POSTED_BLOCKED = `[main] ${BLOCKED_REPLY}`;
 
 interface Hit {
 	key: string;
@@ -312,8 +315,8 @@ test("an allowed stop posts the text to each configured provider once, with the 
 	await host.emit("agent_end", { messages: [msg(REPLY)] }, ctx);
 	expect(await host.emit("session_stop", stopEvent(REPLY), ctx)).toEqual([]);
 	await until(() => discordHits.length === 1 && slackHits.length === 1);
-	expect(discordHits[0]).toEqual({ key: "content", text: REPLY });
-	expect(slackHits[0]).toEqual({ key: "text", text: REPLY });
+	expect(discordHits[0]).toEqual({ key: "content", text: POSTED_REPLY });
+	expect(slackHits[0]).toEqual({ key: "text", text: POSTED_REPLY });
 });
 
 test("the rollover-ready path relaunches and posts nothing", async () => {
@@ -347,10 +350,10 @@ test("a 4500-char reply is 3 discord and 2 slack chunks, in order, nothing lost"
 	await until(() => discordHits.length === 3 && slackHits.length === 2);
 	expect(discordHits.map(h => h.key)).toEqual(["content", "content", "content"]);
 	expect(discordHits.every(h => h.text.length <= 2000)).toBe(true);
-	expect(discordHits.map(h => h.text).join("")).toBe(big);
+	expect(discordHits.map(h => h.text).join("")).toBe(`[main] ${big}`);
 	expect(slackHits.map(h => h.key)).toEqual(["text", "text"]);
 	expect(slackHits.every(h => h.text.length <= 3000)).toBe(true);
-	expect(slackHits.map(h => h.text).join("")).toBe(big);
+	expect(slackHits.map(h => h.text).join("")).toBe(`[main] ${big}`);
 });
 
 test("a blocked stop posts its reply; the later allowed stop posts the final text", async () => {
@@ -366,8 +369,8 @@ test("a blocked stop posts its reply; the later allowed stop posts the final tex
 	writeFileSync(INDEX, "");
 	expect(await host.emit("session_stop", stopEvent(REPLY), ctx)).toEqual([]);
 	await until(() => discordHits.length === 2 && slackHits.length === 2);
-	expect(discordHits.map(h => h.text)).toEqual([BLOCKED_REPLY, REPLY]);
-	expect(slackHits.map(h => h.text)).toEqual([BLOCKED_REPLY, REPLY]);
+	expect(discordHits.map(h => h.text)).toEqual([POSTED_BLOCKED, POSTED_REPLY]);
+	expect(slackHits.map(h => h.text)).toEqual([POSTED_BLOCKED, POSTED_REPLY]);
 	expect(notifyLogLines().filter(l => l.includes("notify: posted (blocked session_stop)")).length).toBe(1);
 	expect(notifyLogLines().filter(l => l.includes("notify: posted (allowed session_stop)")).length).toBe(1);
 });
@@ -474,8 +477,8 @@ test("handback (a): an allowed stop posts its own event reply B, not the earlier
 	await host.emit("agent_end", { messages: [msg("reply A from the last run")] }, ctx);
 	expect(await host.emit("session_stop", stopEvent("reply B from this run"), ctx)).toEqual([]);
 	await until(() => discordHits.length === 1 && slackHits.length === 1);
-	expect(discordHits.map(h => h.text)).toEqual(["reply B from this run"]);
-	expect(slackHits.map(h => h.text)).toEqual(["reply B from this run"]);
+	expect(discordHits.map(h => h.text)).toEqual(["[main] reply B from this run"]);
+	expect(slackHits.map(h => h.text)).toEqual(["[main] reply B from this run"]);
 	expect(notifyLogLines().filter(l => l.includes("notify: posted (allowed session_stop)")).length).toBe(1);
 });
 
@@ -485,8 +488,8 @@ test("handback (b): the first stop of a session, no earlier agent_end, posts the
 	const ctx = ctxFor("main");
 	expect(await host.emit("session_stop", { messages: [msg("earlier"), msg(REPLY)] }, ctx)).toEqual([]);
 	await until(() => discordHits.length === 1 && slackHits.length === 1);
-	expect(discordHits[0]?.text).toBe(REPLY);
-	expect(slackHits[0]?.text).toBe(REPLY);
+	expect(discordHits[0]?.text).toBe(POSTED_REPLY);
+	expect(slackHits[0]?.text).toBe(POSTED_REPLY);
 	expect(notifyLogLines().filter(l => l.includes("notify: posted (allowed session_stop)")).length).toBe(1);
 });
 
@@ -496,7 +499,7 @@ test("handback (c): agent_end willContinue with an async job pending and no stop
 	const ctx = ctxFor("main", [{ label: "bg-1" }]);
 	await host.emit("agent_end", { willContinue: true, messages: [msg(REPLY)] }, ctx);
 	await until(() => discordHits.length === 1 && slackHits.length === 1);
-	expect(discordHits[0]?.text).toBe(REPLY);
+	expect(discordHits[0]?.text).toBe(POSTED_REPLY);
 	expect(notifyLogLines().filter(l => l.includes("notify: posted (agent_end hand-back)")).length).toBe(1);
 	await host.emit("agent_end", { willContinue: true, messages: [msg(REPLY)] }, ctx);
 	await expectNoMore(() => discordHits.length, 1);
@@ -523,7 +526,7 @@ test("handback (e): a blocked stop posts the reply and logs the post", async () 
 	const blocked = await host.emit("session_stop", stopEvent(BLOCKED_REPLY), ctx);
 	expect(blocked.map(decisionOf)).toEqual(["block"]);
 	await until(() => discordHits.length === 1 && slackHits.length === 1);
-	expect(discordHits[0]?.text).toBe(BLOCKED_REPLY);
+	expect(discordHits[0]?.text).toBe(POSTED_BLOCKED);
 	expect(notifyLogLines().filter(l => l.includes("notify: posted (blocked session_stop)")).length).toBe(1);
 });
 
@@ -698,7 +701,7 @@ test("blocked stop posts its reply once and agent_end does not duplicate it", as
 	await host.emit("agent_end", { willContinue: true, messages: [msg(BLOCKED_REPLY)] }, ctx);
 	await expectNoMore(() => discordHits.length, 1);
 	await expectNoMore(() => slackHits.length, 1);
-	expect(discordHits[0]?.text).toBe(BLOCKED_REPLY);
+	expect(discordHits[0]?.text).toBe(POSTED_BLOCKED);
 	expect(notifyLogLines().filter(l => l.includes("notify: posted (blocked session_stop)")).length).toBe(1);
 });
 
@@ -710,7 +713,7 @@ test("postReply serializes concurrent calls in invocation order without overlap"
 	const second = postReply("second", cfg);
 	const third = postReply("third", cfg);
 	await Promise.all([first, second, third]);
-	expect(discordHits.map(hit => hit.text)).toEqual(["first", "second", "third"]);
+	expect(discordHits.map(hit => hit.text)).toEqual(["[main] first", "[main] second", "[main] third"]);
 	expect(maxActiveDiscordRequests).toBe(1);
 });
 
