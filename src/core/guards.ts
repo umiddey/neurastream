@@ -952,10 +952,15 @@ function runBlockers(plan: Plan, hit: string[], e: ToolEvent, cfg: Config): stri
 				stdio: ["pipe", "pipe", "pipe"],
 			});
 		} catch (err) {
+			// P5c (plan 20261031_1207): the deny names the hit paths and the script's own output
+			// (stdout+stderr, first 300 chars) so the worker can fix the named file instead of
+			// retrying blind; the Error message is the last resort for a script with no output.
+			const stdout = typeof err === "object" && err !== null && "stdout" in err && typeof err.stdout === "string" ? err.stdout.trim() : "";
 			const stderr = typeof err === "object" && err !== null && "stderr" in err && typeof err.stderr === "string" ? err.stderr.trim() : "";
 			const message = err instanceof Error ? err.message : String(err);
-			const why = stderr || `${path.basename(b.script)} failed (${message})`;
-			return `blocked by plan ${path.basename(plan.file)}: ${why}`;
+			const detail = `${stdout}\n${stderr}`.trim().slice(0, 300);
+			const why = detail || `${path.basename(b.script)} failed (${message})`;
+			return `blocked by plan ${path.basename(plan.file)} (${hit.join(", ")}): ${why}`;
 		}
 	}
 	return null;
@@ -1079,8 +1084,14 @@ function subRules(e: ToolEvent, input: Record<string, unknown>, paths: string[],
 		const hit = paths.filter(p => !q.isOrchestrationPath(p, plans) && q.planCovers(plan, p, plans));
 		if (!hit.length) continue;
 		if (plan.errors.length) return `plan ${plan.file} is invalid (${plan.errors.join("; ")}). Stop and report to Main.`;
-		const why = runBlockers(plan, hit, e, cfg);
-		if (why) return why;
+		// P5c (plan 20261031_1207): reads and read-only shell calls skip the phase-0 blockers — a
+		// failing blocker used to deny every read of a covered path and send the worker back blind.
+		// The shell filter is the review lock's (writesShellText), so landing text keeps its blocker.
+		const readOnly = cfg.guards.read_tools.includes(e.tool) || (cfg.guards.shell_tools.includes(e.tool) && !writes.length && !writesShellText(input, cfg));
+		if (!readOnly) {
+			const why = runBlockers(plan, hit, e, cfg);
+			if (why) return why;
+		}
 	}
 	return null;
 }
