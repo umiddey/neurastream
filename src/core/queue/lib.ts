@@ -65,10 +65,11 @@ function originBase(repo: string): string {
 	return head.ok && head.out ? `refs/remotes/${head.out}` : "refs/remotes/origin/main";
 }
 
-/** P4: an open plan auto-close starts for — its branch exists and has landed, or it names no branch (a Main-only plan) and every phase is ticked. Shared by the adapter's autoClose filter and queueProblems' landed lock (P5); queue-close --auto re-checks authoritatively. */
+/** P4 (plan 20261031_0911), tightened by 20261031_2320: an open plan auto-close starts for only when every phase is ticked AND (its branch exists and has landed, or it names no branch — a Main-only plan). An empty landed branch is not done: 0.2.60 held the queue on 0/N plans. Shared by the adapter's autoClose filter and queueProblems' landed lock (P5); queue-close --auto re-checks authoritatively. */
 export function autoCloseCandidate(p: Plan): boolean {
 	if (p.status !== "open" || p.errors.length) return false;
-	if (!p.branch) return p.phases.total > 0 && p.phases.done === p.phases.total;
+	if (!(p.phases.total > 0 && p.phases.done === p.phases.total)) return false;
+	if (!p.branch) return true;
 	if (!gitOut(p.repo, "rev-parse", "--verify", "-q", `refs/heads/${p.branch}`).ok) return false;
 	return landed(p.repo, p.branch, originBase(p.repo), p.text);
 }

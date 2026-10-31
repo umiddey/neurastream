@@ -1967,18 +1967,28 @@ export function checkStop(e: StopEvent, cfg: Config): Decision {
 	}
 	// P5 (plan 20261031_0911): a landed open plan whose auto-close failed holds the stop until a
 	// running subagent's brief names it (staffing ∩ live ledger); unrelated live subagents release
-	// nothing, and there is no idle-stop valve — the lock lifts when the plan closes or is staffed.
+	// nothing. Valve (20261031_2320): like the incident block above, empty stops count toward
+	// cfg.guards.idle_stops; a stop with calls in between resets the count and re-locks.
 	const locked = q.activePlans().filter(p => p.status === "open" && q.autoCloseCandidate(p) && q.lastCloseFailed(p.file));
 	if (locked.length) {
 		const staffed = staffedPlans(readStaffing(), liveSubagents(e.ledgerText));
 		const unworked = locked.filter(s => !staffed.includes(s.file));
 		if (unworked.length) {
+			if (state.callsSinceStop === 0) state.idleStops++;
+			else state.idleStops = 0;
+			state.callsSinceStop = 0;
+			if (state.idleStops >= cfg.guards.idle_stops) {
+				log(cfg.paths.guard_log, `ALLOW stop after ${state.idleStops} idle stop attempts; locked: ${unworked.map(s => s.file).join(", ")}`);
+				return { allow: true, reason: "", state: { callsSinceStop: 0, idleStops: 0 } };
+			}
+			const left = cfg.guards.idle_stops - state.idleStops;
 			log(cfg.paths.guard_log, `BLOCK stop: landed but not closed: ${unworked.map(s => s.file).join(", ")}`);
 			return {
 				allow: false,
 				reason:
 					`main-guard: ${unworked.map(s => `${s.file} landed but its auto-close failed (${(q.lastCloseResult(s.file) ?? "").replace(/^queue-close: /, "")})`).join("; ")}. ` +
-					"The stop stays locked: spawn an agent whose brief names the plan, or fix the close.",
+					"The stop stays locked: spawn an agent whose brief names the plan, or fix the close. " +
+					`${left} idle stop ${left === 1 ? "attempt" : "attempts"} left before the stop is allowed.`,
 				state,
 			};
 		}

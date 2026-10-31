@@ -17,7 +17,7 @@ import type { StopEvent } from "../src/core/adapter.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { checkStop, planGate } from "../src/core/guards.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
-import { lastCloseResult, queueProblems, readIndex, refreshQueuePaths } from "../src/core/queue/lib.ts";
+import { autoCloseCandidate, lastCloseResult, parsePlan, queueProblems, readIndex, refreshQueuePaths } from "../src/core/queue/lib.ts";
 
 // The port under test is the checkout these tests ship in (worktree-safe: never a hardcoded path).
 const REPO = dirname(dirname(import.meta.path));
@@ -110,7 +110,7 @@ function landedRepo(dir: string, branch: string): string {
 
 // No cancelled-work word may appear here: cancelledMatches flags plans by wording, and a healthy
 // open plan must produce no queueProblems entry of its own.
-function openPlanText(opts: { title: string; branch?: string; done: string }): string {
+function openPlanText(opts: { title: string; branch?: string; done: string; phases?: string[] }): string {
 	return [
 		`# ${opts.title}`,
 		"",
@@ -125,7 +125,7 @@ function openPlanText(opts: { title: string; branch?: string; done: string }): s
 		"- nopush",
 		"",
 		"## Phases",
-		"- [x] P1 do the work — verify: `true`",
+		...(opts.phases ?? ["- [x] P1 do the work — verify: `true`"]),
 		"",
 		"## Done check",
 		`\`${opts.done}\``,
@@ -238,4 +238,43 @@ test("(j) queueProblems flags a done check that uses merge-base --is-ancestor", 
 	writeFileSync(s.index, `${plan}\n`);
 	const probs = queueProblems(s.index, s.blockers);
 	expect(probs.some((p) => p.where === plan && /is-ancestor|squash-aware/.test(p.problem))).toBe(true);
+});
+
+// P1 (plan 20261031_2320_stop_lock_valve): a landed branch is not "done" — 0.2.60 counted a
+// landed branch as closable even at 0/N phases ticked (team_queue 0/10, pressure_alerts 0/4) and
+// held the queue on plans nobody could close. A branched plan is a candidate only when every
+// phase is ticked AND the branch landed.
+test("(k) a plan with unticked phases and a landed branch is not an auto-close candidate", () => {
+	const s = seed();
+	applyQueueEnv(s.cfg);
+	const repo = landedRepo(s.home, "fix/two-open");
+	const p = parsePlan(repo, join(repo, "docs/plans/20261031_2320_two-open.md"), openPlanText({
+		title: "two open",
+		branch: "fix/two-open",
+		done: "exit 1",
+		phases: ["- [ ] P1 first — verify: `true`", "- [ ] P2 second — verify: `true`"],
+	}));
+	expect(p.phases).toEqual({ done: 0, total: 2 });
+	expect(p.errors).toEqual([]);
+	expect(autoCloseCandidate(p)).toBe(false);
+});
+
+test("(l) a plan with every phase ticked and a landed branch stays a candidate", () => {
+	const s = seed();
+	applyQueueEnv(s.cfg);
+	const repo = landedRepo(s.home, "fix/all-ticked");
+	const p = parsePlan(repo, join(repo, "docs/plans/20261031_2321_all-ticked.md"), openPlanText({ title: "all ticked", branch: "fix/all-ticked", done: "exit 1" }));
+	expect(p.errors).toEqual([]);
+	expect(autoCloseCandidate(p)).toBe(true);
+});
+
+test("(m) a branched plan with zero phases and a landed branch is not a candidate", () => {
+	const s = seed();
+	applyQueueEnv(s.cfg);
+	const repo = landedRepo(s.home, "fix/no-phases");
+	const file = join(repo, "docs/plans/20261031_2322_no-phases.md");
+	// parsePlan cannot build an errorless zero-phase plan ("## Phases" is a required section), so
+	// the predicate's zero-phase guard is pinned on a constructed Plan (the exported shape).
+	const zero = { ...parsePlan(repo, file, openPlanText({ title: "no phases", branch: "fix/no-phases", done: "exit 1" })), phases: { done: 0, total: 0 }, errors: [] as string[] };
+	expect(autoCloseCandidate(zero)).toBe(false);
 });
