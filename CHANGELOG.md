@@ -50,7 +50,11 @@
 ## Unreleased
 ### Changed
 - `guards.rate_limit` replaces `default_wait_s` and `max_wait_s` (the doubling is gone) with `probe_interval_s` (300), `max_probes` (288), `probe_timeout_s` (90) and `probe_cmd` (the shell command that probes the provider; `{model}` is replaced by the shell-quoted model). A named retry-after is still waited for, plus `slack_s`. A config that still sets the retired keys is refused as an unknown key (P2, plan 20261027_1500).
+<<<<<<< HEAD
 >>>>>>> c851de9 (docs(changelog): rate-limit config keys (P2))
+=======
+- A rate-limited Main turn end opens a probe episode in `<queue_state>/main-limit.json` (P3, plan 20261027_1500): a named reset is waited for, otherwise the omp adapter spawns a niced child running `guards.rate_limit.probe_cmd` every `probe_interval_s`; the first good probe (or the named reset) sends Main one back message within one 30 s tick, the owner chat hears once per episode, a turn that ends without a limit closes the episode, and an owner message mid-episode cancels the tick with the probe count kept.
+>>>>>>> 724c123 (docs(changelog): probe loop adapter wiring (P3))
 ## 0.2.57
 ### Changed
 - Plan approval records a hash of the plan text in `<queue_state>/plan-approvals.json` instead of writing an `Approved:` line into the plan; the plan file is never edited, and `Approval: self` is gone (P1, plan 20261029_1455). main-guard refuses a spawn until the record matches the plan's current text.
