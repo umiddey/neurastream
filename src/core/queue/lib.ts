@@ -856,11 +856,14 @@ export function finishedEntry(plan: Plan, archived: string, date: string): strin
 	return [`## ${date} · ${path.basename(plan.repo)} · ${plan.title}`, ...body].join("\n");
 }
 
-/** Identity of a finished entry: its repo name and archived plan file name. Worktrees of one repo share it. */
+/** Identity of a finished entry: its heading title (the text after the second ` · ` of
+ * `## <date> · <repo> · <title>`) plus the `Plan:` line's file basename. The repo name drops
+ * out so a plan copied into separate clones with no shared .git still matches once per plan. */
 export function finishedKey(entry: string): string {
 	const lines = entry.split("\n");
-	const repo = (lines[0] ?? "").split(" · ")[1] ?? "";
-	return `${repo}\n${path.basename(lines.find(l => l.startsWith("Plan: ")) ?? "")}`;
+	const title = (lines[0] ?? "").split(" · ").slice(2).join(" · ").trim();
+	const plan = (lines.find(l => l.startsWith("Plan: ")) ?? "").slice("Plan: ".length);
+	return `${title}\n${path.basename(plan)}`;
 }
 
 /** Inserts the entry above older ones. Returns false when that repo's plan file is already listed. */
