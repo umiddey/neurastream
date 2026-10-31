@@ -1,4 +1,8 @@
 # Changelog
+## Unreleased
+### Added
+- `neurastream config set|get|list <key> [value]` reads or writes one config key through the line-based editor in `src/core/config-edit.ts` (the one `ui on|off` and `pages on|off` now share). Keys are the leaf paths of `templates/config.yml`; an unknown key, or a value that would not load, is refused and the file is left untouched. Comments and every other line of the file are kept byte-for-byte.
+- `pages on|off` validate the edited config before writing it, as `ui on|off` already did.
 ## 0.2.56
 ### Added
 - Owner page: the Base tab lists published pages under their repo (one card per repo, newest first, expired pages gone); `pages publish` records each page's repo.
