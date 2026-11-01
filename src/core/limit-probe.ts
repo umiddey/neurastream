@@ -8,7 +8,10 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Config } from "./config.ts";
+import { strftime } from "./clock.ts";
 import { tryLock } from "./file-lock.ts";
+import { appendMetric } from "./metrics.ts";
+import { postReply } from "./notify.ts";
 import { loadKnownSecrets, redactSecrets } from "./secret-redact.ts";
 
 /** One rate-limit episode of the main agent. Times are epoch ms. */
@@ -142,13 +145,19 @@ export function timingOf(cfg: Config): ProbeTiming {
 /**
  * One tick of the probe loop at `now`. Returns "idle" when no episode is open, the episode is
  * already back, or the next probe is not due; "busy" when another probe holds the lock. Otherwise
- * runs one probe and records its outcome. If the episode was closed (turn-end disarm) or replaced
- * while the probe ran, the result is dropped instead of written back.
+ * runs one probe and records its outcome. A give-up closes the episode: one ⚠ post to the owner
+ * chat (via `notify`, default the redacting postReply) and one `limit` metric. If the episode was
+ * closed (turn-end disarm) or replaced while the probe ran, the result is dropped instead of
+ * written back. A resume only marks the episode back — the adapter's tick posts the ✅ and the
+ * metric when it sends Main's new turn.
  */
 export function probeStep(
 	cfg: Config,
 	now: number,
 	run: ProbeRunner = defaultRun,
+	notify: (text: string) => void = (text) => {
+		void postReply(text, cfg);
+	},
 ): "idle" | "busy" | ProbeOutcome["kind"] {
 	const st = readLimitState(cfg);
 	if (!st || st.back_at !== null || now < st.next_probe_at) return "idle";
@@ -156,9 +165,61 @@ export function probeStep(
 	if (r === "busy") return "busy";
 	const current = readLimitState(cfg);
 	if (!current || current.since !== st.since) return "idle";
-	const step = onProbe(current, r.ok, r.stderr, now, timingOf(cfg));
-	if (step.outcome.kind === "give_up") clearLimitState(cfg);
-	else if (step.outcome.kind === "resume") writeLimitState(cfg, { ...step.state, back_at: now });
+	const timing = timingOf(cfg);
+	const step = onProbe(current, r.ok, r.stderr, now, timing);
+	if (step.outcome.kind === "give_up") {
+		clearLimitState(cfg);
+		appendMetric(cfg, limitMetric(step.state, now));
+		notify(giveUpPost(timing));
+	} else if (step.outcome.kind === "resume") writeLimitState(cfg, { ...step.state, back_at: now });
 	else writeLimitState(cfg, step.state);
 	return step.outcome.kind;
+}
+
+// ---- P4 tell + record: the owner-facing texts and the metric record of a finished episode ----
+// Every text here is built from times and counts only; the error text in LimitState.last_error is
+// unredacted, so no builder takes it — a post, the metric and the report line cannot carry it.
+
+/** Minutes the main agent has been limited, from `since` to the episode's end. */
+function limitedMinutes(state: LimitState, now: number): number {
+	return Math.max(0, Math.round(((state.back_at ?? now) - state.since) / 60000));
+}
+
+/** A duration in whole units the owner reads at a glance: "24 h", "15 min", "5 s". */
+function durationText(seconds: number): string {
+	if (seconds >= 3600) return `${Math.round(seconds / 360) / 10} h`;
+	if (seconds >= 60) return `${Math.round(seconds / 60)} min`;
+	return `${seconds} s`;
+}
+
+const clockHM = (ms: number): string => strftime(ms / 1000, "%H:%M");
+
+/** The post when an episode opens: a named reset announces when it lifts, an unnamed one the probe cadence. */
+export function limitedPost(state: LimitState, interval_s: number): string {
+	const at = clockHM(state.since);
+	return state.reset_named
+		? `⏳ Main hit its limit at ${at}; resets at ${clockHM(state.next_probe_at)}`
+		: `⏳ Main hit its limit at ${at}; checking every ${durationText(interval_s)}`;
+}
+
+/** The post when the provider answered or the named reset passed: times and counts only. */
+export function backPost(state: LimitState): string {
+	return `✅ Main is back at ${clockHM(state.back_at!)} (limited ${limitedMinutes(state, state.back_at!)} min, ${state.probes} checks)`;
+}
+
+/** The post when max_probes is spent without an answer. */
+export function giveUpPost(timing: ProbeTiming): string {
+	return `⚠ Main still limited after ${durationText(timing.max_probes * timing.probe_interval_s)}`;
+}
+
+/** The metric record of one finished episode: numbers and a boolean, never the error text. */
+export function limitMetric(state: LimitState, now: number): Record<string, unknown> {
+	return {
+		type: "limit",
+		since: state.since,
+		back_at: state.back_at,
+		minutes: limitedMinutes(state, now),
+		probes: state.probes,
+		reset_named: state.reset_named,
+	};
 }

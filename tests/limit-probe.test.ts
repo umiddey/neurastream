@@ -8,7 +8,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, type Config } from "../src/core/config.ts";
-import { giveUpPost, onLimited, onProbe, probeStep, runProbe, writeLimitState, type ProbeRunner, type ProbeStep, type ProbeTiming } from "../src/core/limit-probe.ts";
+import { giveUpPost, onLimited, onProbe, probeStep, readLimitState, runProbe, writeLimitState, type ProbeRunner, type ProbeStep, type ProbeTiming } from "../src/core/limit-probe.ts";
 import { readMetricEvents } from "../src/core/metrics.ts";
 import { tryLock } from "../src/core/file-lock.ts";
 
@@ -160,6 +160,9 @@ describe("episode finish (P4)", () => {
 		cfg = loadConfig({ home: "/nonexistent-limit-probe-home" });
 		cfg.paths.queue_state = dir;
 		cfg.paths.score_state = join(dir, "score");
+		cfg.guards.rate_limit.probe_interval_s = T.probe_interval_s;
+		cfg.guards.rate_limit.max_probes = T.max_probes;
+		cfg.guards.rate_limit.slack_s = T.slack_s;
 	});
 
 	afterEach(() => {

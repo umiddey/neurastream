@@ -30,7 +30,8 @@ import { runDetectors, type DetectorInput } from "../../core/incident-detectors.
 import { appendOwnerAnswer, readOwnerAnswers, readOwnerMessages } from "../../core/incidents.ts";
 import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, newProgressEntries, planReadNote, recordMainResult, resetMainCalls, revertMainEdit, rekeySpawnFile, reviewSpawnEnd, STOP_PLAN_OFFER_REFUSAL } from "../../core/guards.ts";
 import { rateLimited } from "../../core/rate-limit.ts";
-import { clearLimitState, onLimited, readLimitState, timingOf, writeLimitState } from "../../core/limit-probe.ts";
+import { backPost, clearLimitState, limitMetric, limitedPost, onLimited, readLimitState, timingOf, writeLimitState } from "../../core/limit-probe.ts";
+import { appendMetric } from "../../core/metrics.ts";
 import { notifyProviders, ownerAnswerHandback, ownerAnswerSteer, postReply } from "../../core/notify.ts";
 import { loadKnownSecrets, redactSecrets, redactSummary } from "../../core/secret-redact.ts";
 import { inboxPath } from "../../core/owner-ui.ts";
@@ -39,7 +40,7 @@ import { actionsRules, ownedRepoOf, suspiciousActions, unreportedFindings } from
 import { applyQueueEnv } from "../../core/queue/env.ts";
 import { mainDetectors, mainStartText } from "../../core/main-start.ts";
 
-import { buildHandoff, holdsBlock, notePath, noteRequest, OWNER_AWAY, ownerText, relaunchPath, rolloverState, spawnRefusal, unansweredOwnerMessages, withUnanswered, type RolloverState } from "../../core/rollover.ts";
+import { buildHandoff, holdsBlock, notePath, noteRequest, OWNER_AWAY, ownerText, relaunchPath, rolloverState, spawnRefusal, unansweredOwnerMessages, type RolloverState } from "../../core/rollover.ts";
 import { defaultCompletedResults, defaultRunSource, runIdOf } from "./sessions.ts";
 import { adapterLog, MAIN_ENV } from "./launch.ts";
 import { parseTraceFile } from "./traces.ts";
@@ -657,7 +658,13 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 			if (now < state.back_at) return;
 			stopLimitTick();
 			clearLimitState(cfg);
+			// P4: the finished episode is recorded once and the owner hears one back post; both are
+			// times and counts only — the episode's last_error never reaches chat or ledger.
+			appendMetric(cfg, limitMetric(state, now));
 			adapterLog(cfg, `RATE-LIMIT back: provider limit over (back at ${rateClock(state.back_at)}); new turn sent`);
+			void postReply(backPost(state), cfg).then(results => {
+				for (const r of results) if (!r.posted) adapterLog(cfg, `notify: ${r.provider}: ${r.error}`);
+			});
 			pi.sendUserMessage(`main-guard: the provider limit is over (back at ${rateClock(state.back_at)}). Continue the queue where you stopped.`);
 			return;
 		}
@@ -686,7 +693,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		adapterLog(cfg, `RATE-LIMIT stop: ${state.reset_named ? "named reset" : "probe"} at ${rateClock(state.next_probe_at)} (probes ${state.probes} of ${timing.max_probes})`);
 		if (prev === null) {
 			adapterLog(cfg, "notify: posted (rate-limit)");
-			void postReply(`⏳ Main is rate limited by its provider until ${rateClock(state.next_probe_at)} (local); it resumes on its own.`, cfg).then(results => {
+			void postReply(limitedPost(state, timing.probe_interval_s), cfg).then(results => {
 				for (const r of results) if (!r.posted) adapterLog(cfg, `notify: ${r.provider}: ${r.error}`);
 			});
 		}

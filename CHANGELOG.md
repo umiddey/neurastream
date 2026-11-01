@@ -1,6 +1,7 @@
 # Changelog
 ## Unreleased
 ### Added
+- Limit episodes are told and recorded (plan 20261027_1500 P4): the owner chat hears exactly two posts per episode — "⏳ Main hit its limit at HH:MM; <resets at HH:MM | checking every 5 min>" when the episode opens and "✅ Main is back at HH:MM (limited N min, M checks)" when the probe gets through or the named reset passes, or "⚠ Main still limited after 24 h" once `max_probes` is spent — and each finished episode appends one `{type: "limit", since, back_at, minutes, probes, reset_named}` metric that the weekly report shows as "Main limited: N h over K episodes". Posts, metric and report carry times and counts only, never the provider error text.
 - Owner answer steer (plan 20261027_1430 P9): a phone-page owner message that has waited more than `notify.answer_within_min` (default 3, 0 = off) with no hand-back after it steers Main once per message — "Owner asked at HH:MM; end your turn with the answer now" — through the omp adapter's tool_result hook; a hand-back clears the wait. The watcher counts each message that crosses the limit as one `m8` metric (once per message — the metrics ledger is the marker), and the release verdict reads M8 in its owner-pain group.
 ## 0.2.63
 ### Added
