@@ -80,6 +80,8 @@ function reset(): void {
 	writeFileSync(INDEX, "");
 	rmSync(GUARD_LOG, { force: true });
 	writeFileSync(SESSION_FILE, "");
+	// P5b: an unanswered owner message from one test must not leak into the next test's resume.
+	rmSync(join(QUEUE_STATE, "owner-messages.jsonl"), { force: true });
 	seedSecrets();
 }
 
@@ -300,6 +302,30 @@ test("a second 429 in the episode doubles the wait, replaces the timer, posts no
 	expect(logLines().filter(l => l.includes("RATE-LIMIT resume"))).toHaveLength(1);
 	expect(rlHits()).toHaveLength(1);
 }, 30_000);
+
+// (P5b) An owner message that only errored turns followed stays unanswered: every resume quotes
+// it first; a real turn end records the answer and the next resume is the plain text again.
+test("resumes quote unanswered owner messages; a real turn end clears them", async () => {
+	reset();
+	const cfg = stopCfg(writeConfig());
+	const host = adapterWith(cfg);
+	const ctx = ctxFor();
+	const resumeOnce = async (i: number): Promise<void> => {
+		await host.emit("session_stop", stopEvent(err429(2000)), ctx);
+		await until(() => host.sent.length === i + 1, 8000);
+		expect(host.sent[i]?.startsWith("UNANSWERED OWNER MESSAGES — answer these first, then end the turn so the reply reaches Discord:")).toBe(true);
+		expect(host.sent[i]).toContain("Who is ARB and what did you decide about it?");
+		await host.emit("before_agent_start", { prompt: host.sent[i] }, ctx); // the resume's own machine turn
+	};
+	await host.emit("before_agent_start", { prompt: "Who is ARB and what did you decide about it?" }, ctx);
+	await resumeOnce(0);
+	await resumeOnce(1);
+	await resumeOnce(2);
+	await host.emit("session_stop", stopEvent(msg({ text: "answered: ARB is the review agent registry" })), ctx);
+	await host.emit("session_stop", stopEvent(err429(2000)), ctx);
+	await until(() => host.sent.length === 4, 8000);
+	expect(host.sent[3]).toMatch(/^main-guard: the provider rate limit is over \(waited until \d\d:\d\d\)\. Continue the queue where you stopped\.$/);
+}, 40_000);
 
 // A non-turn input leaves the resume armed; only an actual Main turn takes it over.
 test("slash command input leaves the resume armed until it fires", async () => {

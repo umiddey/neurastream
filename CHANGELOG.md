@@ -6,6 +6,7 @@
 - `ui on` checks Tailscale first: a missing binary prints the install steps and, on a terminal, asks `Open the Tailscale download page now? [y/N]`; installed but not connected prints `sudo tailscale up`. Nothing is written or started until Tailscale runs. `neurastream doctor` reports `tailscale: ok`, `tailscale: missing` or `tailscale: logged out` when the owner page is enabled.
 - `neurastream setup [--yes]` is the guided first run: it detects this machine (harness, Tailscale, pages, notify, secrets), asks the settings in groups with the detected values as defaults, installs the adapter, runs the doctor and prints `Next: neurastream main` only when it passes. Re-running it offers the current values. `--yes` takes the detected settings without asking; with no terminal and no `--yes` it refuses (exit 2) and writes nothing. Config changes go through the same byte-for-byte editor as `config set`.
 - `neurastream setup` offers a test post when the owner has set a notify webhook file: after the questions it asks `send a test message now? [y/N]`; yes runs `neurastream notify test` and prints its per-provider lines. No, or `--yes`, skips it, and a failed test does not fail setup.
+- Owner answer steer (plan 20261027_1430 P9): a phone-page owner message that has waited more than `notify.answer_within_min` (default 3, 0 = off) with no hand-back after it steers Main once per message — "Owner asked at HH:MM; end your turn with the answer now" — through the omp adapter's tool_result hook; a hand-back clears the wait. The watcher counts each message that crosses the limit as one `m8` metric (once per message — the metrics ledger is the marker), and the release verdict reads M8 in its owner-pain group.
 ## 0.2.56
 ### Added
 - Owner page: the Base tab lists published pages under their repo (one card per repo, newest first, expired pages gone); `pages publish` records each page's repo.
@@ -19,8 +20,7 @@
 - A higher plan with an open MR on its branch no longer blocks spawns on lower plans.
 ### Fixed
 - A plan copied into separate clones (no shared `.git`) now appears once in `FINISHED.md`: `finishedKey` keys on the heading title plus the plan file basename, so per-clone repo names no longer multiply an entry (`bun run typecheck`, `bun test tests/queue-finished.test.ts`).
-- Plans under `docs/plans/<subdir>/` count as live plans (Main plan-file match, brief-lint, plan roots).
-- The test suite leaves no temp files behind: every temp dir is removed in teardown, and a new omp adapter clears the previous one's armed grace timer.
+5: @ours
 ## 0.2.55
 ### Changed
 - `guards.plan_offer` (templates/config.yml, docs/config.md) now also refuses a Main stop reply that promises instead of offering — "I will", "I'll" — with the refusal "don't promise it — do it now, or write the plan and index it"; checkStop's reason and log moved to the exported `STOP_PLAN_OFFER_REFUSAL` const (I-20261030-25, I-20261030-32).

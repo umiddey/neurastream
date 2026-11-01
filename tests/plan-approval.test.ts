@@ -1,17 +1,19 @@
-// Plan approval from the plan's own page (plan 20261026_0930 P9): a plan with a page in Base is
-// approved there — the bar records `Approved: <date> (<page>)` — and main-guard refuses a spawn on it
-// until then, unless the plan says `Approval: self — owner: "<his words>"`. A built thing has notes
-// only: no bar, no approve route.
+// Plan approval from the plan's own diagram page (plan 20261026_0930 P9): a plan that has a page in
+// Base is approved there — the Approve bar records a hash of the plan text in the queue state — and a
+// chat "go" is the same thing. main-guard refuses a spawn on a plan whose page has no matching approval
+// record. A built thing has notes only: no bar, no approve route.
 import { afterEach, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { approvalProblem, approvalLine, isApproved, planForPage, recordApproval } from "../src/core/plan-approval.ts";
+import { approvalProblem, approvePlanFile, chatApprove, planForPage, recordPagePlan } from "../src/core/plan-approval.ts";
+import { reviewHash } from "../src/core/guards.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { appendPageNotes, notesAnswersPath } from "../src/core/page-notes.ts";
 import { publishPage } from "../src/core/pages-setup.ts";
 import { startPagesServer } from "../src/core/pages.ts";
+import { applyQueueEnv } from "../src/core/queue/env.ts";
 
 const REPO = dirname(dirname(import.meta.path));
 const LOOPBACK = [127, 0, 0, 1].join(".");
@@ -20,47 +22,26 @@ const dirs: string[] = [];
 afterEach(() => {
 	for (const s of servers.splice(0)) s.stop();
 	for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
-	delete process.env.QUEUE_STATE;
+	// the helpers below applyQueueEnv all seven path vars, not just QUEUE_STATE: strip them all
+	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
 });
 
-test("the line: replace what is there, otherwise add it above the first section", () => {
-	const plan = "# P\n\nWorktree: -\n\n## Goal\n- x\n";
-	expect(isApproved(plan)).toBe(false);
-	expect(recordApproval(plan, "why.html", new Date("2026-10-27"))).toContain("Approved: 2026-10-27 (why.html)\n\n## Goal");
-	const twice = recordApproval(recordApproval(plan, "why.html", new Date("2026-10-27")), "why2.html", new Date("2026-10-28"));
-	expect(twice).toContain("Approved: 2026-10-28 (why2.html)");
-	expect(twice.match(/^Approved:/gm)?.length).toBe(1);
-	expect(isApproved(twice)).toBe(true);
-	expect(isApproved('- Approval: self \u2014 owner: "just do it"\n')).toBe(true);
-	expect(isApproved("Approval: self\n")).toBe(false); // his words are the exception's condition
-	expect(approvalLine("why.html", new Date("2026-10-27"))).toBe("Approved: 2026-10-27 (why.html)");
-});
-
-test("approvalProblem: only a plan with a page in Base is gated", () => {
-	const dir = mkdtempSync(join(tmpdir(), "plan-approval-meta-"));
-	dirs.push(dir);
-	const pages = join(dir, "pages");
-	mkdirSync(pages, { recursive: true });
-	const plan = join(dir, "20261027_toy.md");
-	writeFileSync(plan, "# Toy\n\n## Phases\n- [ ] P1 x\n");
-	expect(approvalProblem(readFileSync(plan, "utf8"), plan, pages)).toBe(null); // no page: not gated
-	mkdirSync(join(pages, ".meta"), { recursive: true });
-	writeFileSync(join(pages, ".meta", "toy.html.json"), JSON.stringify({ plan }));
-	expect(planForPage(pages, "toy.html")).toBe(plan);
-	const why = approvalProblem(readFileSync(plan, "utf8"), plan, pages);
-	expect(why).toContain('has no "Approved:" line');
-	expect(why).toContain("toy.html");
-	expect(approvalProblem(`${readFileSync(plan, "utf8")}\nApproved: 2026-10-27 (toy.html)\n`, plan, pages)).toBe(null);
-	expect(approvalProblem('# Toy\n\nApproval: self \u2014 owner: "do it yourself"\n', plan, pages)).toBe(null);
-});
+// A plan page is the drilldown template with only DATA edited (plan 20261031_0917 P2); this DATA
+// covers the toy plan: its one phase in a box, the path its line names, 2+ kids per box.
+const TEMPLATE = readFileSync(join(REPO, "templates/skills/architecture-drilldown/template.html"), "utf8");
+const DATA_AT = TEMPLATE.indexOf("/* === DATA === */") + "/* === DATA === */".length;
+const TOY_PAGE = `${TEMPLATE.slice(0, DATA_AT)}\nconst T={id:"root",nm:"toy",kids:[{id:"a",nm:"P1 do the thing",files:"src/a.ts",kids:[{id:"a1",nm:"x"},{id:"a2",nm:"y"}]},{id:"b",nm:"later",kids:[{id:"b1",nm:"z"},{id:"b2",nm:"w"}]}]};\n${TEMPLATE.slice(TEMPLATE.indexOf("/* === END DATA === */"))}`;
 
 function setup(): { dir: string; cfg: Config; pages: string } {
 	const dir = mkdtempSync(join(tmpdir(), "plan-approval-"));
 	dirs.push(dir);
-	process.env.QUEUE_STATE = join(dir, "state");
+	const state = join(dir, "state");
+	mkdirSync(state, { recursive: true });
+	process.env.QUEUE_STATE = state;
 	const cfg = loadConfig({ file: join(dir, "missing.yml"), home: dir, env: {} });
 	cfg.review.agents = [];
-	cfg.paths.queue_state = join(dir, "state");
+	cfg.paths.queue_state = state;
+	applyQueueEnv(cfg);
 	const pages = join(dir, "public");
 	cfg.pages.enabled = true;
 	cfg.pages.dir = pages;
@@ -69,12 +50,51 @@ function setup(): { dir: string; cfg: Config; pages: string } {
 	return { dir, cfg, pages };
 }
 
+test("approvePlanFile records the plan's hash and returns approved <page>", () => {
+	const { dir, cfg } = setup();
+	const plan = join(dir, "20261027_toy.md");
+	const original = "# Toy\n\n## Phases\n- [ ] P1 x\n";
+	writeFileSync(plan, original);
+	expect(approvePlanFile(plan, "toy.html", new Date("2026-10-27"))).toBe("approved toy.html");
+	// Plan bytes are unchanged.
+	expect(readFileSync(plan, "utf8")).toBe(original);
+	// The record stores reviewHash of the text.
+	const records = JSON.parse(readFileSync(join(cfg.paths.queue_state, "plan-approvals.json"), "utf8")) as { approvals: Record<string, unknown> };
+	const rec = records.approvals[plan] as { hash: string; at: number; via: string; page: string };
+	expect(rec.hash).toBe(reviewHash(original));
+	expect(rec.at).toBe(new Date("2026-10-27").getTime());
+	expect(rec.via).toBe("page");
+	expect(rec.page).toBe("toy.html");
+});
+
+test("approvalProblem: a plan with a page is gated until its record matches", () => {
+	const { dir, cfg, pages } = setup();
+	const plan = join(dir, "20261027_toy.md");
+	const body = "# Toy\n\n## Phases\n- [ ] P1 x\n";
+	writeFileSync(plan, body);
+	expect(approvalProblem(body, plan, pages, "")).toBe(null); // approval off at since=""
+	mkdirSync(join(pages, ".meta"), { recursive: true });
+	writeFileSync(join(pages, ".meta", "toy.html.json"), JSON.stringify({ plan }));
+	expect(planForPage(pages, "toy.html")).toBe(plan);
+	// Page exists, no record: gated while the approval hard gate is on (a since stamp).
+	const why = approvalProblem(body, plan, pages, "20261029_1455");
+	expect(why).toContain("has no approval record");
+	expect(why).toContain("toy.html");
+	expect(why).toContain(plan);
+	// Matching record: approved.
+	writeFileSync(join(cfg.paths.queue_state, "plan-approvals.json"), JSON.stringify({ approvals: { [plan]: { hash: reviewHash(body), at: 1, via: "page", page: "toy.html" } } }));
+	expect(approvalProblem(body, plan, pages, "20261029_1455")).toBe(null);
+	// Stale hash: gated.
+	writeFileSync(join(cfg.paths.queue_state, "plan-approvals.json"), JSON.stringify({ approvals: { [plan]: { hash: "stalehash", at: 1, via: "page", page: "toy.html" } } }));
+	expect(approvalProblem(body, plan, pages, "20261029_1455")).toContain("has no approval record");
+});
+
 test("publish --plan: the bar is on a plan page, absent on a built thing, and it drops on a republish without one", () => {
 	const { dir, pages } = setup();
 	const plan = join(dir, "20261027_toy.md");
 	writeFileSync(plan, "# Toy\n\n## Phases\n- [ ] P1 x\n");
 	const html = join(dir, "toy-architecture.html");
-	writeFileSync(html, "<html><body><p>diagram</p></body></html>");
+	writeFileSync(html, TOY_PAGE);
 	expect(publishPage(html, "Toy", false, pages, { plan })).toBe("toy.html");
 	const page = readFileSync(join(pages, "toy.html"), "utf8");
 	expect(page).toContain('id="ns-approve"');
@@ -91,13 +111,14 @@ test("publish --plan: the bar is on a plan page, absent on a built thing, and it
 	expect(readFileSync(join(pages, "toy.html"), "utf8")).toContain('id="ns-approve"');
 });
 
-test("server: approve is refused while a note is open, then it records the line in the plan", async () => {
+test("server: approve records the plan, plan bytes unchanged", async () => {
 	const { dir, cfg, pages } = setup();
 	const plan = join(dir, "20261027_toy.md");
-	writeFileSync(plan, "# Toy\n\n## Phases\n- [ ] P1 x\n");
+	const original = "# Toy\n\n## Phases\n- [ ] P1 x\n";
+	writeFileSync(plan, original);
 	// A diagram that covers the plan: its one phase in a box, the path its line names, 2+ kids per box.
 	const html = join(dir, "toy-architecture.html");
-	writeFileSync(html, '<html><body><p>toy</p><script>const T={id:"root",nm:"toy",kids:[{id:"a",nm:"P1 do the thing",files:"src/a.ts",kids:[{id:"a1",nm:"x"},{id:"a2",nm:"y"}]},{id:"b",nm:"later",kids:[{id:"b1",nm:"z"},{id:"b2",nm:"w"}]}]};</script></body></html>');
+	writeFileSync(html, TOY_PAGE);
 	expect(publishPage(html, "Toy", false, pages, { plan })).toBe("toy.html");
 	appendPageNotes({ page: "/toy.html", notes: [{ quote: "level 3", note: "label it" }] }, cfg, "owner-login");
 	const tailscale = { ip4: () => "", dnsName: () => null, whois: () => "owner@example.test", logins: () => [], state: () => "running" as const };
@@ -107,18 +128,23 @@ test("server: approve is refused while a note is open, then it records the line 
 	expect(await (await fetch(`${base}/_approve?page=toy.html`)).json()).toEqual({ open: ["n1"], problems: [] });
 	let res = await fetch(`${base}/_approve?page=toy.html`, { method: "POST", headers: { origin: base } });
 	expect(res.status).toBe(409);
-	expect(readFileSync(plan, "utf8")).not.toContain("Approved:");
+	expect(readFileSync(plan, "utf8")).toBe(original); // plan bytes unchanged while a note is open
 	writeFileSync(notesAnswersPath(cfg, "toy.html"), JSON.stringify({ n1: "labelled level 3" }));
 	res = await fetch(`${base}/_approve?page=toy.html`, { method: "POST", headers: { origin: base } });
 	expect(res.status).toBe(200);
-	expect((await res.json()).approved ?? "").toMatch(/^Approved: \d{4}-\d{2}-\d{2} \(toy.html\)$/);
-	expect(readFileSync(plan, "utf8")).toContain("Approved: ");
+	expect((await res.json()).approved).toBe("approved toy.html");
+	expect(readFileSync(plan, "utf8")).toBe(original); // plan bytes still unchanged
+	// Record written to the queue state.
+	const records = JSON.parse(readFileSync(join(cfg.paths.queue_state, "plan-approvals.json"), "utf8")) as { approvals: Record<string, unknown> };
+	const rec = records.approvals[plan] as { hash: string; page: string };
+	expect(rec.hash).toBe(reviewHash(original));
+	expect(rec.page).toBe("toy.html");
 	expect(await (await fetch(`${base}/_approve?page=toy.html`)).json()).toEqual({ open: [], problems: [] });
 	// A page with no plan has no approve route, and a foreign origin cannot write one.
 	expect((await fetch(`${base}/_approve?page=nothing.html`)).status).toBe(404);
 });
 
-test("main-guard: a spawn is refused on an unapproved plan page and passes on the line or the self line", () => {
+test("main-guard: a spawn is refused on an unapproved plan page and passes on a matching record", () => {
 	const home = mkdtempSync(join(tmpdir(), "plan-approval-guard-"));
 	dirs.push(home);
 	const agent = join(home, ".omp/agent");
@@ -147,11 +173,14 @@ test("main-guard: a spawn is refused on an unapproved plan page and passes on th
   cancelled: "${join(agent, "CANCELLED.md")}"
   guard_log: "${join(home, "main-guard.log")}"
   plan_guard_log: "${join(home, "plan-guard.log")}"
+approval:
+  since: "20261029_1455"   # P5 turned the default gate off; this test pins the on-case
 pages:
   enabled: false
   dir: "${pages}"
 review:
   agents: []
+  plan: false
 `,
 	);
 	// A real blocker script the plan can name: the plan gate checks it exists and is executable.
@@ -172,9 +201,106 @@ review:
 	};
 	const refused = ask();
 	expect(refused.code).not.toBe(0);
-	expect(refused.reason).toContain('has no "Approved:" line');
-	writeFileSync(plan, `${body}\n${approvalLine("toy.html", new Date("2026-10-27"))}\n`);
+	expect(refused.reason).toContain("has no approval record");
+	// A matching record: approved.
+	writeFileSync(join(state, "plan-approvals.json"), JSON.stringify({ approvals: { [plan]: { hash: reviewHash(body), at: 1, via: "page", page: "toy.html" } } }));
 	expect(ask().code).toBe(0);
-	writeFileSync(plan, `${body}\nApproval: self \u2014 owner: "do it on your own"\n`);
-	expect(ask().code).toBe(0);
+	// A stale hash: still refused.
+	writeFileSync(join(state, "plan-approvals.json"), JSON.stringify({ approvals: { [plan]: { hash: "stalehash", at: 1, via: "page", page: "toy.html" } } }));
+	// The record gate is checked on its own: this spawn already ran, so the guard's progress check would also refuse it.
+	expect(approvalProblem(body, plan, pages, "20261029_1455")).toContain("has no approval record");
+});
+
+// --- Chat approval (plan 20261029_1455 P2): the owner's `approve <YYYYMMDD_HHMM>` in chat ---
+
+/** Write each plan under <dir>/plans, list them in a temp INDEX and point the queue library at it. */
+function indexedPlans(dir: string, cfg: Config, names: string[]): string[] {
+	const files = names.map(name => join(dir, "plans", name));
+	mkdirSync(join(dir, "plans"), { recursive: true });
+	for (const f of files) writeFileSync(f, "# Toy\n\n## Progress\nStatus: open\n- [ ] P1 x\n");
+	const index = join(dir, "INDEX.md");
+	writeFileSync(index, `${files.join("\n")}\n`);
+	cfg.guards.chat_unlock = true;
+	cfg.paths.queue_index = index;
+	cfg.paths.plan_guard_log = join(dir, "plan-guard.log");
+	applyQueueEnv(cfg);
+	return files;
+}
+
+const recordsOf = (cfg: Config): Record<string, { hash: string; via: string; page: string }> =>
+	JSON.parse(readFileSync(join(cfg.paths.queue_state, "plan-approvals.json"), "utf8")).approvals;
+
+test("chatApprove: `approve <stamp>` records a chat approval for the one open plan that matches", () => {
+	const { dir, cfg } = setup();
+	const [plan = ""] = indexedPlans(dir, cfg, ["20261029_1455_forced.md", "20261030_0900_other.md"]);
+	expect(chatApprove("  approve 20261029_1455 ", cfg, "interactive")).toEqual({ applied: true, plan });
+	const rec = recordsOf(cfg)[plan];
+	expect(rec?.hash).toBe(reviewHash(readFileSync(plan, "utf8")));
+	expect(rec?.via).toBe("chat");
+	expect(rec?.page).toBe(""); // no page in Base for this plan
+	expect(readFileSync(cfg.paths.plan_guard_log, "utf8")).toContain(`APPROVE chat source=interactive plan=${plan}`);
+});
+
+test("chatApprove: a plan that has a page in Base records that page", () => {
+	const { dir, cfg } = setup();
+	const [plan = ""] = indexedPlans(dir, cfg, ["20261029_1455_forced.md"]);
+	recordPagePlan(cfg.pages.dir, "toy.html", { plan, missing: [], thin: [] });
+	chatApprove("approve 20261029_1455", cfg, "interactive");
+	expect(recordsOf(cfg)[plan]?.page).toBe("toy.html");
+});
+
+test("chatApprove: an unknown stamp records nothing and says no open plan matches", () => {
+	const { dir, cfg } = setup();
+	indexedPlans(dir, cfg, ["20261029_1455_forced.md"]);
+	expect(chatApprove("approve 20261031_0101", cfg, "interactive")).toEqual({ applied: false, problem: "no open plan 20261031_0101" });
+	expect(existsSync(join(cfg.paths.queue_state, "plan-approvals.json"))).toBe(false);
+});
+
+test("chatApprove: two open plans matching one stamp record nothing", () => {
+	const { dir, cfg } = setup();
+	indexedPlans(dir, cfg, ["20261029_1455_a.md", "20261029_1455_b.md"]);
+	expect(chatApprove("approve 20261029_1455", cfg, "interactive")).toEqual({ applied: false, problem: "2 open plans match 20261029_1455; nothing approved" });
+	expect(existsSync(join(cfg.paths.queue_state, "plan-approvals.json"))).toBe(false);
+});
+
+test("chatApprove: a failed write is a problem, never an approval", () => {
+	const { dir, cfg } = setup();
+	const [plan = ""] = indexedPlans(dir, cfg, ["20261029_1455_forced.md"]);
+	const blocked = join(dir, "state-is-a-file");
+	writeFileSync(blocked, "not a directory");
+	cfg.paths.queue_state = blocked;
+	applyQueueEnv(cfg);
+	const r = chatApprove("approve 20261029_1455", cfg, "interactive");
+	expect(r).toEqual({ applied: false, problem: expect.stringContaining("not approved") });
+	expect(() => approvePlanFile(plan, "toy.html")).toThrow();
+});
+
+// --- Hard gate (plan 20261029_1455 P3): a plan stamped at or after approval.since needs a page and a record ---
+
+test("approvalProblem: after approval.since a plan with no page is refused; before it, or with since empty, it passes", () => {
+	const { dir, pages } = setup();
+	const body = "# Toy\n\n## Phases\n- [ ] P1 x\n";
+	mkdirSync(join(dir, "plans"), { recursive: true });
+	const late = join(dir, "plans", "20261030_0900_late.md");
+	const early = join(dir, "plans", "20261028_0900_early.md");
+	writeFileSync(late, body);
+	writeFileSync(early, body);
+	expect(approvalProblem(body, late, pages, "20261029_1455")).toContain(`neurastream pages publish <page.html> --plan ${late}`);
+	expect(approvalProblem(body, early, pages, "20261029_1455")).toBe(null);
+	expect(approvalProblem(body, late, pages, "")).toBe(null);
+});
+
+test("approvalProblem: after approval.since a page needs a record; a body edit expires it, a Progress-only edit does not", () => {
+	const { dir, cfg, pages } = setup();
+	mkdirSync(join(dir, "plans"), { recursive: true });
+	const plan = join(dir, "plans", "20261030_0900_late.md");
+	const body = "# Toy\n\n## Phases\n- [ ] P1 x\n\n## Progress\n- Started.\n";
+	writeFileSync(plan, body);
+	recordPagePlan(pages, "toy.html", { plan, missing: [], thin: [] });
+	const since = "20261029_1455";
+	expect(approvalProblem(body, plan, pages, since)).toContain("types: approve 20261030_0900");
+	writeFileSync(join(cfg.paths.queue_state, "plan-approvals.json"), JSON.stringify({ approvals: { [plan]: { hash: reviewHash(body), at: 1, via: "page", page: "toy.html" } } }));
+	expect(approvalProblem(body, plan, pages, since)).toBe(null);
+	expect(approvalProblem(body.replace("Started.", "Started, ran it."), plan, pages, since)).toBe(null);
+	expect(approvalProblem(body.replace("P1 x", "P1 y"), plan, pages, since)).toContain("has no approval record");
 });

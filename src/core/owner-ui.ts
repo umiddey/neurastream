@@ -7,7 +7,7 @@
 // tests never call the binary; the peer address is an injectable seam too, so tests bind
 // 127.0.0.1 while the real server binds only the tailnet address from `tailscale ip -4`.
 
-import { appendFileSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, statfsSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, statfsSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
 import { basename, resolve } from "node:path";
@@ -21,9 +21,10 @@ import { byText, knowledgeManifest, readKnowledgeTopicFile, urlField, urlValue, 
 import { log } from "./guards.ts";
 import { publishedPages } from "./pages-expiry.ts";
 import { readMetricEvents } from "./metrics.ts";
-import { activePlans, chatUnlock, dependencyOrderProblems, expandHome, gitTop, stateDirPath, unlockPath, type Plan } from "./queue/lib.ts";
+import { activePlans, chatUnlock, dependencyOrderProblems, expandHome, gitTop, stateDirPath, unlockPath, writeIndex, type Plan } from "./queue/lib.ts";
 import { featuresReport, gatherTags, loadPlans, releasesReport, type FeaturesReport, type ReleaseRow, type ReleaseSideStats, type ReleasesReport } from "./results.ts";
 import type { Tailscale } from "./tailscale.ts";
+import { recheckHolds, staleFiles, type HoldRunner } from "./waiting-check.ts";
 
 const ANSWER_MAX = 2000;
 const MESSAGE_MAX = 4000;
@@ -189,11 +190,12 @@ export interface MachineRow {
 	cores: number;
 }
 
-export function questionRows(cfg: Config): QuestionRow[] {
+export function questionRows(cfg: Config, run?: HoldRunner): QuestionRow[] {
 	const now = Date.now();
 	const plans = activePlans(cfg.paths.queue_index);
+	const stale = staleFiles(recheckHolds(cfg, plans, run));
 	return plans
-		.filter(p => p.waiting && p.status === "open" && p.waitingLine)
+		.filter(p => p.waiting && p.status === "open" && p.waitingLine && !stale.has(p.file))
 		.map(p => {
 			let waitingMin = 0;
 			try {
@@ -1732,10 +1734,9 @@ function handleReorder(cfg: Config, fields: Record<string, string>, login: strin
 	if (from === -1 || to === -1) return fail("moved is not one of the page's plans", 400);
 	const newText = reorderedIndexText(index, order, new Set(openPaths));
 	if (newText === null) return fail("the queue index no longer lists every open plan", 400);
-	// Atomic write: a torn INDEX.md would break every reader, so temp file in the same dir + rename.
-	const tmp = `${index}.${randomUUID().slice(0, 8)}.tmp`;
-	writeFileSync(tmp, newText);
-	renameSync(tmp, index);
+	// The queue library owns every index write (plan 20261031_0911 P2): a reorder is the same plan
+	// set, so no removal reason, and the write lands temp+rename and leaves the file 0444.
+	writeIndex(newText.trimEnd().split("\n"), undefined, index);
 	mkdirSync(stateDirPath(), { recursive: true });
 	appendFileSync(inboxPath(), `${JSON.stringify({ ts: nowSec(), kind: "reorder", plan: moved, from: from + 1, to: to + 1, login })}\n`);
 	if (wantsJson) return Response.json({ ok: true, to: to + 1 });

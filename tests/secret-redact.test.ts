@@ -202,6 +202,8 @@ fs.writeFileSync(${JSON.stringify(NOTES)}, "API_CREDENTIAL=AAAAAAA1\\n");
 const first = loadKnownSecrets(cfg);
 const before = redactSecrets("value: " + "AAAAAAA1", first).text;
 fs.writeFileSync(${JSON.stringify(NOTES)}, "API_CREDENTIAL=BBBBBBB2\\n");
+// mtime resolution varies across filesystems: set it explicitly so the cache re-read is deterministic.
+fs.utimesSync(${JSON.stringify(NOTES)}, new Date(), new Date(Date.now() + 60000));
 const again = loadKnownSecrets(cfg);
 const after = redactSecrets("value: " + "BBBBBBB2", again).text;
 const out = { before, after };

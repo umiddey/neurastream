@@ -107,6 +107,10 @@ export interface Config {
 		auto_close_min: number;
 		repo_index: string;
 		cancelled_rel: string;
+		/** How long a hold's `still true if` result is reused (src/core/waiting-check.ts). */
+		waiting_check_ttl_sec: number;
+		/** One hold check may run this long; a timeout is "unknown", never "stale". */
+		waiting_check_timeout_sec: number;
 	};
 	guards: {
 		sub_warn_calls: number;
@@ -167,11 +171,19 @@ export interface Config {
 	ui: { enabled: boolean; port: number; owner_login: string; allow_this_machine: boolean };
 	/** Plan review gate (plan 20261028_1600): reuse lines and, from P2 on, the reviewer PASS lock. */
 	review: {
-		/** Agents a review spawn may run under: the PASS exemption needs one of these plus the brief's `Plan review: <plan>` line. An empty list turns both review gates off (P5c). */
+		/** Agents a review spawn may run under: the PASS exemption needs one of these plus the brief's `Plan review: <plan>` line. An empty list turns only the `## Reuse` requirement off; the PASS gate follows `plan` (P6). */
 		agents: string[];
+		/** The reviewer PASS gate (P6): `false` skips it; an empty `agents` list no longer turns it off. */
+		plan: boolean;
+		/** The code review gate (P6): `true` refuses Main ticking a plan phase until a named review spawn's `CODE REVIEW: PASS` entry covers that phase. */
+		code: boolean;
+		/** Shell command prefixes (P7) a review spawn's bash may run: every `|`/`&&`/`||`/`;`/`&` segment starts with one, single-line, no redirects or substitution; eval is always denied. */
+		shell_allow: string[];
 		/** Minutes the spawn gate caches a repo's open-MR list in <queue_state>/mr-cache.json; 0 = no cache. */
 		mr_cache_minutes: number;
 	};
+	/** Plan approval hard gate (plan 20261029_1455 P3): a plan stamped at or after `since` needs a page and an approval record. "" = off. */
+	approval: { since: string };
 	/** Static pages hosted over the tailnet. */
 	pages: { enabled: boolean; port: number; dir: string; keep_days: number };
 	/** Repo-local HTML explainers under docs/knowledge/ (owner page Knowledge tab). */
@@ -190,6 +202,31 @@ export interface Config {
 		daily_worse_pct: number;
 		/** Per-metric daily floors (keys: m1, m2, m3, m4_corrections, m4_questions, m5): a regression below the floor is noise. */
 		daily_floor: Record<string, number>;
+		/** D8: seconds after a guard block within which a similar call of the same tool counts as a bypass. */
+		bypass_window_sec: number;
+		/** D8: token-set Jaccard similarity in (0, 1] between a blocked call's args and the bypass. */
+		bypass_similarity: number;
+	};
+	/** The watcher (src/core/watch.ts, plan 20261027_1430 P2): job heartbeats, failed units, detectors. */
+	watch: {
+		/** Per job: hours after which its last heartbeat is stale. Only listed jobs are expected to beat at all. */
+		expect: Record<string, number>;
+		/** Globs of the user units the watcher reports when failed. */
+		units: string[];
+		/** Per watcher run: at most this many new-incident posts; the rest fold into one "+N more" line. */
+		max_posts_per_run: number;
+		/** Minutes between watcher runs; `neurastream watch on` writes this into the timer (plan 20261027_1430 P4). */
+		interval_min: number;
+		/** Weekly report: a detector kind with at least this many incidents in the window and a dismiss rate >= noisy_ratio opens one "noisy detector" incident (plan 20261027_1430 P6). */
+		noisy_min: number;
+		/** Dismiss-rate threshold (0 < ratio <= 1) for the noisy-detector rule (plan 20261027_1430 P6). */
+		noisy_ratio: number;
+		/** Hours an open MR's pipeline may stay failed before incident "ci-red-mr" opens (plan 20261027_1430 P6b). */
+		ci_red_hours: number;
+		/** Release verdict (P11): any group but owner pain reads WORSE when its number grows by at least this percent over the before window. */
+		release_regress_pct: number;
+		/** Release verdict: fewer Main tool calls than this on either side reads "not enough data yet" — no verdict. */
+		release_min_calls: number;
 	};
 	machine: {
 		load_over_cores: number;
@@ -206,7 +243,7 @@ export interface Config {
 	quota: { reset_tz: string; reset_pattern: string; label: string };
 	/** Chat notify (src/core/notify.ts): Main's final reply goes to these webhooks at session_stop.
 	 *  The values are paths to secret files holding the webhook URLs — never the URLs themselves. */
-	notify: { discord_webhook_file: string; slack_webhook_file: string; prefix: string };
+	notify: { discord_webhook_file: string; slack_webhook_file: string; prefix: string; /** Minutes a phone-page owner message may wait before the answer steer (P9; 0 = off). */ answer_within_min: number };
 	/** Content redaction (src/core/secret-redact.ts, plan 20261025_2204): every tool result, every
 	 *  notify post and `neurastream redact` go through it. Detection is by content, not file name. */
 	secrets: {
@@ -488,6 +525,8 @@ function check(cfg: Config): void {
 	}
 	const wc = cfg.write_check;
 	if (wc.applies_to !== "sub" && wc.applies_to !== "all") throw new ConfigError('write_check.applies_to must be "sub" or "all"');
+	if (!(Number.isFinite(cfg.notify.answer_within_min) && cfg.notify.answer_within_min >= 0))
+		throw new ConfigError("notify.answer_within_min must be a number >= 0 (minutes an owner message may wait; 0 = off)");
 	if (!(wc.timeout_ms > 0)) throw new ConfigError("write_check.timeout_ms must be > 0");
 	if (!Array.isArray(wc.linters)) throw new ConfigError("write_check.linters must be a list");
 	if (!Array.isArray(wc.defer_rules) || wc.defer_rules.some((r) => typeof r !== "string" || r === ""))
@@ -521,8 +560,14 @@ function check(cfg: Config): void {
 	if (!(cfg.rollover.max_session_mb > 0)) throw new ConfigError("rollover.max_session_mb must be > 0");
 	if (!Array.isArray(cfg.review.agents) || cfg.review.agents.some(a => typeof a !== "string" || !a.trim()))
 		throw new ConfigError('review.agents must be a list of agent names allowed to run review spawns (default ["reviewer"])');
+	if (typeof cfg.review.plan !== "boolean") throw new ConfigError("review.plan must be true or false (the reviewer PASS gate; default true)");
+	if (typeof cfg.review.code !== "boolean") throw new ConfigError("review.code must be true or false (the code review tick gate; default false)");
+	if (!Array.isArray(cfg.review.shell_allow) || cfg.review.shell_allow.some(a => typeof a !== "string" || !a.trim()))
+		throw new ConfigError("review.shell_allow must be a list of shell command prefixes a review spawn's bash may run (default: git show/log/diff/blame/rev-parse/ls-files/status/merge-base, grep, cat, head, tail, wc, ls, jq, glab mr list/view/diff, gh pr list/view/diff, date)");
 	if (!Number.isInteger(cfg.review.mr_cache_minutes) || cfg.review.mr_cache_minutes < 0)
 		throw new ConfigError("review.mr_cache_minutes must be an integer >= 0 (minutes the spawn gate caches a repo's open-MR list; 0 = no cache)");
+	if (typeof cfg.approval.since !== "string" || (cfg.approval.since !== "" && !/^\d{8}_\d{4}$/.test(cfg.approval.since)))
+		throw new ConfigError('approval.since must be "" or a plan stamp YYYYMMDD_HHMM (plans stamped at or after it need a page and an approval record)');
 	if (cfg.autonomy.tier !== "strict" && cfg.autonomy.tier !== "opinionated" && cfg.autonomy.tier !== "full")
 		throw new ConfigError('autonomy.tier must be "strict", "opinionated" or "full"');
 	if (!Number.isInteger(cfg.autonomy.strict_edit_limit) || cfg.autonomy.strict_edit_limit < 1)
@@ -548,6 +593,33 @@ function check(cfg: Config): void {
 		if (typeof r !== "string" || r.length === 0) throw new ConfigError("knowledge.roots entries must be non-empty paths");
 	}
 	if (!Number.isInteger(cfg.knowledge.max_age_s) || cfg.knowledge.max_age_s < 1) throw new ConfigError("knowledge.max_age_s must be an integer >= 1");
+	for (const [job, hours] of Object.entries(cfg.watch.expect)) {
+		if (typeof hours !== "number" || !(hours > 0)) throw new ConfigError(`watch.expect.${job} must be a positive number of hours`);
+	}
+	if (!Array.isArray(cfg.watch.units) || cfg.watch.units.some(u => typeof u !== "string" || u === "")) {
+		throw new ConfigError("watch.units must be a list of non-empty glob strings");
+	}
+	if (!Number.isInteger(cfg.watch.max_posts_per_run) || cfg.watch.max_posts_per_run < 1) {
+		throw new ConfigError("watch.max_posts_per_run must be an integer >= 1");
+	}
+	if (!Number.isInteger(cfg.watch.interval_min) || cfg.watch.interval_min < 1) {
+		throw new ConfigError("watch.interval_min must be an integer >= 1");
+	}
+	if (!Number.isInteger(cfg.watch.noisy_min) || cfg.watch.noisy_min < 1) {
+		throw new ConfigError("watch.noisy_min must be an integer >= 1");
+	}
+	if (typeof cfg.watch.noisy_ratio !== "number" || !(cfg.watch.noisy_ratio > 0 && cfg.watch.noisy_ratio <= 1)) {
+		throw new ConfigError("watch.noisy_ratio must be a number in (0, 1]");
+	}
+	if (typeof cfg.watch.ci_red_hours !== "number" || !(cfg.watch.ci_red_hours > 0)) {
+		throw new ConfigError("watch.ci_red_hours must be a number > 0");
+	}
+	if (typeof cfg.watch.release_regress_pct !== "number" || !(cfg.watch.release_regress_pct > 0)) {
+		throw new ConfigError("watch.release_regress_pct must be a number > 0");
+	}
+	if (!Number.isInteger(cfg.watch.release_min_calls) || cfg.watch.release_min_calls < 1) {
+		throw new ConfigError("watch.release_min_calls must be an integer >= 1");
+	}
 	for (const p of cfg.metrics.correction_patterns) {
 		try {
 			new RegExp(p, "i");
@@ -600,6 +672,12 @@ function check(cfg: Config): void {
 		new RegExp(cfg.traces.bloat.tool_group);
 	} catch {
 		throw new ConfigError(`traces.bloat.tool_group: not a valid regex: ${cfg.traces.bloat.tool_group}`);
+	}
+	if (!Number.isInteger(cfg.incidents.bypass_window_sec) || cfg.incidents.bypass_window_sec < 1) {
+		throw new ConfigError("incidents.bypass_window_sec must be an integer >= 1");
+	}
+	if (typeof cfg.incidents.bypass_similarity !== "number" || !(cfg.incidents.bypass_similarity > 0) || cfg.incidents.bypass_similarity > 1) {
+		throw new ConfigError("incidents.bypass_similarity must be a number in (0, 1]");
 	}
 	for (const rule of cfg.brief.repo_rules) {
 		for (const key of ["match", "require", "first", "unless"] as const) {

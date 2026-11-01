@@ -12,6 +12,10 @@ const USAGE = "usage: queue-trim <plan file> [--keep N]";
 
 export function queueTrim(args: string[], cfg: Config): number {
 	applyQueueEnv(cfg);
+	if (args[0] === "--help" || args[0] === "-h") {
+		console.log(USAGE);
+		return 0;
+	}
 	const hasKeep = args.includes("--keep");
 	const rest = args.filter((a, i) => a !== "--keep" && args[i - 1] !== "--keep");
 	const planArg = rest[0];

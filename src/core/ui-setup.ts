@@ -128,10 +128,14 @@ export function uiOn(opts: UiOnOptions): number {
 		const r = runner(args);
 		if (r.status !== 0) {
 			if (r.stderr.trim()) error(r.stderr.trimEnd());
-			error("neurastream ui: systemctl failed — the config was already written; fix the unit and run `neurastream ui` (or this command again).");
+			error("neurastream ui: systemctl failed — the config was not changed; fix the unit and run `neurastream ui` (or this command again).");
 			return 1;
 		}
 	}
+	// The config only turns on once the unit is up: a systemctl failure leaves the config
+	// exactly as it was (a leftover unit file is fine).
+	mkdirSync(dirname(file), { recursive: true });
+	writeFileSync(file, edited);
 	const name = tailscale.dnsName() ?? tailscale.ip4();
 	const port = opts.port ?? cfg.ui.port;
 	if (name) print(`http://${name}:${port}`);

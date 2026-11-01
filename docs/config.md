@@ -61,6 +61,7 @@ notify:
   discord_webhook_file: ""   # file holding the Discord webhook URL; "" = off
   slack_webhook_file: ""     # file holding the Slack webhook URL; "" = off
   prefix: ""                 # optional label prepended to each posted reply, e.g. "Main:"
+  answer_within_min: 3       # minutes a phone-page owner message may wait before the next tool result steers Main to answer it now; a hand-back clears the wait; the watcher counts each crossing as M8; 0 = off
 
 metrics:
   report_days: 7
@@ -79,6 +80,8 @@ incidents:
   contradiction_grace_min: 3   # minutes after a finished task-result before a RUNNING/WAITING ledger row is a contradiction (detector D1)
   block_repeat: 20             # same guard BLOCK reason within 60 minutes that means a block loop (detector D3)
   scan_interval_sec: 120       # seconds between scans of the expensive detectors (D1 ledger, D3 block loop); the cheap ones run on every event
+  bypass_window_sec: 600       # seconds after a guard block within which a similar call of the same tool is a bypass (detector D8)
+  bypass_similarity: 0.6       # token-set Jaccard similarity (0, 1] between the blocked call's args and the bypass (detector D8)
   daily_worse_pct: 25          # a daily metric must be worse than the 7-day mean by at least this percent
   daily_floor:                 # per-metric daily floors: a regression below the floor is noise
     m1: 0.5                    # $ per merge
@@ -87,6 +90,22 @@ incidents:
     m4_corrections: 1          # owner corrections/day
     m4_questions: 3            # Main questions/day
     m5: 50                     # guard blocks/day
+
+watch:                         # the watcher (src/core/watch.ts): `neurastream watch` runs one pass
+  expect:                      # hours after which a job's last heartbeat is stale (beat-stale); only listed jobs must beat at all
+    wip-snapshot: 2            # hourly snapshot
+    wip-backup: 26             # nightly 23:30 backup; one missed day is not yet stale
+    metrics-report: 192        # 8 days; the weekly report job
+  units:                       # user units the watcher reports when failed (unit-failed), as globs
+    - "neurastream-*"
+    - "wip-*"
+  max_posts_per_run: 3         # per run: at most this many new-incident posts, then one "+N more, see `neurastream incident list --open`" line
+  interval_min: 15            # minutes between watcher runs; `neurastream watch on` installs the timer at this interval
+  noisy_min: 5                # weekly report: a detector kind with at least this many incidents in the window ...
+  noisy_ratio: 0.5            # ... and at least this dismiss rate opens one "noisy detector" incident
+  ci_red_hours: 2              # an open MR whose pipeline stays failed longer than this opens incident "ci-red-mr" (the watcher also runs metrics.ci_pipelines_cmd for merged MRs)
+  release_regress_pct: 25      # release verdict: any group but owner pain worse by this percent over the before window reads WORSE
+  release_min_calls: 300       # release verdict: fewer Main tool calls on either side reads "not enough data yet", no verdict
 
 ledger:
   default_hours: 24
@@ -150,6 +169,8 @@ queue:
   auto_close_min: 15
   repo_index: "INDEX.md"
   cancelled_rel: "docs/plans/CANCELLED.md"
+  waiting_check_ttl_sec: 600     # a hold's `still true if` result is reused this long (key: plan mtime, command, HEAD)
+  waiting_check_timeout_sec: 60  # one check may run this long; a timeout is "unknown" (card stays, no incident)
 
 guards:
   sub_warn_calls: 90
@@ -321,9 +342,17 @@ traces:
 
 `review.mr_cache_minutes` (default `10`, `0` = no cache) bounds the spawn gate's open-MR cache: for `review.mr_cache_minutes` minutes after one repo's forge list, a spawn on a plan of that repo reuses `<queue_state>/mr-cache.json` instead of calling `glab`/`gh` again. A forge outage is never cached — the spawn gate degrades to a guard-log line and the next spawn retries, exactly like the MR sweep.
 
-`review.agents` (default `["reviewer"]`) lists the agents a review spawn may run under: the reviewer-PASS gate exempts a spawn whose agent is on this list and whose brief carries the `Plan review: <plan>` line naming the plan. Everyone else needs the recorded PASS, and only a subagent's `PLAN REVIEW: PASS|FAIL` progress entry can record one (`<queue_state>/plan-reviews.json`; Main's plan edits never record). An EMPTY list turns both review gates off (plan 20261028_1600 P5): no plan needs a `## Reuse` section or a reviewer PASS; any other value gates every plan — plans are no longer exempted by their filename stamp, the old cutover key is gone.
+`review.agents` (default `["reviewer"]`) lists the agents a review spawn may run under: the reviewer-PASS gate exempts a spawn whose agent is on this list and whose brief carries the `Plan review: <plan>` line naming the plan. Everyone else needs the recorded PASS, and only a subagent's `PLAN REVIEW: PASS|FAIL` progress entry can record one (`<queue_state>/plan-reviews.json`; Main's plan edits never record). An EMPTY list turns only the `## Reuse` requirement off: no plan needs a `## Reuse` section; the reviewer PASS gate follows `review.plan` (P6) — any other value gates every plan, plans are no longer exempted by their filename stamp, the old cutover key is gone.
 
-Doctor and `queue-check` fail when no `review.agents` entry is in `## Allowed` of `notes/subagents.md` (`neurastream agents allow <name>`), and warn for each entry that is not, since such an entry can never run a review spawn. An empty `review.agents` list is valid and silent: both review gates are off, so there is no review spawn to allow.
+`review.plan` (default `true`) is the reviewer PASS gate (plan 20261028_1600 P6): `false` skips it entirely — every plan then spawns without a reviewer PASS — and an empty `review.agents` list no longer turns it off. Must be `true` or `false`.
+
+`review.code` (default `false`) is the code review gate (plan 20261028_1600 P6): when `true`, a Main plan edit that ticks a phase (`- [ ] P6` → `- [x] P6`) is refused until the plan's `## Progress` holds a `- <date> <time> <name>: CODE REVIEW: PASS` entry naming that phase — recorded like a PLAN REVIEW verdict, only by the plan's named review spawn (`<queue_state>/plan-reviews.json`; Main's plan edits never record) — and that entry still sits after the phase's last implementer entry. The refusal names the phase and says to spawn a code reviewer or set `review.code: false`. Must be `true` or `false`.
+
+`review.shell_allow` (default: `git show`, `git log`, `git diff`, `git blame`, `git rev-parse`, `git ls-files`, `git status`, `git merge-base`, `grep`, `cat`, `head`, `tail`, `wc`, `ls`, `jq`, `glab mr list/view/diff`, `gh pr list/view/diff`, `date`) is the allow list a review spawn's bash is judged against (plan 20261028_1600 P7): the command must be one line without `$(`, backticks, `<(`, `>(` or any `>` redirect (`2>`, `&>`, `>|` included; quoted text ignored the way the redirect parser does), every segment split on `|`, `&&`, `||`, `;`, `&` must start with one entry followed by a word boundary, and a segment may not carry an option that writes or executes — `--output`, `--pre`, `--ext-diff`, `--textconv`, `-O`, `--open-files-in-pager`, `--exec`, `-w`/`--web` on `gh`/`glab` segments only (they open a browser), and `-c` right after `git`. `eval` is denied outright for review spawns. `git fetch`, `sed`, `rg`, `git grep` and `find` are off the list on purpose — they write or run commands, and the reviewer's read tools cover their read uses. An empty list allows no shell at all.
+
+`approval.since` (default `""`, off) is the plan approval hard gate (plan 20261029_1455 P3). While it is `""`, approval is off entirely: no page and no approval record is required (plan 20261031_1207 P5 — the reviewer agent replaced the hard gate). When it is set, a plan whose file stamp (`YYYYMMDD_HHMM`) is at or after `since` needs a page in Base: with no page, a spawn is refused until `neurastream pages publish <page.html> --plan <file>` runs. A plan with a page needs its approval record (the Approve button or `approve <stamp>` in chat) for its current text; a Progress-only edit keeps the record. Plans stamped before `since` keep the old behaviour: a plan with no page is not gated. A plan file with no stamp counts as after `since` once it is set. Must be `""` or a `YYYYMMDD_HHMM` stamp; anything else fails config load.
+
+Doctor and `queue-check` fail when no `review.agents` entry is in `## Allowed` of `notes/subagents.md` (`neurastream agents allow <name>`), and warn for each entry that is not, since such an entry can never run a review spawn. An empty `review.agents` list is valid and silent: no review spawn can run, and only the `## Reuse` requirement is off — the reviewer PASS gate follows `review.plan` (P6).
 
 `score.default_branch` has no default. It is config, not a core literal: set it here or pass `--branch`; with `score.default_repo` empty, `accept` / `check` require `--repo` and `--branch`.
 
@@ -371,6 +400,7 @@ The loader rejects:
 - a `metrics.product_cmds` that is not `{<repo path>: {<name>: non-empty shell command}}`
 - `ui.port` outside 1..65535
 - `pages.keep_days` below 1, or not an integer
+- `approval.since` that is not `""` or a `YYYYMMDD_HHMM` stamp
 - `knowledge.roots` that is not a non-empty list of non-empty paths, or `knowledge.max_age_s` below 1 or not an integer
 - a `brief.repo_rules` entry whose `match`, `require`, `first` or `unless` does not compile as a case-insensitive regex, or whose `message` is empty
 - `secrets.proxy` that is not `none` or `secretgate`, a `secrets.known_value_files` entry that is not a non-empty path, or a `secrets.extra_patterns` entry without a non-empty `type` and a `regex` that compiles

@@ -445,3 +445,10 @@ test("a src/tests path the plan's blocker ALLOWED regex rejects is refused", () 
 	expect(outScope.out).toContain("scope.sh does not allow src/core/brief-lint.ts");
 });
 
+// P5e-b (plan 20261027_0915): `neurastream brief-lint --help` used to be read as a plan file and
+// crashed with ENOENT; --help/-h must print the usage and exit 0, like agent-score.
+test("brief-lint --help and -h print the usage and exit 0 instead of reading '--help' as a file", () => {
+	expect(briefLint(["--help"], cfg)).toBe(0);
+	expect(briefLint(["-h"], cfg)).toBe(0);
+});
+

@@ -3,13 +3,13 @@
 // page whose check fails cannot be approved — `pages publish --plan` leaves the bar disabled and the
 // server answers 409.
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkDiagram, diagramData, planItems } from "../src/core/diagram-check.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { publishPage } from "../src/core/pages-setup.ts";
-import { readPagePlan } from "../src/core/plan-approval.ts";
+import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { startPagesServer } from "../src/core/pages.ts";
 import { runDiagram } from "../src/cli/diagram.ts";
 
@@ -19,7 +19,8 @@ const dirs: string[] = [];
 afterEach(() => {
 	for (const s of servers.splice(0)) s.stop();
 	for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
-	delete process.env.QUEUE_STATE;
+	// the helpers below applyQueueEnv all seven path vars, not just QUEUE_STATE: strip them all
+	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
 });
 
 const PLAN = `# Toy
@@ -32,8 +33,11 @@ const PLAN = `# Toy
 Status: open
 `;
 
+// Plan pages must be the drilldown template with only DATA edited (plan 20261031_0917 P2).
+const TEMPLATE = readFileSync(join(import.meta.dir, "../templates/skills/architecture-drilldown/template.html"), "utf8");
 function page(boxes: string): string {
-	return `<!doctype html><html><body><p>toy</p><script>\n/* data */\nconst T={id:"root",nm:"toy",g:[2,1],kids:[\n${boxes}\n]};\n</script></body></html>`;
+	const a = TEMPLATE.indexOf("/* === DATA === */") + "/* === DATA === */".length, b = TEMPLATE.indexOf("/* === END DATA === */");
+	return `${TEMPLATE.slice(0, a)}\nconst T={id:"root",nm:"toy",g:[2,1],kids:[\n${boxes}\n]};\n${TEMPLATE.slice(b)}`;
 }
 
 const FULL = page(
@@ -89,6 +93,7 @@ test("publish --plan: an incomplete diagram keeps Approve disabled and the serve
 	process.env.QUEUE_STATE = join(dir, "state");
 	const cfg: Config = loadConfig({ file: join(dir, "missing.yml"), home: dir, env: {} });
 	cfg.paths.queue_state = join(dir, "state");
+	applyQueueEnv(cfg);
 	cfg.pages.enabled = true;
 	cfg.pages.dir = join(dir, "public");
 	cfg.pages.port = 0;
@@ -98,27 +103,18 @@ test("publish --plan: an incomplete diagram keeps Approve disabled and the serve
 	const src = join(dir, "toy-architecture.html");
 	writeFileSync(src, page(`{id:"a",nm:"P1 scan",files:"src/core/a.ts",kids:[{id:"a1",nm:"read"},{id:"a2",nm:"list"}]}`));
 	const out = join(dir, "public");
-	expect(publishPage(src, "Toy", false, out, { plan })).toBe("toy.html");
-	const published = readFileSync(join(out, "toy.html"), "utf8");
-	expect(published).toContain('id="ns-approve"');
-	expect(published).toContain('<button id="ns-approve-btn" type="button" disabled>Approve</button>');
-	expect(published).toContain("The diagram is not complete yet");
-	expect(readPagePlan(out, "toy.html")).toMatchObject({
-		plan,
-		missing: ["P2: the phase is in no box", "tests/b.test.ts (P2): named in the plan, in no box"],
-		thin: ["root has 1 kid"],
-	});
-	const tailscale = { ip4: () => "", dnsName: () => null, whois: () => "owner@example.test", logins: () => [], state: () => "running" as const };
+	// P7 (plan 20261031_0917): an incomplete diagram never publishes, so no link goes out that cannot be approved.
+	expect(() => publishPage(src, "Toy", false, out, { plan })).toThrow(/diagram is not complete \(3\)/);
+	expect(existsSync(join(out, "toy.html"))).toBe(false);
+	const tailscale = { ip4: () => "", dnsName: () => null, whois: () => "owner@example.test", logins: () => [] };
 	const server = startPagesServer({ cfg, tailscale, source: { listRuns: () => [], mainSession: () => null }, hostname: LOOPBACK, port: 0, root: out, peerOf: () => LOOPBACK });
 	servers.push(server);
 	const base = `http://${LOOPBACK}:${server.port}`;
-	const state = await (await fetch(`${base}/_approve?page=toy.html`)).json();
-	expect(state.problems).toEqual(["P2: the phase is in no box", "tests/b.test.ts (P2): named in the plan, in no box", "root has 1 kid"]);
-	expect((await fetch(`${base}/_approve?page=toy.html`, { method: "POST", headers: { origin: base } })).status).toBe(409);
-	// The complete diagram publishes with the bar enabled, and the click records the line.
+	// The complete diagram publishes with the bar enabled, and the click records the plan's hash in the queue state.
 	writeFileSync(src, FULL);
-	expect(publishPage(src, "Toy", true, out, { plan })).toBe("toy.html");
+	expect(publishPage(src, "Toy", false, out, { plan })).toBe("toy.html");
 	expect(readFileSync(join(out, "toy.html"), "utf8")).toContain("<button id=\"ns-approve-btn\" type=\"button\">Approve</button>");
 	expect((await fetch(`${base}/_approve?page=toy.html`, { method: "POST", headers: { origin: base } })).status).toBe(200);
-	expect(readFileSync(plan, "utf8")).toContain("Approved: ");
+	expect(readFileSync(plan, "utf8")).not.toContain("Approved:"); // the plan file is never edited
+	expect(JSON.parse(readFileSync(join(cfg.paths.queue_state, "plan-approvals.json"), "utf8")).approvals[plan].page).toBe("toy.html");
 });

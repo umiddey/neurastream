@@ -14,6 +14,8 @@ import { loadConfig } from "../../core/config.ts";
 import { notifyFindings } from "../../core/notify.ts";
 import { loadKnownSecrets, proxyOnPath } from "../../core/secret-redact.ts";
 import { allowedAgents, readIndex, reviewAgentsProblem } from "../../core/queue/lib.ts";
+import { systemRunner, type Runner } from "../../core/pages-setup.ts";
+import { packageJsonPath } from "./package-root.ts";
 import { realTailscale, type Tailscale } from "../../core/tailscale.ts";
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -167,7 +169,24 @@ function npmViewVersion(name: string, env: NodeJS.ProcessEnv): { version: string
 	return { version };
 }
 
-export function doctorReport(home: string, env: NodeJS.ProcessEnv = process.env, tailscale: Tailscale = realTailscale): DoctorReport {
+/** The pages service's start as epoch ms, or null when it is not running or the stamp is unreadable (P6). */
+export function pagesServiceStartMs(runner: Runner): number | null {
+	const r = runner(["--user", "show", "neurastream-pages.service", "--property=ActiveEnterTimestamp", "--value"]);
+	const m = r.status === 0 ? /^\w{3} (\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})/.exec((r.stdout ?? "").trim()) : null;
+	// systemctl prints local wall time; a TZ-less ISO stamp parses as local too, so both sides agree
+	// (Date.parse alone returns NaN on the weekday prefix and zone abbrev).
+	return m === null ? null : Date.parse(`${m[1]}T${m[2]}`);
+}
+
+function packageMtimeMs(): number | null {
+	try {
+		return statSync(packageJsonPath()).mtimeMs;
+	} catch {
+		return null;
+	}
+}
+
+export function doctorReport(home: string, env: NodeJS.ProcessEnv = process.env, tailscale: Tailscale = realTailscale, systemctl: Runner = systemRunner): DoctorReport {
 	const pkg = readPackage(PACKAGE_ROOT);
 	const name = pkg.name ?? "neurastream";
 	const installed = pkg.version ?? "";
@@ -190,6 +209,14 @@ export function doctorReport(home: string, env: NodeJS.ProcessEnv = process.env,
 	const agents = liveAgentsMd(home);
 	const text = existsSync(agents) ? readFileSync(agents, "utf8") : "";
 	const cfg = loadConfig({ home, env });
+	// P6 (plan 20261031_0917): a pages server started before the installed package changed keeps old
+	// code — the owner's tap hit the pre-0.2.57 handler and the approval was lost (2026-10-31 09:34).
+	if (cfg.pages.enabled) {
+		const startedAt = pagesServiceStartMs(systemctl);
+		const installedAt = packageMtimeMs();
+		if (startedAt !== null && installedAt !== null && startedAt < installedAt)
+			problems.push("neurastream-pages.service is running code older than the installed package; run: systemctl --user restart neurastream-pages.service");
+	}
 	// The owner page (plan 20261024_2230): when it is switched on, the login must be set and
 	// tailscale must answer, or the unit will start and refuse, or serve nobody.
 	if (cfg.ui.enabled) {

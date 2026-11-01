@@ -6,12 +6,17 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { helpText } from "../src/cli/dispatch.ts";
 import type { ToolEvent } from "../src/core/adapter.ts";
-import { CANCEL_TODO, MAIN_PLAN_FILE } from "../src/core/guards.ts";
-import { touchedPaths } from "../src/core/queue/lib.ts";
+import { CANCEL_TODO, MAIN_PLAN_FILE, planGate, reviewHash } from "../src/core/guards.ts";
+import { autoClose } from "../src/adapters/omp/index.ts";
+import { lastCloseResult, touchedPaths } from "../src/core/queue/lib.ts";
+import { loadConfig } from "../src/core/config.ts";
+import { recordPagePlan } from "../src/core/plan-approval.ts";
+import { applyQueueEnv } from "../src/core/queue/env.ts";
 
 const REPO = dirname(dirname(import.meta.path));
 const ORIG = "/tmp/neurastream-originals";
@@ -96,6 +101,7 @@ guards:
   free_prefixes: ["${join(HOME, "Work/gf-testbed/")}", "${join(HOME, "Work/archive/")}", "${join(HOME, "Work/heavy-run.sh")}"]
 review:
   agents: []
+  plan: false
 `,
 	);
 	spawnSync("git", ["init", "-q"], { cwd: TOY });
@@ -147,6 +153,12 @@ function guardCli(event: string, payload: unknown): { code: number; d: Decision 
 	return { code: r.status ?? 1, d: JSON.parse(r.stdout.trim()) as Decision };
 }
 
+function waitFor(see: () => boolean, ms: number): boolean {
+	const end = Date.now() + ms;
+	while (!see() && Date.now() < end) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+	return see();
+}
+
 function origRun(body: string, blockers = ORIG_BLOCKERS): unknown {
 	const lines = [
 		`process.env.HOME = ${JSON.stringify(HOME)}`,
@@ -179,16 +191,17 @@ test("help names the guard command", () => {
 	expect(helpText()).toContain("guard <event>");
 });
 
-test("denied command: a sub's bash matching a deny-command blocker is refused; clean command allowed", () => {
+test("denied command: a mutating bash matching a deny-command blocker is refused; read-only shell is allowed (P5c)", () => {
 	fresh();
-	const bad = "bun test --grep thing test.skip";
-	const refused = guardCli("pre-tool", toolEvent("bash", { command: bad }, "sub"));
+	// P5c: a read-only shell call skips the blockers, so the pattern match alone no longer refuses it.
+	const allowed = guardCli("pre-tool", toolEvent("bash", { command: "bun test --grep thing test.skip" }, "sub"));
+	expect(allowed.code).toBe(0);
+	expect(allowed.d).toEqual({ allow: true, reason: "" });
+	// A mutating command still meets the blocker, and the refusal names the pattern.
+	const refused = guardCli("pre-tool", toolEvent("bash", { command: "touch test.skip" }, "sub"));
 	expect(refused.code).toBe(2);
 	expect(refused.d.allow).toBe(false);
 	expect(refused.d.reason).toContain("deny-command: command matches forbidden pattern /test\\.skip/");
-	const allowed = guardCli("pre-tool", toolEvent("bash", { command: "bun test --grep thing" }, "sub"));
-	expect(allowed.code).toBe(0);
-	expect(allowed.d).toEqual({ allow: true, reason: "" });
 });
 
 test("denied path: a write under a deny-path glob is refused; other writes allowed", () => {
@@ -553,6 +566,69 @@ test("stop: keep working while the queue is open; live sub or idle stops allow; 
 	expect(stop({ agent: "main", callsSinceStop: 1, idleStops: 0, ledgerText: "" }).code).toBe(0);
 });
 
+// 20261031_2320 P2: the landed lock had no idle-stop valve — 0.2.60 froze Main's chat input on
+// plans whose auto-close kept failing. Like the incident block above it, empty stops now count
+// toward cfg.guards.idle_stops; a stop with tool calls in between resets the count and re-locks.
+test("stop valve: the landed lock lets Main out after idle_stops empty stops; a stop with calls resets it", () => {
+	fresh();
+	const cfg = loadConfig({ home: HOME, env: {} });
+	applyQueueEnv(cfg);
+	// Branchless, every phase ticked, done check fails: the auto-close records a failed close, so
+	// the landed lock (not the open-queue valve) is what holds the stop.
+	writeFileSync(PLAN, [
+		"# Stuck valve",
+		"",
+		"## Goal",
+		"- hold the stop until the landed-lock valve opens.",
+		"",
+		"## Forbidden",
+		"- never skip tests.",
+		"",
+		"## Blockers",
+		"- no-push",
+		"",
+		"## Phases",
+		"- [x] P1 do the thing — verify: `true`",
+		"",
+		"## Done check",
+		"`exit 1`",
+		"",
+		"## Progress",
+		"Status: open",
+		"- landed; the auto-close keeps failing on the done check.",
+		"",
+	].join("\n"));
+	writeFileSync(join(AGENT, "INDEX.md"), `${PLAN}\n`);
+	const stub = join(HOME, "close-stub");
+	writeFileSync(stub, `#!/bin/sh\nexec bun ${join(REPO, "bin", "queue-close")} "$@"\n`);
+	chmodSync(stub, 0o755);
+	const closeBin = process.env.QUEUE_CLOSE_BIN;
+	process.env.QUEUE_CLOSE_BIN = stub;
+	try {
+		autoClose(cfg);
+		expect(waitFor(() => lastCloseResult(PLAN) !== null, 20_000)).toBe(true);
+		const stop = (calls: number, idle: number) => guardCli("stop", { agent: "main", callsSinceStop: calls, idleStops: idle, ledgerText: "" });
+		const first = stop(0, 0);
+		expect(first.code).toBe(2);
+		expect(first.d.reason).toContain("landed but its auto-close failed");
+		expect(first.d.state).toEqual({ callsSinceStop: 0, idleStops: 1 });
+		expect(first.d.reason).toContain("2 idle stop attempts left");
+		const second = stop(0, 1);
+		expect(second.code).toBe(2);
+		expect(second.d.reason).toContain("1 idle stop attempt left");
+		const third = stop(0, 2);
+		expect(third.code).toBe(0);
+		// a stop with tool calls in between resets the streak and blocks again
+		const busy = stop(5, 0);
+		expect(busy.code).toBe(2);
+		expect(busy.d.reason).toContain("3 idle stop attempts left");
+		expect(busy.d.state).toEqual({ callsSinceStop: 0, idleStops: 0 });
+	} finally {
+		if (closeBin === undefined) delete process.env.QUEUE_CLOSE_BIN;
+		else process.env.QUEUE_CLOSE_BIN = closeBin;
+	}
+});
+
 test("guard CLI surface: unknown event and bad JSON exit 2", () => {
 	fresh();
 	const bad = spawnSync("bun", [join(REPO, "src/cli/main.ts"), "guard", "nope", "--json"], { input: "{}", encoding: "utf8", env: envFor() });
@@ -615,5 +691,56 @@ test("MAIN_PLAN_FILE matches plans under docs/plans subdirs but never archive", 
 	expect(MAIN_PLAN_FILE.test("/r/docs/plans/immediate/deeper/20261029_1200_x.md")).toBe(true);
 	expect(MAIN_PLAN_FILE.test("/r/docs/plans/archive/202610/20261029_1200_x.md")).toBe(false);
 	expect(MAIN_PLAN_FILE.test("/r/docs/plans/archive/20261029_1200_x.md")).toBe(false);
+});
+
+// --- Hard approval gate (plan 20261029_1455 P3): approval.since sets which plans need a page and a record ---
+describe("plan approval hard gate (planGate, 20261029_1455 P3)", () => {
+	const home = mkdtempSync(join(tmpdir(), "guards-approval-"));
+	const plan = join(home, "projects/toy/docs/plans/20261030_0900_late.md");
+	const index = join(home, "INDEX.md");
+	const state = join(home, "state");
+	const pages = join(home, "pages");
+	const blockers = join(home, "blockers");
+	const cancelled = join(home, "CANCELLED.md");
+	const saved = { ...process.env };
+	const body = "# Toy plan\n\nWorktree: -\nBranch: feat/toy\n\n## Goal\n- Toy.\n\n## Forbidden\n- Never skip tests.\n\n## Blockers\n- toy-blocker\n\n## Code read by Main\n- src/a.ts\n\n## Phases\n- [ ] P1 do the thing — verify: `test -f src/a.ts`\n\n## Done check\n`test -f src/a.ts`\n\n## Progress\nStatus: open\n\n- Started.\n";
+
+	beforeAll(() => {
+		for (const d of [dirname(plan), state, pages, blockers]) mkdirSync(d, { recursive: true });
+		writeFileSync(plan, body);
+		writeFileSync(index, `${plan}\n`);
+		writeFileSync(cancelled, "");
+		writeFileSync(join(blockers, "toy-blocker"), "#!/bin/sh\nexit 0\n");
+		chmodSync(join(blockers, "toy-blocker"), 0o755);
+	});
+	afterAll(() => {
+		rmSync(home, { recursive: true, force: true });
+		for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+		Object.assign(process.env, saved);
+	});
+	// planGate under a sandbox config: the one indexed plan, a page dir inside the sandbox.
+	const gate = (since: string): [string | null, string[]] => {
+		const cfg = loadConfig({ file: join(home, "missing.yml"), home, env: {} });
+		cfg.review.agents = [];
+		cfg.paths.queue_index = index;
+		cfg.paths.queue_state = state;
+		cfg.paths.blockers = blockers;
+		cfg.paths.cancelled = cancelled;
+		cfg.pages.dir = pages;
+		cfg.approval.since = since;
+		applyQueueEnv(cfg);
+		return planGate(`Plan: ${plan}\nP1 do the thing.`, "toy-worker", cfg);
+	};
+	test("after approval.since a plan with no page is refused; with since empty or a later since it passes", () => {
+		expect(gate("20261029_1455")[0]).toContain(`neurastream pages publish <page.html> --plan ${plan}`);
+		expect(gate("")).toEqual([null, [plan]]);
+		expect(gate("20261031_0000")).toEqual([null, [plan]]);
+	});
+	test("after approval.since a page without a record is refused, and a matching record passes", () => {
+		recordPagePlan(pages, "toy.html", { plan, missing: [], thin: [] });
+		expect(gate("20261029_1455")[0]).toContain("has no approval record");
+		writeFileSync(join(state, "plan-approvals.json"), JSON.stringify({ approvals: { [plan]: { hash: reviewHash(body), at: 1, via: "page", page: "toy.html" } } }));
+		expect(gate("20261029_1455")).toEqual([null, [plan]]);
+	});
 });
 

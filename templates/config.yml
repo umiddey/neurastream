@@ -111,6 +111,8 @@ queue:
   auto_close_min: 15   # minutes before an item auto-closes
   repo_index: "INDEX.md"   # declared only; no code reads it yet
   cancelled_rel: "docs/plans/CANCELLED.md"   # declared only; no code reads it yet
+  waiting_check_ttl_sec: 600     # a hold's `still true if` result is reused this long (key: plan mtime, command, HEAD)
+  waiting_check_timeout_sec: 60  # one check may run this long; a timeout is "unknown" (card stays, no incident)
 
 guards:
   sub_warn_calls: 90   # subagent tool calls that draw the wrap-up warning
@@ -149,8 +151,13 @@ autonomy:
   go_phrase: "go push"     # the whole chat message that approves one push/merge in tier strict (I-20261025-201); a bare `go` is an ordinary message
 
 review:                    # plan review gate (plan 20261028_1600): reuse lines now, reviewer PASS from P2 (docs/config.md)
-  agents: ["reviewer"]     # agents allowed to run a review spawn: one must be in "## Allowed" of notes/subagents.md (doctor and queue-check fail otherwise, e.g. ["glm"]); the PASS exemption needs one plus the brief's `Plan review:` line; an empty list turns both review gates off
+  plan: true               # the reviewer PASS gate: false skips it (P6); an empty agents list no longer turns it off
+  code: false              # the code review gate: true refuses Main ticking a phase until a review spawn's `CODE REVIEW: PASS` entry covers it (P6)
+  agents: ["reviewer"]     # agents allowed to run a review spawn: one must be in "## Allowed" of notes/subagents.md (doctor and queue-check fail otherwise, e.g. ["glm"]); the PASS exemption needs one plus the brief's `Plan review:` line; an empty list only turns the `## Reuse` requirement off
+  shell_allow: ["git show", "git log", "git diff", "git blame", "git rev-parse", "git ls-files", "git status", "git merge-base", "grep", "cat", "head", "tail", "wc", "ls", "jq", "glab mr list", "glab mr view", "glab mr diff", "gh pr list", "gh pr view", "gh pr diff", "date"]  # the bash prefixes a review spawn may run (P7): every |/&&/||/;/& segment starts with one, single-line, no redirects or substitution; eval is denied outright
   mr_cache_minutes: 10     # minutes the spawn gate caches a repo's open-MR list in <queue_state>/mr-cache.json; 0 = no cache
+approval:                  # plan approval hard gate (plan 20261029_1455 P3): docs/config.md
+  since: ""                # a plan stamped at or after this (YYYYMMDD_HHMM) needs a page and an approval record; "" = off
 
 ui:
   enabled: false        # the owner's phone page (neurastream ui); binds the tailnet address only
@@ -185,14 +192,32 @@ incidents:
   contradiction_grace_min: 3   # minutes after a finished task-result before a RUNNING/WAITING ledger row is a contradiction
   block_repeat: 20             # same guard BLOCK reason within 60 minutes that means a block loop
   scan_interval_sec: 120       # seconds between scans of the expensive detectors (D1 ledger, D3 block loop); the cheap ones run on every event
+  bypass_window_sec: 600       # seconds after a guard block within which a similar call of the same tool is a bypass (detector D8)
+  bypass_similarity: 0.6       # token-set Jaccard similarity (0, 1] between the blocked call's args and the bypass (detector D8)
   daily_worse_pct: 25          # a daily metric must be worse than the 7-day mean by at least this percent
   daily_floor:                 # per-metric daily floors: a regression below the floor is noise
     m1: 0.5                    # $ per merge
     m2: 50                     # idle calls/day
     m3: 1.5                    # mean CI tries
-    m4_corrections: 1          # owner corrections/day
-    m4_questions: 3            # Main questions/day
-    m5: 50                     # guard blocks/day
+    m4_corrections: 1        # owner corrections/day
+    m4_questions: 3          # Main questions/day
+    m5: 50                   # guard blocks/day
+
+watch:                       # the watcher (src/core/watch.ts): heartbeats, failed units, detectors
+  expect:                    # hours after which a job's last heartbeat is stale; only listed jobs must beat at all
+    wip-snapshot: 2          # hourly snapshot
+    wip-backup: 26           # nightly 23:30 backup; one missed day is not yet stale
+    metrics-report: 192      # 8 days; the weekly report job
+  units:                     # user units the watcher reports when failed
+    - "neurastream-*"
+    - "wip-*"
+  max_posts_per_run: 3       # per run: at most this many new-incident posts, then one "+N more" line
+  interval_min: 15          # minutes between watcher runs; `neurastream watch on` installs the timer at this interval
+  noisy_min: 5             # weekly report: a detector kind with at least this many incidents in the window ...
+  noisy_ratio: 0.5         # ... and at least this dismiss rate opens one "noisy detector" incident
+  ci_red_hours: 2         # an open MR whose last finished pipeline stays failed longer than this opens incident "ci-red-mr"
+  release_regress_pct: 25  # release verdict: any group but owner pain worse by this percent over the before window reads WORSE
+  release_min_calls: 300   # release verdict: fewer Main tool calls on either side reads "not enough data yet", no verdict
 
 machine:
   load_over_cores: 4   # load above the core count that draws a warning (used when load_max is 0)
@@ -215,6 +240,7 @@ notify:
   discord_webhook_file: ""   # file holding the Discord webhook URL; "" = off (README: Notify the owner)
   slack_webhook_file: ""     # file holding the Slack webhook URL; "" = off
   prefix: ""                 # optional label prepended to each posted reply, e.g. "Main:"
+  answer_within_min: 3       # minutes an owner message may wait before the tool-result steer steers Main to answer it now (0 = off)
 
 secrets:                     # content redaction (src/core/secret-redact.ts); a hit prints as [REDACTED:<type>]
   redact: true               # every tool result, every notify post and `neurastream redact` go through the redactor

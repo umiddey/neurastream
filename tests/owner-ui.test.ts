@@ -9,7 +9,7 @@ import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { Run, RunSource, ToolEvent } from "../src/core/adapter.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { nowSec, strftime } from "../src/core/clock.ts";
@@ -152,6 +152,11 @@ afterAll(() => {
 });
 
 beforeEach(() => {
+	// The bunfig preload (plan 20261031_0911 P3) re-points the seven QUEUE_* path vars at its
+	// shared sandbox for each test, overriding the module-top applyQueueEnv(CFG): the runtime
+	// helpers would then read the preload's inbox while the adapter and checkTool judge CFG's
+	// paths. Re-assert CFG's queue paths first, so env and CFG name the same files again.
+	applyQueueEnv(CFG);
 	rmSync(inboxPath(), { force: true });
 	rmSync(ownerInboxCursorPath(), { force: true });
 	rmSync(unlockPath(), { force: true });
@@ -866,6 +871,13 @@ test("ownerInboxMessage formats unlock, lock, answer, reorder and rejects unknow
 	expect(ownerInboxMessage({ ts: nowSec(), kind: "bogus", login: OWNER })).toBe(null);
 });
 
+// P5 (plan 20261031_0917): the approval row the approve tap writes maps to the one line Main acts on.
+test("ownerInboxMessage formats an approval row", () => {
+	expect(ownerInboxMessage({ ts: nowSec(), kind: "approval", page: "toy.html", plan: PLAN_W, login: OWNER })).toBe(
+		`Owner approved ${basename(PLAN_W)} on page toy.html.`,
+	);
+});
+
 const mainCtx = { agent: { kind: "main" } };
 const subCtx = { agent: { kind: "sub" } };
 
@@ -1002,6 +1014,24 @@ test("guards refuse agent shell commands that start the owner page", () => {
 	expect(planGuardLogLines().some(l => l.includes("ui-start"))).toBe(true);
 });
 
+// --- P5g (plan 20261027_0915): the page-start check reads only real shell commands ---
+
+test("P5g: eval prose that only carries the page's words is not a page start; the real exits still are", () => {
+	const cfg: Config = { ...CFG, guards: { ...CFG.guards, shell_tools: ["bash", "eval"] } };
+	const ev = (code: string): ToolEvent => ({ tool: "eval", input: { code }, cwd: TMP, agent: "sub", agentId: "p5g-eval", calls: 0, paths: [], writes: [], command: "" });
+	// An eval cell whose string data only mentions the page command runs nothing: a backticked
+	// mention in a plan-file edit and a plan-quote template literal are prose, not shell.
+	expect(checkTool(ev('edit(plan, { old: "x", new: "the card runs `neurastream ui` to serve the page" })'), cfg).allow).toBe(true);
+	expect(checkTool(ev("const forbidden = `\nneurastream ui stays the owner's move\n`;"), cfg).allow).toBe(true);
+	// Real shell exits stay the owner's move: a !cmd line, Bun.$ and spawn arguments.
+	expect(checkTool(ev("!neurastream ui"), cfg).allow).toBe(false);
+	expect(checkTool(ev("await Bun.$`neurastream ui`.nothrow()"), cfg).allow).toBe(false);
+	expect(checkTool(ev('Bun.spawn(["neurastream", "ui"])'), cfg).allow).toBe(false);
+	expect(checkTool(ev("Bun.spawnSync(['neurastream', 'ui'])"), cfg).allow).toBe(false);
+	// bash keeps its whole command line.
+	expect(checkTool({ tool: "bash", input: { command: "systemctl --user start neurastream-ui" }, cwd: TMP, agent: "sub", agentId: "p5g-bash", calls: 0, paths: [], writes: [], command: "" }, cfg).allow).toBe(false);
+});
+
 // --- CLI: `neurastream ui` keeps serving (the 0.2.8 unit exited 0 after 90 ms) ---
 
 test("runUi never resolves once the page is started, so the CLI does not exit and kill the server", async () => {
@@ -1090,6 +1120,19 @@ test("questionRows: title, repo label, waiting line, goal and minutes waiting fr
 	expect(rows.length).toBe(1);
 	expect(rows[0]).toMatchObject({ plan: PLAN_W, title: "Toy plan", repo: "toy", waitingLine: QUESTION, waitingAsk: QUESTION, waitingBlocked: null, waitingWhy: null, unblocks: [], goal: ["Owner page toy."] });
 	expect(rows[0]!.waitingMin).toBeGreaterThanOrEqual(0);
+});
+
+test("questionRows drops a stale hold and keeps one whose check still holds", () => {
+	const stateCfg: Config = { ...CFG, paths: { ...CFG.paths, queue_state: join(TMP, "stale-state") } };
+	const original = readFileSync(PLAN_W, "utf8");
+	try {
+		writeFileSync(PLAN_W, `# Toy plan\n\n## Progress\nStatus: open\nWAITING on owner: ${QUESTION} — still true if: \`owner-ui-gone-check\`\n`);
+		expect(questionRows(stateCfg, () => ({ code: 1 }))).toEqual([]);
+		writeFileSync(PLAN_W, `# Toy plan\n\n## Progress\nStatus: open\nWAITING on owner: ${QUESTION} — still true if: \`owner-ui-still-check\`\n`);
+		expect(questionRows(stateCfg, () => ({ code: 0 }))).toHaveLength(1);
+	} finally {
+		writeFileSync(PLAN_W, original);
+	}
 });
 
 test("agentRows: short model after the last /, detail and minutes since startedAt", () => {
@@ -1258,6 +1301,8 @@ function reorderIndex(): string {
 	writeFileSync(PLAN_B, PLAN_TEXT("open", false));
 	writeFileSync(PLAN_C, PLAN_TEXT("open", false));
 	const index = join(TMP, "reorder-index.md");
+	// A reorder leaves the index 0444 (plan 20261031_0911 P2); reseed fresh instead of writing over it.
+	rmSync(index, { force: true });
 	writeFileSync(
 		index,
 		[
@@ -1281,6 +1326,8 @@ function mixedIndex(): string {
 	writeFileSync(PLAN_C, PLAN_TEXT("open", false));
 	writeFileSync(PLAN_E, PLAN_TEXT("open", true));
 	const index = join(TMP, "reorder-index-open.md");
+	// A reorder leaves the index 0444 (plan 20261031_0911 P2); reseed fresh instead of writing over it.
+	rmSync(index, { force: true });
 	writeFileSync(
 		index,
 		[
@@ -1369,6 +1416,8 @@ function waitsIndex(): string {
 	writeFileSync(PLAN_B, PLAN_TEXT("open", false));
 	writeFileSync(PLAN_C, PLAN_TEXT("open", false));
 	const index = join(TMP, "reorder-index-waits.md");
+	// A reorder leaves the index 0444 (plan 20261031_0911 P2); reseed fresh instead of writing over it.
+	rmSync(index, { force: true });
 	writeFileSync(index, [PLAN_B, PLAN_C, PLAN_A, ""].join("\n"));
 	return index;
 }

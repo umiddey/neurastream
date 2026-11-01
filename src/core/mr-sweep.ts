@@ -109,7 +109,7 @@ function asNumber(v: unknown): number | null {
 }
 
 /** Parse a JSON list. Null means the CLI answered but not with a list — treat as unreachable, never as "no MRs". */
-function parseList(stdout: string): Record<string, unknown>[] | null {
+export function parseList(stdout: string): Record<string, unknown>[] | null {
 	const t = stdout.trim();
 	if (!t) return [];
 	const from = (v: unknown): Record<string, unknown>[] | null => {
@@ -208,17 +208,24 @@ export interface OpenMr {
 /** `{ ok: false, why }` is the sweep's degrade: the caller logs it and never treats it as "no MRs". */
 export type OpenMrs = { ok: true; mrs: OpenMr[] } | { ok: false; why: string };
 
+/** The forge behind a repo's origin remote: `{ forge }`, or `{ why }` (the sweep's degrade reason). */
+export function repoForge(repo: string, run: CommandRunner = defaultRunner, env?: NodeJS.ProcessEnv): { forge: Forge } | { why: string } {
+	const remote = run(["git", "-C", repo, "remote", "get-url", "origin"], { env });
+	const url = remote.code === 0 ? remote.stdout.trim() : "";
+	if (!url) return { why: "no origin remote" };
+	const host = remoteHost(url);
+	const forge = host ? forgeOf(host) : null;
+	return forge ? { forge } : { why: "unknown forge" };
+}
+
 /**
  * Open MRs of one repo (the sweep's lister, single-repo): `!N` / `#N` token plus source branch.
  * Everything — origin lookup included — goes through the runner, so callers can inject it.
  */
 export function listOpenMrs(repo: string, run: CommandRunner = defaultRunner, env?: NodeJS.ProcessEnv): OpenMrs {
-	const remote = run(["git", "-C", repo, "remote", "get-url", "origin"], { env });
-	const url = remote.code === 0 ? remote.stdout.trim() : "";
-	if (!url) return { ok: false, why: "no origin remote" };
-	const host = remoteHost(url);
-	const forge = host ? forgeOf(host) : null;
-	if (!forge) return { ok: false, why: "unknown forge" };
+	const found = repoForge(repo, run, env);
+	if ("why" in found) return { ok: false, why: found.why };
+	const forge = found.forge;
 	const listed = forge === "gitlab" ? listGitlab(repo, run, env) : listGithub(repo, run, env);
 	if (listed.missing) return { ok: false, why: "no forge CLI" };
 	if (listed.fail) return { ok: false, why: "forge unreachable" };

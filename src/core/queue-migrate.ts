@@ -1,8 +1,8 @@
-import { existsSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 import type { Config } from "./config.ts";
 import { applyQueueEnv } from "./queue/env.ts";
-import { gitTop, readIndex } from "./queue/lib.ts";
+import { gitTop, readIndex, writeIndex } from "./queue/lib.ts";
 
 // One index (20261024_1400_one_index): fold the old two-level layout into the main index. Every
 // repo directory the main index still lists has its INDEX.md plan lines moved into the main index
@@ -44,7 +44,7 @@ export function queueMigrate(args: string[], cfg: Config): number {
 		rmSync(repoIndex);
 	}
 	const unique = [...new Set(kept)];
-	writeFileSync(index, unique.length ? `${unique.join("\n")}\n` : "");
+	writeIndex(unique, { removed: "migrate" });
 	console.log(`queue migrate: ${index} now lists ${unique.length} plan(s); folded ${folded} repo INDEX.md file(s)`);
 	for (const p of unique) {
 		const g = gitTop(p);

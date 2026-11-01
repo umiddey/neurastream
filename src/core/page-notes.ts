@@ -97,6 +97,15 @@ export interface AnsweredNote {
 
 const ANSWERED_RE = /<section id="ns-answered"[\s\S]*?<\/section>\n?/i;
 const APPROVE_RE = /<section id="ns-approve"[\s\S]*?<\/section>\n?/i;
+const STYLE_RE = /<style data-ns-page-notes>[\s\S]*?<\/style>\n?/i;
+const PANEL_RE = /<section id="ns-notes"[\s\S]*?<\/section>\n?/i;
+const FAB_RE = /<button id="ns-note-fab"[\s\S]*?<\/button>\n?/i;
+const SCRIPT_RE = /<script data-ns-page-notes>[\s\S]*?<\/script>\n?/i;
+
+/** The html with the injected notes chrome gone, so a publish-time check sees the built page again (plan 20261031_0917 P2). */
+export function stripPageNotes(html: string): string {
+	return [STYLE_RE, PANEL_RE, APPROVE_RE, ANSWERED_RE, FAB_RE, SCRIPT_RE].reduce((text, re) => text.replace(re, ""), html);
+}
 
 /** What the Approve bar needs: the page it approves, the notes still open on it and what the
  * diagram check found (P9, P10). */
@@ -122,7 +131,7 @@ function approveBlock(chrome: ApproveChrome): string {
  <script>(function(){var page="${page}",btn=document.getElementById("ns-approve-btn"),status=document.getElementById("ns-approve-status");
   function set(open,problems){var bad=(problems||[]);btn.disabled=open.length>0||bad.length>0;status.textContent=open.length>0?"Answer every note first ("+open.join(", ")+")":bad.length>0?"The diagram is not complete yet ("+bad.length+"): "+bad.slice(0,3).join("; "):"Approve and go \u2014 the plan records it.";}
   fetch("/_approve?page="+page).then(function(r){return r.json();}).then(function(d){set(d.open||[],d.problems);}).catch(function(){set(["?"],[]);});
-  btn.addEventListener("click",function(){btn.disabled=true;fetch("/_approve?page="+page,{method:"POST",headers:{"content-type":"application/json"},body:"{}"}).then(function(r){return r.json().then(function(d){return {ok:r.ok,body:d};});}).then(function(res){status.textContent=res.ok?"Approved: "+res.body.approved:"Not approved: "+res.body.error;btn.disabled=!res.ok;}).catch(function(){status.textContent="Not approved: the pages server did not answer.";btn.disabled=false;});});
+  btn.addEventListener("click",function(){btn.disabled=true;fetch("/_approve?page="+page,{method:"POST",headers:{"content-type":"application/json"},body:"{}"}).then(function(r){return r.json().then(function(d){return {ok:r.ok,body:d};});}).then(function(res){status.textContent=res.ok?res.body.approved:"Not approved: "+res.body.error;btn.disabled=!res.ok;}).catch(function(){status.textContent="Not approved: the pages server did not answer.";btn.disabled=false;});});
  })();</script>
 </section>`;
 }

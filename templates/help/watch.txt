@@ -1,0 +1,45 @@
+watch: one pass of the watcher — scheduled jobs report in with heartbeats, the watcher checks
+the reports, failed units, CI, the detectors and the release verdicts; each NEW problem opens
+one incident and posts one notice. `watch on` installs the timer that runs the pass every
+watch.interval_min.
+
+What one pass checks, in order:
+1. Heartbeats <queue_state>/heartbeats/<name>.json: ok:false, or older than watch.expect[name]
+   hours (only jobs listed there must beat at all; defaults: wip-snapshot 2h, wip-backup 26h,
+   metrics-report 8 days).
+2. Failed user units matching the watch.units globs (default neurastream-*, wip-*), with the
+   unit's last error line.
+3. CI per active-plan repo: a red default branch (ci-red-main), an open MR red longer than
+   watch.ci_red_hours (ci-red-mr, held back while an agent runs on its plan), M3 records for
+   MRs merged since the last pass (the ledger is the cursor, so `metrics ci` is no longer
+   forgotten), and a commit that went red then green as a ci-flaky metric.
+4. The gated incident detectors (ledger contradiction, block loop, ...).
+5. Release verdict: one judgment per tag whose after-window has closed — better or worse over
+   the before window, from the weekly report's numbers. A verdict is a finding for Main: it
+   stays open until planned or dismissed and is never auto-closed as recovered.
+
+Notify: every NEW incident posts one "⚠ <job>: <state> at <time> — <first error line>
+(incident <id>)" through the configured providers — at most watch.max_posts_per_run (3) per
+run, then "+N more, see `neurastream incident list --open`"; without a provider the incident
+still opens and nothing posts; already-open problems post nothing; every post goes through
+the secret redactor (a job name, a time, a first error line — never file contents). A
+recovered problem closes its incident again.
+
+Timer: `watch on` installs the systemd user timer neurastream-watch.{service,timer} (or the
+LaunchAgent neurastream-watch.plist on macOS) running one pass every watch.interval_min;
+`watch off` removes it. The service manager is probed first; a failed probe writes nothing.
+`neurastream doctor` prints "watch: on|off, last run N min ago"; main-start raises a
+watch:not-running incident once the last pass is older than 3 intervals.
+
+Your own cron jobs join the same loop — after each run (or on failure) beat by hand:
+  neurastream heartbeat <name>                 # the run was fine
+  neurastream heartbeat <name> --fail "why"    # report a failure
+
+Noisy-detector rule: the weekly report opens one "noisy detector: <kind> (<d>/<n> dismissed)"
+incident when a detector kind reaches watch.noisy_min incidents in the window and a
+watch.noisy_ratio dismiss rate, with the three latest dismiss reasons — the alarm saying its
+own alarm is crying wolf.
+
+Usage: neurastream watch            one pass now (beats its own "watch" heartbeat after the run)
+       neurastream watch on|off     install/remove the timer
+       neurastream watch --help     this text

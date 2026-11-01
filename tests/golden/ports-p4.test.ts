@@ -63,6 +63,7 @@ snapshot:
   git_backup: "${join(home, "Work/gf-backups/latest")}"
 review:
   agents: []
+  plan: false
 `;
 	writeFileSync(join(home, ".config/neurastream/config.yml"), yml);
 }
@@ -417,7 +418,9 @@ test("queue-close refusal paths", () => {
 	const plan = setupQueue(home, env, "open");
 	const noArgs = runPort("queue-close", [], env);
 	expect(noArgs.code).toBe(1);
-	expect(noArgs.stderr).toContain("usage: queue-close <plan file>");
+	// P4 (20261031_0911) added queue-close --auto, so the usage line names the flag; the refusal
+	// rule itself (no plan argument, exit 1) still matches the frozen oracle.
+	expect(noArgs.stderr).toContain("usage: queue-close [--auto] <plan file>");
 	const open = runPort("queue-close", [plan], env);
 	expect(open.code).toBe(1);
 	expect(open.stderr).toContain('"Status: open"');

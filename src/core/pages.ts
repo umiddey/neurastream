@@ -1,9 +1,11 @@
-import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { basename, extname, resolve } from "node:path";
 import type { Config } from "./config.ts";
-import { isLoopback, isTailnet, type UiHttpServer } from "./owner-ui.ts";
+import { isLoopback, isTailnet, inboxPath, type UiHttpServer } from "./owner-ui.ts";
+import { nowSec } from "./clock.ts";
 import { appendPageNotes, openNoteIds } from "./page-notes.ts";
 import { approvePlanFile, readPagePlan } from "./plan-approval.ts";
+import { stateDirPath } from "./queue/lib.ts";
 import type { RunSource } from "./adapter.ts";
 import type { Tailscale } from "./tailscale.ts";
 
@@ -27,9 +29,9 @@ export function startPagesServer(opts: PagesOptions): PagesServer {
   // rows Main delivers. Same origin only, so another site's tab cannot write to the inbox; nothing here
   // touches the page file, and a submit with no note text is refused.
   if (req.method === "POST") {
-   // Approve from the plan's own page (plan 20261026 P9): the click records `Approved: <date> (<page>)`
-   // in the plan recorded at publish. Only that plan, only from this page's origin, and never while a
-   // note on the page has no answer.
+   // Approve from the plan's own page (plan 20261026 P9): the click records a hash of the plan text
+   // in the queue state (plan-approvals.json). Only that plan, only from this page's origin, and
+   // never while a note on the page has no answer.
    if (url.pathname === "/_approve") {
     if (req.headers.get("origin") !== `http://${req.headers.get("host")}`) return plain("forbidden: origin is not this page", 403);
     const page = url.searchParams.get("page") ?? "";
@@ -41,7 +43,16 @@ export function startPagesServer(opts: PagesOptions): PagesServer {
     if (unproven.length > 0) return Response.json({ error: `the diagram is not complete (${unproven.slice(0, 3).join("; ")})` }, { status: 409 });
     const plan = record.plan;
     if (!existsSync(plan)) return plain("not found: the plan file is gone", 404);
-    return Response.json({ approved: approvePlanFile(plan, page) });
+    try {
+      const approved = approvePlanFile(plan, page);
+      // P5 (plan 20261031_0917): the tap must reach Main at once — one owner-inbox row, the same
+      // direct append the message POST uses; never a page note, which would 409 the next tap.
+      mkdirSync(stateDirPath(), { recursive: true });
+      appendFileSync(inboxPath(), `${JSON.stringify({ ts: nowSec(), kind: "approval", page, plan, login })}\n`);
+      return Response.json({ approved });
+    } catch (e) {
+      return plain(`not approved: ${e instanceof Error ? e.message : String(e)}`, 500);
+    }
    }
    if (url.pathname !== "/_notes") return plain("method not allowed", 405);
    if (req.headers.get("origin") !== `http://${req.headers.get("host")}`) return plain("forbidden: origin is not this page", 403);

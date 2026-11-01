@@ -11,6 +11,7 @@ import {
 	m3,
 	m4,
 	m5,
+	inWindow,
 	readBlocks,
 	readMetricEvents,
 	windows,
@@ -43,7 +44,8 @@ function day(t: number): string {
 	return new Date(t * 1000).toISOString().slice(0, 10);
 }
 
-function snap(cfg: Config, source: RunSource, events: Ev[], blocks: GuardBlock[], incidents: IncidentView[], w: Window): Snap {
+/** One window's raw metric values: the inputs every before/after view (weekly report, release verdict) compares. */
+export function snap(cfg: Config, source: RunSource, events: Ev[], blocks: GuardBlock[], incidents: IncidentView[], w: Window): Snap {
 	const runs = source.listRuns(w.from);
 	const patterns = cfg.metrics.correction_patterns.map((p) => new RegExp(p, "i"));
 	return {
@@ -83,10 +85,75 @@ export function m6(incidents: IncidentView[], w: Window): M6 {
 		.map((i) => ({ opened: i.ts, at: fixedAt(i) }))
 		.filter((x): x is { opened: number; at: number } => x.at !== null)
 		.map((x) => (x.at - x.opened) / 3600)
-		.sort((a, b) => a - b);
+		.toSorted((a, b) => a - b);
 	const mid = Math.floor(hours.length / 2);
 	const median = hours.length === 0 ? null : hours.length % 2 ? hours[mid]! : (hours[mid - 1]! + hours[mid]!) / 2;
 	return { opened: inW.length, planned: byType("plan"), dismissed: byType("dismiss"), fixed: byType("fixed"), medianHours: median };
+}
+
+/** Silent failures (P6): watch-source incidents opened in the window, i.e. failures the watcher found without anyone asking. */
+export function silentFailures(incidents: IncidentView[], w: Window): number {
+	return incidents.filter((i) => i.source === "watch" && inWindow(i.ts, w)).length;
+}
+
+/** M7 (P6): suspected false blocks in one window: D8 block-then-bypass incidents plus false-alarm events. */
+export function m7(incidents: IncidentView[], falseAlarms: number, w: Window): number {
+	return incidents.filter((i) => i.kind === "block-then-bypass" && inWindow(i.ts, w)).length + falseAlarms;
+}
+
+/** One kind's outcomes for incidents opened in the window; dismissRate is dismissed / opened. */
+export interface KindStat {
+	kind: string;
+	opened: number;
+	planned: number;
+	dismissed: number;
+	dismissRate: number;
+}
+
+/** Per-kind outcomes, busiest kind first. */
+export function kindStats(incidents: IncidentView[], w: Window): KindStat[] {
+	const byKind = new Map<string, IncidentView[]>();
+	for (const i of incidents) {
+		if (!inWindow(i.ts, w)) continue;
+		byKind.set(i.kind, [...(byKind.get(i.kind) ?? []), i]);
+	}
+	return [...byKind]
+		.map(([kind, list]): KindStat => {
+			const dismissed = list.filter((i) => i.resolution?.type === "dismiss").length;
+			return {
+				kind,
+				opened: list.length,
+				planned: list.filter((i) => i.resolution?.type === "plan").length,
+				dismissed,
+				dismissRate: dismissed / list.length,
+			};
+		})
+		.toSorted((a, b) => b.opened - a.opened || (a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : 0));
+}
+
+/** A noisy detector (P6): the finding the weekly check turns into one "noisy-detector" incident. */
+export interface NoisyFinding {
+	kind: "noisy-detector";
+	/** The incident kind that is noisy. */
+	detector: string;
+	summary: string;
+	/** The three latest dismiss reasons, joined with "; ". */
+	evidence: string;
+}
+
+/** A kind is noisy when this window opened at least noisy_min incidents of it and at least
+ *  noisy_ratio of them were dismissed. */
+export function noisyDetectors(incidents: IncidentView[], w: Window, t: { noisy_min: number; noisy_ratio: number }): NoisyFinding[] {
+	return kindStats(incidents, w)
+		.filter((s) => s.opened >= t.noisy_min && s.dismissRate >= t.noisy_ratio)
+		.map((s): NoisyFinding => {
+			const why = incidents
+				.filter((i) => i.kind === s.kind && inWindow(i.ts, w) && i.resolution?.type === "dismiss")
+				.toSorted((a, b) => b.ts - a.ts)
+				.slice(0, 3)
+				.map((i) => (i.resolution?.type === "dismiss" ? i.resolution.why : ""));
+			return { kind: "noisy-detector", detector: s.kind, summary: `noisy detector: ${s.kind} (${s.dismissed}/${s.opened} dismissed)`, evidence: why.join("; ") };
+		});
 }
 
 interface Row {
@@ -100,10 +167,12 @@ interface Row {
 	rank: boolean;
 }
 
-function rowsOf(c: Snap, p: Snap): Row[] {
-	const usd = (v: number | null) => (v === null ? "n/a (0 merged)" : `$${v.toFixed(2)}`);
-	const num = (v: number | null) => (v === null ? "n/a" : String(v));
-	const mean = (v: number | null) => (v === null ? "n/a" : v.toFixed(2));
+const usd = (v: number | null) => (v === null ? "n/a (0 merged)" : `$${v.toFixed(2)}`);
+const num = (v: number | null) => (v === null ? "n/a" : String(v));
+const mean = (v: number | null) => (v === null ? "n/a" : v.toFixed(2));
+
+/** The report's ranked rows: the release verdict reads the same numbers the owner sees (P11). */
+export function rowsOf(c: Snap, p: Snap): Row[] {
 	return [
 		{ key: "m1", name: "M1 cost per merge", cur: c.m1.perMerge, prev: p.m1.perMerge, fmt: usd, rank: true },
 		{ key: "m2", name: "M2 idle calls", cur: c.m2.calls, prev: p.m2.calls, fmt: num, rank: true },
@@ -170,6 +239,8 @@ export interface Report {
 	text: string;
 	/** The ranked row with the biggest percent increase; null when nothing ranked moved. */
 	worst: { key: string; name: string; cur: number | null; prev: number | null; change: number | null } | null;
+	/** Noisy-detector findings for this window; runWeeklyCheck opens one incident for each. */
+	noisy: NoisyFinding[];
 }
 
 /** Weekly provider-honesty counts the report appends; the CLI caller builds them from the
@@ -220,12 +291,22 @@ export function buildReport(cfg: Config, source: RunSource, days: number, now: n
 			return `| ${r.name} | ${r.fmt(r.cur)} | ${r.fmt(r.prev)} | ${signed(change(r))}${mark} |`;
 		}),
 	];
+	const falseAlarms = events.filter((e) => e.type === "false-alarm" && inWindow(Number(e.ts), cur)).length;
+	const noisy = noisyDetectors(incidents, cur, cfg.watch);
+	const quality = [
+		`Silent failures: ${silentFailures(incidents, cur)} watch incidents; suspected false blocks: ${m7(incidents, falseAlarms, cur)}`,
+		`Flaky jobs: ${events.filter((e) => e.type === "ci-flaky" && inWindow(Number(e.ts), cur)).length} same-commit red→green re-runs`,
+		"Dismiss rate by kind (opened, planned, dismissed):",
+		...kindStats(incidents, cur).map((k) => `- ${k.kind}: ${k.opened}, ${k.planned}, ${k.dismissed} (${Math.round(k.dismissRate * 100)}% dismissed)`),
+	];
 	const body = [
 		`Self-metrics: last ${days} days [${day(cur.from)} to ${day(cur.to)}) vs previous ${days} days.`,
 		"",
 		...table,
 		"",
 		...detail(c),
+		"",
+		...quality,
 		"",
 		"Approved rules, before vs after:",
 		...ruleLines(cfg, source, events, blocks, incidents, days, now),
@@ -260,5 +341,6 @@ export function buildReport(cfg: Config, source: RunSource, days: number, now: n
 		md,
 		text: body,
 		worst: worst ? { key: worst.key, name: worst.name, cur: worst.cur, prev: worst.prev, change: change(worst) } : null,
+		noisy,
 	};
 }
