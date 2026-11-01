@@ -5,17 +5,19 @@
 // service manager or detector inputs.
 
 import { afterAll, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { loadConfig, type Config } from "../src/core/config.ts";
+import type { Run, RunSource } from "../src/core/adapter.ts";
 import { beat, type Heartbeat } from "../src/core/heartbeat.ts";
 import type { GatedInputs } from "../src/core/incident-detectors.ts";
-import { openIncidents } from "../src/core/incidents.ts";
+import { addIncident, openIncidents } from "../src/core/incidents.ts";
 import { nowSec } from "../src/core/clock.ts";
-import { watchDoctorLine, watchHealth, watchOnce, watchUnitPaths, type FailedUnit, type WatchDeps } from "../src/core/watch.ts";
+import { releaseVerdicts, watchDoctorLine, watchHealth, watchOnce, watchUnitPaths, type FailedUnit, type WatchDeps } from "../src/core/watch.ts";
 import type { CommandRunner } from "../src/core/mr-sweep.ts";
-import { readMetricEvents } from "../src/core/metrics.ts";
+import type { ReleaseTag } from "../src/core/results.ts";
+import { appendMetric, readMetricEvents } from "../src/core/metrics.ts";
 
 const DIRS: string[] = [];
 afterAll(() => { for (const d of DIRS) rmSync(d, { recursive: true, force: true }); });
@@ -328,4 +330,152 @@ test("ci: a ci-red-mr held back by a staffed plan stays open, not dismissed as r
 	const r = watchOnce(cfg, ciDeps(T + 900, STALE_RED, [CI_PLAN.file]));
 	expect(r.closed).toHaveLength(0);
 	expect(openIncidents(cfg).map(i => i.kind)).toContain("ci-red-mr");
+});
+
+// ---- P11: the release verdict — is the new version better or worse? ----
+// Two tags two hours apart: v1.0.0's after-window is [VT, VT+2h), its before-window
+// [VT-2h, VT), closed from VT+2h+60 on. v1.1.0's own window is never closed in these tests.
+
+const VT = 2_000_000;
+const VTAGS: ReleaseTag[] = [{ name: "v1.0.0", ts: VT }, { name: "v1.1.0", ts: VT + 7200 }];
+const VNOW = VT + 7260;
+
+let runNo = 0;
+function mainRun(calls: number, at: number, texts: [string, string][] = []): Run {
+	runNo++;
+	return {
+		id: `vm${runNo}`, kind: "main", model: "test", calls, tokens: 0, cacheRead: 0, cost: 0,
+		inputTokens: 0, prefillTokens: 0, status: "done", statusDetail: "", startedAt: null,
+		lastWriteAt: at, endedAt: null,
+		messages: texts.map(([role, text]) => ({ role, cost: 0, text, ts: null })),
+		scoreModel: "", scoreCost: 0, scoreHours: 0, scoreRunning: false, scoreSurvived: false, scoreEnd: "",
+	};
+}
+const vsrc = (runs: Run[]): RunSource => ({ listRuns: () => runs, mainSession: () => null });
+
+/** Appends `<ISO> BLOCK <reason>` lines to the guard log readBlocks parses. */
+function guardBlocks(cfg: Config, at: number, n: number, reason = "stop refused: read tools only"): void {
+	const iso = new Date(at * 1000).toISOString();
+	const old = existsSync(cfg.paths.guard_log) ? readFileSync(cfg.paths.guard_log, "utf8") : "";
+	writeFileSync(cfg.paths.guard_log, old + Array.from({ length: n }, () => `${iso} BLOCK ${reason}`).join("\n") + "\n");
+}
+
+function watchIncident(cfg: Config, fingerprint: string, at: number, kind = "unit-failed"): void {
+	addIncident(cfg, { source: "watch", kind, summary: `test ${fingerprint}`, fingerprint }, at);
+}
+
+test("verdict: blocks double after a tag → WORSE and one incident", () => {
+	const cfg = tempCfg("verdict-blocks");
+	guardBlocks(cfg, VT - 3600, 10);
+	guardBlocks(cfg, VT + 3600, 20);
+	const posts: string[] = [];
+	const out = releaseVerdicts(cfg, { now: VNOW, tags: VTAGS, source: vsrc([mainRun(400, VT - 3600), mainRun(400, VT + 3600)]), notify: t => posts.push(t) });
+	expect(out.map(v => v.verdict)).toEqual(["WORSE"]);
+	expect(posts).toHaveLength(1);
+	expect(posts[0]).toContain("v1.0.0: WORSE");
+	const open = openIncidents(cfg);
+	expect(open).toHaveLength(1);
+	expect(open[0]!.summary).toContain("release v1.0.0 worse:");
+	expect(open[0]!.summary).toContain("2.5→5");
+});
+
+test("verdict: a downgrade version-change event alone → WORSE", () => {
+	const cfg = tempCfg("verdict-downgrade");
+	appendMetric(cfg, { type: "version-change", from: "1.0.1", to: "1.0.0", ts: VT + 3600 });
+	const posts: string[] = [];
+	const out = releaseVerdicts(cfg, { now: VNOW, tags: VTAGS, source: vsrc([mainRun(400, VT - 3600), mainRun(400, VT + 3600)]), notify: t => posts.push(t) });
+	expect(out.map(v => v.verdict)).toEqual(["WORSE"]);
+	expect(posts[0]).toContain("downgrade");
+	expect(openIncidents(cfg)).toHaveLength(1);
+});
+
+test("verdict: Main's owner questions triple, corrections flat → WORSE", () => {
+	const cfg = tempCfg("verdict-questions");
+	const posts: string[] = [];
+	const out = releaseVerdicts(cfg, {
+		now: VNOW, tags: VTAGS,
+		source: vsrc([
+			mainRun(400, VT - 3600, Array.from({ length: 2 }, () => ["assistant", "shall I proceed?"] as [string, string])),
+			mainRun(400, VT + 3600, Array.from({ length: 6 }, () => ["assistant", "shall I proceed?"] as [string, string])),
+		]),
+		notify: t => posts.push(t),
+	});
+	expect(out.map(v => v.verdict)).toEqual(["WORSE"]);
+});
+
+test("verdict: a busy night at the same rate per 100 calls is not WORSE", () => {
+	const cfg = tempCfg("verdict-busy");
+	guardBlocks(cfg, VT - 3600, 10);
+	guardBlocks(cfg, VT + 3600, 20);
+	const posts: string[] = [];
+	const out = releaseVerdicts(cfg, { now: VNOW, tags: VTAGS, source: vsrc([mainRun(400, VT - 3600), mainRun(400, VT + 3600), mainRun(400, VT + 4000)]), notify: t => posts.push(t) });
+	expect(out.map(v => v.verdict)).toEqual(["MIXED"]);
+});
+
+test("verdict: under 300 Main calls on either side → no verdict", () => {
+	const cfg = tempCfg("verdict-min-calls");
+	guardBlocks(cfg, VT - 3600, 10);
+	guardBlocks(cfg, VT + 3600, 20);
+	const posts: string[] = [];
+	const out = releaseVerdicts(cfg, { now: VNOW, tags: VTAGS, source: vsrc([mainRun(100, VT - 3600), mainRun(100, VT + 3600)]), notify: t => posts.push(t) });
+	expect(out).toHaveLength(0);
+	expect(posts).toHaveLength(0);
+	expect(readMetricEvents(cfg).filter(e => e.type === "release-verdict")).toHaveLength(0);
+	expect(openIncidents(cfg)).toHaveLength(0);
+});
+
+test("verdict: a metric with no before-events is new, not compared — not WORSE", () => {
+	const cfg = tempCfg("verdict-new");
+	guardBlocks(cfg, VT + 3600, 20); // no before blocks at all: the counter is new in the release
+	const posts: string[] = [];
+	const out = releaseVerdicts(cfg, { now: VNOW, tags: VTAGS, source: vsrc([mainRun(400, VT - 3600), mainRun(400, VT + 3600)]), notify: t => posts.push(t) });
+	expect(out.map(v => v.verdict)).toEqual(["MIXED"]);
+	expect(posts[0]).toContain("new, not compared");
+	expect(openIncidents(cfg)).toHaveLength(0);
+});
+
+test("verdict: watch incidents double with nothing else changing → WORSE", () => {
+	const cfg = tempCfg("verdict-m6");
+	for (let i = 0; i < 2; i++) watchIncident(cfg, `watch:unit-failed:before${i}`, VT - 3600);
+	for (let i = 0; i < 4; i++) watchIncident(cfg, `watch:unit-failed:after${i}`, VT + 3600);
+	const posts: string[] = [];
+	const out = releaseVerdicts(cfg, { now: VNOW, tags: VTAGS, source: vsrc([mainRun(400, VT - 3600), mainRun(400, VT + 3600)]), notify: t => posts.push(t) });
+	expect(out.map(v => v.verdict)).toEqual(["WORSE"]);
+	expect(posts[0]).toContain("silent");
+});
+
+test("verdict: merges per 100 calls halved, all else flat → WORSE", () => {
+	const cfg = tempCfg("verdict-merges");
+	for (let i = 0; i < 10; i++) appendMetric(cfg, { type: "ci", mr: `b${i}`, repo: "r", tries: 1, ts: VT - 3600 });
+	for (let i = 0; i < 5; i++) appendMetric(cfg, { type: "ci", mr: `a${i}`, repo: "r", tries: 1, ts: VT + 3600 });
+	const posts: string[] = [];
+	const out = releaseVerdicts(cfg, { now: VNOW, tags: VTAGS, source: vsrc([mainRun(400, VT - 3600), mainRun(400, VT + 3600)]), notify: t => posts.push(t) });
+	expect(out.map(v => v.verdict)).toEqual(["WORSE"]);
+	expect(posts[0]).toContain("merges");
+});
+
+test("verdict: a watch:not-running incident open in a window → watcher off, no verdict", () => {
+	const cfg = tempCfg("verdict-watcher-off");
+	watchIncident(cfg, "watch:not-running", VT - 3600, "not-running");
+	guardBlocks(cfg, VT - 3600, 10);
+	guardBlocks(cfg, VT + 3600, 20);
+	const posts: string[] = [];
+	const out = releaseVerdicts(cfg, { now: VNOW, tags: VTAGS, source: vsrc([mainRun(400, VT - 3600), mainRun(400, VT + 3600)]), notify: t => posts.push(t) });
+	expect(out.map(v => v.verdict)).toEqual(["watcher-off"]);
+	expect(posts).toHaveLength(1);
+	expect(openIncidents(cfg)).toHaveLength(1); // only the not-running one; no release incident
+	expect(readMetricEvents(cfg).filter(e => e.type === "release-verdict")).toHaveLength(1);
+});
+
+test("verdict: a second watch run posts nothing", () => {
+	const cfg = tempCfg("verdict-twice");
+	healthy(cfg);
+	guardBlocks(cfg, VT - 3600, 10);
+	guardBlocks(cfg, VT + 3600, 20);
+	const posts: string[] = [];
+	const d = { ...deps(VNOW), source: vsrc([mainRun(400, VT - 3600), mainRun(400, VT + 3600)]), tags: VTAGS, notify: (t: string) => posts.push(t) };
+	watchOnce(cfg, d);
+	watchOnce(cfg, { ...d, now: () => VNOW + 60 });
+	expect(posts).toHaveLength(1);
+	expect(readMetricEvents(cfg).filter(e => e.type === "release-verdict")).toHaveLength(1);
 });
