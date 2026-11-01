@@ -1,5 +1,5 @@
 # Changelog
-## Unreleased
+## 0.2.67
 ### Added
 - Limit episodes are told and recorded (plan 20261027_1500 P4): the owner chat hears exactly two posts per episode — "⏳ Main hit its limit at HH:MM; <resets at HH:MM | checking every 5 min>" when the episode opens and "✅ Main is back at HH:MM (limited N min, M checks)" when the probe gets through or the named reset passes, or "⚠ Main still limited after 24 h" once `max_probes` is spent — and each finished episode appends one `{type: "limit", since, back_at, minutes, probes, reset_named}` metric that the weekly report shows as "Main limited: N h over K episodes". Posts, metric and report carry times and counts only, never the provider error text.
 
