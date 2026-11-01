@@ -1,7 +1,7 @@
 # Changelog
 
 
-## Unreleased
+## 0.2.63
 ### Added
 - Guard false-positive detector D8 `block-then-bypass` (plan 20261027_1430 P5): a guard refusal (`main-guard:` / `plan-guard:`) followed within `incidents.bypass_window_sec` (default 600) by an allowed call of the same tool whose args share at least `incidents.bypass_similarity` (default 0.6, token Jaccard) opens a `possible guard false positive: <reason>` incident with both call excerpts as evidence. Main's session events feed it through the gated detector path, so the session is parsed at most once per `incidents.scan_interval_sec`. `neurastream watch` does not run D8 yet (its gather passes no main-session events).
 - Every scheduled job beats: `withHeartbeat` wraps wip-snapshot, wip-backup and `metrics report`, the pages server and the owner page server write `pages-serve` / `ui` heartbeats — `{name, at, ok, detail}` JSON under `<queue_state>/heartbeats/<name>.json`, detail cut to 200 chars; a crash beats ok:false with the first error line, then re-throws so exit codes are unchanged. Hidden `neurastream heartbeat <name> [--fail "<text>"]` beats once by hand (live check, your own cron jobs).
