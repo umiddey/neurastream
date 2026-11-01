@@ -55,6 +55,7 @@ Branch: feat/toy
 
 ## Forbidden
 - Never skip tests.
+- Never push.
 
 ## Blockers
 - no-push
@@ -64,6 +65,9 @@ Branch: feat/toy
 
 ## Done check
 \`test -f src/a.ts\`
+
+- Call budget: 100 tool calls.
+- Plan file: ${PLAN}
 
 ## Progress
 Status: open
@@ -107,6 +111,7 @@ function buildCfg(extra = ""): Config {
   guard_log: "${join(HOME, "main-guard.log")}"
   plan_guard_log: "${join(HOME, "plan-guard.log")}"
 review:
+  plan: false
   agents: []
 ${extra}`,
 	);
@@ -333,7 +338,7 @@ ledger:
 	const d = checkSpawn({ ...spawnEv(), agent: "glm" }, cfg);
 	expect(d.allow).toBe(false);
 	expect(d.reason).toBe(
-		`main-guard: glm: ahead is ahead of glm in ledger.prefer and free (under its provider cap) — spawn ahead, or add "Pick note: <why>" to the brief.`,
+		`main-guard: glm: 1 problem:\n1. glm: ahead is ahead of glm in ledger.prefer and free (under its provider cap) — spawn ahead, or add "Pick note: <why>" to the brief.`,
 	);
 });
 

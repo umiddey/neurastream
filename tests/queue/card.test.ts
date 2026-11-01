@@ -105,7 +105,7 @@ test("queueRows: Summary, goal fallback, and the status chip (WAITING wins over 
 
 test("queue card HTML clamps the summary to two lines and keeps the drag controls", () => {
 	const rows: QueueRow[] = [
-		{ repo: "toy", file: "/plans/a.md", title: "Alpha", status: "open", waiting: false, summary: "one beautiful line", state: "phase 3 of 5" },
+		{ repo: "toy", file: "/plans/a.md", title: "Alpha", status: "open", waiting: false, summary: "one beautiful line", state: "phase 3 of 5", holder: null },
 	];
 	const data: PageData = {
 		questions: [],
