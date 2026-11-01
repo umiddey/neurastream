@@ -8,6 +8,8 @@ import { afterAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { loadConfig, type Config } from "../src/core/config.ts";
+import { notifySecretReadHit } from "../src/core/notify.ts";
 
 const REPO = dirname(dirname(import.meta.path));
 // realpath: macOS /tmp is a symlink to /private/tmp, and git reports worktrees by real path.
@@ -153,4 +155,69 @@ test("blocker scope: B's deny-path tests/** does not reach A's worktree; B's wor
 	const unnamed = edit(join(WT_C, "tests/x.spec.js"));
 	expect(unnamed.code).toBe(2);
 	expect(unnamed.d.reason).toContain("deny-path tests/**");
+});
+
+// --- P5g (plan 20261027_0915): the notify-secret check reads real read targets, never prose ---
+
+const SECRET = "/home/x/.config/neurastream/secrets/discord-webhook";
+const PLAN_C = join(TOY, "docs/plans/20261101_plan_c.md");
+
+// fresh() plus the notify secret configured and the review plan gate off (the other guard
+// sandboxes' shape) plus the queue-check stub the priority gate reads.
+function freshNotify(): void {
+	fresh();
+	const cfgPath = join(HOME, ".config/neurastream/config.yml");
+	writeFileSync(
+		cfgPath,
+		`${readFileSync(cfgPath, "utf8")}
+notify:
+  discord_webhook_file: "${join(HOME, ".config/neurastream/secrets/discord-webhook")}"
+review:
+  plan: false
+  agents: []
+`,
+	);
+	const queueCheck = join(HOME, ".local/bin/queue-check");
+	mkdirSync(dirname(queueCheck), { recursive: true });
+	writeFileSync(queueCheck, "#!/bin/sh\necho P77\nexit 0\n");
+	chmodSync(queueCheck, 0o755);
+}
+
+// Filesystem-free: hitsSecret runs a glob engine over configured paths, never the file system.
+test("P5g: a glob refuses only when it actually matches a secret file or its directory", () => {
+	fresh();
+	const base = loadConfig({ home: HOME });
+	const cfg: Config = { ...base, notify: { ...base.notify, discord_webhook_file: SECRET } };
+	const hit = (p: string): string | null => notifySecretReadHit([p], cfg);
+	// The exact file, its directory and a glob rooted at or inside it stay refused.
+	expect(hit(SECRET)).toBe(SECRET);
+	expect(hit("/home/x/.config/neurastream/secrets")).toBe("/home/x/.config/neurastream/secrets");
+	expect(hit("/home/x/.config/neurastream/secrets/x/**")).toBe("/home/x/.config/neurastream/secrets/x/**");
+	// A glob that really names them refuses: a whole-home sweep and a basename glob.
+	expect(hit("/home/x/**")).toBe("/home/x/**");
+	expect(hit("**/discord-webhook")).toBe("**/discord-webhook");
+	// P5g: a home-wide glob hunting an unrelated folder is not a secrets read.
+	expect(hit("/home/x/**/cv-editor/**")).toBe(null);
+	expect(hit("/home/x/Documents/**/cv*")).toBe(null);
+});
+
+test("P5g: task brief prose and plan text are not secret reads; a read of the real secret still is", () => {
+	freshNotify();
+	writeFileSync(PLAN_C, planText("Plan C ground", "-", "feat/c", "- no-push"));
+	writeFileSync(join(AGENT, "INDEX.md"), `${PLAN_A}\n${PLAN_B}\n${PLAN_C}\n`);
+	const secret = join(HOME, ".config/neurastream/secrets/discord-webhook");
+	const configGlob = `${join(HOME, ".config/neurastream")}/**`;
+	// A task brief naming the user config dir with a ** glob is prose, not a read: the spawn goes through.
+	const spawn = guardCli(
+		"pre-tool",
+		toolEvent("task", { tasks: [{ name: "w1", agent: "toy-worker", task: `Work ${PLAN_C} P1 now. The cv-editor folder is somewhere under ${configGlob}.`, context: "" }] }, "main"),
+	);
+	expect([spawn.code, spawn.d.reason]).toEqual([0, ""]);
+	// An edit of a plan line that describes the check is plan text, not a read.
+	const edit = guardCli("pre-tool", toolEvent("edit", { path: PLAN_C, old_string: "- Started.", new_string: `- Started. The old check refused any glob over ${configGlob} by prefix alone.` }, "sub"));
+	expect([edit.code, edit.d.reason]).toEqual([0, ""]);
+	// A read tool call on the real notify file is still refused, main or sub.
+	const read = guardCli("pre-tool", toolEvent("read", { path: secret }, "sub"));
+	expect(read.code).toBe(2);
+	expect(read.d.reason).toContain("is a notify secret path");
 });

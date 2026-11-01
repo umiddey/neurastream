@@ -1013,6 +1013,24 @@ test("guards refuse agent shell commands that start the owner page", () => {
 	expect(planGuardLogLines().some(l => l.includes("ui-start"))).toBe(true);
 });
 
+// --- P5g (plan 20261027_0915): the page-start check reads only real shell commands ---
+
+test("P5g: eval prose that only carries the page's words is not a page start; the real exits still are", () => {
+	const cfg: Config = { ...CFG, guards: { ...CFG.guards, shell_tools: ["bash", "eval"] } };
+	const ev = (code: string): ToolEvent => ({ tool: "eval", input: { code }, cwd: TMP, agent: "sub", agentId: "p5g-eval", calls: 0, paths: [], writes: [], command: "" });
+	// An eval cell whose string data only mentions the page command runs nothing: a backticked
+	// mention in a plan-file edit and a plan-quote template literal are prose, not shell.
+	expect(checkTool(ev('edit(plan, { old: "x", new: "the card runs `neurastream ui` to serve the page" })'), cfg).allow).toBe(true);
+	expect(checkTool(ev("const forbidden = `\nneurastream ui stays the owner's move\n`;"), cfg).allow).toBe(true);
+	// Real shell exits stay the owner's move: a !cmd line, Bun.$ and spawn arguments.
+	expect(checkTool(ev("!neurastream ui"), cfg).allow).toBe(false);
+	expect(checkTool(ev("await Bun.$`neurastream ui`.nothrow()"), cfg).allow).toBe(false);
+	expect(checkTool(ev('Bun.spawn(["neurastream", "ui"])'), cfg).allow).toBe(false);
+	expect(checkTool(ev("Bun.spawnSync(['neurastream', 'ui'])"), cfg).allow).toBe(false);
+	// bash keeps its whole command line.
+	expect(checkTool({ tool: "bash", input: { command: "systemctl --user start neurastream-ui" }, cwd: TMP, agent: "sub", agentId: "p5g-bash", calls: 0, paths: [], writes: [], command: "" }, cfg).allow).toBe(false);
+});
+
 // --- CLI: `neurastream ui` keeps serving (the 0.2.8 unit exited 0 after 90 ms) ---
 
 test("runUi never resolves once the page is started, so the CLI does not exit and kill the server", async () => {
