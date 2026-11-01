@@ -1103,6 +1103,19 @@ test("questionRows: title, repo label, waiting line, goal and minutes waiting fr
 	expect(rows[0]!.waitingMin).toBeGreaterThanOrEqual(0);
 });
 
+test("questionRows drops a stale hold and keeps one whose check still holds", () => {
+	const stateCfg: Config = { ...CFG, paths: { ...CFG.paths, queue_state: join(TMP, "stale-state") } };
+	const original = readFileSync(PLAN_W, "utf8");
+	try {
+		writeFileSync(PLAN_W, `# Toy plan\n\n## Progress\nStatus: open\nWAITING on owner: ${QUESTION} — still true if: \`owner-ui-gone-check\`\n`);
+		expect(questionRows(stateCfg, () => ({ code: 1 }))).toEqual([]);
+		writeFileSync(PLAN_W, `# Toy plan\n\n## Progress\nStatus: open\nWAITING on owner: ${QUESTION} — still true if: \`owner-ui-still-check\`\n`);
+		expect(questionRows(stateCfg, () => ({ code: 0 }))).toHaveLength(1);
+	} finally {
+		writeFileSync(PLAN_W, original);
+	}
+});
+
 test("agentRows: short model after the last /, detail and minutes since startedAt", () => {
 	expect(agentRows(CFG, RUNS)).toEqual([{ id: "owner-ui-alice-run", model: "model", detail: "RUNNING", minutes: 0, status: "running" }]);
 	const started = nowSec() - 5400;

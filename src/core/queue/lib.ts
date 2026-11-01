@@ -127,6 +127,8 @@ export interface Plan {
 	waitingBlocked: string | null;
 	/** Why Main cannot do it. Null when the line has no `— why you:`. */
 	waitingWhy: string | null;
+	/** The command from `— still true if: \`<cmd>\``; exit 0 keeps the card up. Null without one. */
+	waitingCheck: string | null;
 	waitsOn: string[];
 	priorityId: string | null;
 	/** First level-1 "# " heading in the plan, else the file basename. */
@@ -246,26 +248,40 @@ const MAIN_ONLY_LINE = /^\s*(?:[-*]\s+)?(Status:|WAITING on owner:|Waits on:|Can
 
 const WAITING_BLOCKED = " — blocked: ";
 const WAITING_WHY = " — why you: ";
+/** The hold's own proof: exit 0 means the hold is still real (src/core/waiting-check.ts). */
+const WAITING_CHECK = " — still true if: ";
+
+export interface WaitingParts {
+	ask: string;
+	blocked: string | null;
+	why: string | null;
+	/** The backticked command after `— still true if:`, or null. */
+	check: string | null;
+}
 
 /** Split `WAITING on owner:` text. An old one-part line is ask only; a missing part is null. */
-export function splitWaiting(line: string): { ask: string; blocked: string | null; why: string | null } {
-	const marks: { at: number; kind: "blocked" | "why"; len: number }[] = [];
+export function splitWaiting(line: string): WaitingParts {
+	const marks: { at: number; kind: "blocked" | "why" | "check"; len: number }[] = [];
 	const blockedAt = line.indexOf(WAITING_BLOCKED);
 	const whyAt = line.indexOf(WAITING_WHY);
+	const checkAt = line.indexOf(WAITING_CHECK);
 	if (blockedAt >= 0) marks.push({ at: blockedAt, kind: "blocked", len: WAITING_BLOCKED.length });
 	if (whyAt >= 0) marks.push({ at: whyAt, kind: "why", len: WAITING_WHY.length });
+	if (checkAt >= 0) marks.push({ at: checkAt, kind: "check", len: WAITING_CHECK.length });
 	marks.sort((a, b) => a.at - b.at);
-	if (marks.length === 0) return { ask: line.trim(), blocked: null, why: null };
+	if (marks.length === 0) return { ask: line.trim(), blocked: null, why: null, check: null };
 	let blocked: string | null = null;
 	let why: string | null = null;
+	let check: string | null = null;
 	for (let i = 0; i < marks.length; i++) {
 		const mark = marks[i]!;
 		const end = i + 1 < marks.length ? marks[i + 1]!.at : line.length;
 		const text = line.slice(mark.at + mark.len, end).trim();
 		if (mark.kind === "blocked") blocked = text || null;
-		else why = text || null;
+		else if (mark.kind === "why") why = text || null;
+		else check = text.match(/`([^`]+)`/)?.[1]?.trim() || null;
 	}
-	return { ask: line.slice(0, marks[0]!.at).trim(), blocked, why };
+	return { ask: line.slice(0, marks[0]!.at).trim(), blocked, why, check };
 }
 
 /** Keep the first `keep` entries (the file lists them newest first) and move the rest. Pure. */
@@ -354,7 +370,7 @@ function reuseProblems(repo: string, file: string, secs: Map<string, string>, re
 }
 
 export function parsePlan(repo: string, file: string, text: string | null, blockersDir = blockersDirPath(), reviewAgents: string[] = []): Plan {
-	const empty = { repo, file, text: "", status: null, blockers: [], doneCheck: null, worktree: null, branch: null, appliesTo: [], waiting: false, waitingLine: null, waitingAsk: null, waitingBlocked: null, waitingWhy: null, waitsOn: [], priorityId: null, title: path.basename(file), goal: [], summary: null, phases: { done: 0, total: 0 }, started: false };
+	const empty = { repo, file, text: "", status: null, blockers: [], doneCheck: null, worktree: null, branch: null, appliesTo: [], waiting: false, waitingLine: null, waitingAsk: null, waitingBlocked: null, waitingWhy: null, waitingCheck: null, waitsOn: [], priorityId: null, title: path.basename(file), goal: [], summary: null, phases: { done: 0, total: 0 }, started: false };
 	if (text === null) return { ...empty, errors: ["plan file listed in the index does not exist"] };
 	const errors: string[] = [];
 	const secs = sections(text);
@@ -391,7 +407,7 @@ export function parsePlan(repo: string, file: string, text: string | null, block
 	if (bg > BACKGROUND_MAX_LINES) errors.push(`"## Background" has ${bg} lines (max ${BACKGROUND_MAX_LINES}); link a separate file for long context`);
 	const wt = headerField(text, "Worktree");
 	const waitingLine = text.match(/^WAITING on owner:[ \t]*(.*)$/m)?.[1] ?? null;
-	const waitingParts = waitingLine === null ? { ask: null, blocked: null, why: null } : splitWaiting(waitingLine);
+	const waitingParts = waitingLine === null ? { ask: null, blocked: null, why: null, check: null } : splitWaiting(waitingLine);
 	return {
 		repo,
 		file,
@@ -407,6 +423,7 @@ export function parsePlan(repo: string, file: string, text: string | null, block
 		waitingAsk: waitingParts.ask,
 		waitingBlocked: waitingParts.blocked,
 		waitingWhy: waitingParts.why,
+		waitingCheck: waitingParts.check,
 		waitsOn: [...text.matchAll(/^[ \t]*(?:[-*][ \t]+)?Waits on:[ \t]*(.+)$/gm)].map(m => m[1]!.trim()),
 		priorityId: text.match(/^PRIORITY-ID:\s*`?([A-Z]{2}[0-9]{2})`?/m)?.[1] ?? null,
 		title: text.match(/^# (.+)$/m)?.[1]?.trim() || path.basename(file),
@@ -1106,6 +1123,7 @@ export function queueProblems(index = INDEX, blockersDir = BLOCKERS_DIR, reviewA
 		if (p.doneCheck?.includes("merge-base --is-ancestor"))
 			probs.push({ where: p.file, problem: "done check runs git merge-base --is-ancestor — queue-close checks landing itself, squash-aware; drop it" });
 		for (const c of cancelledMatches(p)) probs.push({ where: p.file, problem: cancelledProblem(p, c) });
+		probs.push(...doneClaimProblems(p));
 		// A plan file must live in a main checkout, never in a linked worktree.
 		const g = gitTop(p.file);
 		if (g && g.top !== g.repo)
@@ -1124,12 +1142,68 @@ export function queueProblems(index = INDEX, blockersDir = BLOCKERS_DIR, reviewA
 	return probs;
 }
 
+// P4 (plan 20261027_0915): from this day on, a Progress entry claiming a phase done/complete/
+// "nothing left"/"finished" must quote that phase's verify command (or the Done check) and its
+// result, or queue-check fails the plan; entries without a date or dated before it are grandfathered.
+export const DONE_CLAIM_SINCE = "2026-11-01";
+
+const DONE_WORD = /\b(?:done|completed?|nothing left|finished)\b/i;
+const NOT_DONE = /\b(?:not|never)\s+(?:done|completed?|finished)\b/i;
+const RESULT_MARK = /\bexit(?: code|ed)?\s*\d|\b\d+ pass|\b\d+ fail|\bpass(?:ed|ing)?\b|\bfail(?:ed|ing)?\b|\bresult\b/i;
+
+/** Progress entries: the "- " line plus the lines up to the next entry start (trimProgressBody's rule). */
+function progressEntryBlocks(text: string): string[] {
+	const lines = progressBody(text).split("\n").filter(l => !l.startsWith(POINTER_PREFIX));
+	const blocks: string[] = [];
+	for (let i = 0; i < lines.length; i++) {
+		if (!lines[i]!.startsWith("- ") || MAIN_ONLY_LINE.test(lines[i]!)) continue;
+		let j = i + 1;
+		while (j < lines.length && !(lines[j]!.startsWith("- ") && !MAIN_ONLY_LINE.test(lines[j]!))) j++;
+		blocks.push(lines.slice(i, j).join("\n"));
+		i = j - 1;
+	}
+	return blocks;
+}
+
+/** A dated done claim about phase Pn must quote Pn's verify (or the Done check) with its result; else one problem per entry. */
+function doneClaimProblems(p: Plan): QueueProblem[] {
+	const probs: QueueProblem[] = [];
+	const verifies = new Map<string, string>();
+	for (const line of items(sections(p.text).get("phases") ?? "")) {
+		const id = /\[.\]\s*(P\d+[a-z]?)/i.exec(line)?.[1];
+		const cmd = /verify:\s*`([^`]+)`/.exec(line)?.[1];
+		if (id && cmd) verifies.set(id.toUpperCase(), cmd);
+	}
+	for (const entry of progressEntryBlocks(p.text)) {
+		const date = /^- (\d{4}-\d{2}-\d{2})/.exec(entry)?.[1];
+		if (!date || date < DONE_CLAIM_SINCE || !DONE_WORD.test(entry) || NOT_DONE.test(entry)) continue;
+		const ids = [...entry.matchAll(/\b(P\d+[a-z]?)\b/g)].map(m => m[1]!.toUpperCase());
+		if (!ids.length) continue;
+		const backings = [...new Set(ids.flatMap(id => verifies.get(id) ?? []))];
+		if (p.doneCheck) backings.push(p.doneCheck);
+		// No verify command and no Done check to quote: nothing this plan can back a claim with, so it is not judged.
+		if (!backings.length) continue;
+		if (backings.some(c => entry.includes(c)) && RESULT_MARK.test(entry)) continue;
+		probs.push({ where: p.file, problem: `unbacked done claim: ${p.file} ${entry.split("\n")[0]!.slice(0, 80)}` });
+	}
+	return probs;
+}
+
+/** P4: a hold dated DONE_CLAIM_SINCE or later without `still true if` is a warning; the exit code never changes. */
+export function holdWarnings(plans: Plan[]): string[] {
+	return plans.flatMap(p => {
+		if (!p.waiting || p.waitingCheck) return [];
+		const date = /^(\d{4}-\d{2}-\d{2})/.exec(p.waitingLine ?? "")?.[1];
+		return date && date >= DONE_CLAIM_SINCE ? [`${p.file}: WAITING hold dated ${date} carries no "still true if" check`] : [];
+	});
+}
+
 // P5b (plan 20261031_1207, I-20261031-330): the summary rides every Main prompt and the stop
 // refusal repeats on every blocked stop, so both cap their lists; queue-check prints everything
 // and passes `cap = Infinity`.
 export const SUMMARY_CAP = 10;
 
-export function queueSummary(index = INDEX, reviewAgents: string[] = [], cap: number = SUMMARY_CAP): string {
+export function queueSummary(index = INDEX, reviewAgents: string[] = [], stale: ReadonlySet<string> = new Set(), cap: number = SUMMARY_CAP): string {
 	// Index order IS priority (20261025_0215_index_priority): the list is flat and ranked,
 	// rank 1 = the index's top line; repos only surface through each plan's own path.
 	const plans = activePlans(index);
@@ -1138,7 +1212,8 @@ export function queueSummary(index = INDEX, reviewAgents: string[] = [], cap: nu
 	const lines = [`Queue (${index}): ${plans.length ? `${plans.length} plan(s) in ${repos.length} repo(s)` : "empty, no open work"}`];
 	plans.slice(0, cap).forEach((p, i) => {
 		const status = awaitingMerge(p) ? "complete, awaiting merge" : (p.status ?? "INVALID");
-		const hold = p.waiting ? `WAITING on owner: ${(p.waitingLine ?? "").slice(0, 80)}` : "";
+		const ask = (p.waitingLine ?? "").slice(0, 80);
+		const hold = p.waiting ? (stale.has(p.file) ? `[STALE?] ${ask}` : `WAITING on owner: ${ask}`) : "";
 		// I-20261025-208: an open plan waiting on an open plan of the queue shows the target's rank.
 		const waits: string[] = [];
 		if (p.status === "open")

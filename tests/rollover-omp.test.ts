@@ -13,7 +13,8 @@ import { blockersDirPath, indexPath } from "../src/core/queue/lib.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { notePath, relaunchPath } from "../src/core/rollover.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
-import { addIncident, incidentsFile } from "../src/core/incidents.ts";
+import { addIncident, incidentsFile, ownerMessagesFile } from "../src/core/incidents.ts";
+import { nowSec } from "../src/core/clock.ts";
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
 type CommandHandler = (args: string, ctx: MainCtx) => unknown;
@@ -459,6 +460,29 @@ test("the in-process fallback without an owner message carries the owner-away te
 	expect(host.sent[0]?.endsWith(
 		"Owner's message:\nOwner away (automatic rollover). Continue the work in the note and the queue; the owner reads results later.",
 	)).toBe(true);
+}, 60_000);
+
+test("a handoff after an unanswered owner message starts with the unanswered prefix", async () => {
+	resetState();
+	const store = ownerMessagesFile();
+	mkdirSync(dirname(store), { recursive: true });
+	writeFileSync(store, `${JSON.stringify({ at: nowSec() - 30, text: "Who is ARB?" })}\n`);
+	try {
+		const host = fakeHost();
+		createOmpAdapter(host, graceCfg());
+		const handedOff = handoffSignal(host);
+		const { ctx, opened } = ctxAwaitingOpen();
+		await armReady(host, ctx, "## In progress\nstep");
+		await host.emit("agent_end", {}, ctx);
+		await opened;
+		await handedOff;
+		expect(host.sent.length).toBe(1);
+		expect(host.sent[0]?.startsWith("UNANSWERED OWNER MESSAGES — answer these first, then end the turn so the reply reaches Discord:")).toBe(true);
+		expect(host.sent[0]).toContain("Who is ARB?");
+		expect(host.sent[0]).toContain("Previous session file: ");
+	} finally {
+		rmSync(store, { force: true });
+	}
 }, 60_000);
 
 test("omp really shutting down (session_shutdown) cancels the in-process fallback", async () => {

@@ -24,6 +24,7 @@ import { readMetricEvents } from "./metrics.ts";
 import { activePlans, chatUnlock, dependencyOrderProblems, expandHome, gitTop, stateDirPath, unlockPath, writeIndex, type Plan } from "./queue/lib.ts";
 import { featuresReport, gatherTags, loadPlans, releasesReport, type FeaturesReport, type ReleaseRow, type ReleaseSideStats, type ReleasesReport } from "./results.ts";
 import type { Tailscale } from "./tailscale.ts";
+import { recheckHolds, staleFiles, type HoldRunner } from "./waiting-check.ts";
 
 const ANSWER_MAX = 2000;
 const MESSAGE_MAX = 4000;
@@ -189,11 +190,12 @@ export interface MachineRow {
 	cores: number;
 }
 
-export function questionRows(cfg: Config): QuestionRow[] {
+export function questionRows(cfg: Config, run?: HoldRunner): QuestionRow[] {
 	const now = Date.now();
 	const plans = activePlans(cfg.paths.queue_index);
+	const stale = staleFiles(recheckHolds(cfg, plans, run));
 	return plans
-		.filter(p => p.waiting && p.status === "open" && p.waitingLine)
+		.filter(p => p.waiting && p.status === "open" && p.waitingLine && !stale.has(p.file))
 		.map(p => {
 			let waitingMin = 0;
 			try {

@@ -27,6 +27,7 @@ import { configFile, loadConfig, reloadingConfig, type Config } from "../../core
 import { checkWrite, deferSteer, type WriteCheckConfig } from "../../core/write-check.ts";
 import { strftime } from "../../core/clock.ts";
 import { runDetectors, type DetectorInput } from "../../core/incident-detectors.ts";
+import { appendOwnerAnswer, readOwnerAnswers, readOwnerMessages } from "../../core/incidents.ts";
 import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, newProgressEntries, planReadNote, recordMainResult, resetMainCalls, revertMainEdit, rekeySpawnFile, reviewSpawnEnd, STOP_PLAN_OFFER_REFUSAL } from "../../core/guards.ts";
 import { rateLimitWait } from "../../core/rate-limit.ts";
 import { notifyProviders, postReply } from "../../core/notify.ts";
@@ -37,7 +38,7 @@ import { actionsRules, ownedRepoOf, suspiciousActions, unreportedFindings } from
 import { applyQueueEnv } from "../../core/queue/env.ts";
 import { mainDetectors, mainStartText } from "../../core/main-start.ts";
 
-import { buildHandoff, holdsBlock, notePath, noteRequest, OWNER_AWAY, ownerText, relaunchPath, rolloverState, spawnRefusal, type RolloverState } from "../../core/rollover.ts";
+import { buildHandoff, holdsBlock, notePath, noteRequest, OWNER_AWAY, ownerText, relaunchPath, rolloverState, spawnRefusal, unansweredOwnerMessages, withUnanswered, type RolloverState } from "../../core/rollover.ts";
 import { defaultCompletedResults, defaultRunSource, runIdOf } from "./sessions.ts";
 import { adapterLog, MAIN_ENV } from "./launch.ts";
 import { parseTraceFile } from "./traces.ts";
@@ -613,12 +614,24 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		clearRateTimer();
 		rateAttempt = 0;
 	};
+	// P5b: a real turn end answers every owner message it followed — the answer (the turn's own
+	// reply, the page's lastAnswerFor shape) rides the same owner-message store. Rate-limited,
+	// blocked and mid-run ends are not turn ends: nothing is recorded.
+	const recordTurnAnswer = (reply: EventReply | null): void => {
+		if (!reply?.text) return;
+		try {
+			appendOwnerAnswer(reply.text);
+		} catch (err) {
+			adapterLog(cfg, `OWNER-ANSWER record failed: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	};
 	// The one resume: replacing any armed timer, exactly one new user message when the wait is over.
 	const armRateResume = (untilMs: number): void => {
 		clearRateTimer();
 		rateTimer = setTimeout(() => {
 			rateTimer = null;
-			pi.sendUserMessage(`main-guard: the provider rate limit is over (waited until ${rateClock(untilMs)}). Continue the queue where you stopped.`);
+			// P5b: whichever resume text exists, it quotes owner messages no turn has answered.
+			pi.sendUserMessage(withUnanswered(`main-guard: the provider rate limit is over (waited until ${rateClock(untilMs)}). Continue the queue where you stopped.`, readOwnerMessages(), readOwnerAnswers()));
 			adapterLog(cfg, `RATE-LIMIT resume: new turn sent (waited until ${rateClock(untilMs)})`);
 		}, untilMs - Date.now());
 	};
@@ -1071,6 +1084,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 			}
 			if (snap.state === "ready" || snap.state === "wait-jobs") {
 				adapterLog(cfg, `ALLOW stop: rollover ${snap.state}`);
+				recordTurnAnswer(reply);
 				// Under the launcher a ready rollover starts now (not a hand-back to the owner).
 				const handsToOwner = !(snap.state === "ready" && requestRelaunch(rc, notePath(rc.sessionId)));
 				if (handsToOwner) notifyHandback(reply, "allowed session_stop");
@@ -1082,6 +1096,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		callsSinceStop = d.state?.callsSinceStop ?? 0;
 		idleStops = d.state?.idleStops ?? idleStops;
 		if (d.allow) {
+			recordTurnAnswer(reply);
 			notifyHandback(reply, "allowed session_stop");
 			return undefined;
 		}
@@ -1195,6 +1210,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 				note,
 				previousSessionFile: previous,
 				ownerMessage: owner.filter(s => s !== "").join("\n"),
+				unanswered: unansweredOwnerMessages(readOwnerMessages(), readOwnerAnswers()),
 			});
 			pi.sendUserMessage(handoff);
 		} finally {
@@ -1333,6 +1349,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		}
 		// A real hand-back: the turn ended without a rate limit — the episode is over.
 		disarmRateEpisode();
+		recordTurnAnswer(reply);
 		// A deferred hand-back fires no session_stop: reset the per-turn cap here (I-20261030-24)
 		// and steer a promise like checkStop refuses it (I-20261030-32).
 		resetMainCalls();

@@ -166,6 +166,8 @@ queue:
   auto_close_min: 15
   repo_index: "INDEX.md"
   cancelled_rel: "docs/plans/CANCELLED.md"
+  waiting_check_ttl_sec: 600     # a hold's `still true if` result is reused this long (key: plan mtime, command, HEAD)
+  waiting_check_timeout_sec: 60  # one check may run this long; a timeout is "unknown" (card stays, no incident)
 
 guards:
   sub_warn_calls: 90

@@ -9,6 +9,7 @@ import { basename, dirname, join } from "node:path";
 import type { LaunchOptions } from "../src/core/adapter.ts";
 import { carriedArgs, runMainLauncher } from "../src/adapters/omp/launch.ts";
 import { loadConfig } from "../src/core/config.ts";
+import { ownerMessagesFile } from "../src/core/incidents.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { notePath, relaunchPath } from "../src/core/rollover.ts";
 
@@ -151,6 +152,27 @@ test("owner messages typed during a pending relaunch all reach the second run, i
 	const handoff = runs[1]?.argv.at(-1) ?? "";
 	expect(handoff).toContain("Owner's messages during the rollover (and any unsent draft): first\nsecond");
 	expect(code).toBe(7);
+}, 60_000);
+
+// Live-recheck P5b review fix: the launcher's own buildHandoff call must quote unanswered owner
+// messages exactly like the adapter's rollover handoff does — the prefix test fails while
+// nextMessage leaves `unanswered` unset.
+test("a relaunch handoff after an unanswered owner message starts with the unanswered prefix", async () => {
+	const dir = newCase();
+	const store = ownerMessagesFile();
+	mkdirSync(dirname(store), { recursive: true });
+	writeFileSync(store, `${JSON.stringify({ at: Math.floor(Date.now() / 1000) - 30, text: "Who is ARB?" })}\n`);
+	try {
+		const code = await launch([], dir);
+		const runs = runsOf(dir);
+		expect(runs.length).toBe(2);
+		const handoff = runs[1]?.argv.at(-1) ?? "";
+		expect(handoff.startsWith("UNANSWERED OWNER MESSAGES — answer these first, then end the turn so the reply reaches Discord:")).toBe(true);
+		expect(handoff).toContain("Who is ARB?");
+		expect(code).toBe(7);
+	} finally {
+		rmSync(store, { force: true });
+	}
 }, 60_000);
 
 test("a stale relaunch.json (mtime before the run started) does not relaunch", async () => {

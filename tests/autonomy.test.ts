@@ -252,6 +252,7 @@ function planAt(file: string, status: "open" | "complete" = "open"): Plan {
 		waitingAsk: null,
 		waitingBlocked: null,
 		waitingWhy: null,
+		waitingCheck: null,
 		waitsOn: [],
 		priorityId: null,
 		title: file,
