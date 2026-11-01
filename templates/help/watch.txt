@@ -1,6 +1,7 @@
 watch: one pass of the watcher — scheduled jobs report in with heartbeats, the watcher checks
-the reports, failed units, the detectors and CI; each NEW problem opens one incident and posts
-one notice. `watch on` installs the timer that runs the pass every watch.interval_min.
+the reports, failed units, CI, the detectors and the release verdicts; each NEW problem opens
+one incident and posts one notice. `watch on` installs the timer that runs the pass every
+watch.interval_min.
 
 What one pass checks, in order:
 1. Heartbeats <queue_state>/heartbeats/<name>.json: ok:false, or older than watch.expect[name]
@@ -8,11 +9,14 @@ What one pass checks, in order:
    metrics-report 8 days).
 2. Failed user units matching the watch.units globs (default neurastream-*, wip-*), with the
    unit's last error line.
-3. The incident detectors (ledger contradiction, block loop, ...).
-4. CI per active-plan repo: a red default branch (ci-red-main), an open MR red longer than
+3. CI per active-plan repo: a red default branch (ci-red-main), an open MR red longer than
    watch.ci_red_hours (ci-red-mr, held back while an agent runs on its plan), M3 records for
    MRs merged since the last pass (the ledger is the cursor, so `metrics ci` is no longer
    forgotten), and a commit that went red then green as a ci-flaky metric.
+4. The gated incident detectors (ledger contradiction, block loop, ...).
+5. Release verdict: one judgment per tag whose after-window has closed — better or worse over
+   the before window, from the weekly report's numbers. A verdict is a finding for Main: it
+   stays open until planned or dismissed and is never auto-closed as recovered.
 
 Notify: every NEW incident posts one "⚠ <job>: <state> at <time> — <first error line>
 (incident <id>)" through the configured providers — at most watch.max_posts_per_run (3) per
