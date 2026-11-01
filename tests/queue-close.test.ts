@@ -177,8 +177,11 @@ test("queue-close still closes when the upstream default branch is gone: it fall
 		gitRun("-C", SEED, "add", "f.txt");
 		gitRun("-C", SEED, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "seed");
 		// The remote is a bare clone (never a push): no host git hook can interfere, and the remote
-		// starts with main exactly as the source left it.
+		// starts with main exactly as the source left it. The bare clone carries origin→seed in its
+		// config; cut it, or the hop-follow walks to seed and the fetch there succeeds, never
+		// exercising the fallback.
 		gitRun("clone", "-q", "--bare", SEED, REMOTE);
+		gitRun("-C", REMOTE, "remote", "remove", "origin");
 		gitRun("clone", "-q", REMOTE, UCLONE);
 		// The clone already made its local copy of origin/main; now the upstream branch disappears.
 		gitRun("-C", REMOTE, "branch", "-D", "main");
@@ -187,7 +190,11 @@ test("queue-close still closes when the upstream default branch is gone: it fall
 		writeFileSync(UPLAN, plan("Upstream plan", "complete", []));
 		writeFileSync(UIX, `${UPLAN}\n`);
 		const r = spawnSync("bun", [CLI, "queue-close", UPLAN], { env: childEnv(UHOME), encoding: "utf8" });
-		expect(r.stderr).not.toContain("could not fetch");
+		// The fallback must be loud (a stale local base hides the fetch error from the landing
+		// check) but never refuse the close.
+		expect(r.stderr).toContain("warning:");
+		expect(r.stderr).toContain("stale local base");
+		expect(r.stderr).not.toContain("REFUSED");
 		expect(r.status).toBe(0);
 		const month = new Date().toISOString().slice(0, 7).replace("-", "");
 		expect(existsSync(join(UCLONE, "docs/plans/archive", month, "20261020_1500_upstream.md"))).toBe(true);

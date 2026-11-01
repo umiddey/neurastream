@@ -48,9 +48,16 @@ export function queueClose(args: string[], cfg: Config): number {
 		// The remote's default branch can be gone upstream (renamed, pruned): fall back to the
 		// local base ref, then the local main branch, instead of refusing every close.
 		const local = git(repo, "rev-parse", "-q", "--verify", localBase);
-		if (local.ok) return local.out;
+		if (local.ok) {
+			// A stale local base hides the fetch error from the landing check, so say so loudly.
+			console.warn(`warning: queue-close: could not fetch ${def} from ${cur}; using the stale local base ${localBase}`);
+			return local.out;
+		}
 		const fallback = git(repo, "rev-parse", "-q", "--verify", "refs/heads/main");
-		if (fallback.ok) return fallback.out;
+		if (fallback.ok) {
+			console.warn(`warning: queue-close: could not fetch ${def} from ${cur}; using the local main branch`);
+			return fallback.out;
+		}
 		die(`could not fetch ${def} from ${cur}: ${fetched.out}`);
 	}
 	const today = new Date().toISOString().slice(0, 10);
