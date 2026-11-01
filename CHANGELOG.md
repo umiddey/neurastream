@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+### Fixed
+- Unreported-finding false alarm D7 (plan 20261027_1430 P10c): `unreportedFindings` (src/core/trace-actions.ts) now skips a cross-product read whose path globMatches a path the run's brief text names or a path named in the configured method doc `brief.method_read` — paths extracted the brief-lint way via the exported `briefPaths` (src/core/brief-lint.ts), passed in by the omp adapter as `OwnRun.allowed` keyed by each task spawn's brief (src/adapters/omp/index.ts) — instead of treating every read behind a `Findings: none` line as an incident. A path named only inside a worktree file the brief names is still flagged.
+
 ## 0.2.64
 ### Fixed
 - Guard false positives (plan 20261027_0915 P5g): the owner-page start check reads only real shell commands — bash `command`, eval `!cmd` lines, and `Bun.$` / bare `$` (imported from bun) template tags and spawn arguments — so task brief prose, plan text and string data no longer trip it; the notify-secret glob check refuses only when `new Bun.Glob(pattern).match()` hits a notify secret file or its directory, instead of refusing every glob whose prefix is an ancestor of the secrets dir.
