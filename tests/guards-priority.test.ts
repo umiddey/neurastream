@@ -7,7 +7,7 @@
 // at it; the caller's QUEUE_* and NEURASTREAM_NOW are restored afterAll).
 
 import { afterAll, expect, test } from "bun:test";
-import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InjectEvent, SpawnEvent, ToolEvent } from "../src/core/adapter.ts";
@@ -349,6 +349,19 @@ test("owner messages are recorded, bounded, and matched as recent normalized quo
 	expect(ownerSaid("PRIORITY   for the traces series", [{ at: NOW, text: "The owner wants priority for the traces series" }], NOW)).toBe(true);
 	expect(ownerSaid("one two three", [{ at: NOW, text: "one two three" }], NOW)).toBe(false);
 	expect(ownerSaid("four words minimum", [{ at: NOW - 86401, text: "four words minimum" }], NOW)).toBe(false);
+});
+
+// Live-recheck P5b review fix: real task results carry attributes (`<task-result id="…" agent="glm"
+// status="completed">`), so the machine-text exclusion must match the bare open tag, not
+// `<task-result>` — an attributed result is a subagent's words, never the owner's.
+test("a task-result with attributes is machine text, not an owner message", () => {
+	const file = join(STATE, "owner-messages.jsonl");
+	rmSync(file, { force: true });
+	checkInject(
+		{ agent: "main", inject: `<task-result id="x" agent="glm" status="completed">\nStopped per Main's order.\n</task-result>` },
+		cfg,
+	);
+	expect(existsSync(file)).toBe(false);
 });
 
 test("without job info the gate never refuses and logs PRIORITY unknown jobs", () => {

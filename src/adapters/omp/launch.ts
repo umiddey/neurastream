@@ -8,11 +8,12 @@ import { appendFileSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSyn
 import { basename, dirname, join } from "node:path";
 import type { LaunchOptions } from "../../core/adapter.ts";
 import type { Config } from "../../core/config.ts";
+import { readOwnerAnswers, readOwnerMessages } from "../../core/incidents.ts";
 import { mainStartText } from "../../core/main-start.ts";
 import { appendMetric } from "../../core/metrics.ts";
 import { applyQueueEnv } from "../../core/queue/env.ts";
 import * as q from "../../core/queue/lib.ts";
-import { buildHandoff, holdsBlock, MAX_NOTE_AGE_MS, OWNER_AWAY, relaunchPath } from "../../core/rollover.ts";
+import { buildHandoff, holdsBlock, MAX_NOTE_AGE_MS, OWNER_AWAY, relaunchPath, unansweredOwnerMessages } from "../../core/rollover.ts";
 import { PROXY_BIN, proxyOnPath } from "../../core/secret-redact.ts";
 import { PACKAGE_ROOT, packageJsonPath, packageVersion } from "./package-root.ts";
 import { defaultCompletedResults, defaultRunSource } from "./sessions.ts";
@@ -280,6 +281,7 @@ async function nextMessage(req: RelaunchRequest, cfg: Config, mainStart: typeof 
 		note,
 		previousSessionFile: req.previousSessionFile,
 		ownerMessage: `${OWNER_AWAY}${draft}`,
+		unanswered: unansweredOwnerMessages(readOwnerMessages(), readOwnerAnswers()),
 	});
 	const bytes = Buffer.byteLength(handoff);
 	if (bytes <= MAX_INLINE_HANDOFF) {

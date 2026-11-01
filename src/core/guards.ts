@@ -411,7 +411,7 @@ function staffingFile(): string {
 /** P3 (plan 20261031_1207): the text is owner prose — not Main's own guard output, a system notice, a task result — so its words are the owner's. Gates both the owner-message store and the cancel flag. The P5b resume prefix makes a wrapped machine prompt owner-shaped, so it is excluded here like its unwrapped form. */
 function isOwnerProse(text: string): boolean {
 	const t = text.trimStart();
-	return !(t.startsWith("main-guard:") || t.startsWith(UNANSWERED_PREFIX) || t.startsWith("<system-notice>") || text.includes("<task-result>"));
+	return !(t.startsWith("main-guard:") || t.startsWith(UNANSWERED_PREFIX) || t.startsWith("<system-notice>") || text.includes("<task-result"));
 }
 
 function recordOwnerMessage(text: string, cfg: Config): void {
