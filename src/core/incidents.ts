@@ -233,6 +233,12 @@ export interface OwnerMessage {
 	text: string;
 }
 
+/** A real Main turn end, stored beside the messages (the page's lastAnswerFor shape, P5b): a message with a turn end after it is answered. */
+export interface OwnerAnswer {
+	at: number;
+	answer: string;
+}
+
 export function ownerMessagesFile(): string {
 	return join(q.STATE_DIR, "owner-messages.jsonl");
 }
@@ -240,10 +246,30 @@ export function ownerMessagesFile(): string {
 export function readOwnerMessages(): OwnerMessage[] {
 	try {
 		return readFileSync(ownerMessagesFile(), "utf8").split("\n").filter(Boolean)
-			.map(line => JSON.parse(line) as OwnerMessage);
+			.map(line => JSON.parse(line) as OwnerMessage).filter(m => typeof m.text === "string");
 	} catch {
 		return [];
 	}
+}
+
+export function readOwnerAnswers(): OwnerAnswer[] {
+	try {
+		return readFileSync(ownerMessagesFile(), "utf8").split("\n").filter(Boolean)
+			.map(line => JSON.parse(line) as OwnerAnswer).filter(a => typeof a.answer === "string");
+	} catch {
+		return [];
+	}
+}
+
+/** Rewrites the store: the newest 50 messages, then the newest 20 answers. */
+export function writeOwnerStore(messages: OwnerMessage[], answers: OwnerAnswer[]): void {
+	mkdirSync(dirname(ownerMessagesFile()), { recursive: true });
+	writeFileSync(ownerMessagesFile(), [...messages.slice(-50).map(m => JSON.stringify(m)), ...answers.slice(-20).map(a => JSON.stringify(a))].join("\n") + "\n");
+}
+
+/** Records a real Main turn end as an answer in the same store (P5b); throws so the caller logs the failure. */
+export function appendOwnerAnswer(answer: string, at = nowSec()): void {
+	writeOwnerStore(readOwnerMessages(), [...readOwnerAnswers(), { at, answer }]);
 }
 
 export function ownerSaid(words: string, messages: OwnerMessage[], now: number): boolean {

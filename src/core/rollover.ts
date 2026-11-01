@@ -5,7 +5,9 @@
 // the jobs and the note mtime, and performs the switch. No harness names here.
 
 import { join } from "node:path";
+import { strftime } from "./clock.ts";
 import { stateDirPath } from "./queue/lib.ts";
+import type { OwnerAnswer, OwnerMessage } from "./incidents.ts";
 
 export type RolloverState = "below" | "need-note" | "wait-jobs" | "ready";
 
@@ -62,12 +64,41 @@ export interface HandoffInput {
 	previousSessionFile: string;
 	/** The owner's message exactly as typed; it is the last thing in the handoff. */
 	ownerMessage: string;
+	/** Owner messages no turn has ended after (P5b); the handoff starts with their block. */
+	unanswered?: readonly OwnerMessage[];
 }
 
 /** Prefixes of the machine-written messages: the builders write them, ownerText reads them. */
 const NOTE_REQUEST_PREFIX = "Session rollover:";
 const HANDOFF_PREFIX = "Previous session file:";
 const OWNER_MARK = "Owner's message:";
+
+/** The prefix both machine prompts start with while owner messages sit unanswered (P5b). */
+export const UNANSWERED_PREFIX =
+	"UNANSWERED OWNER MESSAGES — answer these first, then end the turn so the reply reaches Discord:";
+
+/** Owner messages no real turn end has followed: an answer record ({at, answer}, the page's lastAnswerFor shape) rides the message store, and a message with one after it is answered. */
+export function unansweredOwnerMessages(messages: readonly OwnerMessage[], answers: readonly OwnerAnswer[]): OwnerMessage[] {
+	const answeredAt = Math.max(-1, ...answers.map(a => a.at));
+	return messages.filter(m => m.at > answeredAt);
+}
+
+/** The unanswered block proper: the prefix line, then each message's arrival time and first 300 characters. */
+export function unansweredPrompt(unanswered: readonly OwnerMessage[]): string {
+	return [
+		UNANSWERED_PREFIX,
+		...unanswered.map(m => {
+			const quote = m.text.replace(/\s+/g, " ").trim();
+			return `- ${strftime(m.at, "%Y-%m-%d %H:%M")}: ${quote.length > 300 ? `${quote.slice(0, 300)}…` : quote}`;
+		}),
+	].join("\n");
+}
+
+/** The one wrapper for machine prompts — the resume text may be swapped (plan 20261027_1500_limit_probe), the prefix rides either way. Unchanged when nothing is unanswered. */
+export function withUnanswered(resume: string, messages: readonly OwnerMessage[], answers: readonly OwnerAnswer[]): string {
+	const un = unansweredOwnerMessages(messages, answers);
+	return un.length === 0 ? resume : `${unansweredPrompt(un)}\n\n${resume}`;
+}
 
 /**
  * The first user message of the new session: header, Main's note, generated state, owner message.
@@ -78,6 +109,7 @@ export function buildHandoff(p: HandoffInput): string {
 	const note = p.note.trimEnd();
 	const numbers = [...note.matchAll(/\(from: `([^`]+)`\)/g)].map((m) => m[1]);
 	return [
+		...(p.unanswered && p.unanswered.length > 0 ? [unansweredPrompt(p.unanswered), ""] : []),
 		`${HANDOFF_PREFIX} ${p.previousSessionFile}. Its full history stays there; this session continues from the handoff below.`,
 		"",
 		"## Main's handoff note (verbatim)",
@@ -96,15 +128,16 @@ export function buildHandoff(p: HandoffInput): string {
 
 /**
  * The owner's own words in a user prompt, or undefined for a machine prompt: a guard continuation, the
- * rollover note request, or a handoff without its owner marker. A handoff yields only its owner message.
+ * rollover note request, or a handoff without its owner marker. A handoff yields only its owner message;
+ * since P5b the handoff may start with the unanswered block, which is machine text either way.
  */
 export function ownerText(prompt: string): string | undefined {
 	const t = prompt.trimStart();
-	if (t.startsWith("main-guard:") || t.startsWith(NOTE_REQUEST_PREFIX)) return undefined;
-	if (t.startsWith(HANDOFF_PREFIX)) {
+	if (t.startsWith(HANDOFF_PREFIX) || t.startsWith(UNANSWERED_PREFIX)) {
 		const at = prompt.lastIndexOf(OWNER_MARK);
 		return at < 0 ? undefined : prompt.slice(at + OWNER_MARK.length).trim();
 	}
+	if (t.startsWith("main-guard:") || t.startsWith(NOTE_REQUEST_PREFIX)) return undefined;
 	return prompt;
 }
 

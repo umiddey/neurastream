@@ -30,7 +30,8 @@ import { currentTier, takeGo } from "./autonomy.ts";
 import { approvalProblem, MAIN_ONLY_LINE, reviewHash } from "./plan-approval.ts";
 export { reviewHash };
 import type { Config } from "./config.ts";
-import { openIncidents, ownerMessagesFile, ownerSaid, readOwnerMessages, type IncidentView, type OwnerMessage } from "./incidents.ts";
+import { openIncidents, ownerMessagesFile, ownerSaid, readOwnerAnswers, readOwnerMessages, type IncidentView, type OwnerMessage, writeOwnerStore } from "./incidents.ts";
+import { UNANSWERED_PREFIX } from "./rollover.ts";
 import { notifyProtectedPaths, notifySecretReadHit } from "./notify.ts";
 import { defaultRunner, listOpenMrs, mentioned, type CommandRunner, type OpenMr } from "./mr-sweep.ts";
 import { unlandedRows } from "./wip-check.ts";
@@ -407,21 +408,18 @@ function staffingFile(): string {
 // The owner-message store (owner-messages.jsonl) and its matcher live in src/core/incidents.ts
 // (20261028_0900 P3): dismissIncident needs them too, and guards already imports incidents.
 
-/** P3 (plan 20261031_1207): the text is owner prose — not Main's own guard output, a system notice, a task result — so its words are the owner's. Gates both the owner-message store and the cancel flag. */
+/** P3 (plan 20261031_1207): the text is owner prose — not Main's own guard output, a system notice, a task result — so its words are the owner's. Gates both the owner-message store and the cancel flag. The P5b resume prefix makes a wrapped machine prompt owner-shaped, so it is excluded here like its unwrapped form. */
 function isOwnerProse(text: string): boolean {
-	return !(text.trimStart().startsWith("main-guard:") || text.trimStart().startsWith("<system-notice>") || text.includes("<task-result"));
+	const t = text.trimStart();
+	return !(t.startsWith("main-guard:") || t.startsWith(UNANSWERED_PREFIX) || t.startsWith("<system-notice>") || text.includes("<task-result>"));
 }
 
 function recordOwnerMessage(text: string, cfg: Config): void {
 	if (!isOwnerProse(text)) return;
-	const file = ownerMessagesFile();
 	try {
-		mkdirSync(q.STATE_DIR, { recursive: true });
-		const messages = readOwnerMessages();
-		messages.push({ at: nowSec(), text });
-		writeFileSync(file, `${messages.slice(-50).map(m => JSON.stringify(m)).join("\n")}\n`);
+		writeOwnerStore([...readOwnerMessages(), { at: nowSec(), text }], readOwnerAnswers());
 	} catch (err) {
-		log(cfg.paths.guard_log, `cannot write ${file}: ${err}`);
+		log(cfg.paths.guard_log, `cannot write ${ownerMessagesFile()}: ${err}`);
 	}
 }
 

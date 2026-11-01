@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { loadConfig } from "../src/core/config.ts";
-import { buildHandoff, holdsBlock, MAX_NOTE_AGE_MS, noteRequest, notePath, ownerText, rolloverState, spawnRefusal } from "../src/core/rollover.ts";
+import { buildHandoff, holdsBlock, MAX_NOTE_AGE_MS, noteRequest, notePath, ownerText, rolloverState, spawnRefusal, unansweredOwnerMessages, withUnanswered } from "../src/core/rollover.ts";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -165,6 +165,56 @@ describe("buildHandoff", () => {
 	test("a note without (from: …) numbers adds no Numbers to re-run section", () => {
 		const text = buildHandoff({ generated: "g", note: "no numbers here", previousSessionFile: "/p", ownerMessage: "m" });
 		expect(text).not.toContain("## Numbers to re-run");
+	});
+
+	test("an unanswered owner message starts the handoff, above the note and Numbers to re-run", () => {
+		const text = buildHandoff({
+			generated: "g",
+			note: "3 obligations (from: `gateforge obligations`)",
+			previousSessionFile: "/p",
+			ownerMessage: "m",
+			unanswered: [{ at: 1_760_000_000, text: "Who is ARB?" }],
+		});
+		expect(text.startsWith("UNANSWERED OWNER MESSAGES — answer these first, then end the turn so the reply reaches Discord:")).toBe(true);
+		expect(text.indexOf("Who is ARB?")).toBeLessThan(text.indexOf("## Main's handoff note"));
+		expect(text.indexOf("## Numbers to re-run")).toBeGreaterThan(text.indexOf("## Main's handoff note"));
+	});
+
+	test("a long unanswered message is quoted at its first 300 characters with its arrival time", () => {
+		const text = buildHandoff({
+			generated: "g",
+			note: "n",
+			previousSessionFile: "/p",
+			ownerMessage: "m",
+			unanswered: [{ at: 1_760_000_000, text: `${"x".repeat(300)}TAIL` }],
+		});
+		expect(text).toContain(`${"x".repeat(300)}…`);
+		expect(text).not.toContain("TAIL");
+		expect(text).toMatch(/UNANSWERED OWNER MESSAGES[^\n]*\n- \d{4}-\d{2}-\d{2} \d{2}:\d{2}: /);
+	});
+});
+
+describe("unanswered owner messages", () => {
+	const msgs = [
+		{ at: 100, text: "first question?" },
+		{ at: 200, text: "second question?" },
+	];
+
+	test("with no turn end after them every message is unanswered", () => {
+		expect(unansweredOwnerMessages(msgs, [])).toEqual(msgs);
+	});
+
+	test("a real turn end answers exactly the messages it ended after", () => {
+		expect(unansweredOwnerMessages(msgs, [{ at: 150, answer: "r1" }])).toEqual([{ at: 200, text: "second question?" }]);
+		expect(unansweredOwnerMessages(msgs, [{ at: 250, answer: "r2" }])).toEqual([]);
+	});
+
+	test("withUnanswered wraps the resume text, and leaves it unchanged when nothing is unanswered", () => {
+		const resume = "main-guard: the provider rate limit is over (waited until 12:00). Continue the queue where you stopped.";
+		expect(withUnanswered(resume, msgs, [{ at: 250, answer: "r" }])).toBe(resume);
+		const wrapped = withUnanswered(resume, msgs, []);
+		expect(wrapped.startsWith("UNANSWERED OWNER MESSAGES — answer these first, then end the turn so the reply reaches Discord:\n- ")).toBe(true);
+		expect(wrapped.endsWith(resume)).toBe(true);
 	});
 });
 

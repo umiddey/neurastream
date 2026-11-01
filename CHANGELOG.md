@@ -1,5 +1,6 @@
 # Changelog
 
+
 ## Unreleased
 ### Added
 - Guard false-positive detector D8 `block-then-bypass` (plan 20261027_1430 P5): a guard refusal (`main-guard:` / `plan-guard:`) followed within `incidents.bypass_window_sec` (default 600) by an allowed call of the same tool whose args share at least `incidents.bypass_similarity` (default 0.6, token Jaccard) opens a `possible guard false positive: <reason>` incident with both call excerpts as evidence. Main's session events feed it through the gated detector path, so the session is parsed at most once per `incidents.scan_interval_sec`. `neurastream watch` does not run D8 yet (its gather passes no main-session events).
@@ -13,6 +14,7 @@
 ### Changed
 - Live recheck P3 (plan 20261027_0915): a `WAITING on owner:` hold whose `still true if:` check fails is stale. The queue summary shows it as `[STALE?] <ask>` instead of `WAITING on owner: <ask>`, the owner page drops its card, `queue-check` prints `STALE HOLD: <plan>: <ask> — check \`<cmd>\` exited <code>` (exit code unchanged), and `neurastream metrics ci` re-runs every hold check after recording. A stale hold's incident opens once per check run, not once per prompt.
 - Live recheck P5 (plan 20261027_0915): the rollover handoff adds `## Numbers to re-run` right after Main's note, listing every `(from: \`cmd\`)` in the note — re-run these before repeating any number.
+- Live recheck P5b (plan 20261027_0915): while owner messages sit unanswered, the rate-limit resume and the rollover handoff start with `UNANSWERED OWNER MESSAGES — answer these first, then end the turn so the reply reaches Discord:` and quote each message's arrival time and first 300 characters. A real Main turn end records its reply as the answer in the same `<queue_state>/owner-messages.jsonl` store; a turn that ends on a provider error answers nothing, so the block is quoted again.
 
 ## 0.2.62
 ### Changed
