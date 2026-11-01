@@ -103,6 +103,8 @@ watch:                         # the watcher (src/core/watch.ts): `neurastream w
   noisy_min: 5                # weekly report: a detector kind with at least this many incidents in the window ...
   noisy_ratio: 0.5            # ... and at least this dismiss rate opens one "noisy detector" incident
   ci_red_hours: 2              # an open MR whose pipeline stays failed longer than this opens incident "ci-red-mr" (the watcher also runs metrics.ci_pipelines_cmd for merged MRs)
+  release_regress_pct: 25      # release verdict: any group but owner pain worse by this percent over the before window reads WORSE
+  release_min_calls: 300       # release verdict: fewer Main tool calls on either side reads "not enough data yet", no verdict
 
 ledger:
   default_hours: 24

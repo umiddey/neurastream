@@ -214,6 +214,38 @@ Guard rules around it:
 
 "Needs you" pings use the same channels so the owner learns on the phone that a decision is his: when a Main turn ends with an open plan whose `WAITING on owner:` line was not pinged before, neurastream posts `🔔 Needs you — <plan>: <question>` (with the `neurastream ui` phone-page link when `ui.enabled: true`), and when the guard refuses a Main tool call because it touches a protected guard file, it posts `🔓 Main needs an unlock to continue (<file>)` — the unlock ping at most once per 30 minutes, each waiting question once until its line changes or disappears, remembered in `<queue_state>/notify-waiting.json`. Every decision logs one `notify: needs-you posted|skipped (<why>)` guard-log line.
 
+## Continuous feedback (watch)
+
+Every scheduled job reports in, and a small timer checks the reports every few minutes — even when no Main session is open. This is the loop that catches a backup failing silently for six days.
+
+Every job beats: wip-snapshot, wip-backup, `metrics report`, the pages server and the owner page server write `<queue_state>/heartbeats/<name>.json` — `{name, at, ok, detail}` — after every run; a crash beats `ok: false` with the first error line, then exits with its usual code. Your own cron jobs join the same loop with the hidden command:
+
+```sh
+neurastream heartbeat <name>                  # the run was fine
+neurastream heartbeat <name> --fail "why"     # report a failure
+```
+
+One watcher pass (`neurastream watch`) checks, in order: heartbeats with `ok: false` and heartbeats older than `watch.expect[name]` hours (only jobs listed there must beat at all); failed user units matching the `watch.units` globs, with the unit's last error line; the incident detectors; and CI per active-plan repo — a red default branch (`ci-red-main`), an open MR red for more than `watch.ci_red_hours` (`ci-red-mr`, held back while an agent runs on its plan), an M3 record for every MR merged since the last pass (the ledger is the cursor, so `metrics ci` can no longer be forgotten), and a commit that went red then green as a `ci-flaky` metric. Each new problem opens one incident; when the problem recovers, the incident closes again.
+
+Notify: every NEW incident posts one `⚠ <job>: <state> at <time> — <first error line> (incident <id>)` through the configured channels — at most `watch.max_posts_per_run` (default 3) per run, then one "+N more, see `neurastream incident list --open`" line. Without a provider the incident still opens and nothing posts; already-open problems post nothing; every post is scrubbed by the secret redactor, so the text carries a job name, a time and a first error line — never file contents or env values.
+
+`neurastream watch on|off` installs/removes the timer: a systemd user timer `neurastream-watch.{service,timer}` or a macOS LaunchAgent (`neurastream-watch.plist`), running one pass every `watch.interval_min` (default 15). The service manager is probed first; a failed probe writes nothing. `neurastream doctor` prints `watch: on|off, last run N min ago`, and main-start raises a `watch:not-running` incident once the last pass is older than 3 intervals — the watcher watches itself.
+
+The noisy-detector rule: in the weekly report, a detector kind with at least `watch.noisy_min` (default 5) incidents in the window and a dismiss rate of at least `watch.noisy_ratio` (default 0.5) opens one `noisy detector: <kind> (<d>/<n> dismissed)` incident with the three latest dismiss reasons — an alarm that says its own alarm is crying wolf.
+
+Config (`docs/config.md`, `templates/config.yml`):
+
+```yaml
+watch:
+  expect:                    # hours after which a job's last heartbeat is stale; only listed jobs must beat at all
+    wip-snapshot: 2          # hourly snapshot
+    wip-backup: 26           # nightly backup; one missed day is not yet stale
+    metrics-report: 192      # 8 days; the weekly report job
+  units: ["neurastream-*", "wip-*"]   # failed user units the watcher reports
+  max_posts_per_run: 3       # new-incident posts per run, then one "+N more" line
+  interval_min: 15           # minutes between watcher runs
+```
+
 ## Secrets never reach the chat
 
 A value the machine holds is hidden before the model, the chat and the session log see it (`src/core/secret-redact.ts`, plan 20261025_2204, incident I-20261025-197). Detection is by **content**, not by file name — the old name list never knew about `~/.npmrc`.
