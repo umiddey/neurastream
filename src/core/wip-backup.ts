@@ -1,9 +1,10 @@
-import { accessSync, constants, existsSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { accessSync, constants, realpathSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import type { Config } from "./config.ts";
 import { nowSec, strftime } from "./clock.ts";
 import { printText } from "./help.ts";
 import { cmd, gitRaw } from "./proc.ts";
+import { keyOf, wipRepos } from "./wip-roots.ts";
 
 function executable(path: string): boolean {
 	try {
@@ -14,23 +15,12 @@ function executable(path: string): boolean {
 	}
 }
 
-function keyOf(path: string, home: string): string {
-	return relative(home, path).replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^_+|_+$/g, "");
-}
-
-function repos(roots: string[]): string[] {
-	const out: string[] = [];
-	for (const root of roots) {
-		if (!existsSync(root) || !statSync(root).isDirectory()) continue;
-		for (const d of readdirSync(root)) {
-			if (existsSync(join(root, d, ".git"))) out.push(join(root, d));
-		}
-	}
-	out.sort();
-	return out;
-}
 
 export function wipBackup(args: string[], cfg: Config): number {
+	if (cfg.wip.roots.length === 0) {
+		console.log("wip: no wip.roots set — run `neurastream wip add <path>`");
+		return 0;
+	}
 	const dry = args.includes("--dry-run");
 	const quiet = args.includes("--quiet");
 	const seen = new Set<string>();
@@ -38,7 +28,7 @@ export function wipBackup(args: string[], cfg: Config): number {
 	const skipped: string[] = [];
 	const failed: string[] = [];
 
-	for (const repo of repos(cfg.paths.work_roots)) {
+	for (const repo of wipRepos(cfg)) {
 		const commonRaw = gitRaw(repo, ["rev-parse", "--git-common-dir"]).stdout || ".";
 		const common = realpathSync(resolve(repo, commonRaw));
 		if (seen.has(common)) continue;
@@ -93,6 +83,7 @@ export function wipBackup(args: string[], cfg: Config): number {
 			continue;
 		}
 		const hookOff = noHooks ? ["-c", "core.hooksPath=/dev/null"] : [];
+		// backupVisibility gates push (P3).
 		const pushedRun = cmd(["git", "-C", repo, ...hookOff, "push", "--quiet", cfg.wip.backup_url, ...ok]);
 		if (pushedRun.code) {
 			failed.push(`${rkey}: ${pushedRun.stderr.trim().slice(-200)}`);

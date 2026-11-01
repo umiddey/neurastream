@@ -26,6 +26,7 @@ import { runDiagram } from "./diagram.ts";
 import { runNotes } from "./notes.ts";
 import { runPages } from "./pages.ts";
 import { watchOn, watchOff } from "./watch-setup.ts";
+import { runWip } from "./wip.ts";
 import { runUninstall } from "../core/uninstall.ts";
 import { queueMigrate } from "../core/queue-migrate.ts";
 import { activePlans, allowedAgents, enforceReadOnlyIndex, gitTop, indexPath, readIndex, subagentsPath, writeIndex } from "../core/queue/lib.ts";
@@ -90,6 +91,7 @@ export function helpText(): string {
 		"                                these two commands are the only agent writes to it",
 		"  neurastream config [--json]   print the merged config (defaults + file + env)",
 		"  neurastream config set|get|list <key> [value]   read or write one key (ui.port, paths.work_roots, ...)",
+		"  neurastream wip add|remove|list [path]          add or remove a root in wip.roots, or list them",
 		"  neurastream guard <event> --json",
 		`                                (${GUARD_USAGE.slice(GUARD_USAGE.indexOf("(") + 1, -1)})`,
 		"  neurastream main [args]       run omp under the launcher (automatic session rollover)",
@@ -145,6 +147,7 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 	if (cmd === "adapter") return getAdapter().install(args);
 	if (cmd === "setup") return runSetup(args, realSetupDeps(async () => runNotify(["test"])));
 	if (cmd === "config" && ["set", "get", "list"].includes(args[0] ?? "")) return runConfigKeys(args);
+	if (cmd === "wip") return runWip(args);
 	if (cmd === "config") {
 		try {
 			const cfg = loadConfig();

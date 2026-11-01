@@ -86,12 +86,18 @@ oc:
   tail_chars: 600   # output chars kept from an oc run
 
 wip:
+  roots: []   # folders or repos to snapshot/backup; empty = off
+  depth: 3   # folder walk depth limit
   limit: 6   # open WIP items the check allows
   days: 14   # WIP age window in days
+  keep_hourly: 48   # hourly snapshots kept per worktree
+  keep_days: 14   # days to keep daily snapshots
+  stale_hours: 3   # hours without a snapshot before an alert
   backup_url: ""   # your own private backup repo; wip-backup refuses to invent one
   backup_log: "~/.local/state/neurastream/WIP-BACKUP.md"   # backup log file
   backup_hook_off: []   # origin name fragments whose pre-push hook wip-backup may bypass
   backup_max_repo_mb: 1000   # largest repo wip-backup will back up
+  private_check: ""   # command checking backup repo visibility
   secret_gate: "~/.local/bin/git-secret-gate"   # secret scanner run before a backup
   snapshot_max_mb: 5   # largest file a snapshot keeps
   status_log: "~/.local/state/neurastream/WIP-STATUS.md"   # WIP status file
