@@ -5,6 +5,7 @@ import { ConfigError, configFile, loadConfig, type Config } from "../core/config
 import { beat, withHeartbeat } from "../core/heartbeat.ts";
 import { watchOnce, systemUnitLister, watchDoctorLine, watchHealth, timerStaffedPlans } from "../core/watch.ts";
 import { defaultGather } from "../core/main-start.ts";
+import { gatherTags } from "../core/results.ts";
 import { nowSec } from "../core/clock.ts";
 import { postReply } from "../core/notify.ts";
 import { log } from "../core/guards.ts";
@@ -24,7 +25,7 @@ import { runPages } from "./pages.ts";
 import { watchOn, watchOff } from "./watch-setup.ts";
 import { runUninstall } from "../core/uninstall.ts";
 import { queueMigrate } from "../core/queue-migrate.ts";
-import { activePlans, allowedAgents, enforceReadOnlyIndex, indexPath, readIndex, subagentsPath, writeIndex } from "../core/queue/lib.ts";
+import { activePlans, allowedAgents, enforceReadOnlyIndex, gitTop, indexPath, readIndex, subagentsPath, writeIndex } from "../core/queue/lib.ts";
 import { defaultRunner } from "../core/mr-sweep.ts";
 import { allowAgents, denyAgents, invalidSlugs } from "../core/subagents.ts";
 
@@ -188,6 +189,9 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 					now: nowSec,
 					listUnits: systemUnitLister,
 					gather: defaultGather(cfg, getAdapter(cfg)),
+					// P11: the self repo's tags and the session source feed the release verdict; no tags — no verdicts.
+					source: getAdapter(cfg).runSource(cfg),
+					tags: gatherTags(gitTop(import.meta.dir)?.repo ?? null),
 					notify: text => {
 						sends.push(
 							postReply(text, cfg).then(rs => {

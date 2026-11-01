@@ -356,6 +356,7 @@ const vsrc = (runs: Run[]): RunSource => ({ listRuns: () => runs, mainSession: (
 /** Appends `<ISO> BLOCK <reason>` lines to the guard log readBlocks parses. */
 function guardBlocks(cfg: Config, at: number, n: number, reason = "stop refused: read tools only"): void {
 	const iso = new Date(at * 1000).toISOString();
+	mkdirSync(dirname(cfg.paths.guard_log), { recursive: true });
 	const old = existsSync(cfg.paths.guard_log) ? readFileSync(cfg.paths.guard_log, "utf8") : "";
 	writeFileSync(cfg.paths.guard_log, old + Array.from({ length: n }, () => `${iso} BLOCK ${reason}`).join("\n") + "\n");
 }

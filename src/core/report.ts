@@ -44,7 +44,8 @@ function day(t: number): string {
 	return new Date(t * 1000).toISOString().slice(0, 10);
 }
 
-function snap(cfg: Config, source: RunSource, events: Ev[], blocks: GuardBlock[], incidents: IncidentView[], w: Window): Snap {
+/** One window's raw metric values: the inputs every before/after view (weekly report, release verdict) compares. */
+export function snap(cfg: Config, source: RunSource, events: Ev[], blocks: GuardBlock[], incidents: IncidentView[], w: Window): Snap {
 	const runs = source.listRuns(w.from);
 	const patterns = cfg.metrics.correction_patterns.map((p) => new RegExp(p, "i"));
 	return {
@@ -170,7 +171,8 @@ const usd = (v: number | null) => (v === null ? "n/a (0 merged)" : `$${v.toFixed
 const num = (v: number | null) => (v === null ? "n/a" : String(v));
 const mean = (v: number | null) => (v === null ? "n/a" : v.toFixed(2));
 
-function rowsOf(c: Snap, p: Snap): Row[] {
+/** The report's ranked rows: the release verdict reads the same numbers the owner sees (P11). */
+export function rowsOf(c: Snap, p: Snap): Row[] {
 	return [
 		{ key: "m1", name: "M1 cost per merge", cur: c.m1.perMerge, prev: p.m1.perMerge, fmt: usd, rank: true },
 		{ key: "m2", name: "M2 idle calls", cur: c.m2.calls, prev: p.m2.calls, fmt: num, rank: true },

@@ -16,14 +16,20 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { Glob } from "bun";
 import type { Config } from "./config.ts";
+import type { RunSource } from "./adapter.ts";
+import { readEvents } from "./agent-score.ts";
+import { strftime } from "./clock.ts";
 import { readBeats, type Heartbeat } from "./heartbeat.ts";
 import { runDetectorsGated, type GatedInputs } from "./incident-detectors.ts";
 import { log, readStaffingEntries } from "./guards.ts";
+import { appendMetric, inWindow, readBlocks, readMetricEvents, reasonKey, type Window } from "./metrics.ts";
 import { notifyProviders } from "./notify.ts";
 import { addIncident, dismissIncident, openIncidents, readIncidents, type IncidentView } from "./incidents.ts";
+import { m7, rowsOf, silentFailures, snap } from "./report.ts";
 import { loadKnownSecrets, redactSecrets } from "./secret-redact.ts";
 import { ciScan } from "./ci.ts";
 import type { CommandRunner } from "./mr-sweep.ts";
+import type { ReleaseTag } from "./results.ts";
 
 /** One failed user unit, as the lister reports it. */
 export interface FailedUnit {
@@ -84,6 +90,10 @@ export interface WatchDeps {
 	plans: () => { file: string; repo: string; text: string }[];
 	/** Plan files held back from ci-red-mr: a running agent right now (a timer run passes timerStaffedPlans, the spawn record). `now` is this pass's clock. */
 	staffed: (now: number) => string[];
+	/** Run data for the release verdict (P11): Main tool calls and run costs per window. Absent — the caller has no session source — and no verdicts happen. */
+	source?: RunSource;
+	/** The self repo's `v*` tags (results.ts gatherTags, handed in by the CLI). Absent or empty — no verdicts. */
+	tags?: ReleaseTag[];
 }
 
 export interface WatchReport {
@@ -198,7 +208,9 @@ export function watchOnce(cfg: Config, deps: WatchDeps): WatchReport {
 	// (IncidentView's "open" marker) for an incident this run just closed.
 	const closedIds: string[] = [];
 	for (const inc of openIncidents(cfg)) {
-		if (inc.source !== "watch" || current.has(inc.fingerprint)) continue;
+		// A release-regression incident (P11) is a finding, not a live problem: a later run seeing
+		// nothing is not a recovery — Main plans or dismisses it.
+		if (inc.source !== "watch" || inc.kind === "release-regression" || current.has(inc.fingerprint)) continue;
 		const subject = inc.fingerprint.split(":").slice(2).join(":") || inc.kind;
 		const refusal = dismissIncident(cfg, inc.id, `watch: recovered — ${subject} healthy again (watch run ${new Date(now * 1000).toISOString()})`);
 		if (refusal) {
@@ -247,7 +259,213 @@ export function watchOnce(cfg: Config, deps: WatchDeps): WatchReport {
 
 	// (d) the gated detectors fold their own incidents (D1/D3 behind incidents.scan_interval_sec).
 	const detectors = runDetectorsGated(cfg, {}, deps.gather, now);
+	// (e) P11: the release verdict — one judgment per tag whose after-window has closed and
+	// whose tag has no `{type:"release-verdict"}` record on the metrics ledger yet.
+	if (deps.source && deps.tags && deps.tags.length > 0) {
+		releaseVerdicts(cfg, {
+			now,
+			tags: deps.tags,
+			source: deps.source,
+			notify: text => deps.notify(cfg.secrets.redact ? redactSecrets(text, loadKnownSecrets(cfg), cfg.secrets.extra_patterns).text : text),
+		});
+	}
 	return { opened, deduped, closed, detectors };
+}
+
+// ---- P11: the release verdict — is the new version better or worse? ----
+
+/** The inputs of one verdict pass. Tags and the run source are injected: core never runs git or
+ * reads harness sessions itself. */
+export interface ReleaseVerdictDeps {
+	/** Unix seconds now; an after-window is closed once this passes its end. */
+	now: number;
+	/** The self repo's `v*` tags, oldest first. */
+	tags: ReleaseTag[];
+	/** Run data for the windows: Main tool calls and run costs. */
+	source: RunSource;
+	/** The chat notifier: one line per newly closable tag. */
+	notify: (text: string) => void;
+}
+
+export type VerdictWord = "BETTER" | "WORSE" | "MIXED" | "watcher-off";
+
+export interface ReleaseVerdict {
+	tag: string;
+	verdict: VerdictWord;
+	/** The notify line, when one posted. */
+	post: string | null;
+}
+
+/** An after-window runs from the tag to the next tag or 24 h, whichever is first (the heartbeat
+ * is one overwritten file, so longer outages are not provable). */
+const VERDICT_CAP_SEC = 86400;
+
+/** The value per 100 Main tool calls in the window, so a busy night is not read as a worse version. */
+const rate = (v: number | null, calls: number): number | null => (v === null ? null : (v * 100) / calls);
+
+/** Percent change of one judged number from before to after; null reads "not comparable"
+ * (nothing before — a counter new in this release — or a zero before value). */
+const pctOf = (n: VerdictNum): number | null => {
+	if (n.before === null || n.after === null || n.beforeCount === 0 || n.before === 0) return null;
+	return ((n.after - n.before) / n.before) * 100;
+};
+
+const isBetter = (n: VerdictNum, pct: number): boolean => (n.group === 5 ? pct > 0 : pct < 0);
+
+/** Phases ticked in the window: a scored accept or validate names the plan and phase it
+ * finished (the only time series the ledger holds for output). */
+const phasesTicked = (cfg: Config, w: Window): number => new Set(readEvents(cfg).filter(e => (e.type === "accept" || e.type === "validate") && inWindow(Number(e.ts), w)).map(e => `${String(e.plan)}/${String(e.phase)}`)).size;
+
+/** Dot-version compare for the launcher's version-change events: "0.2.9" < "0.2.10". */
+function verCompare(a: string, b: string): number {
+	const pa = a.split(".").map(p => Number.parseInt(p, 10) || 0);
+	const pb = b.split(".").map(p => Number.parseInt(p, 10) || 0);
+	for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+		const d = (pa[i] ?? 0) - (pb[i] ?? 0);
+		if (d !== 0) return d;
+	}
+	return 0;
+}
+
+/** Was the incident alive at some point of the window: opened before the window ended, and
+ * either still open or seen again after the window began — a resolution record carries no close
+ * time, so the last sighting stands in for it. */
+function overlapsWindow(i: IncidentView, w: Window): boolean {
+	return i.ts < w.to && (i.resolution === null || i.lastSeen > w.from);
+}
+
+const signed = (pct: number): string => `${pct >= 0 ? "+" : "-"}${Math.abs(pct).toFixed(0)}%`;
+const fmtNum = (v: number): string => String(Number(v.toFixed(1)));
+
+/** One judged number: the same value in both windows. Rates are per 100 Main tool calls. */
+interface VerdictNum {
+	name: string;
+	/** 1 = owner pain (any of it worse reads WORSE outright), 2-4 = worse when higher, 5 = output (worse when lower). */
+	group: 1 | 2 | 3 | 4 | 5;
+	before: number | null;
+	after: number | null;
+	/** The raw counts: 0 before means the counter is new in the release — "new, not compared". */
+	beforeCount: number;
+	afterCount: number;
+	/** The daily-check metric key whose open incident this may not double, when one exists. */
+	dailyKey?: string;
+}
+
+/** One verdict per tag once its after-window closes; the `{type:"release-verdict"}` metrics
+ * record is the ledger marker, so no tag is ever judged twice. */
+export function releaseVerdicts(cfg: Config, deps: ReleaseVerdictDeps): ReleaseVerdict[] {
+	const done = new Set(readMetricEvents(cfg).filter(e => e.type === "release-verdict").map(e => String(e.tag)));
+	const tags = deps.tags.toSorted((a, b) => a.ts - b.ts);
+	const out: ReleaseVerdict[] = [];
+	for (let i = 0; i < tags.length; i++) {
+		const tag = tags[i]!;
+		if (done.has(tag.name)) continue;
+		const end = Math.min(tag.ts + VERDICT_CAP_SEC, tags[i + 1]?.ts ?? tag.ts + VERDICT_CAP_SEC);
+		if (deps.now < end) continue;
+		const verdict = judgeRelease(cfg, tag.name, { from: tag.ts - (end - tag.ts), to: tag.ts }, { from: tag.ts, to: end }, deps);
+		if (verdict === null) continue; // not enough data yet: no verdict, nothing recorded, nothing posted
+		appendMetric(cfg, { type: "release-verdict", tag: tag.name, verdict: verdict.verdict, ts: deps.now });
+		if (verdict.post !== null) deps.notify(verdict.post);
+		out.push(verdict);
+	}
+	return out;
+}
+
+/** Judges one closed after-window against the same-length before window; null reads "not enough data yet". */
+function judgeRelease(cfg: Config, tag: string, before: Window, after: Window, deps: ReleaseVerdictDeps): ReleaseVerdict | null {
+	const incidents = readIncidents(cfg);
+	// Watcher gap: a not-running incident open at any time in either window means that window's
+	// watcher-fed numbers read ~0 for want of a watcher — no verdict is possible.
+	if (incidents.some(i => i.fingerprint === "watch:not-running" && (overlapsWindow(i, before) || overlapsWindow(i, after)))) {
+		return { tag, verdict: "watcher-off", post: `${tag}: watcher off, no verdict` };
+	}
+	const callsOf = (w: Window) => deps.source.listRuns(w.from).filter(r => r.kind === "main" && inWindow(r.lastWriteAt, w)).reduce((s, r) => s + r.calls, 0);
+	const bc = callsOf(before);
+	const ac = callsOf(after);
+	if (bc < cfg.watch.release_min_calls || ac < cfg.watch.release_min_calls) return null;
+	const metricEvents = readMetricEvents(cfg);
+	const events = [...readEvents(cfg), ...metricEvents];
+	const blocks = readBlocks(cfg);
+	const b = snap(cfg, deps.source, events, blocks, incidents, before);
+	const a = snap(cfg, deps.source, events, blocks, incidents, after);
+	// The weekly report's own rows carry M2 idle calls, M3 mean tries and both M4 counts: the
+	// verdict reads the same numbers the owner sees.
+	const rows = new Map(rowsOf(a, b).map(r => [r.key, r]));
+	const row = (key: string) => rows.get(key)!;
+	const inCount = (type: string, w: Window) => metricEvents.filter(e => e.type === type && inWindow(Number(e.ts), w)).length;
+	const kindIn = (kind: string, w: Window) => incidents.filter(i => i.kind === kind && inWindow(i.ts, w)).length;
+	const merges = (w: Window) => inCount("ci", w);
+	const nums: VerdictNum[] = [
+		// 1 owner pain (veto — any of these worse reads WORSE outright)
+		{ name: "corrections", group: 1, before: rate(row("m4_corrections").prev, bc), after: rate(row("m4_corrections").cur, ac), beforeCount: row("m4_corrections").prev ?? 0, afterCount: row("m4_corrections").cur ?? 0, dailyKey: "m4_corrections" },
+		{ name: "questions", group: 1, before: rate(row("m4_questions").prev, bc), after: rate(row("m4_questions").cur, ac), beforeCount: row("m4_questions").prev ?? 0, afterCount: row("m4_questions").cur ?? 0, dailyKey: "m4_questions" },
+		{ name: "m8 waits", group: 1, before: rate(inCount("m8", before), bc), after: rate(inCount("m8", after), ac), beforeCount: inCount("m8", before), afterCount: inCount("m8", after) },
+		// 2 stuck
+		{ name: "idle", group: 2, before: rate(row("m2").prev, bc), after: rate(row("m2").cur, ac), beforeCount: row("m2").prev ?? 0, afterCount: row("m2").cur ?? 0, dailyKey: "m2" },
+		{ name: "false blocks", group: 2, before: rate(m7(incidents, b.m5.falseAlarms, before), bc), after: rate(m7(incidents, a.m5.falseAlarms, after), ac), beforeCount: m7(incidents, b.m5.falseAlarms, before), afterCount: m7(incidents, a.m5.falseAlarms, after) },
+		// 3 quality
+		{ name: "ci tries", group: 3, before: row("m3").prev, after: row("m3").cur, beforeCount: merges(before), afterCount: merges(after), dailyKey: "m3" },
+		{ name: "silent failures", group: 3, before: rate(silentFailures(incidents, before), bc), after: rate(silentFailures(incidents, after), ac), beforeCount: silentFailures(incidents, before), afterCount: silentFailures(incidents, after) },
+		{ name: "open→fix median h", group: 3, before: b.m6.medianHours, after: a.m6.medianHours, beforeCount: b.m6.fixed, afterCount: a.m6.fixed },
+		{ name: "ci-flaky", group: 3, before: rate(inCount("ci-flaky", before), bc), after: rate(inCount("ci-flaky", after), ac), beforeCount: inCount("ci-flaky", before), afterCount: inCount("ci-flaky", after) },
+		{ name: "ci-red-main", group: 3, before: rate(kindIn("ci-red-main", before), bc), after: rate(kindIn("ci-red-main", after), ac), beforeCount: kindIn("ci-red-main", before), afterCount: kindIn("ci-red-main", after) },
+		{ name: "incidents", group: 3, before: rate(b.m6.opened, bc), after: rate(a.m6.opened, ac), beforeCount: b.m6.opened, afterCount: a.m6.opened },
+		{ name: "fix plans", group: 3, before: rate(b.m6.planned, bc), after: rate(a.m6.planned, ac), beforeCount: b.m6.planned, afterCount: a.m6.planned },
+		// 4 cost — merges counted from the forge merges P6b records, so a missing `agent-score accept` does not blank it
+		{ name: "$/merge", group: 4, before: merges(before) > 0 ? (b.m1.worker + b.m1.main) / merges(before) : null, after: merges(after) > 0 ? (a.m1.worker + a.m1.main) / merges(after) : null, beforeCount: merges(before), afterCount: merges(after) },
+		// 5 output — worse when lower
+		{ name: "merges", group: 5, before: rate(merges(before), bc), after: rate(merges(after), ac), beforeCount: merges(before), afterCount: merges(after) },
+		{ name: "phases", group: 5, before: rate(phasesTicked(cfg, before), bc), after: rate(phasesTicked(cfg, after), ac), beforeCount: phasesTicked(cfg, before), afterCount: phasesTicked(cfg, after) },
+	];
+	// M5 by reason: each refusal shape is its own number; the daily m5 total stays the fingerprint.
+	const shaped = new Map<string, { b: number; a: number }>();
+	for (const bl of blocks) {
+		if (!inWindow(bl.ts, before) && !inWindow(bl.ts, after)) continue;
+		const k = reasonKey(bl.reason);
+		const e = shaped.get(k) ?? { b: 0, a: 0 };
+		if (inWindow(bl.ts, before)) e.b++;
+		else e.a++;
+		shaped.set(k, e);
+	}
+	for (const [k, e] of shaped) nums.push({ name: `blocks(${k})`, group: 2, before: rate(e.b, bc), after: rate(e.a, ac), beforeCount: e.b, afterCount: e.a, dailyKey: "m5" });
+
+	const isWorse = (n: VerdictNum, pct: number): boolean => {
+		if (n.group === 1) return n.after! > n.before!;
+		return n.group === 5 ? pct <= -cfg.watch.release_regress_pct : pct >= cfg.watch.release_regress_pct;
+	};
+	const downgrade = metricEvents
+		.filter(e => e.type === "version-change" && inWindow(Number(e.ts), after))
+		.map(e => ({ from: String(e.from ?? ""), to: String(e.to ?? "") }))
+		.find(v => verCompare(v.to, v.from) < 0) ?? null;
+	const judged = nums.map(n => ({ n, pct: pctOf(n) })).filter((jd): jd is { n: VerdictNum; pct: number } => jd.pct !== null);
+	const worseOnes = judged.filter(jd => isWorse(jd.n, jd.pct));
+	const improved24 = judged.some(jd => jd.n.group >= 2 && jd.n.group <= 4 && isBetter(jd.n, jd.pct));
+	let verdict: "BETTER" | "WORSE" | "MIXED";
+	if (downgrade !== null || worseOnes.length > 0) verdict = "WORSE";
+	else if (judged.filter(jd => jd.n.group >= 2).every(jd => !isWorse(jd.n, jd.pct)) && improved24) verdict = "BETTER";
+	else verdict = "MIXED";
+
+	const parts: string[] = [];
+	if (downgrade !== null) parts.push(`downgrade ${downgrade.from}→${downgrade.to}`);
+	for (const v of judged.filter(jd => jd.n.group === 1)) parts.push(`${v.n.name} ${signed(v.pct)}`);
+	for (const g of [2, 3, 4, 5] as const) {
+		const top = judged.filter(jd => jd.n.group === g).toSorted((p, q) => Math.abs(q.pct) - Math.abs(p.pct))[0];
+		if (top) parts.push(`${top.n.name} ${signed(top.pct)}`);
+	}
+	const fresh = nums.filter(n => n.beforeCount === 0).map(n => n.name);
+	const freshLine = fresh.length === 0 ? "" : `${(fresh.length > 4 ? [...fresh.slice(0, 4), `+${fresh.length - 4} more`] : fresh).join(", ")} new, not compared`;
+	const post = `${tag}: ${verdict} — ${[...parts, freshLine].filter(p => p !== "").join(", ")}`;
+
+	if (verdict === "WORSE") {
+		const top = worseOnes.toSorted((p, q) => Math.abs(q.pct) - Math.abs(p.pct))[0];
+		const name = top ? top.n.name : "downgrade";
+		const vals = top ? `${fmtNum(top.n.before!)}→${fmtNum(top.n.after!)}` : `${downgrade!.from}→${downgrade!.to}`;
+		// The daily/weekly check may already hold today's open incident on this metric: the shared
+		// fingerprint dedups into it instead of doubling the story.
+		const fingerprint = top?.n.dailyKey !== undefined ? `daily:${top.n.dailyKey}:${strftime(deps.now, "%Y%m%d")}` : `release:${tag}:${name}`;
+		addIncident(cfg, { source: "watch", kind: "release-regression", summary: `release ${tag} worse: ${name} ${vals}`, evidence: post, fingerprint }, deps.now);
+	}
+	return { tag, verdict, post };
 }
 
 /** The plan files a timer run treats as staffed: a plan whose newest spawn (staffing.json) names tasks and is newer than `ciRedHours` before `now`. An older spawn's agent is gone, so its red MR is not held back (I-20261031-265). A timer run has no live job list, so the spawn record is the only signal it has. */

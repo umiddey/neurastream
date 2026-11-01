@@ -219,6 +219,10 @@ export interface Config {
 		noisy_ratio: number;
 		/** Hours an open MR's pipeline may stay failed before incident "ci-red-mr" opens (plan 20261027_1430 P6b). */
 		ci_red_hours: number;
+		/** Release verdict (P11): any group but owner pain reads WORSE when its number grows by at least this percent over the before window. */
+		release_regress_pct: number;
+		/** Release verdict: fewer Main tool calls than this on either side reads "not enough data yet" — no verdict. */
+		release_min_calls: number;
 	};
 	machine: {
 		load_over_cores: number;
@@ -603,6 +607,12 @@ function check(cfg: Config): void {
 	}
 	if (typeof cfg.watch.ci_red_hours !== "number" || !(cfg.watch.ci_red_hours > 0)) {
 		throw new ConfigError("watch.ci_red_hours must be a number > 0");
+	}
+	if (typeof cfg.watch.release_regress_pct !== "number" || !(cfg.watch.release_regress_pct > 0)) {
+		throw new ConfigError("watch.release_regress_pct must be a number > 0");
+	}
+	if (!Number.isInteger(cfg.watch.release_min_calls) || cfg.watch.release_min_calls < 1) {
+		throw new ConfigError("watch.release_min_calls must be an integer >= 1");
 	}
 	for (const p of cfg.metrics.correction_patterns) {
 		try {
