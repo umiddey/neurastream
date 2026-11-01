@@ -92,6 +92,7 @@ const baseCfg: Config = (() => {
   plan_guard_log: "${join(HOME, "plan-guard.log")}"
 review:
   agents: []
+  plan: false
 `,
 	);
 	return loadConfig({ home: HOME, env: {} });
@@ -167,7 +168,9 @@ test("a task spawn is refused until its plan cites the incident; once planned, u
 });
 
 test("a bypass launch follows the same rule as the task gate", () => {
-	const { incident } = addIncident(cfg, { source: "daily", kind: "m2", summary: "third toy" }, NOW);
+	// P2 (plan 20261031_1207): only realtime incidents gate spawns and launches, so the refusal
+	// proof uses a realtime one; daily/weekly sources stay notes.
+	const { incident } = addIncident(cfg, { source: "realtime", kind: "m2", summary: "third toy" }, NOW);
 	const cmd = (plan: string) => `opencode run P1 ${plan}`;
 	// FIX2 is uncited and never spawned on, so planGate passes and the refusal provably comes
 	// from the incident gate (TOY_PLAN's progress hash was spent by the task-gate test above).
@@ -181,7 +184,8 @@ test("a bypass launch follows the same rule as the task gate", () => {
 });
 
 test("the spawn event gate refuses open-incident work like the task gate", () => {
-	const { incident } = addIncident(cfg, { source: "weekly", kind: "m5", summary: "fourth toy" }, NOW);
+	// P2 (plan 20261031_1207): realtime source — the only one that still gates spawns.
+	const { incident } = addIncident(cfg, { source: "realtime", kind: "m5", summary: "fourth toy" }, NOW);
 	// Same trick as the bypass test: FIX3 is uncited and never spawned on, so planGate passes
 	// and the incident gate is what refuses.
 	const refused = checkSpawn({ agent: "toy-worker", invocationKind: "task", brief: `Work ${FIX3} on P1` }, cfg);

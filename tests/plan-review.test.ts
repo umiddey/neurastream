@@ -114,8 +114,16 @@ review:
 `,
 );
 
+// The gate setup points QUEUE_* env at its sandbox; restore the caller's at the end so nothing
+// leaks into the test files that run after this one.
+const queueEnvBefore = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("QUEUE_")));
 const gcfg = loadConfig({ home: GHOME, env: {} });
 applyQueueEnv(gcfg);
+
+afterAll(() => {
+	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
+	Object.assign(process.env, queueEnvBefore);
+});
 
 // No origin remote: the P3 pending-work check degrades off the toy repo, so these tests see only the PASS gate.
 const gRunner: CommandRunner = args =>
@@ -229,11 +237,16 @@ test("a plan with no PASS is refused however it is stamped", () => {
 	});
 });
 
-test("review.agents [] turns the PASS gate off", () => {
+test("review.plan false turns the PASS gate off; an empty review.agents list no longer does (P6)", () => {
 	rmSync(REVIEWS, { force: true });
 	rmSync(join(GSTATE, "incidents.jsonl"), { force: true }); // the FAIL tests' findings are open incidents; this test is about the off-switch
 	freshProgress();
-	expect(gspawn(`Work ${LOCKED} on P1`, "worker", withAgents([]))).toMatchObject({ allow: true });
+	expect(gspawn(`Work ${LOCKED} on P1`, "worker", { ...gcfg, review: { ...gcfg.review, agents: [], plan: false } })).toMatchObject({ allow: true });
+	freshProgress(); // the first spawn spent the plan's progress hash; the PASS-gate spawn needs its own
+	expect(gspawn(`Work ${LOCKED} on P1`, "worker", withAgents([]))).toMatchObject({
+		allow: false,
+		reason: expect.stringContaining("no current reviewer PASS"),
+	});
 });
 
 test("review.agents [glm] still refuses a plan with no PASS", () => {
@@ -572,10 +585,8 @@ test("a non-review spawn reusing the review name drops the entry and its lock", 
 	expect(checkTool(spawnedAs("bash", { command: "echo hi" }, "rev1"), gcfg)).toMatchObject({ allow: true });
 });
 
-test("a review spawn's shell, spawn, cancel and MCP tools are denied", () => {
+test("a review spawn's spawn, cancel and MCP tools are denied; read-only shell is allowed (P5)", () => {
 	for (const [tool, input] of [
-		["bash", { command: "echo hi" }],
-		["eval", { code: "1" }],
 		["node_repl", { code: "1" }],
 		["task", { tasks: [] }],
 		["cancel_job", {}],
@@ -586,6 +597,9 @@ test("a review spawn's shell, spawn, cancel and MCP tools are denied", () => {
 		expect(`${tool}: ${d.allow}`).toBe(`${tool}: false`);
 		expect(d.reason).toMatch(/review spawn/);
 	}
+	registerReviewer();
+	expect(checkTool(spawnedAs("bash", { command: "git status --short" }, "rev1"), gcfg).allow).toBe(true);
+	expect(checkTool(spawnedAs("eval", { code: "1" }, "rev1"), gcfg).allow).toBe(false);
 });
 
 test("a review spawn may edit only its own plan", () => {
@@ -616,7 +630,7 @@ test("a review spawn may not read credentials or env files", () => {
 
 test("a review spawn's suffixed sub agent id (rev1-2) keeps the review lock", () => {
 	registerReviewer();
-	const d = checkTool(spawnedAs("bash", { command: "echo hi" }, "rev1-2"), gcfg);
+	const d = checkTool(spawnedAs("task", { tasks: [] }, "rev1-2"), gcfg);
 	expect(d).toMatchObject({ allow: false });
 	expect(d.reason).toMatch(/review spawn/);
 });
@@ -694,4 +708,151 @@ test("a review spawn that ends with no verdict tells Main and records nothing", 
 	expect(reviewSpawnEnd("rev1-2", gcfg)).toBe(`rev1 wrote no verdict on ${LOCKED}.`);
 	expect(reviewsNow()[LOCKED]).toBeUndefined();
 	expect(reviewSpawnEnd("worker-1", gcfg)).toBeNull();
+});
+
+// --- P6: review.code, the code review tick gate ---
+
+const CODE_PASS = "\n- 2026-10-31 16:00 RevC1: CODE REVIEW: PASS — phase: P1 — redundant: none — inefficient: none — insecure: none — MRs: none\n  Findings: none\n";
+const mainTick = (cfg: typeof gcfg, id = "P1") => {
+	const before = readFileSync(LOCKED, "utf8");
+	return checkPlanEdit({ path: LOCKED, before, after: before.replace(`- [ ] ${id} `, `- [x] ${id} `), agent: "main" }, cfg);
+};
+const codeReviewsNow = (): unknown => {
+	try {
+		const store = JSON.parse(readFileSync(REVIEWS, "utf8")) as { code?: Record<string, unknown> }; // the store readPlanReviews/writePlanReviews keep
+		return store.code?.[LOCKED];
+	} catch {
+		return undefined;
+	}
+};
+
+/** The reviewer's accepted edit, written back like the guard's caller does, so the plan text carries the verdict. */
+function reviewerEditWritten(entry: string): void {
+	const before = readFileSync(LOCKED, "utf8");
+	expect(reviewerEdit(entry).allow).toBe(true);
+	writeFileSync(LOCKED, before + entry);
+}
+
+test("review.code default false leaves Main's phase tick alone with no CODE REVIEW entry", () => {
+	rmSync(REVIEWS, { force: true });
+	expect(mainTick(gcfg)).toMatchObject({ allow: true });
+});
+
+test("review.code true refuses Main's tick until a review spawn records CODE REVIEW: PASS (P6)", () => {
+	rmSync(REVIEWS, { force: true });
+	const cfg = { ...gcfg, review: { ...gcfg.review, code: true } };
+	const refused = mainTick(cfg);
+	expect(refused.allow).toBe(false);
+	expect(refused.restore).toMatchObject({ path: LOCKED });
+	expect(refused.reason).toContain("P1");
+	expect(refused.reason).toContain("spawn a code reviewer or set review.code: false");
+	reviewerEditWritten(CODE_PASS);
+	expect(codeReviewsNow()).toMatchObject({ verdict: "PASS", by: "rev1", phases: ["P1"] });
+	expect(mainTick(cfg).allow).toBe(true);
+});
+
+test("a Main-written CODE REVIEW line is restored and never counts (P6)", () => {
+	rmSync(REVIEWS, { force: true });
+	const before = readFileSync(LOCKED, "utf8");
+	const d = checkPlanEdit({ path: LOCKED, before, after: `${before.replace("- [ ] P1 ", "- [x] P1 ")}${CODE_PASS}`, agent: "main" }, { ...gcfg, review: { ...gcfg.review, code: true } });
+	expect(d).toMatchObject({ allow: false, restore: { path: LOCKED, text: before } });
+	expect(codeReviewsNow()).toBeUndefined();
+});
+
+// P6 rework (CODE REVIEW: FAIL 2026-11-01): "last entry naming the phase" is by entry time, not file order.
+
+const OLDER_IMPL = "\n- 2026-10-31 10:00 worker-1: implemented P1 — done, tests green\n  Findings: none\n";
+const NEWER_IMPL = "\n- 2026-10-31 20:00 worker-1: implemented P1 — done, tests green\n  Findings: none\n";
+
+test("the tick gate reads Progress by entry time, not file order: a newest-first plan keeps the PASS valid (P6)", () => {
+	rmSync(REVIEWS, { force: true });
+	const cfg = { ...gcfg, review: { ...gcfg.review, code: true } };
+	// Recorded against the bare fixture first (the entry must be new to record), then the plan text is arranged as live plans are, newest first: PASS (16:00) on top, an older implementer entry (10:00) below — file order alone would void the PASS.
+	writeFileSync(LOCKED, fixturePlan());
+	expect(reviewerEdit(CODE_PASS).allow).toBe(true);
+	writeFileSync(LOCKED, fixturePlan().replace("- Started.\n", CODE_PASS + OLDER_IMPL));
+	expect(mainTick(cfg).allow).toBe(true);
+});
+
+test("a newer implementer entry naming the phase voids the PASS wherever it sits (P6)", () => {
+	rmSync(REVIEWS, { force: true });
+	const cfg = { ...gcfg, review: { ...gcfg.review, code: true } };
+	// Recorded against the bare fixture first (the entry must be new to record), then the plan text is arranged newest-first: implementer entry (20:00) above the PASS (16:00) — file order alone would keep the PASS valid.
+	writeFileSync(LOCKED, fixturePlan());
+	expect(reviewerEdit(CODE_PASS).allow).toBe(true);
+	writeFileSync(LOCKED, fixturePlan().replace("- Started.\n", NEWER_IMPL + CODE_PASS));
+	expect(mainTick(cfg)).toMatchObject({ allow: false, reason: expect.stringContaining("P1") });
+});
+
+// P6 rework: a verdict covers only the phases named before its Findings line.
+
+const CODE_PASS_SEE_P2 = "\n- 2026-10-31 16:00 RevC1: CODE REVIEW: PASS — phase: P1 — redundant: none — inefficient: none — insecure: none — MRs: none\n  Findings: see P2 for the edge this review did not cover\n";
+
+test("a CODE REVIEW PASS whose Findings mention another phase does not cover it (P6)", () => {
+	rmSync(REVIEWS, { force: true });
+	const cfg = { ...gcfg, review: { ...gcfg.review, code: true } };
+	writeFileSync(LOCKED, fixturePlan().replace(
+		"- [ ] P1 do the thing — verify: `test -f src/a.ts`",
+		"- [ ] P1 do the thing — verify: `test -f src/a.ts`\n- [ ] P2 also this — verify: `test -f src/a.ts`",
+	));
+	expect(reviewerEdit(CODE_PASS_SEE_P2).allow).toBe(true);
+	expect(codeReviewsNow()).toMatchObject({ verdict: "PASS", phases: ["P1"] });
+	expect(mainTick(cfg, "P2")).toMatchObject({ allow: false, reason: expect.stringContaining("P2") });
+});
+
+// --- P7 (plan 20261028_1600): the review spawn's shell is an allow list, not a ban list ---
+
+/** A registered review spawn's bash call under the sandbox guard. */
+function revShell(command: string, cfg: typeof gcfg = gcfg) {
+	registerReviewer();
+	return checkTool(spawnedAs("bash", { command }, "rev1"), cfg);
+}
+
+test("a review spawn's bash runs only review.shell_allow commands, single-line and substitution-free (P7)", () => {
+	const denied = [
+		"cat a > b",
+		"cat a 2> b",
+		"cat a &> b",
+		"cat a >| b",
+		"grep x $(date)",
+		"grep x `ls`",
+		"git log --graph <(git diff)",
+		"sed -n 'e cp a b' x",
+		"rg --pre sh x",
+		"git grep -O x",
+		"git log --output=f",
+		"git -c core.pager=sh log",
+		"find . -fls f",
+		"git fetch . +refs/heads/main:refs/heads/x",
+		"gh pr view 1 --web",
+		"glab mr view 1 -w",
+		"GIT_PAGER=x git log",
+		"python -c 'import sys'",
+		"cat a\nmv b c",
+		"git diff main;",
+	];
+	for (const command of denied) {
+		const d = revShell(command);
+		expect(`${command}: ${d.allow}`).toBe(`${command}: false`);
+		expect(d.reason).toMatch(/review spawn/);
+	}
+	for (const command of ["git show origin/main:x | head", "wc -w x", "cat src/a.ts", "git status --short"]) {
+		const d = revShell(command);
+		expect(`${command}: ${d.allow}`).toBe(`${command}: true`);
+	}
+});
+
+test("a review spawn's eval is denied outright and the denial names the tool (P7)", () => {
+	registerReviewer();
+	const d = checkTool(spawnedAs("eval", { code: `require("fs").renameSync("a", "b")` }, "rev1"), gcfg);
+	expect(d).toMatchObject({ allow: false });
+	expect(d.reason).toMatch(/eval/);
+});
+
+test("a review.shell_allow override is honoured (P7)", () => {
+	const cfg = { ...gcfg, review: { ...gcfg.review, shell_allow: ["cat"] } };
+	expect(revShell("cat src/a.ts", cfg).allow).toBe(true);
+	const d = revShell("git status --short", cfg);
+	expect(d).toMatchObject({ allow: false });
+	expect(d.reason).toMatch(/shell_allow/);
 });

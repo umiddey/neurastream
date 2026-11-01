@@ -147,7 +147,9 @@ test("doctor flags a main index that still lists repo directories", () => {
 	const flagged = cli(["doctor"]);
 	expect(flagged.status).toBe(1);
 	expect(flagged.stdout).toContain(demo);
-	// The one-index layout raises no flag.
+	// The one-index layout raises no flag. Doctor left the index 0444 (plan 20261031_0911 P2);
+	// reseed fresh instead of writing over it.
+	rmSync(idx);
 	writeFileSync(idx, `- ${join(HOME, "docs/plans/x.md")}\n`);
 	const clean = cli(["doctor"]);
 	expect(clean.status).toBe(0);

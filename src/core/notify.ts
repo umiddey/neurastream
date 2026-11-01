@@ -4,9 +4,12 @@
 // from them (guard rules in guards.ts), and does the posting. Plain TypeScript, no harness here.
 
 import { dirname } from "node:path";
-import { readFileSync, statSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { configFile, type Config } from "./config.ts";
 import { mainId } from "./guards.ts";
+import { strftime } from "./clock.ts";
+import { recentOwnerMessages, type MessageRow } from "./owner-ui.ts";
+import { stateDirPath } from "./queue/lib.ts";
 import { loadKnownSecrets, redactSecrets } from "./secret-redact.ts";
 
 export type NotifyProviderName = "discord" | "slack";
@@ -43,10 +46,14 @@ function hitsSecret(p: string, file: string): boolean {
 	const m = GLOB_META.exec(p);
 	if (!m) return false;
 	const base = p.slice(0, m.index).replace(/\/+$/, "");
-	if (!base) return false;
-	// The glob's literal prefix is the secrets dir, sits inside it, or is an ancestor of it:
-	// every match it can name is a secret (or reveals the directory listing).
-	return base === dir || base.startsWith(`${dir}/`) || dir.startsWith(`${base}/`);
+	// The glob's literal prefix is the secrets dir or sits inside it: every match it can name is a
+	// secret (or reveals the directory listing).
+	if (base && (base === dir || base.startsWith(`${dir}/`))) return true;
+	// P5g: a wider glob refuses only when it actually matches a secret file or the secrets dir
+	// (Bun.Glob, filesystem-free, asked once per secret file and once per its directory), never
+	// by its prefix alone — a home-wide glob hunting an unrelated folder passes, and the cost
+	// stays bounded by the number of secret files, not by what the glob would expand to.
+	return new Bun.Glob(p).match(file) || new Bun.Glob(p).match(dir);
 }
 
 /** The first touched read path that hits a configured secret file, its directory, or a glob over
@@ -225,4 +232,66 @@ export function postReply(text: string, cfg: Config): Promise<NotifyPostResult[]
 		}
 		return out;
 	});
+}
+
+// ---- Owner answer steer (plan 20261027_1430 P9): a phone-page owner message must be answered
+// by the next hand-back within notify.answer_within_min. The rule is host-neutral: core decides
+// who is waiting and keeps the once-per-message markers; the harness adapter injects the steer
+// at its tool_result hook and records the hand-back at its turn end. The markers live in a file
+// under the queue state, not in session memory: one-shot CLI calls and a reloaded plugin must
+// agree, like the guard window file.
+
+function ownerAnswerStatePath(): string {
+	return `${stateDirPath()}/owner-answer.json`;
+}
+
+interface OwnerAnswerState {
+	/** Unix seconds of the last hand-back; a message older than this was answered by it. */
+	lastHandBack: number;
+	/** Message ids this turn already steered, so a message steers once per turn. */
+	steered: string[];
+}
+
+function readOwnerAnswerState(): OwnerAnswerState {
+	try {
+		const s = JSON.parse(readFileSync(ownerAnswerStatePath(), "utf8")) as Partial<OwnerAnswerState>;
+		return {
+			lastHandBack: Number(s.lastHandBack) || 0,
+			steered: Array.isArray(s.steered) ? s.steered.filter((x): x is string => typeof x === "string") : [],
+		};
+	} catch {
+		return { lastHandBack: 0, steered: [] };
+	}
+}
+
+function writeOwnerAnswerState(state: OwnerAnswerState): void {
+	mkdirSync(stateDirPath(), { recursive: true });
+	writeFileSync(ownerAnswerStatePath(), `${JSON.stringify(state)}\n`);
+}
+
+/** Phone-page owner messages waiting past notify.answer_within_min with no hand-back after them; none when the limit is 0. */
+export function waitingOwnerMessages(cfg: Config, now: number): MessageRow[] {
+	const limit = cfg.notify.answer_within_min * 60;
+	if (!(limit > 0)) return [];
+	const { lastHandBack } = readOwnerAnswerState();
+	return recentOwnerMessages(now).filter((m) => now - m.ts > limit && m.ts > lastHandBack);
+}
+
+/** The steer for every waiting message this turn has not steered yet — one line per message, so
+ * each owner ask lands once — or null when nobody is waiting. Marks the messages steered. */
+export function ownerAnswerSteer(cfg: Config, now: number): string | null {
+	const limit = cfg.notify.answer_within_min * 60;
+	if (!(limit > 0)) return null;
+	const state = readOwnerAnswerState();
+	const due = recentOwnerMessages(now).filter((m) => now - m.ts > limit && m.ts > state.lastHandBack && !state.steered.includes(m.id));
+	if (due.length === 0) return null;
+	state.steered.push(...due.map((m) => m.id));
+	writeOwnerAnswerState(state);
+	return due.map((m) => `Owner asked at ${strftime(m.ts, "%H:%M")}; end your turn with the answer now`).join("\n");
+}
+
+/** A hand-back ends the wait: the reply just posted answers whatever waited, so the wait clears
+ * and the next owner message starts fresh. */
+export function ownerAnswerHandback(now: number): void {
+	writeOwnerAnswerState({ lastHandBack: now, steered: [] });
 }

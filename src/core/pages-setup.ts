@@ -5,7 +5,7 @@ import { dirname, join, basename, extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { configFile, loadConfig } from "./config.ts";
 import { repoKey } from "./knowledge.ts";
-import { injectPageNotes, type NotesGate } from "./page-notes.ts";
+import { injectPageNotes, stripPageNotes, type NotesGate } from "./page-notes.ts";
 import { recordPagePlan } from "./plan-approval.ts";
 import { checkDiagram } from "./diagram-check.ts";
 import { gitRaw } from "./proc.ts";
@@ -13,9 +13,11 @@ import { recordPublish } from "./pages-expiry.ts";
 import { realTailscale, type Tailscale } from "./tailscale.ts";
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const PAGES_UNIT_TEMPLATE = join(HERE, "../../templates/systemd/neurastream-pages.service");
-export interface RunnerResult { status: number | null; stderr: string }
+const DATA_MARK = "/* === DATA === */";
+const END_DATA_MARK = "/* === END DATA === */";
+export interface RunnerResult { status: number | null; stderr: string; stdout?: string }
 export type Runner = (args: string[]) => RunnerResult;
-export const systemRunner: Runner = args => { const r = spawnSync("systemctl", args, { encoding:"utf8" }); return { status:r.status, stderr:r.stderr ?? "" }; };
+export const systemRunner: Runner = args => { const r = spawnSync("systemctl", args, { encoding:"utf8" }); return { status:r.status, stderr:r.stderr ?? "", stdout:r.stdout ?? "" }; };
 export interface Setup { home?: string; runner?: Runner; tailscale?: Tailscale }
 function editBlock(text: string | null, values: { enabled: boolean; port: number; dir: string }): string {
  const fresh = ["pages:", `  enabled: ${values.enabled}`, `  port: ${values.port}`, `  dir: "${values.dir.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`];
@@ -76,6 +78,22 @@ export interface PublishOptions {
 	repo?: string;
 }
 
+/** P2 (plan 20261031_0917): a plan page is the drilldown skill's engine with only its DATA block
+ * edited — the owner approves a diagram the skill drew, not a hand-rolled page. The injected notes
+ * chrome is stripped first, so a republished page still compares clean against the template. */
+const DRILLDOWN_TEMPLATE = join(HERE, "../../templates/skills/architecture-drilldown/template.html");
+export function assertDrilldown(html: string): void {
+	const template = readFileSync(DRILLDOWN_TEMPLATE, "utf8");
+	const clean = stripPageNotes(html);
+	const at = clean.indexOf(DATA_MARK), end = clean.indexOf(END_DATA_MARK);
+	const part =
+		at < 0 || end < 0 ? "no DATA block"
+		: clean.slice(0, at) !== template.slice(0, template.indexOf(DATA_MARK)) ? "the part before DATA"
+		: clean.slice(end + END_DATA_MARK.length) !== template.slice(template.indexOf(END_DATA_MARK) + END_DATA_MARK.length) ? "the part after END DATA"
+		: null;
+	if (part !== null) throw new Error(`pages: a plan page must be built from ${DRILLDOWN_TEMPLATE}: copy it and edit only the DATA block (${part})`);
+}
+
 export function publishPage(file: string, name: string | undefined, force: boolean, dir: string, opts: PublishOptions = {}): string {
  const keep = opts.keep ?? false, keepDays = opts.keepDays ?? 15, now = opts.now ?? new Date(), notes = opts.notes;
  const source=basename(file), base=(name ?? source.slice(0,source.length-extname(source).length)).toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"");
@@ -88,7 +106,12 @@ export function publishPage(file: string, name: string | undefined, force: boole
  let diagram: { missing: string[]; thin: string[] } | null = null;
  if (opts.plan !== undefined) {
   if (extname(source).toLowerCase() !== ".html") throw new Error(`pages: --plan needs an HTML artifact, not ${source}`);
+  assertDrilldown(readFileSync(file, "utf8"));
   diagram = checkDiagram(readFileSync(file, "utf8"), readFileSync(opts.plan, "utf8"));
+  // P7 (plan 20261031_0917): an incomplete diagram must not publish at all — the Approve bar only
+  // disables itself, and once a link the owner could not approve went out (I-20261031-329).
+  const unproven = [...diagram.missing, ...diagram.thin];
+  if (unproven.length > 0) throw new Error(`pages: ${targetName} diagram is not complete (${unproven.length}): ${unproven.join("; ")}`);
  }
  const approve = opts.plan === undefined || diagram === null ? undefined : { page: targetName, open, problems: [...diagram.missing, ...diagram.thin] };
  if(open.length>0) throw new Error(`pages: ${targetName} has ${open.length} open note(s) (${open.join(", ")}); answer each one before publishing (see \`neurastream notes check ${targetName}\`)`);

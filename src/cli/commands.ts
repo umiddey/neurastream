@@ -18,6 +18,7 @@ import { tmpSnapshot } from "../core/tmp-snapshot.ts";
 import { wipBackup } from "../core/wip-backup.ts";
 import { wipCheck } from "../core/wip-check.ts";
 import { wipSnapshot } from "../core/wip-snapshot.ts";
+import { withHeartbeat } from "../core/heartbeat.ts";
 import { runtime } from "./runtime.ts";
 import { claimCli } from "./claim.ts";
 import { getAdapter } from "../adapters/index.ts";
@@ -65,9 +66,9 @@ export async function runPorted(cmd: string, args: string[]): Promise<number> {
 		case "wip-check":
 			return wipCheck(args, rt.cfg);
 		case "wip-backup":
-			return wipBackup(args, rt.cfg);
+			return withHeartbeat(rt.cfg, "wip-backup", () => wipBackup(args, rt.cfg));
 		case "wip-snapshot":
-			return wipSnapshot(args, rt.cfg);
+			return withHeartbeat(rt.cfg, "wip-snapshot", () => wipSnapshot(args, rt.cfg));
 		case "main-health":
 			return mainHealth(args, rt.cfg, rt.source);
 		case "queue-check":

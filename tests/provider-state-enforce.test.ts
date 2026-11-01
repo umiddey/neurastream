@@ -25,7 +25,10 @@ const queueEnvBefore = Object.fromEntries(Object.entries(process.env).filter(([k
 for (const k of Object.keys(queueEnvBefore)) delete process.env[k];
 
 afterAll(() => {
-	for (const k of Object.keys(queueEnvBefore)) delete process.env[k];
+	// The snapshot above is empty under the deletion-only preload (it deletes every inherited
+	// QUEUE_* before any module loads), so delete what applyQueueEnv below wrote, not just the
+	// snapshot's keys, then put the snapshot back — else the sandbox paths leak into later files.
+	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
 	Object.assign(process.env, queueEnvBefore);
 	rmSync(TMP, { recursive: true, force: true });
 });
@@ -80,6 +83,7 @@ adapter:
   extensions: "${join(home, ".omp/agent/extensions")}"
 review:
   agents: []
+  plan: false
 ${prefer ? 'ledger:\n  prefer:\n    - glm\n    - deepseek\n    - haiku\n' : ""}`,
 	);
 	return loadConfig({ home, env: {} });

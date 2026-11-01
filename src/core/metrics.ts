@@ -222,8 +222,9 @@ export interface GuardBlock {
 }
 
 /** Groups reasons by shape: paths cut to 40 chars, digit runs collapsed to N, and every
- * `open: <plan list>` tail collapsed to one key: the lists differ per plan set, the reason is one. */
-function reasonKey(text: string): string {
+ * `open: <plan list>` tail collapsed to one key: the lists differ per plan set, the reason is one.
+ * Exported for the release verdict, which compares M5 blocks per reason (P11). */
+export function reasonKey(text: string): string {
 	const shaped = text.replace(/\S*\/\S*/g, (p) => (p.length > 40 ? `${p.slice(0, 40)}…` : p)).replace(/\d+/g, "N");
 	const at = shaped.indexOf("open: ");
 	return at === -1 ? shaped : `${shaped.slice(0, at)}open: <list>`;

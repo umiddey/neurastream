@@ -18,7 +18,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import { appendFileSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, join, resolve } from "node:path";
-import type { Decision } from "../../core/adapter.ts";
+import type { Decision, TraceEvent } from "../../core/adapter.ts";
 import { AGENTS_TEMPLATE, renderBlock } from "../../core/agents-md.ts";
 import { chatGo, chatTier, type Tier } from "../../core/autonomy.ts";
 import { chatApprove } from "../../core/plan-approval.ts";
@@ -28,17 +28,18 @@ import { checkWrite, deferSteer, type WriteCheckConfig } from "../../core/write-
 import { nowSec, strftime } from "../../core/clock.ts";
 import { runDetectors, runDetectorsGated, type DetectorInput } from "../../core/incident-detectors.ts";
 import { fileClaimStore } from "../../core/claims.ts";
+import { appendOwnerAnswer, readOwnerAnswers, readOwnerMessages } from "../../core/incidents.ts";
 import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, mainId, newProgressEntries, planReadNote, recordMainResult, resetMainCalls, revertMainEdit, rekeySpawnFile, reviewSpawnEnd, STOP_PLAN_OFFER_REFUSAL } from "../../core/guards.ts";
 import { rateLimitWait } from "../../core/rate-limit.ts";
-import { notifyProviders, postReply } from "../../core/notify.ts";
+import { notifyProviders, ownerAnswerHandback, ownerAnswerSteer, postReply } from "../../core/notify.ts";
 import { loadKnownSecrets, redactSecrets, redactSummary } from "../../core/secret-redact.ts";
 import { inboxPath } from "../../core/owner-ui.ts";
 import { realTailscale } from "../../core/tailscale.ts";
 import { actionsRules, ownedRepoOf, suspiciousActions, unreportedFindings } from "../../core/trace-actions.ts";
 import { applyQueueEnv } from "../../core/queue/env.ts";
-import { mainStartText, runDailyCheck } from "../../core/main-start.ts";
-import { readBlocks } from "../../core/metrics.ts";
-import { buildHandoff, holdsBlock, notePath, noteRequest, OWNER_AWAY, ownerText, relaunchPath, rolloverState, spawnRefusal, type RolloverState } from "../../core/rollover.ts";
+import { mainDetectors, mainStartText } from "../../core/main-start.ts";
+
+import { buildHandoff, holdsBlock, notePath, noteRequest, OWNER_AWAY, ownerText, relaunchPath, rolloverState, spawnRefusal, unansweredOwnerMessages, withUnanswered, type RolloverState } from "../../core/rollover.ts";
 import { defaultCompletedResults, defaultRunSource, runIdOf } from "./sessions.ts";
 import { adapterLog, MAIN_ENV } from "./launch.ts";
 import { parseTraceFile } from "./traces.ts";
@@ -48,6 +49,16 @@ import { pinModel, providerOfModel, recordOut, resetEpochFromText } from "../../
 import { annotateResetTimes } from "../../core/reset-time.ts";
 // Registers the plugin-command matcher into core's writeTargets (side effect).
 import "./package-ops.ts";
+
+/** TraceEvents of the newest Main session file (D8's input); [] when there is none or it cannot be read. */
+function defaultMainEvents(cfg: Config): TraceEvent[] {
+	try {
+		const s = defaultRunSource(cfg).mainSession();
+		return s ? parseTraceFile(s.file, runIdOf(s.file)) : [];
+	} catch {
+		return [];
+	}
+}
 
 /** Subset of the harness extension host the adapter needs. */
 export interface ExtensionHost {
@@ -145,27 +156,6 @@ const PUSH_MERGE = /\bgit\b[^\n;|&]*\bpush\b|\b(glab\s+mr|gh\s+pr)\s+merge\b/;
 export { adapterLog };
 
 /**
- * Real-time incident detectors (plan 20261022_2330 P3) at Main's prompt and after each Main bash
- * result, plus the once-per-day metrics check (P4, retried until it marks the day). The cheap
- * detectors (D2 bash, D4 prompt) run on every call; D1/D3 and their inputs — Main's session
- * file, the ledger runs, both guard logs — are gathered behind the scan interval
- * (incidents.scan_interval_sec, see runDetectorsGated). Best effort: a failed check is logged,
- * never thrown.
- */
-function mainDetectors(cfg: Config, extra: { prompt?: string; bash?: { command: string; output: string } }): void {
-	try {
-		runDetectorsGated(cfg, extra, () => ({
-			results: defaultCompletedResults(cfg),
-			runs: defaultRunSource(cfg).listRuns(nowSec() - 2 * 86400),
-			blocks: readBlocks(cfg),
-		}));
-		runDailyCheck(cfg, defaultRunSource(cfg), nowSec());
-	} catch (err) {
-		adapterLog(cfg, `incident detectors failed: ${err instanceof Error ? err.message : String(err)}`);
-	}
-}
-
-/**
  * D6 + D7 over a subagent's own trace, right after an allowed Progress edit (plan
  * 20261024_0301 P6): the sub's session file (its harness session manager hands it out) is
  * parsed as the run's trace, every high suspicious action folds as a D6 incident, and when the
@@ -200,24 +190,28 @@ function subActionDetectors(cfg: Config, ctx: unknown, planFile: string, before:
 	}
 }
 
-// Background queue-close for every plan Main marked complete. Ported from the
-// original autoClose: same filter, same "--- auto-close attempt" log line, detached child with
-// stdio on the per-plan close log. QUEUE_CLOSE_BIN overrides the binary (tests); without it the
-// package's own executable bin/queue-close runs (its `#!/usr/bin/env bun` shebang picks bun).
+// Background queue-close for every plan Main marked complete — and (P4, plan 20261031_0911) for
+// every OPEN plan whose work has landed. Ported from the original autoClose: same filter, same
+// "--- auto-close attempt" log line, detached child with stdio on the per-plan close log.
+// QUEUE_CLOSE_BIN overrides the binary (tests); without it the package's own executable
+// bin/queue-close runs (its `#!/usr/bin/env bun` shebang picks bun).
 // Never process.execPath: inside the harness that is the harness binary itself, so the child was
 // a new agent session that loaded this plugin and auto-closed again — a process fork bomb
 // (2026-10-21 OOMs, ~175 processes).
-function closeChildArgs(plan: string): [string, string[]] {
+function closeChildArgs(plan: string, auto: boolean): [string, string[]] {
 	const bin = process.env.QUEUE_CLOSE_BIN;
-	if (bin) return [bin, [plan]];
-	return [join(import.meta.dir, "..", "..", "..", "bin", "queue-close"), [plan]];
+	const args = auto ? ["--auto", plan] : [plan];
+	if (bin) return [bin, args];
+	return [join(import.meta.dir, "..", "..", "..", "bin", "queue-close"), args];
 }
 
 export function autoClose(cfg: Config): string[] {
 	const started: string[] = [];
 	let plans: q.Plan[];
 	try {
-		plans = q.activePlans().filter(p => (p.status === "complete" || p.status === "cancelled") && !p.errors.length);
+		// P4: landed open plans auto-close too (q.autoCloseCandidate) — the child runs queue-close
+		// --auto and writes "Status: complete" itself when the done check passes.
+		plans = q.activePlans().filter(p => (p.status === "complete" || p.status === "cancelled" || q.autoCloseCandidate(p)) && !p.errors.length);
 	} catch {
 		return started;
 	}
@@ -229,7 +223,7 @@ export function autoClose(cfg: Config): string[] {
 			const outFile = q.closeLog(p.file);
 			appendFileSync(outFile, `--- ${new Date().toISOString()} auto-close attempt\n`);
 			const out = openSync(outFile, "a");
-			const [bin, args] = closeChildArgs(p.file);
+			const [bin, args] = closeChildArgs(p.file, p.status === "open");
 			const child = spawn(bin, args, { detached: true, stdio: ["ignore", out, out], env: process.env });
 			child.unref();
 			started.push(p.file);
@@ -472,6 +466,12 @@ export function ownerInboxMessage(rec: Record<string, unknown>): string | ({ typ
 		}
 		case "lock":
 			return "Owner locked the guards from the phone page.";
+		case "approval": {
+			const page = asString(rec.page);
+			const plan = asString(rec.plan);
+			if (page === "" || plan === "") return null;
+			return `Owner approved ${basename(plan)} on page ${page}.`;
+		}
 		case "reorder": {
 			const plan = asString(rec.plan);
 			const from = num(rec.from);
@@ -617,12 +617,24 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		clearRateTimer();
 		rateAttempt = 0;
 	};
+	// P5b: a real turn end answers every owner message it followed — the answer (the turn's own
+	// reply, the page's lastAnswerFor shape) rides the same owner-message store. Rate-limited,
+	// blocked and mid-run ends are not turn ends: nothing is recorded.
+	const recordTurnAnswer = (reply: EventReply | null): void => {
+		if (!reply?.text) return;
+		try {
+			appendOwnerAnswer(reply.text);
+		} catch (err) {
+			adapterLog(cfg, `OWNER-ANSWER record failed: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	};
 	// The one resume: replacing any armed timer, exactly one new user message when the wait is over.
 	const armRateResume = (untilMs: number): void => {
 		clearRateTimer();
 		rateTimer = setTimeout(() => {
 			rateTimer = null;
-			pi.sendUserMessage(`main-guard: the provider rate limit is over (waited until ${rateClock(untilMs)}). Continue the queue where you stopped.`);
+			// P5b: whichever resume text exists, it quotes owner messages no turn has answered.
+			pi.sendUserMessage(withUnanswered(`main-guard: the provider rate limit is over (waited until ${rateClock(untilMs)}). Continue the queue where you stopped.`, readOwnerMessages(), readOwnerAnswers()));
 			adapterLog(cfg, `RATE-LIMIT resume: new turn sent (waited until ${rateClock(untilMs)})`);
 		}, untilMs - Date.now());
 	};
@@ -825,7 +837,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		// A turn the harness starts from the guard's own stop continuation is not an owner
 		// message: D4 (owner-correction) only sees real prompts; D1/D3 run either way.
 		// Machine prompts (guard continuation, rollover note request, handoff note) are not owner messages.
-		mainDetectors(cfg, { prompt: ownerText(prompt) });
+		mainDetectors(cfg, { runSource: defaultRunSource, completedResults: defaultCompletedResults, mainEvents: defaultMainEvents }, { prompt: ownerText(prompt) });
 		// The rules of a repo this session has just worked in (P3): one hand-over per repo per file
 		// version — rulesChanged holds the hash, and the set holds only what was touched.
 		const rules: string[] = [];
@@ -927,6 +939,12 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 
 	pi.on("tool_result", (event, ctx) => {
 		cfg = freshConfig();
+		// P9: an owner message past notify.answer_within_min with no hand-back steers once per
+		// message; sendUserMessage reaches Main mid-turn through the steer queue.
+		if (isMain(ctx)) {
+			const steer = ownerAnswerSteer(cfg, nowSec());
+			if (steer) pi.sendUserMessage(steer);
+		}
 		onSizeCheck("tool_result", event, ctx);
 		const e = asRecord(event);
 		const c = asCtx(ctx);
@@ -1031,7 +1049,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		}
 		// Real-time detectors after each Main bash result, crashes included (D2 wants the stack).
 		if ((!c.hasAgent || c.kind === "main") && asString(e.toolName) === "bash") {
-			mainDetectors(cfg, {
+			mainDetectors(cfg, { runSource: defaultRunSource, completedResults: defaultCompletedResults, mainEvents: defaultMainEvents }, {
 				bash: { command: asString(asRecord(e.input).command), output: content.map(p => asString(asRecord(p).text)).join("\n") },
 			});
 		}
@@ -1085,6 +1103,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 			}
 			if (snap.state === "ready" || snap.state === "wait-jobs") {
 				adapterLog(cfg, `ALLOW stop: rollover ${snap.state}`);
+				recordTurnAnswer(reply);
 				// Under the launcher a ready rollover starts now (not a hand-back to the owner).
 				const handsToOwner = !(snap.state === "ready" && requestRelaunch(rc, notePath(rc.sessionId)));
 				if (handsToOwner) notifyHandback(reply, "allowed session_stop");
@@ -1096,6 +1115,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		callsSinceStop = d.state?.callsSinceStop ?? 0;
 		idleStops = d.state?.idleStops ?? idleStops;
 		if (d.allow) {
+			recordTurnAnswer(reply);
 			notifyHandback(reply, "allowed session_stop");
 			return undefined;
 		}
@@ -1209,6 +1229,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 				note,
 				previousSessionFile: previous,
 				ownerMessage: owner.filter(s => s !== "").join("\n"),
+				unanswered: unansweredOwnerMessages(readOwnerMessages(), readOwnerAnswers()),
 			});
 			pi.sendUserMessage(handoff);
 		} finally {
@@ -1347,9 +1368,12 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		}
 		// A real hand-back: the turn ended without a rate limit — the episode is over.
 		disarmRateEpisode();
-		// A deferred hand-back fires no session_stop: reset the per-turn cap here (I-20261030-24)
-		// and steer a promise like checkStop refuses it (I-20261030-32).
+		recordTurnAnswer(reply);
+		// A deferred hand-back fires no session_stop: reset the per-turn cap here (I-20261030-24),
+		// record the hand-back for the owner-answer wait (P9), and steer a promise like checkStop
+		// refuses it (I-20261030-32).
 		resetMainCalls();
+		ownerAnswerHandback(nowSec());
 		if (new RegExp(cfg.guards.plan_offer, "i").test(reply.text)) {
 			pi.sendUserMessage(STOP_PLAN_OFFER_REFUSAL);
 		}
@@ -1393,6 +1417,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		if (!isMain(ctx)) return;
 		if (asRecord(e).willContinue === true) return;
 		resetMainCalls();
+		ownerAnswerHandback(nowSec());
 	});
 	// P4k backstop (plan 20261028_1600): a named review spawn that ends with no verdict recorded at its edit is judged here, from its own plan file; the note tells Main at its next prompt.
 	pi.on("agent_end", (_e, ctx) => {

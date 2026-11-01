@@ -13,6 +13,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "../src/core/config.ts";
 import { mainStateDir } from "../src/core/guards.ts";
+import { readMetricEvents } from "../src/core/metrics.ts";
 import { notePath, relaunchPath } from "../src/core/rollover.ts";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -149,6 +150,10 @@ test("an upgrade during a run: the second run's handoff comes from the new code,
 	expect(r.stderr).not.toMatch(/^\s+at /m);
 	const v = JSON.parse(readFileSync(join(REPO, "package.json"), "utf8")).version;
 	expect(r.guard).toContain(`rollover: relaunch handed to a fresh launcher (${v} → ${v}-b)`);
+	// P11: the changed branch records one version-change ledger event, so the release verdict sees a downgrade.
+	const ev = readMetricEvents(loadConfig({ home: c.home, env: {} })).filter(e => e.type === "version-change");
+	expect(ev).toHaveLength(1);
+	expect(ev[0]).toMatchObject({ from: v, to: `${v}-b` });
 	// The child launcher took the request; the variable never reaches the harness.
 	expect(r.runs[1]?.since).toBe(null);
 	expect(existsSync(c.relaunch)).toBe(false);
@@ -164,4 +169,6 @@ test("same version: one launcher process, no handover, the handoff is the one bu
 	expect(r.code).toBe(7);
 	expect(r.stderr).not.toMatch(/^\s+at /m);
 	expect(r.guard).not.toContain("handed to a fresh launcher");
+	// No version change, no version-change event.
+	expect(readMetricEvents(loadConfig({ home: c.home, env: {} })).filter(e => e.type === "version-change")).toHaveLength(0);
 }, 60_000);

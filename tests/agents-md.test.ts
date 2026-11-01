@@ -25,9 +25,15 @@ const AGENTS = join(SANDBOX, ".omp/agent/AGENTS.md");
 const CLI = join(REPO, "src/cli/main.ts");
 const INSTALLED = JSON.parse(readFileSync(join(REPO, "package.json"), "utf8")).version as string;
 
+// The P3 setup below points QUEUE_* env at its sandbox; restore the caller's at the end so
+// nothing leaks into the test files that run after this one.
+const queueEnvBefore = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("QUEUE_")));
+
 afterAll(() => {
 	rmSync(SANDBOX, { recursive: true, force: true });
 	rmSync(P6_DIR, { recursive: true, force: true });
+	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
+	Object.assign(process.env, queueEnvBefore);
 });
 
 function freshInstall(personal?: string) {

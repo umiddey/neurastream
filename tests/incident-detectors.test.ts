@@ -6,11 +6,12 @@ import { afterAll, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { Run } from "../src/core/adapter.ts";
+import type { Run, TraceEvent } from "../src/core/adapter.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { readIncidents } from "../src/core/incidents.ts";
 import {
 	blockLoop,
+	blockThenBypass,
 	ledgerContradictions,
 	ownerCorrection,
 	runDetectors,
@@ -269,4 +270,57 @@ test("scan gate: past the interval the inputs are gathered again; cheap detector
 	expect(gathers).toBe(2);
 	expect(second.map(i => i.kind)).toEqual(["tool-crash"]);
 	expect(second[0]!.count).toBe(2);
+});
+
+// ---- D8: a guard block the same action got past ----
+
+const BLOCK_TEXT = "main-guard: eval reads a protected page path; run the page through the plan's task instead";
+const BLOCKED_CODE = 'await fs.readFile("/work/app/pages/index.tsx", "utf8")';
+const BYPASS_CODE = 'await fs.readFile("/work/app/" + "pa" + "ges/index.tsx", "utf8")';
+
+function evalCall(callId: string, ts: number, code: string, text: string, isError: boolean): TraceEvent[] {
+	return [
+		{ kind: "toolCall", ts, runId: "MAIN", tool: "eval", args: { code }, callId },
+		{ kind: "toolResult", ts: ts + 1, runId: "MAIN", tool: "eval", callId, isError, text },
+	];
+}
+
+test("D8 block-then-bypass: the 2026-10-27 pair is one finding", () => {
+	const events = [...evalCall("c1", 1000, BLOCKED_CODE, BLOCK_TEXT, true), ...evalCall("c2", 1060, BYPASS_CODE, "ok", false)];
+	const found = blockThenBypass(events, 600, 0.6);
+	expect(found.length).toBe(1);
+	expect(found[0]!.kind).toBe("block-then-bypass");
+	expect(found[0]!.summary.startsWith("possible guard false positive: main-guard:")).toBe(true);
+});
+
+test("D8 block-then-bypass: a different action after a block is not a bypass", () => {
+	const events = [...evalCall("c1", 1000, BLOCKED_CODE, BLOCK_TEXT, true), ...evalCall("c2", 1060, 'await db.query("select 1")', "ok", false)];
+	expect(blockThenBypass(events, 600, 0.6)).toEqual([]);
+});
+
+test("D8 block-then-bypass: a repeat outside the window is not a bypass", () => {
+	const events = [...evalCall("c1", 1000, BLOCKED_CODE, BLOCK_TEXT, true), ...evalCall("c2", 1700, BYPASS_CODE, "ok", false)];
+	expect(blockThenBypass(events, 600, 0.6)).toEqual([]);
+});
+
+test("D8 block-then-bypass: args below the similarity threshold are not a bypass", () => {
+	const events = [...evalCall("c1", 1000, BLOCKED_CODE, BLOCK_TEXT, true), ...evalCall("c2", 1060, BYPASS_CODE, "ok", false)];
+	expect(blockThenBypass(events, 600, 0.9)).toEqual([]);
+});
+
+test("D8 frontier: a block at or before the scanned frontier is not reported again", () => {
+	const events = [...evalCall("c1", 1000, BLOCKED_CODE, BLOCK_TEXT, true), ...evalCall("c2", 1060, BYPASS_CODE, "ok", false)];
+	expect(blockThenBypass(events, 600, 0.6, 1061)).toEqual([]);
+	expect(blockThenBypass(events, 600, 0.6, 999)).toHaveLength(1);
+});
+
+test("D8 frontier: the next scan over the same session does not re-raise the pair", () => {
+	const c = cfg();
+	const events = [...evalCall("c1", NOW, BLOCKED_CODE, BLOCK_TEXT, true), ...evalCall("c2", NOW + 60, BYPASS_CODE, "ok", false)];
+	const gather = () => ({ results: [], runs: [], blocks: [], mainEvents: events });
+	const first = runDetectorsGated(c, {}, gather, NOW);
+	expect(first.find(i => i.kind === "block-then-bypass")).toBeDefined();
+	const second = runDetectorsGated(c, {}, gather, NOW + c.incidents.scan_interval_sec);
+	expect(second.find(i => i.kind === "block-then-bypass")).toBeUndefined();
+	expect(readIncidents(c).find(i => i.kind === "block-then-bypass")!.count).toBe(1);
 });

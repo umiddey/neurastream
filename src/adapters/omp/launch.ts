@@ -8,12 +8,14 @@ import { appendFileSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSyn
 import { basename, dirname, join } from "node:path";
 import type { LaunchOptions } from "../../core/adapter.ts";
 import type { Config } from "../../core/config.ts";
+import { readOwnerAnswers, readOwnerMessages } from "../../core/incidents.ts";
 import { mainStartText } from "../../core/main-start.ts";
+import { appendMetric } from "../../core/metrics.ts";
 import { applyQueueEnv } from "../../core/queue/env.ts";
 import { tryLock } from "../../core/file-lock.ts";
 import { MAIN_ID_RE, mainStateDir } from "../../core/guards.ts";
 import * as q from "../../core/queue/lib.ts";
-import { buildHandoff, holdsBlock, MAX_NOTE_AGE_MS, OWNER_AWAY, relaunchPath } from "../../core/rollover.ts";
+import { buildHandoff, holdsBlock, MAX_NOTE_AGE_MS, OWNER_AWAY, relaunchPath, unansweredOwnerMessages } from "../../core/rollover.ts";
 import { PROXY_BIN, proxyOnPath } from "../../core/secret-redact.ts";
 import { PACKAGE_ROOT, packageJsonPath, packageVersion } from "./package-root.ts";
 import { defaultCompletedResults, defaultRunSource } from "./sessions.ts";
@@ -236,6 +238,8 @@ export async function runMainLauncher(args: string[], cfg: Config, opts: LaunchO
 			const changed = loaded === null || installed === null || loaded !== installed;
 			if (changed && noteReadable(req.notePath)) {
 				adapterLog(cfg, `rollover: relaunch handed to a fresh launcher (${loaded ?? "unknown"} → ${installed ?? "unknown"})`);
+				// P11: one version-change ledger event per relaunch on a version change; the release verdict reads a to < from event as a downgrade.
+				appendMetric(cfg, { type: "version-change", from: loaded ?? "unknown", to: installed ?? "unknown", ts: Math.floor(Date.now() / 1000) });
 				return runChild(process.execPath, [join(PACKAGE_ROOT, "src", "cli", "main.ts"), "main", ...carried], {
 					...process.env,
 					NEURASTREAM_RELAUNCH_SINCE: String(started),
@@ -330,6 +334,7 @@ async function nextMessage(req: RelaunchRequest, cfg: Config, mainStart: typeof 
 		note,
 		previousSessionFile: req.previousSessionFile,
 		ownerMessage: `${OWNER_AWAY}${draft}`,
+		unanswered: unansweredOwnerMessages(readOwnerMessages(), readOwnerAnswers()),
 	});
 	const bytes = Buffer.byteLength(handoff);
 	if (bytes <= MAX_INLINE_HANDOFF) {

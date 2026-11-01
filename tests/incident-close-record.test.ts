@@ -37,6 +37,8 @@ function seed(): Config {
 	const blocker = join(AGENT, "blockers/no-push");
 	writeFileSync(blocker, "#!/bin/sh\nexit 0\n");
 	chmodSync(blocker, 0o755);
+	// queueClose leaves the index 0444 (plan 20261031_0911 P2); reseed fresh instead of writing over it.
+	rmSync(join(AGENT, "INDEX.md"), { force: true });
 	writeFileSync(join(AGENT, "INDEX.md"), `${join(TOY, "docs/plans/20261020_1200_fix.md")}\n`);
 	writeFileSync(
 		join(HOME, ".config/neurastream/config.yml"),
@@ -164,11 +166,75 @@ test("an incident with a plan record becomes FIXED when a plan citing it closes;
 	]);
 });
 
-afterAll(() => {
-	for (const [k, v] of Object.entries(queueEnvBefore)) {
-		if (v === undefined) delete process.env[k];
-		else process.env[k] = v;
+// P5b (I-20261031-349, plan 20261031_0911_forced_close_index_guard): queue-close must not lift
+// INCIDENT ids out of ## Progress — an id cited only there was never fixed by a phase, so it
+// stays open while ids named in the Goal or a phase still count as fixed on close. Fails on
+// origin/main, which records fixed for every id anywhere in the plan text.
+test("an incident cited only in ## Progress stays open when the plan closes; one named in a phase is fixed", () => {
+	const cfg = seed();
+	const plan = join(TOY, "docs/plans/20261022_0900_progress-only.md");
+	writeFileSync(join(AGENT, "INDEX.md"), `${plan}\n`);
+	const idA = addIncident(cfg, { source: "realtime", kind: "ledger-contradiction", summary: "cited in a phase" }, NOW).incident.id;
+	const idB = addIncident(cfg, { source: "realtime", kind: "ledger-contradiction", summary: "cited only in the Progress section" }, NOW).incident.id;
+	writeFileSync(plan, [
+		"# progress-only",
+		"",
+		"## Goal",
+		`Fix ${idA}.`,
+		"",
+		"## Forbidden",
+		"- never push",
+		"",
+		"## Blockers",
+		"- no-push",
+		"",
+		"## Phases",
+		`- [x] P1 fix ${idA} — verify: \`true\``,
+		"",
+		"## Done check",
+		"`true`",
+		"",
+		"## Code read by Main",
+		"- `src/core/incidents.ts`",
+		"",
+		"## Progress",
+		"Status: complete",
+		"- done.",
+		"",
+		`INCIDENT ${idA}`,
+		`INCIDENT ${idB}`,
+		"",
+	].join("\n"));
+	const errors: string[] = [];
+	const logError = console.error;
+	console.error = (...args: unknown[]) => {
+		errors.push(args.map(String).join(" "));
+		logError(...args);
+	};
+	let rc: number;
+	try {
+		rc = queueClose([plan], cfg);
+	} finally {
+		console.error = logError;
 	}
+	expect(rc).toBe(0);
+	const views = readIncidents(cfg);
+	expect(views.find(i => i.id === idA)?.resolution).toMatchObject({ type: "fixed", id: idA, plan });
+	// idB appears only in ## Progress: no phase fixed it, so it stays open and the close logs it.
+	expect(views.find(i => i.id === idB)?.resolution?.type).toBeUndefined();
+	expect(errors.filter(l => l.includes(`still open: ${idB}`))).toEqual([
+		`queue-close: still open: ${idB} (cited only in ## Progress)`,
+	]);
+	expect(errors.some(l => l.includes(`still open: ${idA}`))).toBe(false);
+});
+
+afterAll(() => {
+	// The snapshot above is empty under the deletion-only preload (it deletes every inherited
+	// QUEUE_* before any module loads), so delete what queueClose applied in-process, not just
+	// the snapshot's keys, then put the snapshot back — else the nsar-qclose sandbox paths leak
+	// into the test files that run after this one.
+	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
+	Object.assign(process.env, queueEnvBefore);
 	refreshQueuePaths();
 	rmSync(TMP, { recursive: true, force: true });
 });

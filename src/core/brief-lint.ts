@@ -37,8 +37,13 @@ function escapeReg(s: string): string {
 /** A scanned path without its trailing sentence punctuation (the path loop's cleaning). */
 const clean = (raw: string): string => raw.replace(/[.,)]+$/, "");
 
-function lint(path: string, cfg: Config): { errs: string[]; warns: string[] } {
-	const text = readFileSync(path, "utf8");
+/** The same rules on a file on disk; the guard's spawn verdict lints the named plan files (plan 20261031_1207 P4). */
+export function lint(path: string, cfg: Config): { errs: string[]; warns: string[] } {
+	return lintText(readFileSync(path, "utf8"), cfg);
+}
+
+/** P4 (plan 20261031_1207): the guard's spawn verdict lints the named plan files itself, so the rules must run on text the guard already has, not only on a file path. */
+export function lintText(text: string, cfg: Config): { errs: string[]; warns: string[] } {
 	const low = text.toLowerCase();
 	const lines = text.split(/\r?\n/);
 	const first = lines[0] ?? "";
@@ -183,6 +188,10 @@ function lint(path: string, cfg: Config): { errs: string[]; warns: string[] } {
 
 export function briefLint(args: string[], cfg: Config): number {
 	if (args.length === 0) return exitText(helpDoc("brief-lint"));
+	if (args[0] === "-h" || args[0] === "--help") {
+		printText(helpDoc("brief-lint"));
+		return 0;
+	}
 	let rc = 0;
 	for (const path of args) {
 		const { errs, warns } = lint(path, cfg);

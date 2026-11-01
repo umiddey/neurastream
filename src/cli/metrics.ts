@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ConfigError, loadConfig, type Config } from "../core/config.ts";
 import { appendMetric, readMetricEvents } from "../core/metrics.ts";
+import { recordCiMr } from "../core/ci.ts";
 import { nowSec } from "../core/clock.ts";
 import type { RunSource } from "../core/adapter.ts";
 import { buildReport, type BloatSummary, type ProviderSummary } from "../core/report.ts";
@@ -13,8 +14,10 @@ import { providerFindings } from "../core/trace-provider.ts";
 import { bloatRules } from "../core/trace-bloat.ts";
 import { getAdapter } from "../adapters/index.ts";
 import { featuresReport, gatherTags, loadPlans, releasesReport, type FeaturesReport, type ReleasesReport } from "../core/results.ts";
-import { gitTop } from "../core/queue/lib.ts";
+import { activePlans, gitTop } from "../core/queue/lib.ts";
+import { recheckHolds, spawnHoldRunner, staleHoldLines, type HoldRunner } from "../core/waiting-check.ts";
 import { assignDumps, bloatReport } from "./traces.ts";
+import { withHeartbeat } from "../core/heartbeat.ts";
 
 export const METRICS_USAGE = [
 	"usage: neurastream metrics ci <repo-dir> <mr-id>",
@@ -30,70 +33,27 @@ function flagValue(args: string[], name: string): string | undefined {
 	return i >= 0 ? args[i + 1] : undefined;
 }
 
-/** Single-quotes a value for `sh -c`, so an MR id cannot inject shell syntax. */
-function shellQuote(v: string): string {
-	return `'${v.replaceAll("'", "'\\''")}'`;
-}
-
 /** Runs the configured CI command in the repo and records how many pipelines the MR needed. */
-export function recordCi(cfg: Config, repoDir: string, mr: string, now: number): number {
+export function recordCi(cfg: Config, repoDir: string, mr: string, now: number, run: HoldRunner = spawnHoldRunner(cfg.queue.waiting_check_timeout_sec)): number {
 	if (!repoDir || !mr) {
 		console.error(METRICS_USAGE);
-		return 2;
-	}
-	const template = cfg.metrics.ci_pipelines_cmd;
-	if (!template) {
-		console.error("metrics.ci_pipelines_cmd not set");
 		return 2;
 	}
 	if (!existsSync(repoDir)) {
 		console.error(`repo-dir not found: ${repoDir}`);
 		return 2;
 	}
-	const proc = Bun.spawnSync(["sh", "-c", template.replaceAll("{mr}", shellQuote(mr))], {
-		cwd: repoDir,
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	if (proc.exitCode !== 0) {
-		console.error(`ci command exited ${proc.exitCode}: ${proc.stderr.toString().trim()}`);
-		return 1;
+	const r = recordCiMr(cfg, repoDir, mr, now);
+	if (!r.ok) {
+		console.error(r.error);
+		return r.code;
 	}
-	let pipelines: unknown;
-	try {
-		pipelines = JSON.parse(proc.stdout.toString());
-	} catch {
-		pipelines = undefined;
-	}
-	if (!Array.isArray(pipelines)) {
-		console.error("ci command must print a JSON array on stdout");
-		return 1;
-	}
-	appendMetric(cfg, { type: "ci", mr, repo: repoDir, tries: pipelines.length, ts: now });
-	console.log(`ci: ${mr} needed ${pipelines.length} pipeline(s)`);
-	recordProducts(cfg, repoDir, now);
+	console.log(`ci: ${mr} needed ${r.tries} pipeline(s)`);
+	for (const s of r.skipped) console.error(s);
+	// A new CI record can change what a hold check sees, so every hold is re-checked now, not on its TTL.
+	const plans = activePlans(cfg.paths.queue_index);
+	for (const line of staleHoldLines(recheckHolds(cfg, plans, run, now, true), plans)) console.log(line);
 	return 0;
-}
-
-const PRODUCT_TIMEOUT_MS = 10_000;
-
-/**
- * Runs the repo's configured product numbers once each (metrics.product_cmds) and appends one
- * product record per number. A command that fails, times out or prints anything but one finite
- * number is skipped with a stderr line; the ci record itself never fails on a product number.
- */
-function recordProducts(cfg: Config, repoDir: string, now: number): void {
-	for (const [name, cmd] of Object.entries(cfg.metrics.product_cmds[repoDir] ?? {})) {
-		const proc = Bun.spawnSync(["sh", "-c", cmd], { cwd: repoDir, stdout: "pipe", stderr: "pipe", timeout: PRODUCT_TIMEOUT_MS });
-		const out = proc.stdout.toString().trim();
-		const value = Number(out);
-		if (proc.exitCode !== 0 || out === "" || !Number.isFinite(value)) {
-			const why = proc.exitCode !== 0 ? `exit ${proc.exitCode ?? "signal"}` : `not one number: "${out.slice(0, 40)}"`;
-			console.error(`product_cmds.${name}: skipped (${why})`);
-			continue;
-		}
-		appendMetric(cfg, { type: "product", repo: repoDir, name, value, ts: now });
-	}
 }
 
 /** Marks one guard BLOCK line (by its ISO timestamp) as a false alarm. */
@@ -286,7 +246,7 @@ export async function runMetrics(args: string[]): Promise<number> {
 	const [sub = "", ...rest] = args;
 	const now = nowSec();
 	if (sub === "ci") return recordCi(cfg, rest[0] ?? "", rest[1] ?? "", now);
-	if (sub === "report") return reportCmd(cfg, getAdapter(cfg).runSource(cfg), rest, now);
+	if (sub === "report") return withHeartbeat(cfg, "metrics-report", () => reportCmd(cfg, getAdapter(cfg).runSource(cfg), rest, now));
 	if (sub === "features") return featuresCmd(cfg, getAdapter(cfg).runSource(cfg), rest, now);
 	if (sub === "releases") return releasesCmd(cfg, getAdapter(cfg).runSource(cfg), rest, now);
 	if (sub === "false-alarm") return recordFalseAlarm(cfg, rest[0] ?? "", flagValue(rest, "--why") ?? "", now);

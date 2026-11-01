@@ -53,4 +53,4 @@ Open the file at two widths and check the root plus one drilled level:
 
 ## Host
 
-Build the HTML in a scratch directory (`mktemp -d`), not in a repo. Publish it with `neurastream pages publish <file>`. The page is deleted after 15 days. Add `--keep` only when the owner's prompt says to keep it permanently. Never commit the HTML into a repo unless the owner asks.
+Build the HTML in a scratch directory (`mktemp -d`), not in a repo. Publish it with `neurastream pages publish <file>`. A plan page (`--plan`) is refused unless it is this template with only DATA edited. The page is deleted after 15 days. Add `--keep` only when the owner's prompt says to keep it permanently. Never commit the HTML into a repo unless the owner asks.

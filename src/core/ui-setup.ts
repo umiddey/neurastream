@@ -127,8 +127,6 @@ export function uiOn(opts: UiOnOptions): number {
 	const original = existsSync(file) ? readFileSync(file, "utf8") : null;
 	const edited = editUiBlock(original, { enabled: true, owner_login: opts.login, port: opts.port ?? null });
 	if (!checkEdited(edited, home, "on", error)) return 1;
-	mkdirSync(dirname(file), { recursive: true });
-	writeFileSync(file, edited);
 	const unitPath = join(home, ".config", "systemd", "user", "neurastream-ui.service");
 	mkdirSync(dirname(unitPath), { recursive: true });
 	copyFileSync(UI_UNIT_TEMPLATE, unitPath);
@@ -140,10 +138,14 @@ export function uiOn(opts: UiOnOptions): number {
 		const r = runner(args);
 		if (r.status !== 0) {
 			if (r.stderr.trim()) error(r.stderr.trimEnd());
-			error("neurastream ui: systemctl failed — the config was already written; fix the unit and run `neurastream ui` (or this command again).");
+			error("neurastream ui: systemctl failed — the config was not changed; fix the unit and run `neurastream ui` (or this command again).");
 			return 1;
 		}
 	}
+	// The config only turns on once the unit is up: a systemctl failure leaves the config
+	// exactly as it was (a leftover unit file is fine).
+	mkdirSync(dirname(file), { recursive: true });
+	writeFileSync(file, edited);
 	const name = tailscale.dnsName() ?? tailscale.ip4();
 	const port = opts.port ?? cfg.ui.port;
 	if (name) print(`http://${name}:${port}`);

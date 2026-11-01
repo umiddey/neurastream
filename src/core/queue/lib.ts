@@ -1,12 +1,80 @@
 // Queue model: ONE index — the main index lists plan files, one absolute path per line (templates/queue/TEMPLATE.md).
 
 import { createHash } from "node:crypto";
-import { accessSync, appendFileSync, constants, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { accessSync, appendFileSync, chmodSync, constants, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Config } from "../config.ts";
 import type { ClaimStore } from "../claims.ts";
 import { strftime } from "../clock.ts";
+
+// --- landing detection (plan 20261031_0911 P4/P5): lives here, not queue-close.ts, because
+// queueProblems' landed lock needs it and lib must not import the closer that imports lib ---
+
+/** `{ ok, out }` from a git run in `cwd` (stdout+stderr, trimmed). */
+export function gitOut(cwd: string, ...args: string[]): { ok: boolean; out: string } {
+	const r = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
+	return { ok: r.status === 0, out: `${r.stdout ?? ""}${r.stderr ?? ""}`.trim() };
+}
+
+// True when commit `into` already holds everything in `from`: a clean merge of `from` into it
+// yields exactly its own tree.
+function contains(repo: string, into: string, from: string): boolean {
+	const m = gitOut(repo, "merge-tree", "--write-tree", into, from);
+	return m.ok && m.out.split("\n")[0] === gitOut(repo, "rev-parse", `${into}^{tree}`).out;
+}
+
+// Squash or rebase merges put a new commit on base, so the branch tip is never an ancestor of it.
+// The branch counts as landed when (a) a commit on base carries the same combined patch as the
+// whole branch, (b) every file the branch changed is identical on base, or (c) merging the branch
+// into some first-parent commit of base since the fork point changes nothing (the release squash
+// that shipped it; later edits on base would otherwise conflict).
+function squashMerged(repo: string, ref: string, base: string): boolean {
+	const mb = gitOut(repo, "merge-base", ref, base);
+	if (!mb.ok) return false;
+	const probe = gitOut(repo, "commit-tree", `${ref}^{tree}`, "-p", mb.out, "-m", "queue-close squash probe");
+	if (probe.ok && gitOut(repo, "cherry", base, probe.out).out.startsWith("-")) return true;
+	const files = gitOut(repo, "diff", "--name-only", mb.out, ref);
+	if (!files.ok || !files.out) return false;
+	if (gitOut(repo, "diff", "--quiet", ref, base, "--", ...files.out.split("\n")).ok) return true;
+	const since = gitOut(repo, "rev-list", "--first-parent", "--max-count=200", `${mb.out}..${base}`);
+	return since.ok && !!since.out && since.out.split("\n").some(s => contains(repo, s, ref));
+}
+
+// (d) Stacked branches squashed together with later edits conflict in (c). The plan then names
+// the release: "Landed: <commit on base> from <pre-squash commit>". Verified, never trusted: the
+// first must be on base, the branch tip must be in the second's history, and the first must
+// already contain the second.
+function declaredLanded(repo: string, ref: string, base: string, text: string): boolean {
+	const m = text.match(/^(?:- )?Landed: ([0-9a-f]{7,40}) from ([0-9a-f]{7,40})\s*$/m);
+	if (!m || !m[1] || !m[2]) return false;
+	return gitOut(repo, "merge-base", "--is-ancestor", m[1], base).ok &&
+		gitOut(repo, "merge-base", "--is-ancestor", ref, m[2]).ok &&
+		contains(repo, m[1], m[2]);
+}
+
+/** P4 (plan 20261031_0911): `branch` has landed on `base` — an ancestor, squash/rebase-merged, or declared landed in the plan text. Re-exported by queue-close.ts. */
+export function landed(repo: string, branch: string, base: string, text: string): boolean {
+	return gitOut(repo, "merge-base", "--is-ancestor", `refs/heads/${branch}`, base).ok ||
+		squashMerged(repo, `refs/heads/${branch}`, base) ||
+		declaredLanded(repo, `refs/heads/${branch}`, base, text);
+}
+
+/** The base landing is judged against outside queueClose: origin's default branch, no fetch (the filter and queueProblems run per prompt; queue-close --auto re-checks with its own upstreamBase). */
+function originBase(repo: string): string {
+	const head = gitOut(repo, "symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD");
+	return head.ok && head.out ? `refs/remotes/${head.out}` : "refs/remotes/origin/main";
+}
+
+/** P4 (plan 20261031_0911), tightened by 20261031_2320: an open plan auto-close starts for only when every phase is ticked AND (its branch exists and has landed, or it names no branch — a Main-only plan). An empty landed branch is not done: 0.2.60 held the queue on 0/N plans. Shared by the adapter's autoClose filter and queueProblems' landed lock (P5); queue-close --auto re-checks authoritatively. */
+export function autoCloseCandidate(p: Plan): boolean {
+	if (p.status !== "open" || p.errors.length) return false;
+	if (!(p.phases.total > 0 && p.phases.done === p.phases.total)) return false;
+	if (!p.branch) return true;
+	if (!gitOut(p.repo, "rev-parse", "--verify", "-q", `refs/heads/${p.branch}`).ok) return false;
+	return landed(p.repo, p.branch, originBase(p.repo), p.text);
+}
 
 const HOME = os.homedir();
 // Base set by applyQueueEnv from paths.agent_dir. Specific QUEUE_* vars still win.
@@ -61,6 +129,8 @@ export interface Plan {
 	waitingBlocked: string | null;
 	/** Why Main cannot do it. Null when the line has no `— why you:`. */
 	waitingWhy: string | null;
+	/** The command from `— still true if: \`<cmd>\``; exit 0 keeps the card up. Null without one. */
+	waitingCheck: string | null;
 	waitsOn: string[];
 	priorityId: string | null;
 	/** First level-1 "# " heading in the plan, else the file basename. */
@@ -100,6 +170,41 @@ function indexLines(file: string): string[] | null {
 // Relative lines resolve against `base` (default: the cwd); a repo INDEX.md passes its repo dir.
 export function readIndex(file = indexPath(), base = process.cwd()): string[] {
 	return [...new Set((indexLines(file) ?? []).map(l => path.resolve(base, expandHome(l))))];
+}
+
+// The one writer of the index (plan 20261031_0911 P2): the index can only grow. A plan that would
+// disappear without an explicit close/cancel/migrate reason throws before anything is written, and
+// every write lands temp+rename then chmods the file to 0444. No 0o644 before the rename: rename(2)
+// replaces a read-only target with directory-write permission only, so the file is never writable —
+// not even between the rename and the chmod. `file` defaults to the env index; the owner page
+// reorders the cfg's queue_index, which tests point away from the env index.
+export function writeIndex(lines: string[], why?: { removed?: "close" | "cancel" | "migrate" }, file = indexPath()): void {
+	const index = file;
+	const newSet = new Set(
+		lines.filter(l => l.trim()).map(l => path.resolve(expandHome(l.trim().replace(/^[-*]\s+/, "").replace(/`/g, "").trim()))),
+	);
+	const gone = readIndex(index).filter(p => !newSet.has(p));
+	if (gone.length && !why?.removed)
+		throw new Error(
+			`writeIndex: ${gone.join(", ")} would leave the index; only a close, cancel or migrate removes a plan (why: { removed: "close" | "cancel" | "migrate" })`,
+		);
+	const tmp = `${index}.tmp`;
+	writeFileSync(tmp, lines.length ? `${lines.join("\n")}\n` : "");
+	renameSync(tmp, index);
+	chmodSync(index, 0o444);
+}
+
+// Doctor's enforcement half of the same plan: the live index must sit at 0444 between writes, so
+// no program — not just an agent tool call — can rewrite it. Returns the mode it had to fix.
+export function enforceReadOnlyIndex(index = indexPath()): string | null {
+	try {
+		const mode = statSync(index).mode & 0o777;
+		if (mode === 0o444) return null;
+		chmodSync(index, 0o444);
+		return `0${mode.toString(8)}`;
+	} catch {
+		return null;
+	}
 }
 
 export function sections(text: string): Map<string, string> {
@@ -145,26 +250,40 @@ const MAIN_ONLY_LINE = /^\s*(?:[-*]\s+)?(Status:|WAITING on owner:|Waits on:|Can
 
 const WAITING_BLOCKED = " — blocked: ";
 const WAITING_WHY = " — why you: ";
+/** The hold's own proof: exit 0 means the hold is still real (src/core/waiting-check.ts). */
+const WAITING_CHECK = " — still true if: ";
+
+export interface WaitingParts {
+	ask: string;
+	blocked: string | null;
+	why: string | null;
+	/** The backticked command after `— still true if:`, or null. */
+	check: string | null;
+}
 
 /** Split `WAITING on owner:` text. An old one-part line is ask only; a missing part is null. */
-export function splitWaiting(line: string): { ask: string; blocked: string | null; why: string | null } {
-	const marks: { at: number; kind: "blocked" | "why"; len: number }[] = [];
+export function splitWaiting(line: string): WaitingParts {
+	const marks: { at: number; kind: "blocked" | "why" | "check"; len: number }[] = [];
 	const blockedAt = line.indexOf(WAITING_BLOCKED);
 	const whyAt = line.indexOf(WAITING_WHY);
+	const checkAt = line.indexOf(WAITING_CHECK);
 	if (blockedAt >= 0) marks.push({ at: blockedAt, kind: "blocked", len: WAITING_BLOCKED.length });
 	if (whyAt >= 0) marks.push({ at: whyAt, kind: "why", len: WAITING_WHY.length });
+	if (checkAt >= 0) marks.push({ at: checkAt, kind: "check", len: WAITING_CHECK.length });
 	marks.sort((a, b) => a.at - b.at);
-	if (marks.length === 0) return { ask: line.trim(), blocked: null, why: null };
+	if (marks.length === 0) return { ask: line.trim(), blocked: null, why: null, check: null };
 	let blocked: string | null = null;
 	let why: string | null = null;
+	let check: string | null = null;
 	for (let i = 0; i < marks.length; i++) {
 		const mark = marks[i]!;
 		const end = i + 1 < marks.length ? marks[i + 1]!.at : line.length;
 		const text = line.slice(mark.at + mark.len, end).trim();
 		if (mark.kind === "blocked") blocked = text || null;
-		else why = text || null;
+		else if (mark.kind === "why") why = text || null;
+		else check = text.match(/`([^`]+)`/)?.[1]?.trim() || null;
 	}
-	return { ask: line.slice(0, marks[0]!.at).trim(), blocked, why };
+	return { ask: line.slice(0, marks[0]!.at).trim(), blocked, why, check };
 }
 
 /** Keep the first `keep` entries (the file lists them newest first) and move the rest. Pure. */
@@ -253,7 +372,7 @@ function reuseProblems(repo: string, file: string, secs: Map<string, string>, re
 }
 
 export function parsePlan(repo: string, file: string, text: string | null, blockersDir = blockersDirPath(), reviewAgents: string[] = []): Plan {
-	const empty = { repo, file, text: "", status: null, blockers: [], doneCheck: null, worktree: null, branch: null, appliesTo: [], waiting: false, waitingLine: null, waitingAsk: null, waitingBlocked: null, waitingWhy: null, waitsOn: [], priorityId: null, title: path.basename(file), goal: [], summary: null, phases: { done: 0, total: 0 }, started: false };
+	const empty = { repo, file, text: "", status: null, blockers: [], doneCheck: null, worktree: null, branch: null, appliesTo: [], waiting: false, waitingLine: null, waitingAsk: null, waitingBlocked: null, waitingWhy: null, waitingCheck: null, waitsOn: [], priorityId: null, title: path.basename(file), goal: [], summary: null, phases: { done: 0, total: 0 }, started: false };
 	if (text === null) return { ...empty, errors: ["plan file listed in the index does not exist"] };
 	const errors: string[] = [];
 	const secs = sections(text);
@@ -290,7 +409,7 @@ export function parsePlan(repo: string, file: string, text: string | null, block
 	if (bg > BACKGROUND_MAX_LINES) errors.push(`"## Background" has ${bg} lines (max ${BACKGROUND_MAX_LINES}); link a separate file for long context`);
 	const wt = headerField(text, "Worktree");
 	const waitingLine = text.match(/^WAITING on owner:[ \t]*(.*)$/m)?.[1] ?? null;
-	const waitingParts = waitingLine === null ? { ask: null, blocked: null, why: null } : splitWaiting(waitingLine);
+	const waitingParts = waitingLine === null ? { ask: null, blocked: null, why: null, check: null } : splitWaiting(waitingLine);
 	return {
 		repo,
 		file,
@@ -306,6 +425,7 @@ export function parsePlan(repo: string, file: string, text: string | null, block
 		waitingAsk: waitingParts.ask,
 		waitingBlocked: waitingParts.blocked,
 		waitingWhy: waitingParts.why,
+		waitingCheck: waitingParts.check,
 		waitsOn: [...text.matchAll(/^[ \t]*(?:[-*][ \t]+)?Waits on:[ \t]*(.+)$/gm)].map(m => m[1]!.trim()),
 		priorityId: text.match(/^PRIORITY-ID:\s*`?([A-Z]{2}[0-9]{2})`?/m)?.[1] ?? null,
 		title: text.match(/^# (.+)$/m)?.[1]?.trim() || path.basename(file),
@@ -453,7 +573,7 @@ export function touchedPaths(toolName: string, input: Record<string, unknown>, c
 }
 
 export const MUTATING =
-	/(\brm\b|\bmv\b|\bcp\b|\btouch\b|\btruncate\b|\bchmod\b|\bln\b|\bsed\s+(-\w*\s+)*-i|\bperl\s+(-\w*\s+)*-[a-z]*i|\btee\b|(^|[^0-9&>=-])>{1,2}\s*[^\s&>]|\bgit\s+(rm|mv|checkout|restore|apply|am|stash|reset|clean)\b|\bpatch\b|\binstall\b|\bdd\b|writeFile|appendFile|Bun\.write|unlink|rmSync|\.write_text\(|\.write_bytes\(|\bopen\([^)]*,\s*["'][wax]b?\+?["']|shutil\.|os\.(remove|rename|replace|unlink|chmod)|\.writelines\()/;
+	/(\brm\b|\bmv\b|\bcp\b|\btouch\b|\btruncate\b|\bchmod\b|\bln\b|\bsed\s+(-\w*\s+)*-i|\bperl\s+(-\w*\s+)*-[a-z]*i|\btee\b|(^|[^0-9&>=-])>{1,2}\s*[^\s&>]|\bgit\s+(rm|mv|checkout|restore|apply|am|stash|reset|clean)\b|\bpatch\b|\binstall\b|\bdd\b|writeFile|appendFile|Bun\.write|unlink|rmSync|renameSync|cpSync|copyFileSync|linkSync|symlinkSync|mkdtempSync|mkdirSync|rmdirSync|\.write_text\(|\.write_bytes\(|\bopen\([^)]*,\s*["'][wax]b?\+?["']|shutil\.|os\.(remove|rename|replace|unlink|chmod)|\.writelines\()/;
 
 export function withoutQuotedRedirects(code: string): string {
 	return code.replace(/'[^']*'/g, m => m.replace(/>/g, " ")).replace(/"(?:[^"\\]|\\.)*"/g, m => m.replace(/>/g, " "));
@@ -669,6 +789,9 @@ function protectedPaths(): string[] {
 		`${agent}/agents/`,
 		`${agent}/AGENTS.md`,
 		`${agent}/CANCELLED.md`,
+		// The plan index (plan 20261031_0911 P2): append-only and 0444 on disk. Agents add or
+		// reorder through `neurastream queue add` / `queue move`; only the owner writes directly.
+		indexPath(),
 		`${stateDirPath()}/`,
 		`${agent}/config.yml`,
 		// The user's neurastream config file, even when agent_dir points elsewhere: an agent that
@@ -806,7 +929,7 @@ const STOP = new Set(
 );
 function keyWords(text: string): string[] {
 	const words = text.toLowerCase().match(/[a-z0-9][a-z0-9_.-]{3,}/g) ?? [];
-	return [...new Set(words.map(w => w.replace(/[._-]+$/, "")).filter(w => w.length >= 4 && !STOP.has(w)))].sort();
+	return [...new Set(words.map(w => w.replace(/[._-]+$/, "")).filter(w => w.length >= 4 && !STOP.has(w)))].toSorted();
 }
 export function planWords(text: string): string[] {
 	const title = text.match(/^# (.+)$/m)?.[1] ?? "";
@@ -949,6 +1072,12 @@ export function awaitingMerge(p: Plan): boolean {
 	return p.status === "complete" && (lastCloseResult(p.file) ?? "").startsWith("queue-close: AWAITING merge");
 }
 
+/** P5 (plan 20261031_0911): the plan's last queue-close attempt did not close it — a refusal or still awaiting merge ("already running" is another close in flight, not a failure). */
+export function lastCloseFailed(file: string): boolean {
+	const last = lastCloseResult(file);
+	return !!last && !last.startsWith("queue-close: CLOSED") && !last.startsWith("queue-close: already");
+}
+
 /**
  * I-20261025-208: index order is priority, so an open plan must never sit above an open plan of
  * this list it waits on. A "Waits on" target that is not an open plan of the list (complete,
@@ -987,7 +1116,16 @@ export function queueProblems(index = INDEX, blockersDir = BLOCKERS_DIR, reviewA
 			const last = lastCloseResult(p.file);
 			probs.push({ where: p.file, problem: `says ${p.status} but is still indexed; auto-close runs at every prompt, every 15 min and after a push${last ? ` (last: ${last.replace(/^queue-close: /, "")})` : ""}` });
 		}
+		// P5 (plan 20261031_0911): a landed open plan whose auto-close failed locks the queue — the
+		// spawn gate and the stop gate refuse everything that does not name it until it closes.
+		if (p.status === "open" && autoCloseCandidate(p) && lastCloseFailed(p.file))
+			probs.push({ where: p.file, problem: `landed but not closed: ${path.basename(p.file)} — ${(lastCloseResult(p.file) ?? "").replace(/^queue-close: /, "")}` });
+		// P5: a done check that rides `merge-base --is-ancestor` re-does the landing check the
+		// closer already owns, squash-aware — and misses squashes.
+		if (p.doneCheck?.includes("merge-base --is-ancestor"))
+			probs.push({ where: p.file, problem: "done check runs git merge-base --is-ancestor — queue-close checks landing itself, squash-aware; drop it" });
 		for (const c of cancelledMatches(p)) probs.push({ where: p.file, problem: cancelledProblem(p, c) });
+		probs.push(...doneClaimProblems(p));
 		// A plan file must live in a main checkout, never in a linked worktree.
 		const g = gitTop(p.file);
 		if (g && g.top !== g.repo)
@@ -1012,17 +1150,93 @@ export function openWaits(p: Plan, plans: Plan[], rank: Map<string, number>): nu
 	return p.waitsOn.map(f => rank.get(f)).filter((at): at is number => at !== undefined && plans[at - 1]!.status === "open");
 }
 
-export function queueSummary(index = INDEX, reviewAgents: string[] = [], claimStore?: ClaimStore): string {
+// P4 (plan 20261027_0915): from this day on, a Progress entry claiming a phase done/complete/
+// "nothing left"/"finished" must quote that phase's verify command (or the Done check) and its
+// result, or queue-check fails the plan; entries without a date or dated before it are grandfathered.
+export const DONE_CLAIM_SINCE = "2026-11-01";
+
+const DONE_WORD = /\b(?:done|completed?|nothing left|finished)\b/i;
+const NOT_DONE = /\b(?:not|never)\s+(?:done|completed?|finished)\b/i;
+const RESULT_MARK = /\bexit(?: code|ed)?\s*\d|\b\d+ pass|\b\d+ fail|\bpass(?:ed|ing)?\b|\bfail(?:ed|ing)?\b|\bresult\b/i;
+
+/** Progress entries: the "- " line plus the lines up to the next entry start (trimProgressBody's rule). */
+function progressEntryBlocks(text: string): string[] {
+	const lines = progressBody(text).split("\n").filter(l => !l.startsWith(POINTER_PREFIX));
+	const blocks: string[] = [];
+	for (let i = 0; i < lines.length; i++) {
+		if (!lines[i]!.startsWith("- ") || MAIN_ONLY_LINE.test(lines[i]!)) continue;
+		let j = i + 1;
+		while (j < lines.length && !(lines[j]!.startsWith("- ") && !MAIN_ONLY_LINE.test(lines[j]!))) j++;
+		blocks.push(lines.slice(i, j).join("\n"));
+		i = j - 1;
+	}
+	return blocks;
+}
+
+/** A dated done claim about phase Pn must quote Pn's verify (or the Done check) with its result; else one problem per entry. */
+function doneClaimProblems(p: Plan): QueueProblem[] {
+	const probs: QueueProblem[] = [];
+	const verifies = new Map<string, string>();
+	for (const line of items(sections(p.text).get("phases") ?? "")) {
+		const id = /\[.\]\s*(P\d+[a-z]?)/i.exec(line)?.[1];
+		const cmd = /verify:\s*`([^`]+)`/.exec(line)?.[1];
+		if (id && cmd) verifies.set(id.toUpperCase(), cmd);
+	}
+	for (const entry of progressEntryBlocks(p.text)) {
+		const date = /^- (\d{4}-\d{2}-\d{2})/.exec(entry)?.[1];
+		if (!date || date < DONE_CLAIM_SINCE || !DONE_WORD.test(entry) || NOT_DONE.test(entry)) continue;
+		const ids = [...entry.matchAll(/\b(P\d+[a-z]?)\b/g)].map(m => m[1]!.toUpperCase());
+		if (!ids.length) continue;
+		const backings = [...new Set(ids.flatMap(id => verifies.get(id) ?? []))];
+		if (p.doneCheck) backings.push(p.doneCheck);
+		// No verify command and no Done check to quote: nothing this plan can back a claim with, so it is not judged.
+		if (!backings.length) continue;
+		if (backings.some(c => entry.includes(c)) && RESULT_MARK.test(entry)) continue;
+		probs.push({ where: p.file, problem: `unbacked done claim: ${p.file} ${entry.split("\n")[0]!.slice(0, 80)}` });
+	}
+	return probs;
+}
+
+/** P4: a hold dated DONE_CLAIM_SINCE or later without `still true if` is a warning; the exit code never changes. */
+export function holdWarnings(plans: Plan[]): string[] {
+	return plans.flatMap(p => {
+		if (!p.waiting || p.waitingCheck) return [];
+		const date = /^(\d{4}-\d{2}-\d{2})/.exec(p.waitingLine ?? "")?.[1];
+		return date && date >= DONE_CLAIM_SINCE ? [`${p.file}: WAITING hold dated ${date} carries no "still true if" check`] : [];
+	});
+}
+
+// P5b (plan 20261031_1207, I-20261031-330): the summary rides every Main prompt and the stop
+// refusal repeats on every blocked stop, so both cap their lists; queue-check prints everything
+// and passes `cap = Infinity`.
+export const SUMMARY_CAP = 10;
+
+export function queueSummary(index = INDEX, reviewAgents: string[] = [], staleOrClaims: ReadonlySet<string> | ClaimStore | null = null, cap: number = SUMMARY_CAP): string {
 	// Index order IS priority (20261025_0215_index_priority): the list is flat and ranked,
 	// rank 1 = the index's top line; repos only surface through each plan's own path.
 	const plans = activePlans(index);
 	const rank = new Map(plans.map((p, i) => [p.file, i + 1] as const));
 	const repos = [...new Set(plans.map(p => p.repo))];
 	const lines = [`Queue (${index}): ${plans.length ? `${plans.length} plan(s) in ${repos.length} repo(s)` : "empty, no open work"}`];
-	plans.forEach((p, i) => {
+	let claimStore: ClaimStore | null = null;
+	let stale: ReadonlySet<string> = new Set<string>();
+	if (staleOrClaims != null && typeof (staleOrClaims as ClaimStore).holder === 'function') {
+		claimStore = staleOrClaims as ClaimStore;
+	} else {
+		stale = staleOrClaims as ReadonlySet<string> ?? new Set<string>();
+	}
+	plans.slice(0, cap).forEach((p, i) => {
 		const status = awaitingMerge(p) ? "complete, awaiting merge" : (p.status ?? "INVALID");
-		const hold = p.waiting ? `WAITING on owner: ${(p.waitingLine ?? "").slice(0, 80)}` : "";
-		const waits = openWaits(p, plans, rank).map(at => `waits on #${at}`);
+		const ask = (p.waitingLine ?? "").slice(0, 80);
+		const hold = p.waiting ? (stale?.has(p.file) ? `[STALE?] ${ask}` : `WAITING on owner: ${ask}`) : "";
+		// I-20261025-208: an open plan waiting on an open plan of the queue shows the target's rank.
+		const waits: string[] = [];
+		if (p.status === "open")
+			for (const f of p.waitsOn) {
+				const at = rank.get(f);
+				if (at === undefined || plans[at - 1]!.status !== "open") continue;
+				waits.push(`waits on #${at}`);
+			}
 		const done = p.phases.total ? `${p.phases.done}/${p.phases.total} done` : "";
 		// P4 multi-main (20261027_1300): with the claim store handed in (guards' inject and
 		// queue-check pass it), every plan shows `held by <id> since HH:MM` or `free`.
@@ -1034,7 +1248,13 @@ export function queueSummary(index = INDEX, reviewAgents: string[] = [], claimSt
 	});
 	const nCancelled = repos.reduce((n, repo) => n + readCancelled(repo).length, 0);
 	if (nCancelled) lines.push(`Cancelled rules: ${nCancelled}`);
+	const more = plans.length - Math.min(plans.length, cap);
+	if (more > 0) lines.push(`… ${more} more plans (queue-check lists all)`);
 	const probs = queueProblems(index, BLOCKERS_DIR, reviewAgents);
-	if (probs.length) lines.push(`Problems (fix first):`, ...probs.map(q => `  - ${q.where}: ${q.problem}`));
+	const shown = new Set(plans.slice(0, cap).map(p => p.file));
+	const planProbs = probs.filter(x => shown.has(x.where));
+	const hidden = probs.length - planProbs.length;
+	if (planProbs.length) lines.push(`Problems (fix first):`, ...planProbs.map(x => `  - ${x.where}: ${x.problem}`));
+	if (hidden > 0) lines.push(`… ${hidden} more problems (queue-check)`);
 	return lines.join("\n");
 }

@@ -1,4 +1,4 @@
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -25,13 +25,8 @@ import { buildHandoff, noteRequest } from "../src/core/rollover.ts";
 import { metricsDueLine } from "../src/core/main-start.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "metrics-"));
-// Inherited QUEUE_* (the caller's live session, or an in-process adapter in an earlier test
-// file) beats the sandbox config in loadConfig below; save and delete them before it runs;
-// afterAll restores them.
-const queueEnvBefore = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("QUEUE_")));
+// Inherited QUEUE_* paths are the bunfig preload's job now (plan 20261031_0911 P3).
 afterAll(() => {
-	for (const k of Object.keys(queueEnvBefore)) delete process.env[k];
-	Object.assign(process.env, queueEnvBefore);
 	rmSync(TMP, { recursive: true, force: true });
 });
 
@@ -207,6 +202,9 @@ test("M5 groups every open: <plan list> block reason into one key", () => {
 function cfgWith(home: string, ciCmd: string) {
 	const cfg = loadConfig({ home });
 	cfg.metrics.ci_pipelines_cmd = ciCmd;
+	cfg.paths.score_state = join(home, "score");
+	cfg.paths.queue_state = join(home, "state");
+	cfg.paths.queue_index = join(home, "INDEX.md");
 	return cfg;
 }
 
@@ -215,6 +213,30 @@ test("metrics ci runs the configured command in the repo and records tries = arr
 	expect(recordCi(cfg, TMP, "42", NOW)).toBe(0);
 	const ci = readMetricEvents(cfg).filter((e) => e.type === "ci");
 	expect(ci).toEqual([{ type: "ci", mr: "42", repo: TMP, tries: 3, ts: NOW }]);
+});
+
+test("metrics ci re-runs every hold check after recording and prints the stale holds", () => {
+	const cfg = cfgWith(join(TMP, "home-ci-holds"), "printf '[1,2,3]' # {mr}");
+	const file = join(TMP, "ci-holds", "20261027_0008_hold.md");
+	mkdirSync(dirname(file), { recursive: true });
+	writeFileSync(file, "# Hold\n\n## Progress\nStatus: open\nWAITING on owner: keep the rollover paused — still true if: `exit 1 # metrics-ci`\n");
+	mkdirSync(dirname(cfg.paths.queue_index), { recursive: true });
+	writeFileSync(cfg.paths.queue_index, `${file}\n`);
+	const printed: string[] = [];
+	const ran: string[] = [];
+	const log = spyOn(console, "log").mockImplementation((...args: unknown[]) => {
+		printed.push(args.join(" "));
+	});
+	try {
+		expect(recordCi(cfg, TMP, "42", NOW, cmd => {
+			ran.push(cmd);
+			return { code: 1 };
+		})).toBe(0);
+	} finally {
+		log.mockRestore();
+	}
+	expect(ran).toEqual(["exit 1 # metrics-ci"]);
+	expect(printed).toContain(`STALE HOLD: ${file}: keep the rollover paused — check \`exit 1 # metrics-ci\` exited 1`);
 });
 
 test("metrics ci with an empty command template exits 2", () => {
@@ -286,6 +308,14 @@ test("report ends with the weekly prompt-bloat line when the caller supplies one
 	const none = buildReport(cfg, source, DAYS, NOW, undefined, { runs: 9, flagged: 0, largest: null });
 	expect(none.text).toContain("Prompt bloat over 9 runs: 0 flagged");
 	expect(buildReport(cfg, source, DAYS, NOW).text).not.toContain("Prompt bloat");
+});
+
+test("report counts ci-flaky events in the window: a same-commit red then green is one flaky job", () => {
+	const cfg = cfgWith(join(TMP, "home-flaky"), "");
+	const source = { listRuns: () => [], mainSession: () => null } as unknown as RunSource;
+	appendMetric(cfg, { type: "ci-flaky", repo: "/w/app", sha: "abc123", ts: NOW - 10 });
+	appendMetric(cfg, { type: "ci-flaky", repo: "/w/app", sha: "old999", ts: NOW - 30 * DAY });
+	expect(buildReport(cfg, source, DAYS, NOW).text).toContain("Flaky jobs: 1 same-commit red→green re-runs");
 });
 
 test("metrics report scans the window's runs for the bloat line: a rejected call with no usage flags from its dump", async () => {
