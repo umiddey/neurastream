@@ -27,6 +27,7 @@ const OWN_IP = "100.95.10.2"; // fixture: this machine's tailnet address
 const PEER = "100.95.10.9"; // fixture: the owner's phone
 const TS: Tailscale = {
 	ip4: () => OWN_IP,
+	state: () => "running",
 	dnsName: () => "ukd.tail4295de.ts.net",
 	whois: (peer: string) => (peer === PEER ? OWNER : null),
 	logins: () => [OWNER],

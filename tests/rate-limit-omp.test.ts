@@ -102,7 +102,7 @@ const logLines = (): string[] => (existsSync(GUARD_LOG) ? readFileSync(GUARD_LOG
 
 /** The rate-limit episode posts among every discord hit: a normal allowed stop's hand-back post
  *  (the existing behavior) lands on the same fake server and must not be counted here. */
-const rlHits = (): Hit[] => discordHits.filter(h => h.text.startsWith("⏳"));
+const rlHits = (): Hit[] => discordHits.filter(h => h.text.includes("] ⏳") || h.text.startsWith("⏳"));
 
 // --- event builders: the shapes omp's events carry (plan 20261025_0130) ---
 

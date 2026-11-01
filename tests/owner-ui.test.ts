@@ -18,6 +18,8 @@ import { appendMetric } from "../src/core/metrics.ts";
 import { checkTool } from "../src/core/guards.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { createOmpAdapter, reset as resetAdapter, ownerInboxCursorPath, ownerInboxMessage, type ExtensionHost } from "../src/adapters/omp/index.ts";
+import { fileClaimStore } from "../src/core/claims.ts";
+import { tryLock } from "../src/core/file-lock.ts";
 import { recordPublish } from "../src/core/pages-expiry.ts";
 import { inboxPath, agentRows, buildPageData, ciRows, dropSlot, edgeScrollStep, incidentRows, machineRow, nowStats, questionRows, queueRows, renderPage, resultsCachePath, scoresData, startOwnerUi, type OwnerUiOptions, type OwnerUiServer, type PageData, type ResultsData } from "../src/core/owner-ui.ts";
 import type { ChainRow, FeaturesReport, ReleaseRow, ReleaseSideStats } from "../src/core/results.ts";
@@ -131,6 +133,7 @@ const RUNS: RunSource = {
 // tailnet peer resolves to someone else; everything else makes whois fail.
 const TS: Tailscale = {
 	ip4: () => OWN_IP,
+	state: () => "running",
 	// The seam's contract (like realTailscale): the MagicDNS name, trailing dot already stripped.
 	dnsName: () => DNS_NAME,
 	whois: (peer: string) => (peer === PEER ? OWNER : peer === "100.95.10.7" ? "other@example.com" : null),
@@ -157,7 +160,8 @@ beforeEach(() => {
 	// paths. Re-assert CFG's queue paths first, so env and CFG name the same files again.
 	applyQueueEnv(CFG);
 	rmSync(inboxPath(), { force: true });
-	rmSync(ownerInboxCursorPath(), { force: true });
+	rmSync(ownerInboxCursorPath(CFG), { force: true });
+	rmSync(join(stateDirPath(), "mains"), { recursive: true, force: true });
 	rmSync(unlockPath(), { force: true });
 	rmSync(join(stateDirPath(), "autonomy-tier"), { force: true });
 	rmSync(join(stateDirPath(), "autonomy-go"), { force: true });
@@ -408,7 +412,7 @@ test("ui.enabled false refuses to start", () => {
 });
 
 test("a silent tailscale refuses to start on the default hostname", () => {
-	expect(() => ui({ tailscale: { ip4: () => null, dnsName: () => null, whois: () => null, logins: () => null }, hostname: undefined })).toThrow();
+	expect(() => ui({ tailscale: { ip4: () => null, dnsName: () => null, whois: () => null, logins: () => null, state: () => "stopped" }, hostname: undefined })).toThrow();
 });
 
 test("a real loopback request (no peer injection) gets 403", async () => {
@@ -743,9 +747,9 @@ test("every request logs UI <method> <path> login=<l> → <code> to the guard lo
 	await get(stranger);
 	const lines = guardLogLines();
 	expect(lines.length).toBe(3);
-	expect(lines[0]).toMatch(/^\S+ UI GET \/ login=owner@example\.com → 200$/);
-	expect(lines[1]).toMatch(/^\S+ UI GET \/nope login=owner@example\.com → 404$/);
-	expect(lines[2]).toMatch(/^\S+ UI GET \/ login=- → 403$/);
+	expect(lines[0]).toMatch(/^\S+ \[main\] UI GET \/ login=owner@example\.com → 200$/);
+	expect(lines[1]).toMatch(/^\S+ \[main\] UI GET \/nope login=owner@example\.com → 404$/);
+	expect(lines[2]).toMatch(/^\S+ \[main\] UI GET \/ login=- → 403$/);
 });
 
 // --- resilience ---
@@ -886,7 +890,7 @@ test("the adapter delivers an undelivered inbox record to Main once; the cursor 
 	appendFileSync(inboxPath(), `${rec("yes")}\n`);
 	handlers.get("agent_end")!({ willContinue: false }, mainCtx);
 	expect(sent).toEqual([`Owner answered on the phone page — 20261019_wait.md: ${QUESTION} → yes`]);
-	expect(readFileSync(ownerInboxCursorPath(), "utf8")).toBe("1\n");
+	expect(readFileSync(ownerInboxCursorPath(CFG), "utf8")).toBe("1\n");
 	// A second poll at the same cursor sends nothing.
 	handlers.get("agent_end")!({ willContinue: false }, mainCtx);
 	expect(sent.length).toBe(1);
@@ -909,7 +913,7 @@ test("deliverOwnerInbox sends answer then unlock in order and moves the cursor b
 	expect(sent[1]).toBe(
 		`Owner unlocked the guards from the phone page for 5 min (until ${strftime(until, "%H:%M")}). Do the step that waited on the unlock now.`,
 	);
-	expect(readFileSync(ownerInboxCursorPath(), "utf8")).toBe("2\n");
+	expect(readFileSync(ownerInboxCursorPath(CFG), "utf8")).toBe("2\n");
 });
 
 test("a torn inbox tail waits for the write to complete and is never delivered twice", () => {
@@ -930,7 +934,7 @@ test("a malformed complete inbox row is consumed but skipped, so delivery never 
 	appendFileSync(inboxPath(), `not json\n${rec("after garbage")}\n`);
 	handlers.get("agent_end")!({}, mainCtx);
 	expect(sent).toEqual([`Owner answered on the phone page — 20261019_wait.md: ${QUESTION} → after garbage`]);
-	expect(readFileSync(ownerInboxCursorPath(), "utf8")).toBe("2\n");
+	expect(readFileSync(ownerInboxCursorPath(CFG), "utf8")).toBe("2\n");
 });
 
 test("a subagent session never delivers and never moves the cursor", () => {
@@ -939,7 +943,7 @@ test("a subagent session never delivers and never moves the cursor", () => {
 	appendFileSync(inboxPath(), `${rec("yes")}\n`);
 	handlers.get("agent_end")!({}, subCtx);
 	expect(sent).toEqual([]);
-	expect(existsSync(ownerInboxCursorPath())).toBe(false);
+	expect(existsSync(ownerInboxCursorPath(CFG))).toBe(false);
 });
 
 test("Main's session start arms a 15 s inbox poll; a subagent session arms none", () => {
@@ -948,18 +952,18 @@ test("Main's session start arms a 15 s inbox poll; a subagent session arms none"
 	try {
 		const { pi, sent, handlers } = fakePi();
 		createOmpAdapter(pi, CFG);
-		let tick: (() => void) | null = null;
-		let ms = 0;
+		const timers: { cb: () => void; ms: number }[] = [];
 		handlers.get("session_start")!(undefined, {
 			setInterval: (cb: () => void, every: number) => {
-				tick = cb;
-				ms = every;
-				return 7;
+				timers.push({ cb, ms: every });
+				return timers.length;
 			},
 		});
-		expect(ms).toBe(15_000);
+		// The inbox poll (15 s) among the session timers (autoClose, the multi-main claim beat).
+		const poll = timers.find(t => t.ms === 15_000);
+		expect(poll).toBeTruthy();
 		appendFileSync(inboxPath(), `${rec("later")}\n`);
-		tick!();
+		poll!.cb();
 		expect(sent).toEqual([`Owner answered on the phone page — 20261019_wait.md: ${QUESTION} → later`]);
 		// A subagent session arms no timer (the handler returns before arming).
 		let subTimers = 0;
@@ -1011,6 +1015,24 @@ test("guards refuse agent shell commands that start the owner page", () => {
 	expect(denies("grep neurastream ui notes.md")).toBe(false);
 	// The refusal is logged plan-guard style.
 	expect(planGuardLogLines().some(l => l.includes("ui-start"))).toBe(true);
+});
+
+// --- P5g (plan 20261027_0915): the page-start check reads only real shell commands ---
+
+test("P5g: eval prose that only carries the page's words is not a page start; the real exits still are", () => {
+	const cfg: Config = { ...CFG, guards: { ...CFG.guards, shell_tools: ["bash", "eval"] } };
+	const ev = (code: string): ToolEvent => ({ tool: "eval", input: { code }, cwd: TMP, agent: "sub", agentId: "p5g-eval", calls: 0, paths: [], writes: [], command: "" });
+	// An eval cell whose string data only mentions the page command runs nothing: a backticked
+	// mention in a plan-file edit and a plan-quote template literal are prose, not shell.
+	expect(checkTool(ev('edit(plan, { old: "x", new: "the card runs `neurastream ui` to serve the page" })'), cfg).allow).toBe(true);
+	expect(checkTool(ev("const forbidden = `\nneurastream ui stays the owner's move\n`;"), cfg).allow).toBe(true);
+	// Real shell exits stay the owner's move: a !cmd line, Bun.$ and spawn arguments.
+	expect(checkTool(ev("!neurastream ui"), cfg).allow).toBe(false);
+	expect(checkTool(ev("await Bun.$`neurastream ui`.nothrow()"), cfg).allow).toBe(false);
+	expect(checkTool(ev('Bun.spawn(["neurastream", "ui"])'), cfg).allow).toBe(false);
+	expect(checkTool(ev("Bun.spawnSync(['neurastream', 'ui'])"), cfg).allow).toBe(false);
+	// bash keeps its whole command line.
+	expect(checkTool({ tool: "bash", input: { command: "systemctl --user start neurastream-ui" }, cwd: TMP, agent: "sub", agentId: "p5g-bash", calls: 0, paths: [], writes: [], command: "" }, cfg).allow).toBe(false);
 });
 
 // --- CLI: `neurastream ui` keeps serving (the 0.2.8 unit exited 0 after 90 ms) ---
@@ -1129,7 +1151,7 @@ test("agentRows: short model after the last /, detail and minutes since startedA
 });
 
 test("queueRows: open plans only, with repo label, title, status and waiting", () => {
-	expect(queueRows(CFG)).toEqual([{ repo: "toy", file: PLAN_W, title: "Toy plan", status: "open", waiting: true, summary: "Owner page toy.", state: "waits you" }]);
+	expect(queueRows(CFG)).toEqual([{ repo: "toy", file: PLAN_W, title: "Toy plan", status: "open", waiting: true, summary: "Owner page toy.", state: "waits you", holder: null }]);
 });
 
 test("ciRows: newest first, mr as text, tries as number", () => {
@@ -2134,4 +2156,50 @@ test("base: a repo with only published pages lists them instead of the no-repo c
 	const body = await (await get(svc, "/?tab=knowledge&repo=solo-repo")).text();
 	expect(body).toContain(`<a href="http://${DNS_NAME}:7788/solo.html">solo.html</a>`);
 	expect(body).not.toContain("No repo named");
+});
+
+// --- P5 (plan 20261027_1300): the holder chip and per-Main addressing ---
+
+test("queue rows carry the holder and the card shows the Main chip (P5)", () => {
+	fileClaimStore(CFG.paths.queue_state, nowSec, CFG.queue.claim_ttl_min).claim(PLAN_W, "a");
+	const rows = queueRows(CFG);
+	expect(rows[0]).toMatchObject({ file: PLAN_W, holder: "a" });
+	const body = renderPage(CFG, { ...EMPTY_DATA, queue: rows }, new URLSearchParams(), "n");
+	expect(body).toContain('<span class="chip c-held">Main a</span>');
+});
+
+/** Holds <id>'s running lock so the page's running check sees it; returns release. */
+function runMainUi(id: string): () => void {
+	mkdirSync(join(stateDirPath(), "mains", id), { recursive: true });
+	return tryLock(join(stateDirPath(), "mains", id, "running.lock"))!.release;
+}
+
+test("@<id> messages go only to that Main; @gone is refused and stores nothing (P5)", async () => {
+	const releaseA = runMainUi("a");
+	const svc = ui();
+	const res = await postMessage(svc, { text: "@a check the queue" }, []);
+	expect(res.status).toBe(303);
+	expect(inboxRecords()[0]).toMatchObject({ to: "a" });
+	const meta = JSON.parse(readFileSync(join(messagesDir(), String(inboxRecords()[0]!.id), "message.json"), "utf8")) as Record<string, unknown>;
+	expect(meta.to).toBe("a");
+	const gone = await postMessage(svc, { text: "@gone hello" }, []);
+	expect(gone.status).toBe(400);
+	expect(await gone.text()).toContain("Main gone is not running; running: a");
+	expect(storedMessages()).toHaveLength(1);
+	expect(inboxRecords()).toHaveLength(1);
+	releaseA();
+});
+
+test("the to picker targets a running Main; a stale target is refused; plain text goes to all (P5)", async () => {
+	const releaseA = runMainUi("a");
+	const svc = ui();
+	expect((await postMessage(svc, { text: "via picker", to: "a" }, [])).status).toBe(303);
+	expect(inboxRecords()[0]).toMatchObject({ to: "a" });
+	const stale = await postMessage(svc, { text: "stale", to: "b" }, []);
+	expect(stale.status).toBe(400);
+	expect(await stale.text()).toContain("Main b is not running; running: a");
+	expect(storedMessages()).toHaveLength(1);
+	expect((await postMessage(svc, { text: "plain to all" }, [])).status).toBe(303);
+	expect(inboxRecords()[1]).toMatchObject({ to: "" });
+	releaseA();
 });

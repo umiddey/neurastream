@@ -381,6 +381,12 @@ export interface OwnRun {
 	 * it, so it replaces the final-text check below.
 	 */
 	claimedNone?: boolean;
+	/**
+	 * Read paths named in the run's brief text (cfg.brief.path_prefixes), extracted the
+	 * brief-lint way. A read whose target globMatches one is skipped as a D7 finding: the
+	 * owner deliberately pointed the sub at that path in the brief.
+	 */
+	allowed?: string[];
 }
 
 export interface UnreportedFinding {
@@ -469,6 +475,9 @@ export function unreportedFindings(events: TraceEvent[], rules: ActionsRules, ow
 			const t = expandHome(raw, rules.home);
 			const repo = ownedRepoOf(t, rules.owned_repos);
 			if (repo === null || segKey(repo) === ownKey) continue;
+			// P10c: a read whose path matches a path the run's brief text names is not an
+			// unreported finding — the owner deliberately pointed the sub at it.
+			if (own.allowed?.some((p) => globMatch(p, t, rules.home))) continue;
 			const id = `${repo}:${t}`;
 			if (seen.has(id)) continue;
 			seen.add(id);

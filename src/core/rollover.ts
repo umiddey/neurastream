@@ -5,8 +5,8 @@
 // the jobs and the note mtime, and performs the switch. No harness names here.
 
 import { join } from "node:path";
+import { mainStateDir } from "./guards.ts";
 import { strftime } from "./clock.ts";
-import { stateDirPath } from "./queue/lib.ts";
 import type { OwnerAnswer, OwnerMessage } from "./incidents.ts";
 
 export type RolloverState = "below" | "need-note" | "wait-jobs" | "ready";
@@ -167,11 +167,11 @@ export function noteRequest(path: string, reason = ""): string {
 }
 
 /** Where Main writes the handoff note for one session. */
-export function notePath(sessionId: string, stateDir = stateDirPath()): string {
+export function notePath(sessionId: string, stateDir = mainStateDir()): string {
 	return join(stateDir, "rollover", `${sessionId}.md`);
 }
 
 /** The launcher's relaunch request file: written by the harness just before it exits under `neurastream main`. */
-export function relaunchPath(stateDir = stateDirPath()): string {
+export function relaunchPath(stateDir = mainStateDir()): string {
 	return join(stateDir, "rollover", "relaunch.json");
 }

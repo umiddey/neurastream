@@ -22,7 +22,7 @@
 //     the stop is refused; an incident with a plan no longer blocks
 
 import { execFileSync } from "node:child_process";
-import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import type { Decision, InjectEvent, PlanEditEvent, SpawnEvent, StopEvent, ToolEvent } from "./adapter.ts";
@@ -35,11 +35,11 @@ import { UNANSWERED_PREFIX } from "./rollover.ts";
 import { notifyProtectedPaths, notifySecretReadHit } from "./notify.ts";
 import { defaultRunner, listOpenMrs, mentioned, type CommandRunner, type OpenMr } from "./mr-sweep.ts";
 import { unlandedRows } from "./wip-check.ts";
-import { recheckHolds, staleFiles } from "./waiting-check.ts";
 import * as q from "./queue/lib.ts";
 import type { Plan } from "./queue/lib.ts";
 
-import { nowSec } from "./clock.ts";
+import { fileClaimStore, type Claim, type ClaimStore } from "./claims.ts";
+import { nowSec, strftime } from "./clock.ts";
 import { outUntil, pinModel, providerOfModel, readOut } from "./provider-state.ts";
 import { lint } from "./brief-lint.ts";
 const ALLOW: Decision = { allow: true, reason: "" };
@@ -66,10 +66,10 @@ function isPlanName(raw: string): boolean {
 }
 const PLAN_WRITE_TOOLS: Record<string, true> = { edit: true, write: true, ast_edit: true };
 
-/** Guard-log line, `<ISO UTC> <line>`; a failed append is swallowed. */
+/** Guard-log line, `<ISO UTC> [<main id>] <line>`; a failed append is swallowed. */
 export function log(file: string, line: string): void {
 	try {
-		appendFileSync(file, `${new Date().toISOString()} ${line}\n`);
+		appendFileSync(file, `${new Date().toISOString()} [${mainId()}] ${line}\n`);
 	} catch {}
 }
 
@@ -91,8 +91,39 @@ interface EditWindow {
 	mainCallsStart?: number;
 }
 
+// --- this Main's identity (plan 20261027_1300_multi_main P2) ---
+
+/** What `neurastream main --name` accepts and what `NEURASTREAM_MAIN_ID` may hold. */
+export const MAIN_ID_RE = /^[a-z0-9-]{1,24}$/;
+
+/** This Main's id: the launcher sets `NEURASTREAM_MAIN_ID` (default `main`); a bogus value falls back to `main`. */
+export function mainId(): string {
+	const id = process.env.NEURASTREAM_MAIN_ID ?? "main";
+	return MAIN_ID_RE.test(id) ? id : "main";
+}
+
+/** One-time move of the pre-multi-main top-level state into `mains/main/` (renameSync, idempotent). */
+function moveLegacyState(stateDir: string, dir: string): void {
+	if (existsSync(dir)) return;
+	mkdirSync(dir, { recursive: true });
+	for (const name of ["edit-window.json", "rollover"]) {
+		try {
+			renameSync(path.join(stateDir, name), path.join(dir, name));
+		} catch {}
+	}
+}
+
+/** This Main's own state dir, `<queue_state>/mains/<id>/`: edit window, rollover notes, running lock. */
+export function mainStateDir(cfg?: Config): string {
+	const stateDir = cfg ? cfg.paths.queue_state : q.stateDirPath();
+	const id = mainId();
+	const dir = path.join(stateDir, "mains", id);
+	if (id === "main") moveLegacyState(stateDir, dir);
+	return dir;
+}
+
 function windowFile(): string {
-	return path.join(q.STATE_DIR, "edit-window.json");
+	return path.join(mainStateDir(), "edit-window.json");
 }
 
 export function readWindow(): EditWindow {
@@ -106,7 +137,7 @@ export function readWindow(): EditWindow {
 
 export function writeWindow(w: EditWindow): void {
 	try {
-		mkdirSync(q.STATE_DIR, { recursive: true });
+		mkdirSync(path.dirname(windowFile()), { recursive: true });
 		writeFileSync(windowFile(), JSON.stringify(w, null, 1));
 	} catch (err) {
 		log(`${q.STATE_DIR}/../main-guard.log`, `cannot write ${windowFile()}: ${err}`);
@@ -1075,12 +1106,33 @@ function runsCloser(input: Record<string, unknown>): boolean {
 
 const bin = (w: string | undefined) => (w ?? "").replace(/^["']+|["']+$/g, "").split("/").pop() ?? "";
 
+// P5g (plan 20261027_0915): the shell text a call would really run — bash's command line, eval's
+// !cmd shell-escape lines and the Bun.$/spawn arguments inside its code. Everything else in an
+// input is prose or string data (a task brief, plan text, an eval cell that only names the page's
+// words), and prose runs nothing.
+function shellText(input: Record<string, unknown>): string {
+	if (typeof input.command === "string") return input.command;
+	const code = input.code;
+	if (typeof code !== "string") return "";
+	const out: string[] = [];
+	for (const m of code.matchAll(/^[ \t]*!(.+)$/gm)) out.push(m[1] ?? "");
+	for (const m of code.matchAll(/(?<!\w)(?:Bun\.)?\$[ \t]*`((?:[^`\\]|\\.)*)`/g)) out.push(m[1] ?? "");
+	for (const m of code.matchAll(/\b(?:Bun\.)?spawn(?:Sync)?[ \t]*\(([^)]*)/g))
+		out.push(
+			[...(m[1] ?? "").matchAll(/[`"']([^`"']*)[`"']/g)]
+				.map(s => s[1] ?? "")
+				.join(" "),
+		);
+	return out.join("\n");
+}
+
 // True when a command segment starts the owner page (plan 20261024_2230 P3c): `neurastream ui`
 // serves it and `systemctl --user start/restart/enable` of neurastream-ui relaunches it — the
-// owner's systemd moves, never an agent's, unlocked or not. Segment splitting and launcher
-// skipping match runsCloser, so `sh -c "neurastream ui"` and `sudo systemctl --user ...` are seen.
+// owner's systemd moves, never an agent's, unlocked or not. P5g: the text is shellText's — only
+// real shell commands, never prose. Segment splitting and launcher skipping match runsCloser, so
+// `sh -c "neurastream ui"` and `sudo systemctl --user ...` are seen.
 function startsOwnerUi(input: Record<string, unknown>): boolean {
-	const text = Object.values(input).filter((v): v is string => typeof v === "string").join("\n");
+	const text = shellText(input);
 	return text.split(/&&|\|\||;|\||\n|\$\(|`/).some(seg => {
 		const words = seg.trim().split(/\s+/).filter(Boolean).map(w => w.replace(/^["'(]+|["')]+$/g, ""));
 		let i = 0;
@@ -1093,6 +1145,22 @@ function startsOwnerUi(input: Record<string, unknown>): boolean {
 			words.some(w => w === "start" || w === "restart" || w === "enable") &&
 			words.some(w => bin(w) === "neurastream-ui" || w.startsWith("neurastream-ui."))
 		);
+	});
+}
+
+// True when a command segment runs `claim release <plan> --force` (plan 20261027_1300 P4): it
+// frees another Main's claim, the owner's terminal move, refused for every agent. Segment
+// splitting and launcher skipping match startsOwnerUi, so `sh -c "neurastream claim release x
+// --force"` and `sudo neurastream claim release x --force` are seen too.
+function forceClaimRelease(input: Record<string, unknown>): boolean {
+	const text = Object.values(input).filter((v): v is string => typeof v === "string").join("\n");
+	return text.split(/&&|\|\||;|\||\n|\$\(|`/).some(seg => {
+		const words = seg.trim().split(/\s+/).filter(Boolean).map(w => w.replace(/^["'(]+|["')]+$/g, ""));
+		let i = 0;
+		while (i < words.length && (LAUNCHERS[words[i] ?? ""] === true || /^\w+=/.test(words[i] ?? "") || /(^|\/)main\.ts$/.test(words[i] ?? ""))) i++;
+		const seq = words.slice(i).map(bin);
+		if (seq[0] === "neurastream") seq.shift();
+		return seq[0] === "claim" && seq.includes("release") && seq.includes("--force");
 	});
 }
 
@@ -1137,6 +1205,17 @@ function addedText(input: Record<string, unknown>): string {
 		.filter(([key, value]) => typeof value === "string" && !skip.has(key))
 		.map(([, value]) => value as string)
 		.join("\n");
+}
+
+// P5g: tools whose string fields are content — a task brief, the text a write or edit adds — are
+// prose, never reads; the notify-secret check scans only their path argument.
+const PROSE_TOOLS: Record<string, true> = { task: true, write: true, edit: true, ast_edit: true };
+
+// Only a tool call's path arguments — the paths it names as targets, not its prose fields.
+function pathArgs(input: Record<string, unknown>): Record<string, unknown> {
+	const out: Record<string, unknown> = {};
+	for (const key of ["path", "file"]) if (typeof input[key] === "string") out[key] = input[key];
+	return out;
 }
 
 // Subagent half of a tool call (the original plan-guard checkCall without the main return).
@@ -1289,6 +1368,13 @@ function taskLaunch(input: Record<string, unknown>, cfg: Config, runningJobs: st
 		log(cfg.paths.guard_log, `BLOCK spawn: ${why}`);
 		return why;
 	}
+	const inc = incidentSpawnProblem("spawn", JSON.stringify(input), files, cfg);
+	if (inc) return inc;
+	const held = claimGate(files, cfg);
+	if (held) {
+		log(cfg.paths.guard_log, `BLOCK spawn: ${held}`);
+		return held;
+	}
 	recordSpawns(files, staffing);
 	recordBudgets(budgets);
 	return null;
@@ -1318,6 +1404,13 @@ function bypassLaunch(command: string, cfg: Config, spawner: Spawner): string | 
 		}
 		const inc = incidentSpawnProblem("bypass launch", command, named, cfg);
 		if (inc) return inc;
+		// I-20261031-280: a bypass launch takes the claims like every other spawn, as its last
+		// refusal before the record.
+		const held = claimGate(named, cfg);
+		if (held) {
+			log(cfg.paths.guard_log, `BLOCK bypass launch: ${held}`);
+			return held;
+		}
 		if (named.length) recordSpawns(named);
 	}
 	return null;
@@ -1423,6 +1516,12 @@ export function checkTool(e: ToolEvent, cfg: Config): Decision {
 			"plan-guard: starting the owner page (neurastream ui, or systemctl --user start/restart/enable of neurastream-ui) is the owner's move, not an agent's.",
 		);
 	}
+	// claim release --force frees another Main's claim (plan 20261027_1300 P4): the owner's
+	// terminal move, refused for every agent like the ui-start, plan-guard style.
+	if (cfg.guards.shell_tools.includes(e.tool) && forceClaimRelease(input)) {
+		log(cfg.paths.plan_guard_log, `BLOCK ${e.agent}:${e.agentId} tool=${e.tool} claim-force: ${String(input.command ?? "")}`);
+		return deny("plan-guard: claim release --force frees another Main's claim; that is the owner's move, in a terminal.");
+	}
 	// The caller may know paths the text search cannot see (structured edits); union, never shrink.
 	const paths: string[] = [];
 	for (const p of [...(e.paths ?? []), ...q.touchedPaths(e.tool, input, e.cwd)]) if (!paths.includes(p)) paths.push(p);
@@ -1438,15 +1537,21 @@ export function checkTool(e: ToolEvent, cfg: Config): Decision {
 	}
 	// Notify secrets: no agent, main or sub, reads a webhook URL — with or without the unlock.
 	// A call that changes a secret is not a read: its target goes through the protected-write
-	// rule above, so the owner's unlock covers it like any guard file.
-	const secretHit = notifySecretReadHit(paths.filter(p => !writes.includes(p)), cfg);
+	// rule above, so the owner's unlock covers it like any guard file. P5g: the scan reads real
+	// read targets only — naming a secret-shaped glob in a task brief or in plan text is prose,
+	// not a read — so prose tools (task, write/edit) scan just their path argument, while every
+	// other tool keeps the whole-input scan (glob/grep patterns arrive through it).
+	const secretPaths: string[] = [];
+	for (const p of [...(e.paths ?? []), ...q.touchedPaths(e.tool, PROSE_TOOLS[e.tool] === true ? pathArgs(input) : input, e.cwd)])
+		if (!secretPaths.includes(p)) secretPaths.push(p);
+	const secretHit = notifySecretReadHit(secretPaths.filter(p => !writes.includes(p)), cfg);
 	if (secretHit) {
 		log(cfg.paths.plan_guard_log, `BLOCK ${e.agent}:${e.agentId} tool=${e.tool} notify secret: ${secretHit}`);
 		return deny(`plan-guard: ${secretHit} is a notify secret path. Only the owner touches the webhook files, in a terminal.`);
 	}
 	// Main writes its own rollover note unattended (the note turn has nobody to ask). Only a Write
 	// of a .md directly in <state>/rollover/ is exempt; shell writes, subagents and relaunch.json stay refused.
-	const rolloverDir = path.join(q.stateDirPath(), "rollover");
+	const rolloverDir = path.join(mainStateDir(cfg), "rollover");
 	const openWrites =
 		e.agent === "main" && e.tool === "write"
 			? writes.filter(p => !(path.extname(p) === ".md" && path.dirname(path.resolve(p)) === rolloverDir))
@@ -1594,6 +1699,42 @@ export function planReadNote(tool: string, input: Record<string, unknown>, cwd: 
 }
 
 /**
+ * P3 (plan 20261027_1300): the claim store behind the spawn and Main edit gates. Claims live under
+ * `<queue_state>/claims/`; the free-after TTL is queue.claim_ttl_min (never the store's default).
+ */
+function claims(cfg: Config): ClaimStore {
+	return fileClaimStore(cfg.paths.queue_state, nowSec, cfg.queue.claim_ttl_min);
+}
+
+/** The held refusal (plan 20261027_1300 P3): "plan X is held by Main B since HH:MM" (HH:MM local). */
+function heldProblem(file: string, held: Claim): string {
+	return `plan ${file} is held by Main ${held.main} since ${strftime(held.since, "%H:%M")}`;
+}
+
+/**
+ * The spawn claim gate (plan 20261027_1300 P3): a spawn on a plan claims it for this Main first;
+ * another Main's live claim refuses the launch — a sub's launch too, once its Main no longer
+ * holds the claim. Returns the refusal, or null.
+ */
+function claimGate(files: string[], cfg: Config): string | null {
+	const store = claims(cfg);
+	const mine = mainId();
+	const fresh: string[] = [];
+	for (const f of files) {
+		const heldBefore = store.holder(f)?.main === mine;
+		const c = store.claim(f, mine);
+		if ("heldBy" in c) {
+			// A refusal leaves the store as it found it (P3 review finding 2): claims this call
+			// newly created are released again; a claim this Main already held before the call stays.
+			for (const g of fresh) store.release(g, mine);
+			return heldProblem(f, c.heldBy);
+		}
+		if (!heldBefore) fresh.push(f);
+	}
+	return null;
+}
+
+/**
  * spawn: the allow-list, task-only and open-plan gates for one implementer launch. Covers both
  * original paths (the extension spawn event and a `task` tool call); the brief names the plan.
  */
@@ -1634,6 +1775,11 @@ export function checkSpawn(e: SpawnEvent, cfg: Config, runner: CommandRunner = d
 			else log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${p}`);
 		}
 		return deny(`main-guard: ${verdict}`);
+	}
+	const held = claimGate(named, cfg);
+	if (held) {
+		log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${held}`);
+		return deny(`main-guard: ${held}`);
 	}
 	// The owner's pick order and live provider state (plan 20261025_1700 P3), before the spawn records.
 	const staffing: Record<string, string[]> = {};
@@ -1677,7 +1823,7 @@ export function checkInject(e: InjectEvent, cfg: Config): Decision {
 	recordOwnerMessage(e.inject, cfg);
 	let summary: string;
 	try {
-		summary = q.queueSummary(undefined, cfg.review.agents, staleFiles(recheckHolds(cfg, q.activePlans())));
+		summary = q.queueSummary(undefined, cfg.review.agents, claims(cfg));
 	} catch (err) {
 		summary = `Queue unreadable (${q.INDEX}): ${err}`;
 	}
@@ -1805,6 +1951,17 @@ function codeReviewProblem(file: string, after: string, ids: string[]): string |
 // Main's plan text outside "## Progress" must rest on files Main read itself (planReadProblems).
 // An empty `before` means the plan file did not exist yet; a refusal then deletes it.
 function checkMainPlan(e: PlanEditEvent, cfg: Config): PlanEditDecision {
+	// P3 (plan 20261027_1300): another Main's live claim on this plan refuses the edit, restored
+	// like any refused plan edit. No claim — or this Main's own — edits freely.
+	const holder = claims(cfg).holder(e.path);
+	if (holder && holder.main !== mainId()) {
+		log(cfg.paths.plan_guard_log, `RESTORE ${e.path} (held by Main ${holder.main})`);
+		return {
+			allow: false,
+			reason: `plan-guard: ${heldProblem(e.path, holder)}; the file was restored.`,
+			restore: { path: e.path, text: e.before || null },
+		};
+	}
 	// A PLAN REVIEW or CODE REVIEW line (P6) is a review spawn's verdict (P4k): Main writes none, so its edit is restored.
 	if (newProgressEntries(e.before, e.after).some(b => REVIEW_LINE.test(b))) {
 		log(cfg.paths.plan_guard_log, `RESTORE ${e.path} (Main wrote a review line)`);

@@ -6,6 +6,8 @@ import { accessSync, appendFileSync, chmodSync, constants, existsSync, mkdirSync
 import os from "node:os";
 import path from "node:path";
 import type { Config } from "../config.ts";
+import type { ClaimStore } from "../claims.ts";
+import { strftime } from "../clock.ts";
 
 // --- landing detection (plan 20261031_0911 P4/P5): lives here, not queue-close.ts, because
 // queueProblems' landed lock needs it and lib must not import the closer that imports lib ---
@@ -927,7 +929,7 @@ const STOP = new Set(
 );
 function keyWords(text: string): string[] {
 	const words = text.toLowerCase().match(/[a-z0-9][a-z0-9_.-]{3,}/g) ?? [];
-	return [...new Set(words.map(w => w.replace(/[._-]+$/, "")).filter(w => w.length >= 4 && !STOP.has(w)))].sort();
+	return [...new Set(words.map(w => w.replace(/[._-]+$/, "")).filter(w => w.length >= 4 && !STOP.has(w)))].toSorted();
 }
 export function planWords(text: string): string[] {
 	const title = text.match(/^# (.+)$/m)?.[1] ?? "";
@@ -1142,6 +1144,12 @@ export function queueProblems(index = INDEX, blockersDir = BLOCKERS_DIR, reviewA
 	return probs;
 }
 
+/** Queue ranks of the open queue plans an open plan waits on (I-20261025-208); empty when it is free to start. */
+export function openWaits(p: Plan, plans: Plan[], rank: Map<string, number>): number[] {
+	if (p.status !== "open") return [];
+	return p.waitsOn.map(f => rank.get(f)).filter((at): at is number => at !== undefined && plans[at - 1]!.status === "open");
+}
+
 // P4 (plan 20261027_0915): from this day on, a Progress entry claiming a phase done/complete/
 // "nothing left"/"finished" must quote that phase's verify command (or the Done check) and its
 // result, or queue-check fails the plan; entries without a date or dated before it are grandfathered.
@@ -1203,17 +1211,24 @@ export function holdWarnings(plans: Plan[]): string[] {
 // and passes `cap = Infinity`.
 export const SUMMARY_CAP = 10;
 
-export function queueSummary(index = INDEX, reviewAgents: string[] = [], stale: ReadonlySet<string> = new Set(), cap: number = SUMMARY_CAP): string {
+export function queueSummary(index = INDEX, reviewAgents: string[] = [], staleOrClaims: ReadonlySet<string> | ClaimStore | null = null, cap: number = SUMMARY_CAP): string {
 	// Index order IS priority (20261025_0215_index_priority): the list is flat and ranked,
 	// rank 1 = the index's top line; repos only surface through each plan's own path.
 	const plans = activePlans(index);
 	const rank = new Map(plans.map((p, i) => [p.file, i + 1] as const));
 	const repos = [...new Set(plans.map(p => p.repo))];
 	const lines = [`Queue (${index}): ${plans.length ? `${plans.length} plan(s) in ${repos.length} repo(s)` : "empty, no open work"}`];
+	let claimStore: ClaimStore | null = null;
+	let stale: ReadonlySet<string> = new Set<string>();
+	if (staleOrClaims != null && typeof (staleOrClaims as ClaimStore).holder === 'function') {
+		claimStore = staleOrClaims as ClaimStore;
+	} else {
+		stale = staleOrClaims as ReadonlySet<string> ?? new Set<string>();
+	}
 	plans.slice(0, cap).forEach((p, i) => {
 		const status = awaitingMerge(p) ? "complete, awaiting merge" : (p.status ?? "INVALID");
 		const ask = (p.waitingLine ?? "").slice(0, 80);
-		const hold = p.waiting ? (stale.has(p.file) ? `[STALE?] ${ask}` : `WAITING on owner: ${ask}`) : "";
+		const hold = p.waiting ? (stale?.has(p.file) ? `[STALE?] ${ask}` : `WAITING on owner: ${ask}`) : "";
 		// I-20261025-208: an open plan waiting on an open plan of the queue shows the target's rank.
 		const waits: string[] = [];
 		if (p.status === "open")
@@ -1223,7 +1238,11 @@ export function queueSummary(index = INDEX, reviewAgents: string[] = [], stale: 
 				waits.push(`waits on #${at}`);
 			}
 		const done = p.phases.total ? `${p.phases.done}/${p.phases.total} done` : "";
-		const flags = [status, done, hold, ...waits, p.priorityId ?? ""].filter(Boolean).join(", ");
+		// P4 multi-main (20261027_1300): with the claim store handed in (guards' inject and
+		// queue-check pass it), every plan shows `held by <id> since HH:MM` or `free`.
+		const holder = claimStore?.holder(p.file) ?? null;
+		const claimFlag = claimStore ? (holder ? `held by ${holder.main} since ${strftime(holder.since, "%H:%M")}` : "free") : "";
+		const flags = [status, done, hold, ...waits, claimFlag, p.priorityId ?? ""].filter(Boolean).join(", ");
 		const goal = items(sections(p.text).get("goal") ?? "")[0]?.slice(0, 100) ?? "";
 		lines.push(`  ${i + 1}. ${p.file} [${flags}] ${goal}`);
 	});

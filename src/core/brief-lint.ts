@@ -36,6 +36,18 @@ function escapeReg(s: string): string {
 
 /** A scanned path without its trailing sentence punctuation (the path loop's cleaning). */
 const clean = (raw: string): string => raw.replace(/[.,)]+$/, "");
+/** Extract the paths a brief text names via cfg.brief.path_prefixes (the brief-lint way),
+ * reused by the D7 detector so a read the run's brief deliberately points at is not flagged.
+ */
+export function briefPaths(text: string, cfg: Config): string[] {
+	const paths = new Set<string>();
+	const scan = liveText(text);
+	for (const prefix of cfg.brief.path_prefixes) {
+		const re = new RegExp(`(${escapeReg(prefix)}[\\w./\\-]+)`, "g");
+		for (const hit of scan.matchAll(re)) paths.add(hit[1]!);
+	}
+	return [...paths].toSorted();
+}
 
 /** The same rules on a file on disk; the guard's spawn verdict lints the named plan files (plan 20261031_1207 P4). */
 export function lint(path: string, cfg: Config): { errs: string[]; warns: string[] } {
@@ -73,12 +85,7 @@ export function lintText(text: string, cfg: Config): { errs: string[]; warns: st
 	}
 
 
-	const paths = new Set<string>();
-	const scan = liveText(text);
-	for (const prefix of cfg.brief.path_prefixes) {
-		const re = new RegExp(`(${escapeReg(prefix)}[\\w./\\-]+)`, "g");
-		for (const hit of scan.matchAll(re)) paths.add(hit[1]!);
-	}
+	const paths = briefPaths(text, cfg);
 	for (const raw of [...paths].toSorted()) {
 		const p = clean(raw);
 		if (p.endsWith("-") || p.endsWith("_")) continue;
