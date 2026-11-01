@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, lstatSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { Config } from "./config.ts";
@@ -6,18 +6,8 @@ import { nowSec, strftime } from "./clock.ts";
 import { printText } from "./help.ts";
 import { pyFloatStr } from "./pyfmt.ts";
 import { cmd, gitRaw } from "./proc.ts";
+import { wipRepos } from "./wip-roots.ts";
 
-function repos(roots: string[]): string[] {
-	const out: string[] = [];
-	for (const root of roots) {
-		if (!existsSync(root) || !statSync(root).isDirectory()) continue;
-		for (const d of readdirSync(root)) {
-			if (existsSync(join(root, d, ".git"))) out.push(join(root, d));
-		}
-	}
-	out.sort();
-	return out;
-}
 
 function secretRx(pat: string): RegExp {
 	let src = pat;
@@ -30,6 +20,10 @@ function secretRx(pat: string): RegExp {
 }
 
 export function wipSnapshot(args: string[], cfg: Config): number {
+	if (cfg.wip.roots.length === 0) {
+		console.log("wip: no wip.roots set — run `neurastream wip add <path>`");
+		return 0;
+	}
 	const quiet = args.includes("--quiet");
 	const maxMb = cfg.wip.snapshot_max_mb;
 	const secret = secretRx(cfg.wip.secret_file);
@@ -39,7 +33,7 @@ export function wipSnapshot(args: string[], cfg: Config): number {
 	const homePrefix = home.endsWith("/") ? home : `${home}/`;
 	const seen = new Set<string>();
 	const worktrees: string[] = [];
-	for (const repo of repos(cfg.paths.work_roots)) {
+	for (const repo of wipRepos(cfg)) {
 		const commonRaw = gitRaw(repo, ["rev-parse", "--git-common-dir"]).stdout || ".";
 		const common = realpathSync(resolve(repo, commonRaw));
 		if (seen.has(common)) continue;
