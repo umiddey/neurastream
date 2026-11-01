@@ -1,4 +1,8 @@
 # Changelog
+## Unreleased
+### Fixed
+- Rollover across a version change (I-20261101-47): a relaunch request written by an older version to the legacy `<queue_state>/rollover/relaunch.json` is still picked up — the launcher falls back to it when the new-path file is missing or stale (main id only), and a consumed request now clears both paths, so a leftover copy cannot re-inject at the next fresh start.
+
 ## 0.2.66
 ### Added
 - `neurastream config set|get|list <key> [value]` reads or writes one config key through the line-based editor in `src/core/config-edit.ts` (the one `ui on|off` and `pages on|off` now share). Keys are the leaf paths of `templates/config.yml`; an unknown key, or a value that would not load, is refused and the file is left untouched. Comments and every other line of the file are kept byte-for-byte.
