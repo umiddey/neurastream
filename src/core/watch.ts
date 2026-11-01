@@ -191,7 +191,7 @@ function unitProblems(cfg: Config, listUnits: UnitLister, now: number): WatchPro
 	return out;
 }
 
-/** One watcher pass: heartbeats, failed units, gated detectors — in that order. */
+/** One watcher pass: heartbeats, failed units, CI, gated detectors, release verdicts — in that order. */
 export function watchOnce(cfg: Config, deps: WatchDeps): WatchReport {
 	const now = deps.now();
 	const ci = ciScan(cfg, { run: deps.runner, now, plans: deps.plans(), staffed: deps.staffed(now) });

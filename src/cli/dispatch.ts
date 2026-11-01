@@ -3,6 +3,7 @@ import path from "node:path";
 import { pagesDoctor } from "../core/pages-doctor.ts";
 import { ConfigError, configFile, loadConfig, type Config } from "../core/config.ts";
 import { beat, withHeartbeat } from "../core/heartbeat.ts";
+import { helpDoc } from "../core/help.ts";
 import { watchOnce, systemUnitLister, watchDoctorLine, watchHealth, timerStaffedPlans } from "../core/watch.ts";
 import { defaultGather } from "../core/main-start.ts";
 import { gatherTags } from "../core/results.ts";
@@ -173,6 +174,10 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 	// One watcher pass (plan 20261027_1430 P2); the P4 timer calls this every watch interval.
 	// Beats its own "watch" heartbeat AFTER the pass: ok only when the watcher itself ran.
 	if (cmd === "watch") {
+		if (args.length === 1 && (args[0] === "--help" || args[0] === "-h")) {
+			console.log(helpDoc("watch"));
+			return 0;
+		}
 		if (args.length === 1 && args[0] === "on") return watchOn();
 		if (args.length === 1 && args[0] === "off") return watchOff();
 		if (args.length) {
