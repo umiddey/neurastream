@@ -29,14 +29,9 @@ import { nowSec, strftime } from "../../core/clock.ts";
 import { runDetectors, type DetectorInput } from "../../core/incident-detectors.ts";
 import { appendOwnerAnswer, readOwnerAnswers, readOwnerMessages } from "../../core/incidents.ts";
 import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, newProgressEntries, planReadNote, recordMainResult, resetMainCalls, revertMainEdit, rekeySpawnFile, reviewSpawnEnd, STOP_PLAN_OFFER_REFUSAL } from "../../core/guards.ts";
-<<<<<<< HEAD
-import { rateLimitWait } from "../../core/rate-limit.ts";
-import { notifyProviders, ownerAnswerHandback, ownerAnswerSteer, postReply } from "../../core/notify.ts";
-=======
 import { rateLimited } from "../../core/rate-limit.ts";
 import { clearLimitState, onLimited, readLimitState, timingOf, writeLimitState } from "../../core/limit-probe.ts";
-import { notifyProviders, postReply } from "../../core/notify.ts";
->>>>>>> 92ff65e (feat(limit-probe): probe loop pure core and rateLimited reshape (P2))
+import { notifyProviders, ownerAnswerHandback, ownerAnswerSteer, postReply } from "../../core/notify.ts";
 import { loadKnownSecrets, redactSecrets, redactSummary } from "../../core/secret-redact.ts";
 import { inboxPath } from "../../core/owner-ui.ts";
 import { realTailscale } from "../../core/tailscale.ts";
@@ -638,7 +633,6 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		stopLimitTick();
 		clearLimitState(cfg);
 	};
-<<<<<<< HEAD
 	// P5b: a real turn end answers every owner message it followed — the answer (the turn's own
 	// reply, the page's lastAnswerFor shape) rides the same owner-message store. Rate-limited,
 	// blocked and mid-run ends are not turn ends: nothing is recorded.
@@ -650,16 +644,6 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 			adapterLog(cfg, `OWNER-ANSWER record failed: ${err instanceof Error ? err.message : String(err)}`);
 		}
 	};
-	// The one resume: replacing any armed timer, exactly one new user message when the wait is over.
-	const armRateResume = (untilMs: number): void => {
-		clearRateTimer();
-		rateTimer = setTimeout(() => {
-			rateTimer = null;
-			// P5b: whichever resume text exists, it quotes owner messages no turn has answered.
-			pi.sendUserMessage(withUnanswered(`main-guard: the provider rate limit is over (waited until ${rateClock(untilMs)}). Continue the queue where you stopped.`, readOwnerMessages(), readOwnerAnswers()));
-			adapterLog(cfg, `RATE-LIMIT resume: new turn sent (waited until ${rateClock(untilMs)})`);
-		}, untilMs - Date.now());
-=======
 	const limitTickFire = (c: HostCtx): void => {
 		if (!limitTickArmed) return;
 		const state = readLimitState(cfg);
@@ -679,7 +663,6 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		}
 		if (now < state.next_probe_at) return;
 		(c.spawnLimitProbe ?? (() => spawnLimitProbeChild(cfg)))();
->>>>>>> 869cd8c (feat(limit-probe): adapter wires the probe loop; agent_end keeps the named reset (P3, I-313))
 	};
 	const armLimitTick = (c: HostCtx): void => {
 		stopLimitTick();

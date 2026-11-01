@@ -1,10 +1,7 @@
 # Changelog
-<<<<<<< HEAD
-
 ## Unreleased
 ### Added
 - Owner answer steer (plan 20261027_1430 P9): a phone-page owner message that has waited more than `notify.answer_within_min` (default 3, 0 = off) with no hand-back after it steers Main once per message — "Owner asked at HH:MM; end your turn with the answer now" — through the omp adapter's tool_result hook; a hand-back clears the wait. The watcher counts each message that crosses the limit as one `m8` metric (once per message — the metrics ledger is the marker), and the release verdict reads M8 in its owner-pain group.
-
 ## 0.2.63
 ### Added
 - Guard false-positive detector D8 `block-then-bypass` (plan 20261027_1430 P5): a guard refusal (`main-guard:` / `plan-guard:`) followed within `incidents.bypass_window_sec` (default 600) by an allowed call of the same tool whose args share at least `incidents.bypass_similarity` (default 0.6, token Jaccard) opens a `possible guard false positive: <reason>` incident with both call excerpts as evidence. Main's session events feed it through the gated detector path, so the session is parsed at most once per `incidents.scan_interval_sec`. `neurastream watch` does not run D8 yet (its gather passes no main-session events).
@@ -46,15 +43,9 @@
 - Review spawns may run read-only shell; secret paths judged under both config home and OS home; stop is released at `main_max_calls`; `approval.since: ""` turns approval fully off.
 - Injected queue summary and stop refusal show the top 10 plans plus "… N more".
 - Read tools and non-writing shell skip blocker scripts; a denial names the hit paths and the script's output.
-=======
-## Unreleased
 ### Changed
 - `guards.rate_limit` replaces `default_wait_s` and `max_wait_s` (the doubling is gone) with `probe_interval_s` (300), `max_probes` (288), `probe_timeout_s` (90) and `probe_cmd` (the shell command that probes the provider; `{model}` is replaced by the shell-quoted model). A named retry-after is still waited for, plus `slack_s`. A config that still sets the retired keys is refused as an unknown key (P2, plan 20261027_1500).
-<<<<<<< HEAD
->>>>>>> c851de9 (docs(changelog): rate-limit config keys (P2))
-=======
 - A rate-limited Main turn end opens a probe episode in `<queue_state>/main-limit.json` (P3, plan 20261027_1500): a named reset is waited for, otherwise the omp adapter spawns a niced child running `guards.rate_limit.probe_cmd` every `probe_interval_s`; the first good probe (or the named reset) sends Main one back message within one 30 s tick, the owner chat hears once per episode, a turn that ends without a limit closes the episode, and an owner message mid-episode cancels the tick with the probe count kept.
->>>>>>> 724c123 (docs(changelog): probe loop adapter wiring (P3))
 ## 0.2.57
 ### Changed
 - Plan approval records a hash of the plan text in `<queue_state>/plan-approvals.json` instead of writing an `Approved:` line into the plan; the plan file is never edited, and `Approval: self` is gone (P1, plan 20261029_1455). main-guard refuses a spawn until the record matches the plan's current text.
