@@ -221,3 +221,20 @@ test("P5g: task brief prose and plan text are not secret reads; a read of the re
 	expect(read.code).toBe(2);
 	expect(read.d.reason).toContain("is a notify secret path");
 });
+import { checkTool } from "../src/core/guards.ts";
+
+// --- P5g (plan 20261027_0915): a bare `$` template tag from "bun" starts the owner page too ---
+
+test("P5g: a bare `$` template tag imported from bun (static and dynamic) starts the owner page and is refused", () => {
+	const base = loadConfig({ home: HOME });
+	const cfg: Config = { ...base, guards: { ...base.guards, shell_tools: ["eval"] } };
+	// Static import: `import { $ } from "bun"; $`neurastream ui``
+	expect(checkTool(toolEvent("eval", { code: 'import { $ } from "bun"; $`neurastream ui`' }, "sub"), cfg).allow).toBe(false);
+	// Dynamic import: `const { $ } = await import("bun"); $`neurastream ui``
+	expect(checkTool(toolEvent("eval", { code: "const { $ } = await import(\"bun\"); $`neurastream ui`" }, "sub"), cfg).allow).toBe(false);
+	// The existing Bun.$ case still refuses (no regression).
+	expect(checkTool(toolEvent("eval", { code: "await Bun.$`neurastream ui`.nothrow()" }, "sub"), cfg).allow).toBe(false);
+	// Prose stays allowed: a backticked mention with no preceding `$` is not shell text.
+	expect(checkTool(toolEvent("eval", { code: 'edit(plan, { old: "x", new: "the card runs `neurastream ui` to serve the page" })' }, "sub"), cfg).allow).toBe(true);
+	expect(checkTool(toolEvent("eval", { code: "const forbidden = `\nneurastream ui stays the owner's move\n`;" }, "sub"), cfg).allow).toBe(true);
+});

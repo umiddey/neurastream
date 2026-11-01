@@ -1085,7 +1085,7 @@ function shellText(input: Record<string, unknown>): string {
 	if (typeof code !== "string") return "";
 	const out: string[] = [];
 	for (const m of code.matchAll(/^[ \t]*!(.+)$/gm)) out.push(m[1] ?? "");
-	for (const m of code.matchAll(/\bBun\.\$[ \t]*`((?:[^`\\]|\\.)*)`/g)) out.push(m[1] ?? "");
+	for (const m of code.matchAll(/(?<!\w)(?:Bun\.)?\$[ \t]*`((?:[^`\\]|\\.)*)`/g)) out.push(m[1] ?? "");
 	for (const m of code.matchAll(/\b(?:Bun\.)?spawn(?:Sync)?[ \t]*\(([^)]*)/g))
 		out.push(
 			[...(m[1] ?? "").matchAll(/[`"']([^`"']*)[`"']/g)]
