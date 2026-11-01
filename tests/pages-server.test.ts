@@ -43,7 +43,7 @@ test("POST /_approve records the plan hash and leaves the plan unchanged", async
 	writeFileSync(plan, original);
 	mkdirSync(join(root, ".meta"), { recursive: true });
 	writeFileSync(join(root, ".meta", "toy.html.json"), JSON.stringify({ plan }));
-	const tailscale = { ip4: () => "", dnsName: () => null, whois: () => "owner@example.test", logins: () => [] };
+	const tailscale = { ip4: () => "", dnsName: () => null, whois: () => "owner@example.test", logins: () => [], state: () => "running" as const };
 	const server = startPagesServer({ cfg, tailscale, source: { listRuns: () => [], mainSession: () => null }, hostname: LOOPBACK, port: 0, root, peerOf: () => LOOPBACK });
 	servers.push(server);
 	const base = `http://${LOOPBACK}:${server.port}`;
@@ -77,7 +77,7 @@ test("POST /_approve writes one approval inbox row and leaves the notes store em
 	writeFileSync(plan, "# Toy\n\n## Phases\n- [ ] P1 x\n");
 	mkdirSync(join(root, ".meta"), { recursive: true });
 	writeFileSync(join(root, ".meta", "toy.html.json"), JSON.stringify({ plan, missing: [], thin: [] }));
-	const tailscale = { ip4: () => "", dnsName: () => null, whois: () => "owner@example.test", logins: () => [] };
+	const tailscale = { ip4: () => "", dnsName: () => null, whois: () => "owner@example.test", logins: () => [], state: () => "running" as const };
 	const server = startPagesServer({ cfg, tailscale, source: { listRuns: () => [], mainSession: () => null }, hostname: LOOPBACK, port: 0, root, peerOf: () => LOOPBACK });
 	servers.push(server);
 	const base = `http://${LOOPBACK}:${server.port}`;

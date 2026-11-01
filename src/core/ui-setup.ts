@@ -115,8 +115,6 @@ export function uiOn(opts: UiOnOptions): number {
 		return 1;
 	}
 	if (!checkEdited(edited, home, error)) return 1;
-	mkdirSync(dirname(file), { recursive: true });
-	writeFileSync(file, edited);
 	const unitPath = join(home, ".config", "systemd", "user", "neurastream-ui.service");
 	mkdirSync(dirname(unitPath), { recursive: true });
 	copyFileSync(UI_UNIT_TEMPLATE, unitPath);

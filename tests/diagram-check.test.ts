@@ -106,7 +106,7 @@ test("publish --plan: an incomplete diagram keeps Approve disabled and the serve
 	// P7 (plan 20261031_0917): an incomplete diagram never publishes, so no link goes out that cannot be approved.
 	expect(() => publishPage(src, "Toy", false, out, { plan })).toThrow(/diagram is not complete \(3\)/);
 	expect(existsSync(join(out, "toy.html"))).toBe(false);
-	const tailscale = { ip4: () => "", dnsName: () => null, whois: () => "owner@example.test", logins: () => [] };
+	const tailscale = { ip4: () => "", dnsName: () => null, whois: () => "owner@example.test", logins: () => [], state: () => "running" as const };
 	const server = startPagesServer({ cfg, tailscale, source: { listRuns: () => [], mainSession: () => null }, hostname: LOOPBACK, port: 0, root: out, peerOf: () => LOOPBACK });
 	servers.push(server);
 	const base = `http://${LOOPBACK}:${server.port}`;
