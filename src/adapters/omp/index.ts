@@ -16,7 +16,7 @@
 // Harness payloads are untyped at the boundary: every field read goes through a runtime check.
 
 import { execFileSync, spawn } from "node:child_process";
-import { appendFileSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import type { Decision, TraceEvent } from "../../core/adapter.ts";
 import { AGENTS_TEMPLATE, renderBlock } from "../../core/agents-md.ts";
@@ -27,13 +27,15 @@ import { configFile, loadConfig, reloadingConfig, type Config } from "../../core
 import { checkWrite, deferSteer, type WriteCheckConfig } from "../../core/write-check.ts";
 import { nowSec, strftime } from "../../core/clock.ts";
 import { runDetectors, type DetectorInput } from "../../core/incident-detectors.ts";
+import { fileClaimStore } from "../../core/claims.ts";
 import { appendOwnerAnswer, readOwnerAnswers, readOwnerMessages } from "../../core/incidents.ts";
-import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, newProgressEntries, planReadNote, recordMainResult, resetMainCalls, revertMainEdit, rekeySpawnFile, reviewSpawnEnd, STOP_PLAN_OFFER_REFUSAL } from "../../core/guards.ts";
+import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, mainId, mainStateDir, newProgressEntries, planReadNote, recordMainResult, resetMainCalls, revertMainEdit, rekeySpawnFile, reviewSpawnEnd, STOP_PLAN_OFFER_REFUSAL } from "../../core/guards.ts";
 import { rateLimitWait } from "../../core/rate-limit.ts";
 import { notifyProviders, ownerAnswerHandback, ownerAnswerSteer, postReply } from "../../core/notify.ts";
 import { loadKnownSecrets, redactSecrets, redactSummary } from "../../core/secret-redact.ts";
 import { inboxPath } from "../../core/owner-ui.ts";
 import { realTailscale } from "../../core/tailscale.ts";
+import { briefPaths } from "../../core/brief-lint.ts";
 import { actionsRules, ownedRepoOf, suspiciousActions, unreportedFindings } from "../../core/trace-actions.ts";
 import { applyQueueEnv } from "../../core/queue/env.ts";
 import { mainDetectors, mainStartText } from "../../core/main-start.ts";
@@ -155,6 +157,20 @@ const PUSH_MERGE = /\bgit\b[^\n;|&]*\bpush\b|\b(glab\s+mr|gh\s+pr)\s+merge\b/;
 export { adapterLog };
 
 /**
+ * Paths named inside the one configured method doc (brief.method_read): Main-owned and outside
+ * every run's write scope, so its named paths are trusted one hop past the brief text (P10c).
+ * Unset or unreadable doc allows nothing.
+ */
+const methodDocPaths = (cfg: Config): string[] => {
+	if (!cfg.brief.method_read) return [];
+	try {
+		return briefPaths(readFileSync(q.expandHome(cfg.brief.method_read), "utf8"), cfg);
+	} catch {
+		return [];
+	}
+};
+
+/**
  * D6 + D7 over a subagent's own trace, right after an allowed Progress edit (plan
  * 20261024_0301 P6): the sub's session file (its harness session manager hands it out) is
  * parsed as the run's trace, every high suspicious action folds as a D6 incident, and when the
@@ -164,7 +180,7 @@ export { adapterLog };
  * (Progress runs newest-first). Best effort: a failure is logged, never thrown — a broken
  * detector must not break the verified edit.
  */
-function subActionDetectors(cfg: Config, ctx: unknown, planFile: string, before: string, after: string): void {
+function subActionDetectors(cfg: Config, ctx: unknown, planFile: string, before: string, after: string, allowedText: string): void {
 	try {
 		const entries = newProgressEntries(before, after);
 		if (entries.length === 0) return;
@@ -177,10 +193,14 @@ function subActionDetectors(cfg: Config, ctx: unknown, planFile: string, before:
 			// The plan's repo spelled like its owned_repos entry: a checkout named "pm-mr196" is "pm",
 			// so the run's reads of its own repo never count as another product's.
 			const repoDir = q.planRepo(planFile);
+			// P10c: reads the brief or the method doc names are exempt — the detector stays pure,
+			// the adapter extracts both lists.
+			const allowedPaths = [...(allowedText ? briefPaths(allowedText, cfg) : []), ...methodDocPaths(cfg)];
 			input.unreported = unreportedFindings(events, rules, {
 				repo: ownedRepoOf(`${repoDir}/`, rules.owned_repos) ?? basename(repoDir),
 				plan: planFile,
 				claimedNone: true,
+				allowed: allowedPaths,
 			});
 		}
 		runDetectors(cfg, input);
@@ -420,25 +440,30 @@ function sizeOf(path: string): number {
 
 /** Idle-poll interval for the owner inbox. */
 export const OWNER_INBOX_POLL_MS = 15_000;
+/** How often the adapter heartbeats every claim this Main holds (plan 20261027_1300 P3). */
+export const CLAIM_BEAT_MS = 60_000;
 
-/** The delivered cursor: how many owner-inbox rows Main's session has consumed. */
-export function ownerInboxCursorPath(): string {
-	return `${q.stateDirPath()}/owner-inbox.cursor`;
+/** The delivered cursor: how many owner-inbox rows this Main's session has consumed (P5: one file per Main, under its mainStateDir). */
+export function ownerInboxCursorPath(cfg?: Config): string {
+	return `${mainStateDir(cfg)}/inbox-cursor`;
 }
 
-function readOwnerInboxCursor(): number {
+/** Rows this Main starts past when it has never delivered (P5): set at adapter creation so a Main that registers late does not replay old rows. null = adopt the file or 0. */
+let inboxFloor: number | null = null;
+
+function readOwnerInboxCursor(cfg: Config): number {
 	try {
-		const n = Number(readFileSync(ownerInboxCursorPath(), "utf8").trim());
-		return Number.isInteger(n) && n >= 0 ? n : 0;
+		const n = Number(readFileSync(ownerInboxCursorPath(cfg), "utf8").trim());
+		return Number.isInteger(n) && n >= 0 ? n : inboxFloor ?? 0;
 	} catch {
-		return 0;
+		return inboxFloor ?? 0;
 	}
 }
 
-function writeOwnerInboxCursor(n: number): void {
+function writeOwnerInboxCursor(cfg: Config, n: number): void {
 	try {
-		mkdirSync(q.stateDirPath(), { recursive: true });
-		writeFileSync(ownerInboxCursorPath(), `${n}\n`);
+		mkdirSync(mainStateDir(cfg), { recursive: true });
+		writeFileSync(ownerInboxCursorPath(cfg), `${n}\n`);
 	} catch {}
 }
 
@@ -552,17 +577,19 @@ export function deliverOwnerInbox(pi: ExtensionHost, cfg: Config): void {
 	} catch {
 		return; // no inbox yet: nothing to deliver
 	}
-	const cursor = readOwnerInboxCursor();
+	const cursor = readOwnerInboxCursor(cfg);
 	const { records, next } = pendingInboxRecords(text, cursor);
 	if (next === cursor) return;
 	let delivered = 0;
 	for (const rec of records) {
+		// P5: a row addressed to another Main (`to` set and not this Main's id) is consumed but not delivered here.
+		if (typeof rec.to === "string" && rec.to !== "" && rec.to !== mainId()) continue;
 		const msg = ownerInboxMessage(rec);
 		if (msg === null) continue;
 		pi.sendUserMessage(msg);
 		delivered++;
 	}
-	writeOwnerInboxCursor(next);
+	writeOwnerInboxCursor(cfg, next);
 	adapterLog(cfg, `owner inbox: delivered ${delivered} answer(s) (cursor ${cursor} → ${next})`);
 }
 
@@ -574,6 +601,26 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 	let cfg = initial;
 	// The queue library resolves its paths from env snapshots; point them at this config first.
 	applyQueueEnv(cfg);
+	// P5: seed the per-Main inbox floor once — a Main that has never delivered starts past rows
+	// that predate its registration; the pre-multi-main cursor file belongs to the default id's
+	// first start. Later reads/writes own the file, so the floor is only a creation-time default.
+	try {
+		if (!existsSync(ownerInboxCursorPath(cfg))) {
+			mkdirSync(mainStateDir(cfg), { recursive: true });
+			if (mainId() === "main") {
+				try {
+					renameSync(`${q.stateDirPath()}/owner-inbox.cursor`, ownerInboxCursorPath(cfg));
+				} catch {}
+			}
+			if (!existsSync(ownerInboxCursorPath(cfg))) {
+				try {
+					inboxFloor = pendingInboxRecords(readFileSync(inboxPath(), "utf8"), 0).next;
+				} catch {
+					inboxFloor = 0;
+				}
+			}
+		}
+	} catch {}
 	// Main's rules ride its system prompt each turn; they are never written into the owner's AGENTS.md.
 	const mainRules = renderBlock(cfg);
 
@@ -586,6 +633,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 	const deferredWrite = new Map<string, Map<string, string | null>>(); // agent id -> files that added deferred findings this turn -> text before the first one (null: new file); judged at that session's own agent_end
 	const pendingRules = new Set<string>(); // repos Main worked in, rules to hand over at the next prompt
 	const pendingReviewNotes: string[] = []; // P4k: review spawns that ended with no verdict; Main hears at its next prompt
+	const subBriefs = new Map<string, string>(); // task spawn name -> its brief text (P10c)
 	// Chat notify (plans 20261024_2155, 20261025_0130): the text a hand-back already posted
 	// (attempted) — one post per distinct text, never a retry loop. The reply itself comes from
 	// the stop/agent_end event, never the session file (session_stop fires BEFORE agent_end, and
@@ -764,6 +812,16 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 			? c.setInterval(() => deliverOwnerInbox(pi, cfg), OWNER_INBOX_POLL_MS)
 			: setInterval(() => deliverOwnerInbox(pi, cfg), OWNER_INBOX_POLL_MS);
 		if (it && typeof it === "object" && "unref" in it && typeof it.unref === "function") it.unref();
+		// Multi-main P3: every held claim heartbeats once a minute while this Main session lives,
+		// so a live Main never loses a plan to queue.claim_ttl_min. session_shutdown releases
+		// nothing: the TTL frees a crashed or restarted Main's claims the same way.
+		const beat = (): void => {
+			const store = fileClaimStore(cfg.paths.queue_state, nowSec, cfg.queue.claim_ttl_min);
+			const id = mainId();
+			for (const claim of store.list()) if (claim.main === id) store.heartbeat(claim.plan, id);
+		};
+		const hb: unknown = c.setInterval ? c.setInterval(beat, CLAIM_BEAT_MS) : setInterval(beat, CLAIM_BEAT_MS);
+		if (hb && typeof hb === "object" && "unref" in hb && typeof hb.unref === "function") hb.unref();
 	});
 
 	// What a subagent is still missing (plan 20261027_1530 P2): the rules of the repo its plan is
@@ -894,6 +952,16 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 				}
 			}
 		}
+		// P10c: remember each spawn's brief text by its spawn name — tasks[].name, which is the
+		// sub's ctx.agent.id (tasks[].agent is the agent type, never the key) — so D7 can skip
+		// reads the owner deliberately named in the brief (paths extracted via briefPaths).
+		if (!isSub && tool === "task") {
+			for (const t of Array.isArray(input.tasks) ? input.tasks : []) {
+				const name = asString(asRecord(t).name);
+				const brief = asString(asRecord(t).task);
+				if (name && brief) subBriefs.set(name, brief);
+			}
+		}
 		const d = checkTool(
 			{ tool, input, cwd, agent, agentId: id, calls: n - 1, paths: [], writes: [], command: asString(input.command), runningJobs },
 			cfg,
@@ -983,7 +1051,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 					if (note) notes.push(note);
 				}
 				// Live D6+D7 over the sub's own session as soon as it reports into the plan (P6).
-				if (d.allow && c.kind === "sub") subActionDetectors(cfg, ctx, file, before, after);
+				if (d.allow && c.kind === "sub") subActionDetectors(cfg, ctx, file, before, after, subBriefs.get(c.id ?? "main") ?? "");
 			}
 		}
 		// Write-time checks (plan 20261028_1228): a lint finding the call added is undone here, file by file.
