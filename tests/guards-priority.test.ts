@@ -68,6 +68,9 @@ Status: open
 const baseCfg: Config = (() => {
 	for (const d of [join(AGENT, "blockers"), join(AGENT, "notes"), join(TOY, "docs/plans"), join(TOY, "src"), join(HOME, ".config/neurastream"), STATE])
 		mkdirSync(d, { recursive: true });
+	// planRepo anchors a plan's repo at the nearest .git (repoRoot); without one it falls back to
+	// docs/plans itself or whatever repo sits above the OS tmpdir, so pin the toy repo to TOY.
+	mkdirSync(join(TOY, ".git"));
 	writeFileSync(join(AGENT, "INDEX.md"), `${HIGH}\n${MID}\n${LOW}\n`);
 	writeFileSync(join(AGENT, "notes/subagents.md"), "## Allowed\n\n- `toy-worker`\n");
 	writeFileSync(join(AGENT, "CANCELLED.md"), "");
@@ -407,4 +410,55 @@ test("priorityProblem: a stale cache proves no MR, forge unreachable still refus
 	const plans = plansWithHighMr();
 	writeMrCacheFile(NOW - (cfg.review.mr_cache_minutes + 1) * 60);
 	expect(priorityProblem(plans, [MID], [], "", [], NOW, cfg)?.problem).toContain(`higher plan ${HIGH} (rank 1) is idle`);
+});
+
+// --- P8 (plan 20261028_1600, I-20261031-353): a review spawn skips the priority gate ---
+
+/** LOW with the `## Reuse` line planGate demands once review.agents is non-empty (planGate loads plans with cfg.review.agents; priorityGate's own load keeps the default [], so HIGH stays idle without one). */
+function readyLow(): void {
+	writeFileSync(LOW, planText().replace("## Done check", "## Reuse\n- new: none — checked: src/a.ts:1 — reuse: the toy gate checks src/a.ts\n\n## Done check"));
+}
+
+/** A named review spawn by the fixture's one allowed agent; the caller toggles cfg.review.agents. */
+function reviewEv(plan: string, runningJobs?: string[]): SpawnEvent {
+	return { ...spawnEv(`Plan review: ${plan}\nConfirm the plan's P1.`, runningJobs), name: "rev-low" };
+}
+
+test("P8: a review spawn on rank 3 passes the priority gate while rank 1 is idle, with no skip line", () => {
+	resetHigh();
+	readyLow();
+	refresh(LOW);
+	cfg.review.agents = ["toy-worker"];
+	try {
+		const before = guardLog().length;
+		expect(checkSpawn(reviewEv(LOW, []), cfg)).toMatchObject({ allow: true });
+		const logged = guardLog().slice(before).join("\n");
+		expect(logged).not.toContain("PRIORITY skip");
+		expect(logged).not.toContain(`higher plan ${HIGH}`);
+	} finally {
+		cfg.review.agents = [];
+	}
+});
+
+test("P8: an implementer spawn keeps the priority refusal while rank 1 is idle (not a review spawn)", () => {
+	resetHigh();
+	readyLow();
+	refresh(LOW);
+	refresh(LOW); // the review spawn above was allowed and spent LOW's previous progress entry
+	cfg.review.agents = ["toy-worker"];
+	try {
+		const d = checkSpawn(spawnEv(`Work ${LOW} on P1`, []), cfg);
+		expect(d.allow).toBe(false);
+		expect(d.reason).toContain(`higher plan ${HIGH} (rank 1) is idle`);
+	} finally {
+		cfg.review.agents = [];
+	}
+});
+
+test("P8: a Plan review: line from an agent outside review.agents keeps the priority refusal (not a review spawn)", () => {
+	resetHigh();
+	refresh(LOW);
+	const d = checkSpawn(reviewEv(LOW, []), cfg);
+	expect(d.allow).toBe(false);
+	expect(d.reason).toContain(`higher plan ${HIGH} (rank 1) is idle`);
 });
