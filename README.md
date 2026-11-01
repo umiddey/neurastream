@@ -250,6 +250,29 @@ watch:
   interval_min: 15           # minutes between watcher runs
 ```
 
+## Several Mains
+
+You can run more than one Main at a time on the same queue. Each one claims the plans it works on, and no other Main can touch a claimed plan while the claim is live. Start each with its own name:
+
+```sh
+neurastream main --name a     # terminal 1
+neurastream main --name b     # terminal 2
+```
+
+Names match `[a-z0-9-]{1,24}`; plain `neurastream main` is named `main`. A second launcher with the same name refuses (`Main a is already running`) — the running lock under `<queue_state>/mains/<id>/` is freed by the kernel when the launcher dies, so a crash leaves nothing to clean up.
+
+What each Main keeps for itself, under `<queue_state>/mains/<id>/`:
+
+- its claims: a spawn on a plan claims it for this Main first, and another Main's live claim refuses the launch with `plan <file> is held by Main <id> since HH:MM` (a Main's own plan edit, tick, close or push is gated the same way) — two Mains racing for one plan get exactly one winner;
+- its owner-inbox cursor (`inbox-cursor`): a message you send starting `@<id> ` goes only to that Main, anything else reaches all running Mains, and `@<id>` naming a Main that is not running is refused (`Main b is not running; running: a`) before anything is stored;
+- its rollover notes (`rollover/`) and edit-window state (`edit-window.json`).
+
+Who holds what: the queue summary, `neurastream main-start` and the phone page flag every plan `held by <id> since HH:MM` or `free`, and queue cards carry the holder chip. `neurastream claim list` prints the live claims, `neurastream claim next` claims the highest free plan by the queue's own order, and `neurastream claim release <plan>` frees your Main's own claim.
+
+The 30-minute rule: a claim lives by its heartbeat — the adapter beats every claim its Main holds once a minute while that session lives. When a Main dies (crash, kill, closed terminal), the beats stop and a claim whose last beat is `queue.claim_ttl_min` (default 30) minutes old is free; the next Main to spawn on that plan takes it. A session that shuts down releases nothing — the TTL is what frees a dead Main's claims (closing a plan the normal way, with `queue-close`, frees the closer's own claim). To free another Main's live claim sooner there is `neurastream claim release <plan> --force` — refused for every agent by the guard; that is the owner's move, in a terminal.
+
+Claim heartbeats are not the job heartbeats of the watch section above. A job heartbeat says a cron job ran (`<queue_state>/heartbeats/<name>.json`, stale per `watch.expect`); a claim heartbeat is per-Main liveness recorded in the claim itself, under `<queue_state>/claims/` — one JSON file per plan, its `beat` refreshed every minute. Claims are never wired into `watch`.
+
 ## Secrets never reach the chat
 
 A value the machine holds is hidden before the model, the chat and the session log see it (`src/core/secret-redact.ts`, plan 20261025_2204, incident I-20261025-197). Detection is by **content**, not by file name — the old name list never knew about `~/.npmrc`.
