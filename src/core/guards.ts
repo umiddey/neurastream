@@ -339,6 +339,32 @@ function secretPath(p: string, cfg: Config, cwd: string): boolean {
 	);
 }
 
+// P7 (plan 20261028_1600): option tokens that write or execute on an otherwise allowed command;
+// `-w`/`--web` are denied on gh/glab segments only (they open a browser), `-c` only right after
+// `git` (config injection, e.g. core.pager=sh).
+const SHELL_DENY_OPTS = ["--output", "--pre", "--ext-diff", "--textconv", "--open-files-in-pager", "--exec", "-O"];
+
+/** P7 (plan 20261028_1600): why a review spawn's bash command is not allowed, or null. Single
+ * line, no `$(`/backtick/`<(`/`>(`, no `>` outside quotes (quoted text stripped the way
+ * withoutQuotedRedirects does), and every `|`/`&&`/`||`/`;`/`&` segment starts with a
+ * review.shell_allow entry followed by a word boundary. */
+function reviewShellProblem(command: string, cfg: Config): string | null {
+	if (/[\r\n]/.test(command)) return "a multi-line command";
+	if (command.includes("`") || command.includes("$(") || command.includes("<(") || command.includes(">(")) return "command substitution";
+	if (q.withoutQuotedRedirects(command).includes(">")) return "a shell redirect";
+	for (const raw of command.split(/&&|\|\||[|;&]/)) {
+		const seg = raw.trim();
+		const toks = seg.split(/\s+/);
+		const pre = cfg.review.shell_allow.find(p => seg.startsWith(p) && (seg.length === p.length || /\s/.test(seg.charAt(p.length))));
+		if (!pre) return `${toks[0] || "an empty segment"} is not a review.shell_allow command`;
+		const opt = toks.find(t => SHELL_DENY_OPTS.some(o => t === o || t.startsWith(`${o}=`)));
+		if (opt) return `the writing/executing option ${opt}`;
+		if ((toks[0] === "gh" || toks[0] === "glab") && toks.some(t => t === "-w" || t === "--web")) return "gh/glab --web opens a browser";
+		if (toks.some((t, i) => i > 0 && t === "-c" && toks[i - 1] === "git")) return "git -c config injection";
+	}
+	return null;
+}
+
 /** P4f: a named review spawn may read, use todo, and edit only its own plan. Shell, spawn, cancel and MCP tools are denied; so are secret reads. */
 function reviewLockProblem(e: ToolEvent, cfg: Config): string | null {
 	const plan = matchReviewSpawn(readReviewSpawns(), e.agentId ?? "")?.spawn.plan ?? null;
@@ -353,12 +379,16 @@ function reviewLockProblem(e: ToolEvent, cfg: Config): string | null {
 		const reads = [...(e.paths ?? []), ...q.touchedPaths(e.tool, input, e.cwd)];
 		return reads.some(p => secretPath(p, cfg, e.cwd)) ? `review spawn ${e.agentId} may not read credentials or env files.` : null;
 	}
-	// P5 (plan 20261031_1207): a shell call gets the read tools' deny — allowed when it writes
-	// nothing and its text carries no landing/mutating/spawn command and no secret path.
+	// P7 (plan 20261028_1600): the reviewer's shell is an allow list, not a ban list — eval never
+	// (it runs code), and bash only when every |/&&/||/;/& segment starts with a review.shell_allow
+	// command: single-line, no substitution or redirect characters, no writing/executing option
+	// tokens. The secret-path deny stays. (I-20261031-348: the old MUTATING ban missed
+	// fs.renameSync-style writes; I-20261031-350: a reviewer's shell ran anything unlisted.)
 	if (cfg.guards.shell_tools.includes(e.tool)) {
-		const writes = [...(e.writes ?? []), ...q.writeTargets(e.tool, input, e.cwd, [])];
-		if (writes.length || writesShellText(input, cfg))
-			return `review spawn ${e.agentId} may only read, use todo, and edit its plan; shell writes, landing and mutating commands are denied.`;
+		if (e.tool === "eval")
+			return `review spawn ${e.agentId} may not run eval; use the read tools or a bash command from review.shell_allow.`;
+		const problem = reviewShellProblem(String(input.command ?? ""), cfg);
+		if (problem) return `review spawn ${e.agentId} may run only review.shell_allow commands: ${problem}.`;
 		const reads = [...(e.paths ?? []), ...q.touchedPaths(e.tool, input, e.cwd)];
 		return reads.some(p => secretPath(p, cfg, e.cwd)) ? `review spawn ${e.agentId} may not read credentials or env files.` : null;
 	}

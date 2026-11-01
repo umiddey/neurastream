@@ -1,4 +1,8 @@
 # Changelog
+## Unreleased
+### Changed
+- The review spawn's shell is an allow list (plan 20261028_1600 P7): `eval` is denied outright, and bash runs only single-line commands whose every `|`/`&&`/`||`/`;`/`&` segment starts with an entry of the new `review.shell_allow` config key (default `git show/log/diff/blame/rev-parse/ls-files/status/merge-base`, `grep`, `cat`, `head`, `tail`, `wc`, `ls`, `jq`, `glab mr list/view/diff`, `gh pr list/view/diff`, `date`), with no redirects, no substitution and no writing/executing options — the old MUTATING ban list missed `fs.renameSync`-style writes (I-20261031-348, I-20261031-350). MUTATING gains the `*Sync` file-write names for its other callers, and plan-approval drops a tautological `since !== ""` check.
+
 ## 0.2.62
 ### Changed
 - Plan review switches (plan 20261028_1600 P6): `review.plan` (default `true`; `false` skips the reviewer PASS gate — an empty `review.agents` list no longer does) and `review.code` (default `false`; `true` refuses Main ticking a plan phase until a review spawn's `CODE REVIEW: PASS` entry covers that phase).

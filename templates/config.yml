@@ -152,6 +152,7 @@ review:                    # plan review gate (plan 20261028_1600): reuse lines 
   plan: true               # the reviewer PASS gate: false skips it (P6); an empty agents list no longer turns it off
   code: false              # the code review gate: true refuses Main ticking a phase until a review spawn's `CODE REVIEW: PASS` entry covers it (P6)
   agents: ["reviewer"]     # agents allowed to run a review spawn: one must be in "## Allowed" of notes/subagents.md (doctor and queue-check fail otherwise, e.g. ["glm"]); the PASS exemption needs one plus the brief's `Plan review:` line; an empty list only turns the `## Reuse` requirement off
+  shell_allow: ["git show", "git log", "git diff", "git blame", "git rev-parse", "git ls-files", "git status", "git merge-base", "grep", "cat", "head", "tail", "wc", "ls", "jq", "glab mr list", "glab mr view", "glab mr diff", "gh pr list", "gh pr view", "gh pr diff", "date"]  # the bash prefixes a review spawn may run (P7): every |/&&/||/;/& segment starts with one, single-line, no redirects or substitution; eval is denied outright
   mr_cache_minutes: 10     # minutes the spawn gate caches a repo's open-MR list in <queue_state>/mr-cache.json; 0 = no cache
 approval:                  # plan approval hard gate (plan 20261029_1455 P3): docs/config.md
   since: ""                # a plan stamped at or after this (YYYYMMDD_HHMM) needs a page and an approval record; "" = off

@@ -173,6 +173,8 @@ export interface Config {
 		plan: boolean;
 		/** The code review gate (P6): `true` refuses Main ticking a plan phase until a named review spawn's `CODE REVIEW: PASS` entry covers that phase. */
 		code: boolean;
+		/** Shell command prefixes (P7) a review spawn's bash may run: every `|`/`&&`/`||`/`;`/`&` segment starts with one, single-line, no redirects or substitution; eval is always denied. */
+		shell_allow: string[];
 		/** Minutes the spawn gate caches a repo's open-MR list in <queue_state>/mr-cache.json; 0 = no cache. */
 		mr_cache_minutes: number;
 	};
@@ -529,6 +531,8 @@ function check(cfg: Config): void {
 		throw new ConfigError('review.agents must be a list of agent names allowed to run review spawns (default ["reviewer"])');
 	if (typeof cfg.review.plan !== "boolean") throw new ConfigError("review.plan must be true or false (the reviewer PASS gate; default true)");
 	if (typeof cfg.review.code !== "boolean") throw new ConfigError("review.code must be true or false (the code review tick gate; default false)");
+	if (!Array.isArray(cfg.review.shell_allow) || cfg.review.shell_allow.some(a => typeof a !== "string" || !a.trim()))
+		throw new ConfigError("review.shell_allow must be a list of shell command prefixes a review spawn's bash may run (default: git show/log/diff/blame/rev-parse/ls-files/status/merge-base, grep, cat, head, tail, wc, ls, jq, glab mr list/view/diff, gh pr list/view/diff, date)");
 	if (!Number.isInteger(cfg.review.mr_cache_minutes) || cfg.review.mr_cache_minutes < 0)
 		throw new ConfigError("review.mr_cache_minutes must be an integer >= 0 (minutes the spawn gate caches a repo's open-MR list; 0 = no cache)");
 	if (typeof cfg.approval.since !== "string" || (cfg.approval.since !== "" && !/^\d{8}_\d{4}$/.test(cfg.approval.since)))

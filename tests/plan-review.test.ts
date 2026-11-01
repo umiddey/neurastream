@@ -598,8 +598,8 @@ test("a review spawn's spawn, cancel and MCP tools are denied; read-only shell i
 		expect(d.reason).toMatch(/review spawn/);
 	}
 	registerReviewer();
-	expect(checkTool(spawnedAs("bash", { command: "echo hi" }, "rev1"), gcfg).allow).toBe(true);
-	expect(checkTool(spawnedAs("eval", { code: "1" }, "rev1"), gcfg).allow).toBe(true);
+	expect(checkTool(spawnedAs("bash", { command: "git status --short" }, "rev1"), gcfg).allow).toBe(true);
+	expect(checkTool(spawnedAs("eval", { code: "1" }, "rev1"), gcfg).allow).toBe(false);
 });
 
 test("a review spawn may edit only its own plan", () => {
@@ -798,4 +798,61 @@ test("a CODE REVIEW PASS whose Findings mention another phase does not cover it 
 	expect(reviewerEdit(CODE_PASS_SEE_P2).allow).toBe(true);
 	expect(codeReviewsNow()).toMatchObject({ verdict: "PASS", phases: ["P1"] });
 	expect(mainTick(cfg, "P2")).toMatchObject({ allow: false, reason: expect.stringContaining("P2") });
+});
+
+// --- P7 (plan 20261028_1600): the review spawn's shell is an allow list, not a ban list ---
+
+/** A registered review spawn's bash call under the sandbox guard. */
+function revShell(command: string, cfg: typeof gcfg = gcfg) {
+	registerReviewer();
+	return checkTool(spawnedAs("bash", { command }, "rev1"), cfg);
+}
+
+test("a review spawn's bash runs only review.shell_allow commands, single-line and substitution-free (P7)", () => {
+	const denied = [
+		"cat a > b",
+		"cat a 2> b",
+		"cat a &> b",
+		"cat a >| b",
+		"grep x $(date)",
+		"grep x `ls`",
+		"git log --graph <(git diff)",
+		"sed -n 'e cp a b' x",
+		"rg --pre sh x",
+		"git grep -O x",
+		"git log --output=f",
+		"git -c core.pager=sh log",
+		"find . -fls f",
+		"git fetch . +refs/heads/main:refs/heads/x",
+		"gh pr view 1 --web",
+		"glab mr view 1 -w",
+		"GIT_PAGER=x git log",
+		"python -c 'import sys'",
+		"cat a\nmv b c",
+		"git diff main;",
+	];
+	for (const command of denied) {
+		const d = revShell(command);
+		expect(`${command}: ${d.allow}`).toBe(`${command}: false`);
+		expect(d.reason).toMatch(/review spawn/);
+	}
+	for (const command of ["git show origin/main:x | head", "wc -w x", "cat src/a.ts", "git status --short"]) {
+		const d = revShell(command);
+		expect(`${command}: ${d.allow}`).toBe(`${command}: true`);
+	}
+});
+
+test("a review spawn's eval is denied outright and the denial names the tool (P7)", () => {
+	registerReviewer();
+	const d = checkTool(spawnedAs("eval", { code: `require("fs").renameSync("a", "b")` }, "rev1"), gcfg);
+	expect(d).toMatchObject({ allow: false });
+	expect(d.reason).toMatch(/eval/);
+});
+
+test("a review.shell_allow override is honoured (P7)", () => {
+	const cfg = { ...gcfg, review: { ...gcfg.review, shell_allow: ["cat"] } };
+	expect(revShell("cat src/a.ts", cfg).allow).toBe(true);
+	const d = revShell("git status --short", cfg);
+	expect(d).toMatchObject({ allow: false });
+	expect(d.reason).toMatch(/shell_allow/);
 });
