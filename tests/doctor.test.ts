@@ -93,7 +93,7 @@ test("a removed shipped skill file is named and exits 1", () => {
 
 // P6 (plan 20261031_0917): a pages server started before the installed package changed keeps old
 // code — the owner's tap hit the pre-0.2.57 handler and the approval was lost (2026-10-31 09:34).
-const NO_TS = { ip4: () => "", dnsName: () => null, whois: () => null, logins: () => [] };
+const NO_TS = { ip4: () => "", dnsName: () => null, whois: () => null, logins: () => [], state: () => "stopped" as const };
 
 test("pagesServiceStartMs reads systemctl's local wall clock", () => {
 	expect(pagesServiceStartMs(() => ({ status: 0, stderr: "", stdout: "Tue 2026-10-30 12:14:03 CET\n" }))).toBe(new Date(2026, 9, 30, 12, 14, 3).getTime());
