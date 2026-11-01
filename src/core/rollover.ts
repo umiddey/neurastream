@@ -69,13 +69,22 @@ const NOTE_REQUEST_PREFIX = "Session rollover:";
 const HANDOFF_PREFIX = "Previous session file:";
 const OWNER_MARK = "Owner's message:";
 
-/** The first user message of the new session: header, Main's note, generated state, owner message. */
+/**
+ * The first user message of the new session: header, Main's note, generated state, owner message.
+ * Every `(from: \`cmd\`)` in the note is listed under "## Numbers to re-run" right after it — re-run
+ * these before repeating any number. No numbers, no section.
+ */
 export function buildHandoff(p: HandoffInput): string {
+	const note = p.note.trimEnd();
+	const numbers = [...note.matchAll(/\(from: `([^`]+)`\)/g)].map((m) => m[1]);
 	return [
 		`${HANDOFF_PREFIX} ${p.previousSessionFile}. Its full history stays there; this session continues from the handoff below.`,
 		"",
 		"## Main's handoff note (verbatim)",
-		p.note.trimEnd(),
+		note,
+		...(numbers.length > 0
+			? ["", "## Numbers to re-run", "re-run these before repeating any number", ...numbers.map((c) => `- \`${c}\``)]
+			: []),
 		"",
 		"## Generated state (main-start)",
 		p.generated.trimEnd(),

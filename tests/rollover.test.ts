@@ -131,6 +131,41 @@ describe("buildHandoff", () => {
 		const text = buildHandoff({ generated: "g", note: "n", previousSessionFile: "/p", ownerMessage: message });
 		expect(text.endsWith(`Owner's message:\n${message}`)).toBe(true);
 	});
+
+	test("lists every (from: `cmd`) of the note under Numbers to re-run, right after the note", () => {
+		const note = [
+			"## Done",
+			"Suite green, 162 obligations (from: `gateforge obligations | head -3`).",
+			"Follow-up queued (from: `neurastream metrics ci`).",
+		].join("\n");
+		const text = buildHandoff({ generated: "g", note, previousSessionFile: "/p", ownerMessage: "m" });
+		expect(text).toBe(
+			[
+				"Previous session file: /p. Its full history stays there; this session continues from the handoff below.",
+				"",
+				"## Main's handoff note (verbatim)",
+				"## Done",
+				"Suite green, 162 obligations (from: `gateforge obligations | head -3`).",
+				"Follow-up queued (from: `neurastream metrics ci`).",
+				"",
+				"## Numbers to re-run",
+				"re-run these before repeating any number",
+				"- `gateforge obligations | head -3`",
+				"- `neurastream metrics ci`",
+				"",
+				"## Generated state (main-start)",
+				"g",
+				"",
+				"Owner's message:",
+				"m",
+			].join("\n"),
+		);
+	});
+
+	test("a note without (from: …) numbers adds no Numbers to re-run section", () => {
+		const text = buildHandoff({ generated: "g", note: "no numbers here", previousSessionFile: "/p", ownerMessage: "m" });
+		expect(text).not.toContain("## Numbers to re-run");
+	});
 });
 
 describe("holdsBlock", () => {

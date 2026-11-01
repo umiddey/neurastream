@@ -12,6 +12,7 @@
 - The watcher's CI check closes the gaps the P6b live run showed (plan 20261027_1430 P6b, I-20261031-254 to -258, I-20261031-265): the timer treats a plan as staffed only while its newest staffing.json spawn is newer than `watch.ci_red_hours`, so a ci-red-mr is held back for a live agent instead of raised, and an old spawn no longer holds it back forever (an entry with no spawn time counts as not staffed); the first backfill records at most 20 merged MRs per run; a CI error on one merged MR skips only that MR and its skip is logged once; `recordCiMr` runs the repo's product numbers too, so the watcher's M3 run records them; a ci-red-mr held back by a staffed plan stays open, not dismissed as recovered.
 ### Changed
 - Live recheck P3 (plan 20261027_0915): a `WAITING on owner:` hold whose `still true if:` check fails is stale. The queue summary shows it as `[STALE?] <ask>` instead of `WAITING on owner: <ask>`, the owner page drops its card, `queue-check` prints `STALE HOLD: <plan>: <ask> — check \`<cmd>\` exited <code>` (exit code unchanged), and `neurastream metrics ci` re-runs every hold check after recording. A stale hold's incident opens once per check run, not once per prompt.
+- Live recheck P5 (plan 20261027_0915): the rollover handoff adds `## Numbers to re-run` right after Main's note, listing every `(from: \`cmd\`)` in the note — re-run these before repeating any number.
 
 ## 0.2.62
 ### Changed
