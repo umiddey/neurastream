@@ -213,15 +213,24 @@ test("ui on: an unknown login exits 1 naming the logins seen, and writes and run
 	expect(r.calls).toEqual([]);
 });
 
-// --- (i) a systemctl failure says where things stand ---
+// --- (i) a systemctl failure leaves the config exactly as it was (P5e: the config is written
+// only after systemctl succeeds; a leftover unit file is fine) ---
 
-test("ui on: a failed restart exits 1 with its stderr and says the config was already written", () => {
+test("ui on: a failed restart exits 1 with its stderr and leaves the config as it was", () => {
 	const stderr = "Failed to restart neurastream-ui.service: Unit neurastream-ui.service not found.";
+	const before = `ui:\n  enabled: false\n  owner_login: ""\n`;
+	writeConfig(before);
 	const r = doOn({ fail: { call: 3, stderr } });
 	expect(r.code).toBe(1);
 	expect(r.err.join("\n")).toContain(stderr);
-	expect(r.err.join("\n")).toContain("already written");
-	expect(readConfig()).toContain(`owner_login: ${LOGIN}`);
+	expect(readConfig()).toBe(before);
+});
+
+test("ui on: a failed systemctl writes no config when there was none (the unit file may stay)", () => {
+	const r = doOn({ fail: { call: 3 } });
+	expect(r.code).toBe(1);
+	expect(readConfig()).toBe(null);
+	expect(existsSync(UNIT_FILE)).toBe(true);
 });
 
 // --- (j) off stops the unit and flips enabled back ---

@@ -86,7 +86,7 @@ export function queueCancel(args: string[], cfg: Config): number {
 	text = text.replace(/^Status:\s*\S+\s*$/m, `Status: cancelled\nCancelled by owner: ${today} ${owner.trim().replace(/\n/g, " ")}`);
 	writeFileSync(file, text);
 	clearPending(`plan: ${file}`);
-	const closeBin = fileURLToPath(new URL("../../cli/main.ts", import.meta.url));
+	const closeBin = path.join(path.dirname(fileURLToPath(import.meta.url)), "../cli/main.ts");
 	const r = spawnSync("bun", [closeBin, "queue-close", file], { stdio: "inherit", env: process.env });
 	return r.status ?? 1;
 }

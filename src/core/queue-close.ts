@@ -44,8 +44,14 @@ export function queueClose(args: string[], cfg: Config): number {
 		const named = git(cur, "symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD").out.replace(/^origin\//, "");
 		const def = named || git(cur, "symbolic-ref", "-q", "--short", "HEAD").out;
 		const fetched = git(repo, "fetch", "-q", cur, def);
-		if (!fetched.ok) die(`could not fetch ${def} from ${cur}: ${fetched.out}`);
-		return git(repo, "rev-parse", "FETCH_HEAD").out;
+		if (fetched.ok) return git(repo, "rev-parse", "FETCH_HEAD").out;
+		// The remote's default branch can be gone upstream (renamed, pruned): fall back to the
+		// local base ref, then the local main branch, instead of refusing every close.
+		const local = git(repo, "rev-parse", "-q", "--verify", localBase);
+		if (local.ok) return local.out;
+		const fallback = git(repo, "rev-parse", "-q", "--verify", "refs/heads/main");
+		if (fallback.ok) return fallback.out;
+		die(`could not fetch ${def} from ${cur}: ${fetched.out}`);
 	}
 	const today = new Date().toISOString().slice(0, 10);
 
@@ -53,6 +59,10 @@ export function queueClose(args: string[], cfg: Config): number {
 	// landed; the done check decides, and a pass writes "Status: complete" here, nobody else.
 	const auto = args[0] === "--auto";
 	const arg = auto ? args[1] : args[0];
+	if (arg === "-h" || arg === "--help") {
+		console.log("usage: queue-close [--auto] <plan file>");
+		return 0;
+	}
 	if (!arg) die("usage: queue-close [--auto] <plan file>");
 	const file = path.resolve(arg);
 	resultLog = closeLog(file);

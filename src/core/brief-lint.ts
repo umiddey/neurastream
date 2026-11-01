@@ -188,6 +188,10 @@ export function lintText(text: string, cfg: Config): { errs: string[]; warns: st
 
 export function briefLint(args: string[], cfg: Config): number {
 	if (args.length === 0) return exitText(helpDoc("brief-lint"));
+	if (args[0] === "-h" || args[0] === "--help") {
+		printText(helpDoc("brief-lint"));
+		return 0;
+	}
 	let rc = 0;
 	for (const path of args) {
 		const { errs, warns } = lint(path, cfg);
