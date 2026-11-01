@@ -13,7 +13,7 @@ import type { Run, RunSource } from "../src/core/adapter.ts";
 import { beat, type Heartbeat } from "../src/core/heartbeat.ts";
 import type { GatedInputs } from "../src/core/incident-detectors.ts";
 import { addIncident, openIncidents } from "../src/core/incidents.ts";
-import { nowSec } from "../src/core/clock.ts";
+import { nowSec, strftime } from "../src/core/clock.ts";
 import { releaseVerdicts, watchDoctorLine, watchHealth, watchOnce, watchUnitPaths, type FailedUnit, type WatchDeps } from "../src/core/watch.ts";
 import type { CommandRunner } from "../src/core/mr-sweep.ts";
 import type { ReleaseTag } from "../src/core/results.ts";
@@ -402,6 +402,39 @@ test("verdict: Main's owner questions triple, corrections flat → WORSE", () =>
 		notify: t => posts.push(t),
 	});
 	expect(out.map(v => v.verdict)).toEqual(["WORSE"]);
+});
+
+test("verdict: a WORSE verdict folds into today's open daily incident", () => {
+	const cfg = tempCfg("verdict-daily");
+	guardBlocks(cfg, VT - 3600, 10);
+	guardBlocks(cfg, VT + 3600, 20);
+	// The daily check (main-start.ts) fingerprints with dashed dates: daily:m5:1970-01-24.
+	addIncident(cfg, { source: "daily", kind: "daily-regression", summary: "M5 guard blocks regressed: daily check", evidence: "daily", fingerprint: `daily:m5:${strftime(VNOW, "%Y-%m-%d")}` }, VT + 60);
+	const posts: string[] = [];
+	const out = releaseVerdicts(cfg, { now: VNOW, tags: VTAGS, source: vsrc([mainRun(400, VT - 3600), mainRun(400, VT + 3600)]), notify: t => posts.push(t) });
+	expect(out.map(v => v.verdict)).toEqual(["WORSE"]);
+	const open = openIncidents(cfg);
+	expect(open).toHaveLength(1); // folded into the daily incident, no second one
+	expect(open[0]!.fingerprint).toBe(`daily:m5:${strftime(VNOW, "%Y-%m-%d")}`);
+});
+
+test("verdict: owner corrections appearing from zero are WORSE, not new", () => {
+	const cfg = tempCfg("verdict-zero-pain");
+	const posts: string[] = [];
+	const out = releaseVerdicts(cfg, {
+		now: VNOW, tags: VTAGS,
+		source: vsrc([
+			mainRun(400, VT - 3600),
+			mainRun(400, VT + 3600, [["user", "that is wrong, fix it"], ["user", "still wrong, redo it"]]),
+		]),
+		notify: t => posts.push(t),
+	});
+	expect(out.map(v => v.verdict)).toEqual(["WORSE"]);
+	expect(posts[0]).toContain("corrections +100%");
+	const open = openIncidents(cfg);
+	expect(open).toHaveLength(1);
+	// The summary reports the per-100-call rates: 2 corrections in a 400-call window = 0.5/100.
+	expect(open[0]!.summary).toContain("corrections 0→0.5");
 });
 
 test("verdict: a busy night at the same rate per 100 calls is not WORSE", () => {

@@ -304,9 +304,12 @@ const VERDICT_CAP_SEC = 86400;
 const rate = (v: number | null, calls: number): number | null => (v === null ? null : (v * 100) / calls);
 
 /** Percent change of one judged number from before to after; null reads "not comparable"
- * (nothing before — a counter new in this release — or a zero before value). */
+ * (nothing before — a counter new in this release — or a zero before value). Owner pain
+ * appearing from zero is the exception: any positive after vetoes, reported as +100%. */
 const pctOf = (n: VerdictNum): number | null => {
-	if (n.before === null || n.after === null || n.beforeCount === 0 || n.before === 0) return null;
+	if (n.before === null || n.after === null) return null;
+	if (n.group === 1 && n.after > 0 && (n.before === 0 || n.beforeCount === 0)) return 100;
+	if (n.beforeCount === 0 || n.before === 0) return null;
 	return ((n.after - n.before) / n.before) * 100;
 };
 
@@ -452,7 +455,7 @@ function judgeRelease(cfg: Config, tag: string, before: Window, after: Window, d
 		const top = judged.filter(jd => jd.n.group === g).toSorted((p, q) => Math.abs(q.pct) - Math.abs(p.pct))[0];
 		if (top) parts.push(`${top.n.name} ${signed(top.pct)}`);
 	}
-	const fresh = nums.filter(n => n.beforeCount === 0).map(n => n.name);
+	const fresh = nums.filter(n => n.beforeCount === 0 && pctOf(n) === null).map(n => n.name);
 	const freshLine = fresh.length === 0 ? "" : `${(fresh.length > 4 ? [...fresh.slice(0, 4), `+${fresh.length - 4} more`] : fresh).join(", ")} new, not compared`;
 	const post = `${tag}: ${verdict} — ${[...parts, freshLine].filter(p => p !== "").join(", ")}`;
 
@@ -462,7 +465,7 @@ function judgeRelease(cfg: Config, tag: string, before: Window, after: Window, d
 		const vals = top ? `${fmtNum(top.n.before!)}→${fmtNum(top.n.after!)}` : `${downgrade!.from}→${downgrade!.to}`;
 		// The daily/weekly check may already hold today's open incident on this metric: the shared
 		// fingerprint dedups into it instead of doubling the story.
-		const fingerprint = top?.n.dailyKey !== undefined ? `daily:${top.n.dailyKey}:${strftime(deps.now, "%Y%m%d")}` : `release:${tag}:${name}`;
+		const fingerprint = top?.n.dailyKey !== undefined ? `daily:${top.n.dailyKey}:${strftime(deps.now, "%Y-%m-%d")}` : `release:${tag}:${name}`;
 		addIncident(cfg, { source: "watch", kind: "release-regression", summary: `release ${tag} worse: ${name} ${vals}`, evidence: post, fingerprint }, deps.now);
 	}
 	return { tag, verdict, post };
