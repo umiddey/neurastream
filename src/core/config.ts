@@ -107,6 +107,8 @@ export interface Config {
 		auto_close_min: number;
 		repo_index: string;
 		cancelled_rel: string;
+		/** Minutes without a heartbeat before a Main's plan claim frees (multi-main claims, src/core/claims.ts). */
+		claim_ttl_min: number;
 		/** How long a hold's `still true if` result is reused (src/core/waiting-check.ts). */
 		waiting_check_ttl_sec: number;
 		/** One hold check may run this long; a timeout is "unknown", never "stale". */
@@ -584,6 +586,7 @@ function check(cfg: Config): void {
 	if (!(cfg.guards.rate_limit.slack_s >= 0)) throw new ConfigError("guards.rate_limit.slack_s must be >= 0");
 	if (!(cfg.rollover.exit_grace_s > 0)) throw new ConfigError("rollover.exit_grace_s must be > 0");
 	if (!(cfg.metrics.report_days >= 1)) throw new ConfigError("metrics.report_days must be >= 1");
+	if (!(cfg.queue.claim_ttl_min >= 1)) throw new ConfigError("queue.claim_ttl_min must be >= 1");
 	if (!(cfg.ui.port >= 1 && cfg.ui.port <= 65535)) throw new ConfigError("ui.port must be between 1 and 65535");
 	if (!Number.isInteger(cfg.pages.port) || cfg.pages.port < 1 || cfg.pages.port > 65535) throw new ConfigError("pages.port must be an integer between 1 and 65535");
 	if (typeof cfg.pages.dir !== "string" || cfg.pages.dir.length === 0) throw new ConfigError("pages.dir must be a non-empty path");

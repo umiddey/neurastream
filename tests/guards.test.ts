@@ -172,7 +172,7 @@ function origRun(body: string, blockers = ORIG_BLOCKERS): unknown {
 		`process.env.PLAN_GUARD_LOG = ${JSON.stringify(join(HOME, "plan-guard.log"))}`,
 	];
 	const script = `${lines.join("\n")}\n${body}\n`;
-	// HOME goes through the child's environment: the originals build paths from os.homedir().
+	// HOME goes through the child's environment: the originals build paths from the OS home.
 	const r = spawnSync("bun", ["-e", script], { encoding: "utf8", cwd: "/tmp", env: { ...process.env, HOME } });
 	if (r.status !== 0) throw new Error(`original run failed: ${r.stderr}`);
 	const out = r.stdout.trim().split("\n").pop() ?? "null";
@@ -490,20 +490,24 @@ test("protected guard files: a QUEUE_* env leaked by an earlier in-process adapt
 	}
 });
 
-// The rollover note turn runs with nobody typing, so Main itself writes <state>/rollover/<id>.md.
+// The rollover note turn runs with nobody typing, so Main itself writes <state>/mains/<id>/rollover/<id>.md.
 // Only those notes (directly in that folder, .md) are open to Main; relaunch.json, other state
 // files and subagents stay protected.
-test("rollover notes: Main may write <state>/rollover/<id>.md, the rest of the state dir stays protected", () => {
+test("rollover notes: Main may write <state>/mains/main/rollover/<id>.md, the rest of the state dir stays protected", () => {
 	fresh();
-	const note = join(STATE, "rollover", "sess-1.md");
+	const note = join(STATE, "mains", "main", "rollover", "sess-1.md");
 	expect(guardCli("pre-tool", toolEvent("write", { path: note, content: "x" }, "main")).code).toBe(0);
-	const relaunch = guardCli("pre-tool", toolEvent("write", { path: join(STATE, "rollover", "relaunch.json"), content: "{}" }, "main"));
+	const relaunch = guardCli("pre-tool", toolEvent("write", { path: join(STATE, "mains", "main", "rollover", "relaunch.json"), content: "{}" }, "main"));
 	expect(relaunch.code).toBe(2);
 	expect(relaunch.d.reason).toContain("is a protected guard file");
 	const other = guardCli("pre-tool", toolEvent("write", { path: join(STATE, "other.md"), content: "x" }, "main"));
 	expect(other.code).toBe(2);
 	expect(other.d.reason).toContain("is a protected guard file");
-	const nested = guardCli("pre-tool", toolEvent("write", { path: join(STATE, "rollover", "sub", "x.md"), content: "x" }, "main"));
+	// The pre-multi-main top-level rollover dir is no longer exempt.
+	const legacy = guardCli("pre-tool", toolEvent("write", { path: join(STATE, "rollover", "sess-2.md"), content: "x" }, "main"));
+	expect(legacy.code).toBe(2);
+	expect(legacy.d.reason).toContain("is a protected guard file");
+	const nested = guardCli("pre-tool", toolEvent("write", { path: join(STATE, "mains", "main", "rollover", "sub", "x.md"), content: "x" }, "main"));
 	expect(nested.code).toBe(2);
 	expect(nested.d.reason).toContain("is a protected guard file");
 	const sub = guardCli("pre-tool", toolEvent("write", { path: note, content: "x" }, "sub"));

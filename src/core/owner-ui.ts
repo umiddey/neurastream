@@ -13,12 +13,14 @@ import os from "node:os";
 import { basename, resolve } from "node:path";
 import type { RunSource } from "./adapter.ts";
 import { chatTier, currentTier, type Tier } from "./autonomy.ts";
+import { fileClaimStore } from "./claims.ts";
 import type { Config } from "./config.ts";
 import { nowSec, strftime } from "./clock.ts";
 import { cpuCount } from "./host.ts";
 import { dismissIncident, isFindingKind, openIncidents } from "./incidents.ts";
 import { byText, knowledgeManifest, readKnowledgeTopicFile, urlField, urlValue, type KnowledgeEntry } from "./knowledge.ts";
-import { log } from "./guards.ts";
+import { isBusy } from "./file-lock.ts";
+import { log, MAIN_ID_RE } from "./guards.ts";
 import { publishedPages } from "./pages-expiry.ts";
 import { readMetricEvents } from "./metrics.ts";
 import { activePlans, chatUnlock, dependencyOrderProblems, expandHome, gitTop, stateDirPath, unlockPath, writeIndex, type Plan } from "./queue/lib.ts";
@@ -156,6 +158,8 @@ export interface QueueRow {
 	waiting: boolean;
 	/** `Summary:` header, else the first Goal bullet with a leading Owner/INCIDENT prefix cut off. */
 	summary: string | null;
+	/** The Main id holding this plan's claim, else null (P5 multi-main). */
+	holder: string | null;
 	/** Chip text: waits you, waits on a plan, not started, phase K of N, or all N done. */
 	state: string;
 }
@@ -256,15 +260,20 @@ function queueState(p: Plan, plans: Plan[]): string {
 
 export function queueRows(cfg: Config): QueueRow[] {
 	const plans = activePlans(cfg.paths.queue_index).filter(p => p.status === "open");
-	return plans.map(p => ({
-		repo: basename(p.repo),
-		file: p.file,
-		title: p.title,
-		status: p.status ?? "?",
-		waiting: p.waiting,
-		summary: p.summary ?? (goalSummary(p.goal[0] ?? "") || null),
-		state: queueState(p, plans),
-	}));
+	const claims = fileClaimStore(cfg.paths.queue_state, nowSec, cfg.queue.claim_ttl_min);
+	return plans.map(p => {
+		const holder = claims.holder(p.file)?.main ?? null;
+		return {
+			repo: basename(p.repo),
+			file: p.file,
+			title: p.title,
+			status: p.status ?? "?",
+			waiting: p.waiting,
+			summary: p.summary ?? (goalSummary(p.goal[0] ?? "") || null),
+			state: queueState(p, plans),
+			holder,
+		};
+	});
 }
 
 export function ciRows(cfg: Config): CiRow[] {
@@ -382,6 +391,29 @@ function ownerMessagesDir(): string {
 	return `${stateDirPath()}/owner-messages`;
 }
 
+/** Main ids with a live running.lock in their main state dir (P5 multi-main): the page's picker list and the @-routing target set. */
+export function runningMains(cfg: Config): string[] {
+	let dirs: string[];
+	try {
+		dirs = readdirSync(`${cfg.paths.queue_state}/mains`);
+	} catch {
+		return [];
+	}
+	return dirs
+		.filter(d => MAIN_ID_RE.test(d) && isBusy(`${cfg.paths.queue_state}/mains/${d}/running.lock`))
+		.toSorted();
+}
+
+/** Resolves where a message goes (P5 multi-main): an `@<id> ` prefix or the picker's `to` field names one running Main; empty is every Main. A stale target is refused before anything is stored. */
+export function ownerMessageTarget(text: string, cfg: Config, formTo = ""): { to: string } | { refuse: string } {
+	const at = /^@([a-z0-9-]{1,24})(?:\s|$)/.exec(text);
+	const target = (at ? at[1] : formTo) ?? "";
+	if (!target || !MAIN_ID_RE.test(target)) return { to: "" };
+	const running = runningMains(cfg);
+	if (running.includes(target)) return { to: target };
+	return { refuse: `Main ${target} is not running; running: ${running.length ? running.join(", ") : "none"}` };
+}
+
 export interface MessageRow {
 	id: string;
 	ts: number;
@@ -466,9 +498,10 @@ export function recentOwnerMessages(now: number): MessageRow[] {
 // ---- rendering (consumes the rows above, never the readers directly) ----
 
 /** The "Tell Main" card: one textarea, image picks, a Send button — no chat thread. Under it, "Sent today": this view's messages newer than the keep window, newest first, thumbnails served from /message-image. */
-function messageCard(messages: MessageRow[] | null): string {
+function messageCard(messages: MessageRow[] | null, running: string[]): string {
 	const form = `<form class="msgform" method="post" action="/message" enctype="multipart/form-data">
 <textarea name="text" maxlength="${MESSAGE_MAX}" rows="3" placeholder="What Main should know — a fix, a link, a photo"></textarea>
+<select name="to"><option value="">All</option>${running.map(id => `<option value="${esc(id)}">Main ${esc(id)}</option>`).join("")}</select>
 <input type="file" name="images" accept="image/*" multiple>
 <button class="btn pri" type="submit">Send</button>
 </form>`;
@@ -553,7 +586,7 @@ function queueHtml(rows: QueueRow[], tab: string): string {
 <span class="qhandle" title="Drag to reorder" aria-label="Drag ${esc(r.title)}">≡</span>
 <span class="qrank">${i + 1}</span>
 <span class="qtitle">${esc(r.title)}${r.summary ? `<span class="qsum">${esc(r.summary)}</span>` : ""}</span>
-<span class="chip ${r.state.startsWith("waits") ? "c-wait" : "c-ready"}">${esc(r.state)}</span>
+${r.holder ? `<span class="chip c-held">Main ${esc(r.holder)}</span>` : ""}<span class="chip ${r.state.startsWith("waits") ? "c-wait" : "c-ready"}">${esc(r.state)}</span>
 <span class="qbtns"><button type="button" class="qmove" data-move="top">↑ top</button><button type="button" class="qmove" data-move="up">↑</button><button type="button" class="qmove" data-move="down">↓</button></span>
 </li>`,
 		)
@@ -1255,7 +1288,7 @@ export function renderPage(cfg: Config, data: PageData, params: URLSearchParams,
 	const machine = data.machine === null ? na("Machine") : machineHtml(cfg, data.machine);
 	const body =
 		tab === "now"
-			? `${messageCard(data.messages)}
+			? `${messageCard(data.messages, runningMains(cfg))}
 <h1>Today</h1>
 <p class="sub">What your agents did in the last 24 hours.</p>
 <div class="card">
@@ -1385,6 +1418,7 @@ details.bg ul{margin:4px 0 8px;padding-left:20px;color:var(--mut);font-size:13px
 .c-wait{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}
 .c-run{background:color-mix(in srgb,var(--teal) 18%,transparent);color:var(--teal)}
 .c-ready{background:color-mix(in srgb,var(--mut) 15%,transparent);color:var(--mut)}
+.c-held{background:color-mix(in srgb,var(--acc) 15%,transparent);color:var(--acc)}
 .chip.bad{color:var(--red)}
 .qbtns{display:flex;gap:4px;flex-wrap:wrap;margin-left:auto}
 .qbtns button{min-height:32px;padding:2px 10px;font-size:12px;border-radius:999px;border:1px solid var(--bd);background:var(--card);color:var(--mut)}
@@ -1520,13 +1554,13 @@ function handleIncident(cfg: Config, fields: Record<string, string>, login: stri
 		if (wantsJson) return jsonSent("incident-closed", receiptText("incident-closed", new URLSearchParams()));
 		return redirect(sentTo(fields.tab ?? "", "sent=incident-closed"));
 	}
-	storeOwnerMessage(`${id}: it's a bug — plan it`, login, []);
+	storeOwnerMessage(`${id}: it's a bug — plan it`, login, [], "");
 	if (wantsJson) return jsonSent("incident-bug", receiptText("incident-bug", new URLSearchParams()));
 	return redirect(sentTo(fields.tab ?? "", "sent=incident-bug"));
 }
 
 /** Stores an owner message (text and images) under a new id and inboxes it for Main (P13/P14). */
-function storeOwnerMessage(text: string, login: string, images: { bytes: Uint8Array; kind: string }[]): void {
+function storeOwnerMessage(text: string, login: string, images: { bytes: Uint8Array; kind: string }[], to: string): void {
 	const ts = nowSec();
 	// The dir name starts with a whole-second ts: the sweep and the image route both parse it.
 	const id = `${Math.floor(ts)}-${randomUUID().slice(0, 6)}`;
@@ -1538,21 +1572,23 @@ function storeOwnerMessage(text: string, login: string, images: { bytes: Uint8Ar
 		writeFileSync(`${dir}/${name}`, images[i]!.bytes);
 		names.push(name);
 	}
-	writeFileSync(`${dir}/message.json`, `${JSON.stringify({ ts, text, login, images: names })}\n`);
+	writeFileSync(`${dir}/message.json`, `${JSON.stringify({ ts, text, login, to, images: names })}\n`);
 	mkdirSync(stateDirPath(), { recursive: true });
 	// The text stays out of owner-inbox.jsonl; Main reads message.json through the id (P14).
-	appendFileSync(inboxPath(), `${JSON.stringify({ ts, kind: "message", id, login })}\n`);
+	appendFileSync(inboxPath(), `${JSON.stringify({ ts, kind: "message", id, login, to })}\n`);
 }
 
 // ---- POST /message (plan P13): the owner's one-way note plus images, inboxed by id ----
 
-async function handleMessage(req: Request, login: string, wantsJson: boolean): Promise<Response> {
+async function handleMessage(req: Request, cfg: Config, login: string, wantsJson: boolean): Promise<Response> {
 	sweepOwnerMessages(nowSec());
 	const form = await req.formData();
 	let text = "";
+	let toField = "";
 	const files: File[] = [];
 	for (const [key, value] of form.entries()) {
 		if (key === "text" && typeof value === "string") text = value.trim();
+		else if (key === "to" && typeof value === "string") toField = value;
 		// A form sent with no file chosen still carries one empty, nameless file part (Bun parses it as a nameless Blob).
 		else if (key === "images" && (value as unknown) instanceof Blob) {
 			const part = value as unknown as File;
@@ -1571,7 +1607,10 @@ async function handleMessage(req: Request, login: string, wantsJson: boolean): P
 		if (!kind) return fail("attachments must be PNG, JPEG, GIF or WEBP images — the type is read from the file itself");
 		images.push({ bytes: data, kind });
 	}
-	storeOwnerMessage(text, login, images);
+	// P5: an `@<id>` prefix or the picker's to field names one Main; a stale name is refused before anything is stored.
+	const pick = ownerMessageTarget(text, cfg, toField);
+	if ("refuse" in pick) return fail(pick.refuse);
+	storeOwnerMessage(text, login, images, pick.to);
 	if (wantsJson) return jsonSent("message", receiptText("message", new URLSearchParams()));
 	return redirect("/?sent=message");
 }
@@ -1816,7 +1855,7 @@ res = pageRes(cfg, source, url.searchParams, resultsBuild, pagesHost);
 							// The page's script asks for JSON on every POST (P11b); a no-JS form post gets today's 303s.
 							const wantsJson = (req.headers.get("accept") ?? "").includes("application/json");
 							if (url.pathname === "/message") {
-								res = await handleMessage(req, login, wantsJson);
+								res = await handleMessage(req, cfg, login, wantsJson);
 								code = res.status;
 							} else if (url.pathname === "/incident") {
 								res = handleIncident(cfg, await fieldsOf(req), login, wantsJson);

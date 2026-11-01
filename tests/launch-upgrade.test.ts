@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "../src/core/config.ts";
+import { mainStateDir } from "../src/core/guards.ts";
 import { readMetricEvents } from "../src/core/metrics.ts";
 import { notePath, relaunchPath } from "../src/core/rollover.ts";
 
@@ -88,7 +89,8 @@ function newCase(): Case {
 	writeFileSync(omp, FAKE_SOURCE);
 	chmodSync(omp, 0o755);
 	const cfg = loadConfig({ home, env: {} });
-	const note = notePath(SESSION_ID, cfg.paths.queue_state);
+	const mainDir = mainStateDir(cfg); // id main: the subprocess runs with no NEURASTREAM_MAIN_ID
+	const note = notePath(SESSION_ID, mainDir);
 	mkdirSync(dirname(note), { recursive: true });
 	return {
 		dir,
@@ -96,7 +98,7 @@ function newCase(): Case {
 		bin,
 		pkg,
 		note,
-		relaunch: relaunchPath(cfg.paths.queue_state),
+		relaunch: relaunchPath(mainDir),
 		mark: join(dir, "mark"),
 		runsLog: join(dir, "runs.log"),
 		guardLog: cfg.paths.guard_log,

@@ -12,6 +12,8 @@ import { readOwnerAnswers, readOwnerMessages } from "../../core/incidents.ts";
 import { mainStartText } from "../../core/main-start.ts";
 import { appendMetric } from "../../core/metrics.ts";
 import { applyQueueEnv } from "../../core/queue/env.ts";
+import { tryLock } from "../../core/file-lock.ts";
+import { MAIN_ID_RE, mainStateDir } from "../../core/guards.ts";
 import * as q from "../../core/queue/lib.ts";
 import { buildHandoff, holdsBlock, MAX_NOTE_AGE_MS, OWNER_AWAY, relaunchPath, unansweredOwnerMessages } from "../../core/rollover.ts";
 import { PROXY_BIN, proxyOnPath } from "../../core/secret-redact.ts";
@@ -108,6 +110,32 @@ export function carriedArgs(args: string[]): string[] {
 	return out;
 }
 
+/**
+ * Splits `--name <id>` / `--name=<id>` — this launcher's Main identity — out of the args; the rest
+ * is what the harness gets on the first run and what a relaunch carries. The last --name wins.
+ */
+export function stripNameFlag(args: string[]): { args: string[]; name: string | undefined } {
+	const rest: string[] = [];
+	let name: string | undefined;
+	for (let i = 0; i < args.length; i++) {
+		const arg = args[i] ?? "";
+		if (arg === "--name") {
+			const next = args[i + 1];
+			// A bare `--name` with no value (next token missing or another flag) has none: fall back
+			// to the env/default id instead of eating the next flag as the id (I-20261031-225).
+			if (next !== undefined && !next.startsWith("-")) {
+				name = next;
+				i++;
+			}
+		} else if (arg.startsWith("--name=")) {
+			name = arg.slice("--name=".length);
+		} else {
+			rest.push(arg);
+		}
+	}
+	return { args: rest, name };
+}
+
 /** Handoffs up to this many bytes go in the first message; larger ones go to a file. */
 const MAX_INLINE_HANDOFF = 100_000;
 
@@ -141,65 +169,90 @@ interface RelaunchRequest {
  */
 export async function runMainLauncher(args: string[], cfg: Config, opts: LaunchOptions = {}): Promise<number> {
 	applyQueueEnv(cfg);
-	const harness = opts.harness ?? OMP_BIN;
-	const proxy = proxyPlan(harness, cfg);
-	if (proxy.warning) console.error(proxy.warning);
-	const mainStart = opts.mainStart ?? mainStartText;
-	const carried = carriedArgs(args);
-	const loaded = packageVersion(packageJsonPath());
-	// Set only in a fresh launcher the previous one started: its first step is the request that run left.
+	// --name names this launcher's Main and never reaches the harness: stripped before the first
+	// run's args and a relaunch's carriedArgs are built.
+	const { args: harnessArgs, name } = stripNameFlag(args);
+	const id = name ?? process.env.NEURASTREAM_MAIN_ID ?? "main";
+	if (!MAIN_ID_RE.test(id)) {
+		console.error(`neurastream: bad main id "${id}": must match [a-z0-9-]{1,24}`);
+		return 2;
+	}
+	// The env, not a flag: the omp child and every relaunch inherit it, and the guards running in
+	// this process store this Main's state under it.
+	process.env.NEURASTREAM_MAIN_ID = id;
+	const stateDir = mainStateDir(cfg);
+	mkdirSync(stateDir, { recursive: true });
+	// Set only in a fresh launcher the previous one started: its first step is the request that run
+	// left. It replaces the launcher that holds the lock, so it skips the lock.
 	const handedOver = process.env.NEURASTREAM_RELAUNCH_SINCE;
 	delete process.env.NEURASTREAM_RELAUNCH_SINCE;
-	let runArgs = args;
-	const since = handedOver === undefined ? Number.NaN : Number(handedOver);
-	if (Number.isFinite(since)) {
-		const req = readRequest(since, cfg);
-		if (req !== null) {
-			console.error(HANDOFF_PENDING_LINE);
-			const message = await nextMessage(req, cfg, mainStart);
-			if (message === null) return 1;
-			// The request is removed only once its message exists: a kill during main-start
-			// (I-20261024-4) must leave it for the next launcher to continue.
-			rmSync(relaunchPath(), { force: true });
-			runArgs = [...carried, message];
-		}
-	} else if (!hasPositional(args)) {
-		// A fresh start with no message of its own continues a rollover a killed launcher left
-		// behind: the request counts while it is at most MAX_NOTE_AGE_MS old, like a note. An
-		// older or unreadable one is left alone.
-		const req = readRequest(Date.now() - MAX_NOTE_AGE_MS, cfg);
-		if (req !== null) {
-			console.error(`neurastream: continuing the interrupted rollover from ${req.previousSessionFile}`);
-			console.error(HANDOFF_PENDING_LINE);
-			const message = await nextMessage(req, cfg, mainStart);
-			if (message !== null) {
+	// One live launcher per id: the kernel frees the flock when the launcher dies, so there is no
+	// pid file and no takeover code.
+	const running = handedOver === undefined ? tryLock(join(stateDir, "running.lock")) : { release: () => {} };
+	if (!running) {
+		console.error(`Main ${id} is already running`);
+		return 1;
+	}
+	try {
+		const harness = opts.harness ?? OMP_BIN;
+		const proxy = proxyPlan(harness, cfg);
+		if (proxy.warning) console.error(proxy.warning);
+		const mainStart = opts.mainStart ?? mainStartText;
+		const carried = carriedArgs(harnessArgs);
+		const loaded = packageVersion(packageJsonPath());
+		let runArgs = harnessArgs;
+		const since = handedOver === undefined ? Number.NaN : Number(handedOver);
+		if (Number.isFinite(since)) {
+			const req = readRequest(since, cfg);
+			if (req !== null) {
+				console.error(HANDOFF_PENDING_LINE);
+				const message = await nextMessage(req, cfg, mainStart);
+				if (message === null) return 1;
+				// The request is removed only once its message exists: a kill during main-start
+				// (I-20261024-4) must leave it for the next launcher to continue.
 				rmSync(relaunchPath(), { force: true });
 				runArgs = [...carried, message];
 			}
+		} else if (!hasPositional(harnessArgs)) {
+			// A fresh start with no message of its own continues a rollover a killed launcher left
+			// behind: the request counts while it is at most MAX_NOTE_AGE_MS old, like a note. An
+			// older or unreadable one is left alone.
+			const req = readRequest(Date.now() - MAX_NOTE_AGE_MS, cfg);
+			if (req !== null) {
+				console.error(`neurastream: continuing the interrupted rollover from ${req.previousSessionFile}`);
+				console.error(HANDOFF_PENDING_LINE);
+				const message = await nextMessage(req, cfg, mainStart);
+				if (message !== null) {
+					rmSync(relaunchPath(), { force: true });
+					runArgs = [...carried, message];
+				}
+			}
 		}
-	}
-	for (;;) {
-		const started = Date.now();
-		// The env, not a flag: the child inherits it, so an omp started from inside Main stays guarded.
-		const code = await runChild(proxy.cmd, [...proxy.prefix, ...runArgs], { ...process.env, [MAIN_ENV]: "1" });
-		const req = readRequest(started, cfg);
-		if (req === null) return code;
-		const installed = packageVersion(packageJsonPath());
-		const changed = loaded === null || installed === null || loaded !== installed;
-		if (changed && noteReadable(req.notePath)) {
-			adapterLog(cfg, `rollover: relaunch handed to a fresh launcher (${loaded ?? "unknown"} → ${installed ?? "unknown"})`);
-			// P11: one version-change ledger event per relaunch on a version change; the release verdict reads a to < from event as a downgrade.
-			appendMetric(cfg, { type: "version-change", from: loaded ?? "unknown", to: installed ?? "unknown", ts: Math.floor(Date.now() / 1000) });
-			return runChild(process.execPath, [join(PACKAGE_ROOT, "src", "cli", "main.ts"), "main", ...carried], {
-				...process.env,
-				NEURASTREAM_RELAUNCH_SINCE: String(started),
-			});
+		for (;;) {
+			const started = Date.now();
+			// The env, not a flag: the child inherits it, so an omp started from inside Main stays guarded.
+			const code = await runChild(proxy.cmd, [...proxy.prefix, ...runArgs], { ...process.env, [MAIN_ENV]: "1" });
+			const req = readRequest(started, cfg);
+			if (req === null) return code;
+			const installed = packageVersion(packageJsonPath());
+			const changed = loaded === null || installed === null || loaded !== installed;
+			if (changed && noteReadable(req.notePath)) {
+				adapterLog(cfg, `rollover: relaunch handed to a fresh launcher (${loaded ?? "unknown"} → ${installed ?? "unknown"})`);
+				// P11: one version-change ledger event per relaunch on a version change; the release verdict reads a to < from event as a downgrade.
+				appendMetric(cfg, { type: "version-change", from: loaded ?? "unknown", to: installed ?? "unknown", ts: Math.floor(Date.now() / 1000) });
+				return runChild(process.execPath, [join(PACKAGE_ROOT, "src", "cli", "main.ts"), "main", ...carried], {
+					...process.env,
+					NEURASTREAM_RELAUNCH_SINCE: String(started),
+				});
+			}
+			console.error(HANDOFF_PENDING_LINE);
+			const message = await nextMessage(req, cfg, mainStart);
+			if (message === null) return code;
+			rmSync(relaunchPath(), { force: true });
+			runArgs = [...carried, message];
 		}
-		console.error(HANDOFF_PENDING_LINE);
-		const message = await nextMessage(req, cfg, mainStart);
-		if (message === null) return code;
-		rmSync(relaunchPath(), { force: true });
-		runArgs = [...carried, message];
+	} finally {
+		running.release();
 	}
 }
 

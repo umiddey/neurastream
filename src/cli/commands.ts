@@ -20,6 +20,7 @@ import { wipCheck } from "../core/wip-check.ts";
 import { wipSnapshot } from "../core/wip-snapshot.ts";
 import { withHeartbeat } from "../core/heartbeat.ts";
 import { runtime } from "./runtime.ts";
+import { claimCli } from "./claim.ts";
 import { getAdapter } from "../adapters/index.ts";
 
 export const PORTED = [
@@ -36,6 +37,7 @@ export const PORTED = [
 	"queue-close",
 	"queue-finished",
 	"queue-cancel",
+	"claim",
 	"main-start",
 	"machine-guard",
 	"quota-reset",
@@ -79,6 +81,8 @@ export async function runPorted(cmd: string, args: string[]): Promise<number> {
 			return queueFinished(args, rt.cfg);
 		case "queue-cancel":
 			return queueCancel(args, rt.cfg);
+		case "claim":
+			return claimCli(args, rt.cfg);
 		case "main-start": {
 			const a = getAdapter(rt.cfg);
 			return mainStart(args, rt.cfg, { source: a.runSource(rt.cfg), results: a.completedResults(rt.cfg) });

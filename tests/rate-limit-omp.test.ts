@@ -107,7 +107,7 @@ const logLines = (): string[] => (existsSync(GUARD_LOG) ? readFileSync(GUARD_LOG
 
 /** The rate-limit episode posts among every discord hit: a normal allowed stop's hand-back post
  *  (the existing behavior) lands on the same fake server and must not be counted here. */
-const rlHits = (): Hit[] => discordHits.filter(h => h.text.startsWith("⏳"));
+const rlHits = (): Hit[] => discordHits.filter(h => h.text.includes("] ⏳") || h.text.startsWith("⏳"));
 
 // --- event builders: the shapes omp's events carry (plan 20261025_0130) ---
 
@@ -274,7 +274,7 @@ test("a 429 stop is allowed with one episode post and one resume timer that send
 	const results = await host.emit("session_stop", stopEvent(err429(2000)), ctx);
 	expect(results).toEqual([]); // ALLOW: no block decision
 	await until(() => rlHits().length === 1);
-	expect(rlHits()[0]!.text).toMatch(/^⏳ Main is rate limited by its provider until \d\d:\d\d \(local\); it resumes on its own\.$/);
+	expect(rlHits()[0]!.text).toMatch(/^\[main\] ⏳ Main is rate limited by its provider until \d\d:\d\d \(local\); it resumes on its own\.$/);
 	const stop = logLines().filter(l => l.includes("RATE-LIMIT stop"));
 	expect(stop).toHaveLength(1);
 	expect(stop[0]).toMatch(/RATE-LIMIT stop: resume at \d\d:\d\d \(2s, attempt 1\)$/); // parsed 2s, slack 0
