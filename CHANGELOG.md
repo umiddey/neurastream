@@ -1,8 +1,11 @@
 # Changelog
+## 0.2.62
+### Changed
+- Plan review switches (plan 20261028_1600 P6): `review.plan` (default `true`; `false` skips the reviewer PASS gate — an empty `review.agents` list no longer does) and `review.code` (default `false`; `true` refuses Main ticking a plan phase until a review spawn's `CODE REVIEW: PASS` entry covers that phase).
+
 ## 0.2.61
 ### Fixed
 - 0.2.60 froze chat input: a branch with no new commits counted as landed, so the stop stayed locked forever. A plan now counts as landed only when every phase is ticked, and the landed lock lets Main stop after `guards.idle_stops` empty stop attempts (plan 20261031_2320).
-
 ## 0.2.60
 ### Changed
 - Plan index is append-only and read-only on disk (0444): one writer `writeIndex`; agents add or reorder plans with `neurastream queue add` / `queue move`; doctor re-locks the file.

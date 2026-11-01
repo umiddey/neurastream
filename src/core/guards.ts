@@ -149,6 +149,11 @@ interface PlanReview {
 	by?: string;
 }
 
+/** A CODE REVIEW record (P6): the plan phase ids (P1, P4a, …) the entry names, for the tick gate. */
+interface CodeReview extends PlanReview {
+	phases: string[];
+}
+
 function planReviewsFile(): string {
 	return path.join(q.STATE_DIR, "plan-reviews.json");
 }
@@ -161,19 +166,27 @@ function readPlanReviews(): Record<string, PlanReview> {
 	return {};
 }
 
-function writePlanReviews(reviews: Record<string, PlanReview>, cfg: Config): void {
+function readCodeReviews(): Record<string, CodeReview> {
+	try {
+		const r = JSON.parse(readFileSync(planReviewsFile(), "utf8")) as { code?: Record<string, CodeReview> };
+		if (r.code && typeof r.code === "object") return r.code;
+	} catch {}
+	return {};
+}
+
+function writePlanReviews(reviews: Record<string, PlanReview>, code: Record<string, CodeReview>, cfg: Config): void {
 	try {
 		mkdirSync(q.STATE_DIR, { recursive: true });
-		writeFileSync(planReviewsFile(), JSON.stringify({ reviews }, null, 1));
+		writeFileSync(planReviewsFile(), JSON.stringify({ reviews, code }, null, 1));
 	} catch (err) {
 		log(cfg.paths.plan_guard_log, `cannot write ${planReviewsFile()}: ${err}`);
 	}
 }
 
-/** The progress entry that records a review; only a subagent's edit can carry one. The verdict is the match, never a substring. */
-const REVIEW_LINE = /^- (?:\d{4}-\d{2}-\d{2} \d{2}:\d{2} [^\s:]+: )?PLAN REVIEW: (PASS|FAIL)\b/;
+/** The progress entry that records a review — PLAN for the spawn gate, CODE for the phase tick gate (P6); only a subagent's edit can carry one. The verdict is the match, never a substring. */
+const REVIEW_LINE = /^- (?:\d{4}-\d{2}-\d{2} \d{2}:\d{2} [^\s:]+: )?(PLAN|CODE) REVIEW: (PASS|FAIL)\b/;
 /** Any entry that opens like a review line; one that REVIEW_LINE does not match is restored, not recorded. */
-const REVIEW_LOOKALIKE = /^- (?:\d{4}-\d{2}-\d{2} \d{2}:\d{2} [^\s:]+: )?PLAN REVIEW\b/;
+const REVIEW_LOOKALIKE = /^- (?:\d{4}-\d{2}-\d{2} \d{2}:\d{2} [^\s:]+: )?(PLAN|CODE) REVIEW\b/;
 
 /** Who launches an agent: Main's launch may use a plan review's exemption, a sub's never may (plan 20261028_1600 P4i). */
 export type Spawner = "main" | "sub";
@@ -183,10 +196,11 @@ export type Spawner = "main" | "sub";
  * matches the plan text — progress-only edits keep a PASS valid, any other change expires it,
  * a FAIL is denied with its first finding. A review spawn itself — an agent from review.agents
  * whose brief has the `Plan review: <plan>` line — is exempt when Main launches it. P5 removed
- * the cutover: every named plan is gated.
+ * the cutover: every named plan is gated. review.plan: false skips the gate (P6); an empty
+ * review.agents list no longer turns it off.
  */
 export function reviewPassProblem(named: string[], brief: string, agent: string, cfg: Config, spawner: Spawner): string | null {
-	if (!cfg.review.agents.length) return null; // P5c: an empty review.agents list turns both review gates off
+	if (!cfg.review.plan) return null; // P6: review.plan: false skips the PASS gate; an empty review.agents list no longer does
 	const reviews = readPlanReviews();
 	for (const file of named) {
 		if (isReviewSpawn(file, brief, agent, cfg, spawner)) continue;
@@ -204,7 +218,7 @@ export function reviewPassProblem(named: string[], brief: string, agent: string,
 	return null;
 }
 
-/** A subagent's `PLAN REVIEW: PASS|FAIL` entry records the review of the plan it edited; Main's edit path never reaches this. */
+/** A subagent's `PLAN REVIEW` or `CODE REVIEW` (P6) entry records the review of the plan it edited; Main's edit path never reaches this. */
 function recordReviews(e: PlanEditEvent, cfg: Config): void {
 	const entries = newProgressEntries(e.before, e.after).filter(b => REVIEW_LINE.test(b));
 	if (!entries.length) return;
@@ -213,16 +227,25 @@ function recordReviews(e: PlanEditEvent, cfg: Config): void {
 	if (!found) return;
 	const { name, spawn } = found;
 	const reviews = readPlanReviews();
+	const code = readCodeReviews();
 	for (const block of entries) {
+		const kind = REVIEW_LINE.exec(block)![1];
 		const repeat = spawn.verdicts > 0;
 		spawn.verdicts++;
 		const at = nowSec();
 		// Judged against the plan as the spawn first saw it (P4k): a plan that moved during the review cannot pass.
-		if (repeat) reviews[e.path] = { verdict: "FAIL", hash: spawn.hash, finding: "review spawn wrote 2 verdicts", at, by: name };
-		else if (reviewHash(e.after) !== spawn.hash) reviews[e.path] = { verdict: "FAIL", hash: spawn.hash, finding: "plan changed during review", at, by: name };
-		else reviews[e.path] = { verdict: REVIEW_LINE.exec(block)![1] === "PASS" ? "PASS" : "FAIL", hash: spawn.hash, finding: findingsValue(block) ?? "", at, by: name };
+		const record: PlanReview = repeat
+			? { verdict: "FAIL", hash: spawn.hash, finding: "review spawn wrote 2 verdicts", at, by: name }
+			: reviewHash(e.after) !== spawn.hash
+				? { verdict: "FAIL", hash: spawn.hash, finding: "plan changed during review", at, by: name }
+				: { verdict: REVIEW_LINE.exec(block)![2] === "PASS" ? "PASS" : "FAIL", hash: spawn.hash, finding: findingsValue(block) ?? "", at, by: name };
+		// A CODE REVIEW record covers only the phases the verdict names before its Findings line: a phase in the Findings text ("see P2") is a reference, not coverage; an entry without a Findings line covers nothing.
+		if (kind === "CODE") {
+			const head = block.slice(0, Math.max(block.indexOf("Findings:"), 0));
+			code[e.path] = { ...record, phases: [...new Set([...head.matchAll(/\bP\d+[a-z]?\b/g)].map(m => m[0]))] };
+		} else reviews[e.path] = record;
 	}
-	writePlanReviews(reviews, cfg);
+	writePlanReviews(reviews, code, cfg);
 	writeReviewSpawns(spawns);
 }
 
@@ -564,6 +587,12 @@ const PLAN_WRITE = /\b(write|writing|draft|drafting|author)\b[^\n]*\bplan\b/i;
 function unticked(p: Plan): string[] {
 	const phases = q.sections(p.text).get("phases") ?? "";
 	return [...phases.matchAll(/^\s*[-*]\s+\[ \]\s+(P\d+[a-z]?)\b/gm)].map(m => m[1]!);
+}
+
+/** Phase ids an edit newly ticks: `[ ]` in `before`, `[x]` in `after` (P6, read from the Phases section like unticked). */
+function newlyTicked(before: string, after: string): string[] {
+	const was = new Set([...(q.sections(before).get("phases") ?? "").matchAll(/^\s*[-*]\s+\[ \]\s+(P\d+[a-z]?)\b/gm)].map(m => m[1]!));
+	return [...(q.sections(after).get("phases") ?? "").matchAll(/^\s*[-*]\s+\[[xX]\]\s+(P\d+[a-z]?)\b/gm)].map(m => m[1]!).filter(id => was.has(id));
 }
 
 /** The open plans the text names — a `Priority skip: <path> — <why>` line names a plan it does NOT run on (20261025_0215 P3), so only the remaining text decides. planGate's targeting, shared with the spawn verdict's brief-lint and cap notes (plan 20261031_1207 P4). */
@@ -1662,13 +1691,13 @@ export function checkPlanEdit(e: PlanEditEvent, cfg: Config): PlanEditDecision {
 		log(cfg.paths.plan_guard_log, `RESTORE ${e.path} (review line)`);
 		return {
 			allow: false,
-			reason: `plan-guard: a PLAN REVIEW line in ${e.path} does not match "- [<date> <time> <name>: ]PLAN REVIEW: PASS|FAIL — …". The file was restored.`,
+			reason: `plan-guard: a PLAN REVIEW or CODE REVIEW line in ${e.path} does not match "- [<date> <time> <name>: ]PLAN REVIEW|CODE REVIEW: PASS|FAIL — …". The file was restored.`,
 			restore: { path: e.path, text: e.before },
 		};
 	}
 	if (e.agent === "sub" && newProgressEntries(e.before, e.after).some(b => REVIEW_LINE.test(b)) && matchReviewSpawn(readReviewSpawns(), e.agentId ?? "")?.spawn.plan !== e.path) {
 		log(cfg.paths.plan_guard_log, `RESTORE ${e.path} review line from a spawn that is not its named review spawn`);
-		return { allow: false, reason: `plan-guard: a PLAN REVIEW line counts only from the named review spawn of ${e.path}; the file was restored.`, restore: { path: e.path, text: e.before } };
+		return { allow: false, reason: `plan-guard: a PLAN REVIEW or CODE REVIEW line counts only from the named review spawn of ${e.path}; the file was restored.`, restore: { path: e.path, text: e.before } };
 	}
 	recordReviews(e, cfg);
 	return ALLOW;
@@ -1707,17 +1736,43 @@ export function findingsValue(block: string): string | null {
 	return line.slice(line.lastIndexOf("Findings:") + "Findings:".length).trim() || null;
 }
 
+/** P6 (plan 20261028_1600): the refusal for ticking `ids` with review.code on. Each phase needs a recorded CODE REVIEW: PASS from a named review spawn (the `code` map of plan-reviews.json), and its entry must still be the plan's last Progress entry naming the phase — last by the entry's `<YYYY-MM-DD HH:MM>` stamp, not file order (live plans are newest-first or appended): implementer work after the review voids it. */
+function codeReviewProblem(file: string, after: string, ids: string[]): string | null {
+	const rec = readCodeReviews()[file];
+	// toSorted is stable: ties and unstamped entries ("") keep file order.
+	const entries = progressEntries(after)
+		.map(b => [b, /^\s*-\s*(\d{4}-\d{2}-\d{2} \d{2}:\d{2})/.exec(b)?.[1] ?? ""] as const)
+		.toSorted((a, b) => (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0))
+		.map(([b]) => b);
+	for (const id of ids) {
+		const last = entries.findLast(b => new RegExp(`\\b${id}\\b`).test(b));
+		const valid = last !== undefined && REVIEW_LINE.test(last) && REVIEW_LINE.exec(last)![1] === "CODE" && REVIEW_LINE.exec(last)![2] === "PASS";
+		if (!(rec?.verdict === "PASS" && rec.phases.includes(id) && valid))
+			return `plan-guard: phase ${id} was ticked but has no current CODE REVIEW: PASS from a review spawn after its last implementer entry — spawn a code reviewer or set review.code: false. The file was restored.`;
+	}
+	return null;
+}
+
 // Main's plan text outside "## Progress" must rest on files Main read itself (planReadProblems).
 // An empty `before` means the plan file did not exist yet; a refusal then deletes it.
 function checkMainPlan(e: PlanEditEvent, cfg: Config): PlanEditDecision {
-	// A PLAN REVIEW line is a review spawn's verdict (P4k): Main writes none, so its edit is restored.
+	// A PLAN REVIEW or CODE REVIEW line (P6) is a review spawn's verdict (P4k): Main writes none, so its edit is restored.
 	if (newProgressEntries(e.before, e.after).some(b => REVIEW_LINE.test(b))) {
 		log(cfg.paths.plan_guard_log, `RESTORE ${e.path} (Main wrote a review line)`);
 		return {
 			allow: false,
-			reason: `plan-guard: a PLAN REVIEW line is written only by the named review spawn of ${e.path}, never by Main. The file was restored.`,
+			reason: `plan-guard: a PLAN REVIEW or CODE REVIEW line is written only by the named review spawn of ${e.path}, never by Main. The file was restored.`,
 			restore: { path: e.path, text: e.before || null },
 		};
+	}
+	// P6 (plan 20261028_1600): with review.code on, ticking a phase needs a named review spawn's CODE REVIEW: PASS behind it — the recorded verdict counts, never Main's own line.
+	if (cfg.review.code) {
+		const ticks = newlyTicked(e.before, e.after);
+		const problem = ticks.length ? codeReviewProblem(e.path, e.after, ticks) : null;
+		if (problem) {
+			log(cfg.paths.plan_guard_log, `RESTORE ${e.path} (code review: ${ticks.join(", ")})`);
+			return { allow: false, reason: problem, restore: { path: e.path, text: e.before || null } };
+		}
 	}
 	if (q.outsideProgress(e.after) === q.outsideProgress(e.before)) {
 		return ALLOW;

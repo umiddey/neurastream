@@ -63,6 +63,7 @@ snapshot:
   git_backup: "${join(home, "Work/gf-backups/latest")}"
 review:
   agents: []
+  plan: false
 `;
 	writeFileSync(join(home, ".config/neurastream/config.yml"), yml);
 }
