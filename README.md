@@ -58,8 +58,16 @@ omp -p "say hi"           # plain omp: no neurastream hook, no guard-log line
 
 ## Install
 
+`neurastream setup` is the one-command path: it detects this machine (harness, Tailscale, machine, secrets), asks the settings in groups with the detected values as defaults, installs the adapter, runs `doctor`, and prints `Next: neurastream main` when it passes. `--yes` takes the detected settings without asking.
+
 ```sh
 bun add -g neurastream
+neurastream setup
+```
+
+The manual path, if you want each step yourself:
+
+```sh
 neurastream init
 neurastream adapter install omp
 neurastream doctor

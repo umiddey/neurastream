@@ -15,11 +15,13 @@ import { applyQueueEnv } from "../core/queue/env.ts";
 import { getAdapter } from "../adapters/index.ts";
 import { GUARD_USAGE, runGuard } from "./guard.ts";
 import { runInit } from "./init.ts";
+import { realSetupDeps, runSetup } from "./setup.ts";
 import { PORTED, runMain, runPorted } from "./commands.ts";
 import { runMetrics } from "./metrics.ts";
 import { runIncident } from "./incident.ts";
 import { runTraces } from "./traces.ts";
 import { runUi } from "./ui.ts";
+import { runConfigKeys } from "./config-set.ts";
 import { runDiagram } from "./diagram.ts";
 import { runNotes } from "./notes.ts";
 import { runPages } from "./pages.ts";
@@ -63,6 +65,9 @@ export function helpText(): string {
 		"                                create config, index, notes, blockers, queue template, state dirs",
 		"                                (--agent-dir: keep an existing index/notes/blockers dir)",
 		"                                (--allow a,b: subagents allowed to spawn; on a terminal init asks instead)",
+		"  neurastream setup [--yes]",
+		"                                guided first run: detect this machine, ask in groups, install, doctor",
+		"                                (--yes: take the detected settings without asking)",
 		"  neurastream adapter install omp",
 		"                                link the omp extension under this HOME",
 		"  neurastream uninstall [--purge] [--yes]",
@@ -84,6 +89,7 @@ export function helpText(): string {
 		"                                move a listed plan to rank N; the index file itself is 0444,",
 		"                                these two commands are the only agent writes to it",
 		"  neurastream config [--json]   print the merged config (defaults + file + env)",
+		"  neurastream config set|get|list <key> [value]   read or write one key (ui.port, paths.work_roots, ...)",
 		"  neurastream guard <event> --json",
 		`                                (${GUARD_USAGE.slice(GUARD_USAGE.indexOf("(") + 1, -1)})`,
 		"  neurastream main [args]       run omp under the launcher (automatic session rollover)",
@@ -137,6 +143,8 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 	if (cmd === "notes") return runNotes(args);
 	if (cmd === "diagram") return runDiagram(args);
 	if (cmd === "adapter") return getAdapter().install(args);
+	if (cmd === "setup") return runSetup(args, realSetupDeps(async () => runNotify(["test"])));
+	if (cmd === "config" && ["set", "get", "list"].includes(args[0] ?? "")) return runConfigKeys(args);
 	if (cmd === "config") {
 		try {
 			const cfg = loadConfig();

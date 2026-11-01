@@ -220,9 +220,11 @@ export function doctorReport(home: string, env: NodeJS.ProcessEnv = process.env,
 	// The owner page (plan 20261024_2230): when it is switched on, the login must be set and
 	// tailscale must answer, or the unit will start and refuse, or serve nobody.
 	if (cfg.ui.enabled) {
+		const state = tailscale.state();
+		if (state === "running") ok.push("tailscale: ok");
+		else problems.push(`tailscale: ${state === "missing" ? "missing" : "logged out"}`);
 		if (!cfg.ui.owner_login) problems.push("ui.enabled but ui.owner_login is empty");
-		else if (tailscale.ip4() === null) problems.push("ui.enabled but tailscale does not answer (tailscale ip -4)");
-		else ok.push(`ui owner page: login ${cfg.ui.owner_login}`);
+		else if (state === "running") ok.push(`ui owner page: login ${cfg.ui.owner_login}`);
 	}
 	// One index (20261024_1400_one_index): repo-directory lines in the main index are the old
 	// two-level queue; the plans they hold are invisible to queue-check until migrate folds them.

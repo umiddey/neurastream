@@ -1,4 +1,12 @@
 # Changelog
+## Unreleased
+### Added
+- `neurastream config set|get|list <key> [value]` reads or writes one config key through the line-based editor in `src/core/config-edit.ts` (the one `ui on|off` and `pages on|off` now share). Keys are the leaf paths of `templates/config.yml`; an unknown key, or a value that would not load, is refused and the file is left untouched. Comments and every other line of the file are kept byte-for-byte.
+- `pages on/off` validate the edited config before writing it, as `ui on/off` already did.
+- `ui on` checks Tailscale first: a missing binary prints the install steps and, on a terminal, asks `Open the Tailscale download page now? [y/N]`; installed but not connected prints `sudo tailscale up`. Nothing is written or started until Tailscale runs. `neurastream doctor` reports `tailscale: ok`, `tailscale: missing` or `tailscale: logged out` when the owner page is enabled.
+- `neurastream setup [--yes]` is the guided first run: it detects this machine (harness, Tailscale, pages, notify, secrets), asks the settings in groups with the detected values as defaults, installs the adapter, runs the doctor and prints `Next: neurastream main` only when it passes. Re-running it offers the current values. `--yes` takes the detected settings without asking; with no terminal and no `--yes` it refuses (exit 2) and writes nothing. Config changes go through the same byte-for-byte editor as `config set`.
+- `neurastream setup` offers a test post when the owner has set a notify webhook file: after the questions it asks `send a test message now? [y/N]`; yes runs `neurastream notify test` and prints its per-provider lines. No, or `--yes`, skips it, and a failed test does not fail setup.
+
 ## 0.2.65
 ### Added
 - Multi-main P1: the claim store (src/core/claims.ts) — one JSON claim file per plan under `<queue_state>/claims/`, every change under the store flock, so two Mains racing for one plan get exactly one winner; `queue.claim_ttl_min` (default 30) frees a claim whose heartbeat has stopped that long.

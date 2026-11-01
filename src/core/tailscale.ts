@@ -4,6 +4,8 @@
 
 import { spawnSync } from "node:child_process";
 
+export type TailscaleState = "missing" | "stopped" | "running";
+
 export interface Tailscale {
 	/** This machine's tailnet IPv4 address (first line of `tailscale ip -4`), or null when tailscale fails or answers nothing. */
 	ip4(): string | null;
@@ -13,6 +15,8 @@ export interface Tailscale {
 	whois(peer: string): string | null;
 	/** Every `User[*].LoginName` of `tailscale status --json`, or null when tailscale fails or the answer is unreadable — callers then skip their login check with a printed warning, never refuse on a tailscale failure. */
 	logins(): string[] | null;
+	/** `missing` when the binary does not exist; `stopped` when it is installed but `tailscale status --json` fails, answers unreadably, or its BackendState is not "Running"; else `running`. */
+	state(): TailscaleState;
 }
 
 function firstStdoutLine(args: string[]): string | null {
@@ -30,6 +34,16 @@ export function parseWhoisLogin(stdout: string): string | null {
 		return typeof login === "string" && login ? login : null;
 	} catch {
 		return null;
+	}
+}
+
+/** `running` only when `BackendState` of `tailscale status --json` is "Running"; unreadable JSON or any other state is `stopped`. */
+export function parseBackendState(stdout: string): "running" | "stopped" {
+	try {
+		const parsed = JSON.parse(stdout) as { BackendState?: unknown };
+		return parsed.BackendState === "Running" ? "running" : "stopped";
+	} catch {
+		return "stopped";
 	}
 }
 
@@ -69,5 +83,11 @@ export const realTailscale: Tailscale = {
 		} catch {
 			return null;
 		}
+	},
+	state() {
+		const r = spawnSync("tailscale", ["status", "--json"], { encoding: "utf8", timeout: 8000 });
+		if (r.error) return (r.error as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "stopped";
+		if (r.status !== 0) return "stopped";
+		return parseBackendState(r.stdout ?? "");
 	},
 };

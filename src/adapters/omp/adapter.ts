@@ -10,6 +10,7 @@ import { dumpModel, dumpParts, dumpPromptTokens, ompDumps, ompScoreTraces, ompTr
 
 export const ompAdapter: HarnessAdapter = {
 	name: "omp",
+	bin: "omp",
 	runSource: defaultRunSource,
 	completedResults: defaultCompletedResults,
 	scoreTraces: ompScoreTraces,

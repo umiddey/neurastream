@@ -121,7 +121,7 @@ test("server: approve records the plan, plan bytes unchanged", async () => {
 	writeFileSync(html, TOY_PAGE);
 	expect(publishPage(html, "Toy", false, pages, { plan })).toBe("toy.html");
 	appendPageNotes({ page: "/toy.html", notes: [{ quote: "level 3", note: "label it" }] }, cfg, "owner-login");
-	const tailscale = { ip4: () => "", dnsName: () => null, whois: () => "owner@example.test", logins: () => [] };
+	const tailscale = { ip4: () => "", dnsName: () => null, whois: () => "owner@example.test", logins: () => [], state: () => "running" as const };
 	const server = startPagesServer({ cfg, tailscale, source: { listRuns: () => [], mainSession: () => null }, hostname: LOOPBACK, port: 0, root: pages, peerOf: () => LOOPBACK });
 	servers.push(server);
 	const base = `http://${LOOPBACK}:${server.port}`;
