@@ -45,10 +45,14 @@ function hitsSecret(p: string, file: string): boolean {
 	const m = GLOB_META.exec(p);
 	if (!m) return false;
 	const base = p.slice(0, m.index).replace(/\/+$/, "");
-	if (!base) return false;
-	// The glob's literal prefix is the secrets dir, sits inside it, or is an ancestor of it:
-	// every match it can name is a secret (or reveals the directory listing).
-	return base === dir || base.startsWith(`${dir}/`) || dir.startsWith(`${base}/`);
+	// The glob's literal prefix is the secrets dir or sits inside it: every match it can name is a
+	// secret (or reveals the directory listing).
+	if (base && (base === dir || base.startsWith(`${dir}/`))) return true;
+	// P5g: a wider glob refuses only when it actually matches a secret file or the secrets dir
+	// (Bun.Glob, filesystem-free, asked once per secret file and once per its directory), never
+	// by its prefix alone — a home-wide glob hunting an unrelated folder passes, and the cost
+	// stays bounded by the number of secret files, not by what the glob would expand to.
+	return new Bun.Glob(p).match(file) || new Bun.Glob(p).match(dir);
 }
 
 /** The first touched read path that hits a configured secret file, its directory, or a glob over

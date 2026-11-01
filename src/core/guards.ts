@@ -1075,12 +1075,33 @@ function runsCloser(input: Record<string, unknown>): boolean {
 
 const bin = (w: string | undefined) => (w ?? "").replace(/^["']+|["']+$/g, "").split("/").pop() ?? "";
 
+// P5g (plan 20261027_0915): the shell text a call would really run — bash's command line, eval's
+// !cmd shell-escape lines and the Bun.$/spawn arguments inside its code. Everything else in an
+// input is prose or string data (a task brief, plan text, an eval cell that only names the page's
+// words), and prose runs nothing.
+function shellText(input: Record<string, unknown>): string {
+	if (typeof input.command === "string") return input.command;
+	const code = input.code;
+	if (typeof code !== "string") return "";
+	const out: string[] = [];
+	for (const m of code.matchAll(/^[ \t]*!(.+)$/gm)) out.push(m[1] ?? "");
+	for (const m of code.matchAll(/(?<!\w)(?:Bun\.)?\$[ \t]*`((?:[^`\\]|\\.)*)`/g)) out.push(m[1] ?? "");
+	for (const m of code.matchAll(/\b(?:Bun\.)?spawn(?:Sync)?[ \t]*\(([^)]*)/g))
+		out.push(
+			[...(m[1] ?? "").matchAll(/[`"']([^`"']*)[`"']/g)]
+				.map(s => s[1] ?? "")
+				.join(" "),
+		);
+	return out.join("\n");
+}
+
 // True when a command segment starts the owner page (plan 20261024_2230 P3c): `neurastream ui`
 // serves it and `systemctl --user start/restart/enable` of neurastream-ui relaunches it — the
-// owner's systemd moves, never an agent's, unlocked or not. Segment splitting and launcher
-// skipping match runsCloser, so `sh -c "neurastream ui"` and `sudo systemctl --user ...` are seen.
+// owner's systemd moves, never an agent's, unlocked or not. P5g: the text is shellText's — only
+// real shell commands, never prose. Segment splitting and launcher skipping match runsCloser, so
+// `sh -c "neurastream ui"` and `sudo systemctl --user ...` are seen.
 function startsOwnerUi(input: Record<string, unknown>): boolean {
-	const text = Object.values(input).filter((v): v is string => typeof v === "string").join("\n");
+	const text = shellText(input);
 	return text.split(/&&|\|\||;|\||\n|\$\(|`/).some(seg => {
 		const words = seg.trim().split(/\s+/).filter(Boolean).map(w => w.replace(/^["'(]+|["')]+$/g, ""));
 		let i = 0;
@@ -1137,6 +1158,17 @@ function addedText(input: Record<string, unknown>): string {
 		.filter(([key, value]) => typeof value === "string" && !skip.has(key))
 		.map(([, value]) => value as string)
 		.join("\n");
+}
+
+// P5g: tools whose string fields are content — a task brief, the text a write or edit adds — are
+// prose, never reads; the notify-secret check scans only their path argument.
+const PROSE_TOOLS: Record<string, true> = { task: true, write: true, edit: true, ast_edit: true };
+
+// Only a tool call's path arguments — the paths it names as targets, not its prose fields.
+function pathArgs(input: Record<string, unknown>): Record<string, unknown> {
+	const out: Record<string, unknown> = {};
+	for (const key of ["path", "file"]) if (typeof input[key] === "string") out[key] = input[key];
+	return out;
 }
 
 // Subagent half of a tool call (the original plan-guard checkCall without the main return).
@@ -1438,8 +1470,14 @@ export function checkTool(e: ToolEvent, cfg: Config): Decision {
 	}
 	// Notify secrets: no agent, main or sub, reads a webhook URL — with or without the unlock.
 	// A call that changes a secret is not a read: its target goes through the protected-write
-	// rule above, so the owner's unlock covers it like any guard file.
-	const secretHit = notifySecretReadHit(paths.filter(p => !writes.includes(p)), cfg);
+	// rule above, so the owner's unlock covers it like any guard file. P5g: the scan reads real
+	// read targets only — naming a secret-shaped glob in a task brief or in plan text is prose,
+	// not a read — so prose tools (task, write/edit) scan just their path argument, while every
+	// other tool keeps the whole-input scan (glob/grep patterns arrive through it).
+	const secretPaths: string[] = [];
+	for (const p of [...(e.paths ?? []), ...q.touchedPaths(e.tool, PROSE_TOOLS[e.tool] === true ? pathArgs(input) : input, e.cwd)])
+		if (!secretPaths.includes(p)) secretPaths.push(p);
+	const secretHit = notifySecretReadHit(secretPaths.filter(p => !writes.includes(p)), cfg);
 	if (secretHit) {
 		log(cfg.paths.plan_guard_log, `BLOCK ${e.agent}:${e.agentId} tool=${e.tool} notify secret: ${secretHit}`);
 		return deny(`plan-guard: ${secretHit} is a notify secret path. Only the owner touches the webhook files, in a terminal.`);
