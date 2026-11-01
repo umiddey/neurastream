@@ -19,11 +19,14 @@ import { watchOnce, type WatchDeps } from "../src/core/watch.ts";
 import { createOmpAdapter, reset } from "../src/adapters/omp/index.ts";
 
 const DIRS: string[] = [];
+// The adapter test runs applyQueueEnv, which sets every QUEUE_* path; restore the caller's so
+// nothing leaks into the test files that run after this one (index-guard (e) on macOS CI).
+const queueEnvBefore = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("QUEUE_")));
 afterAll(() => {
 	reset();
 	for (const d of DIRS) rmSync(d, { recursive: true, force: true });
-	delete process.env.QUEUE_STATE;
-	delete process.env.QUEUE_CLOSE_BIN;
+	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
+	Object.assign(process.env, queueEnvBefore);
 });
 
 /** Sandbox config; its queue_state is also QUEUE_STATE — owner-messages dirs and the steer
