@@ -61,6 +61,7 @@ notify:
   discord_webhook_file: ""   # file holding the Discord webhook URL; "" = off
   slack_webhook_file: ""     # file holding the Slack webhook URL; "" = off
   prefix: ""                 # optional label prepended to each posted reply, e.g. "Main:"
+  answer_within_min: 3       # minutes a phone-page owner message may wait before the next tool result steers Main to answer it now; a hand-back clears the wait; the watcher counts each crossing as M8; 0 = off
 
 metrics:
   report_days: 7

@@ -240,6 +240,7 @@ notify:
   discord_webhook_file: ""   # file holding the Discord webhook URL; "" = off (README: Notify the owner)
   slack_webhook_file: ""     # file holding the Slack webhook URL; "" = off
   prefix: ""                 # optional label prepended to each posted reply, e.g. "Main:"
+  answer_within_min: 3       # minutes an owner message may wait before the tool-result steer steers Main to answer it now (0 = off)
 
 secrets:                     # content redaction (src/core/secret-redact.ts); a hit prints as [REDACTED:<type>]
   redact: true               # every tool result, every notify post and `neurastream redact` go through the redactor

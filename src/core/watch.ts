@@ -23,7 +23,7 @@ import { readBeats, type Heartbeat } from "./heartbeat.ts";
 import { runDetectorsGated, type GatedInputs } from "./incident-detectors.ts";
 import { log, readStaffingEntries } from "./guards.ts";
 import { appendMetric, inWindow, readBlocks, readMetricEvents, reasonKey, type Window } from "./metrics.ts";
-import { notifyProviders } from "./notify.ts";
+import { notifyProviders, waitingOwnerMessages } from "./notify.ts";
 import { addIncident, dismissIncident, openIncidents, readIncidents, type IncidentView } from "./incidents.ts";
 import { m7, rowsOf, silentFailures, snap } from "./report.ts";
 import { loadKnownSecrets, redactSecrets } from "./secret-redact.ts";
@@ -105,6 +105,8 @@ export interface WatchReport {
 	closed: IncidentView[];
 	/** Incidents the gated detectors folded themselves (their own sources and kinds). */
 	detectors: IncidentView[];
+	/** Owner messages that first crossed notify.answer_within_min this pass (M8, P9). */
+	ownerWaits: number;
 }
 
 /** One problem the watcher found: exactly one addIncident input plus the fields its ⚠ post
@@ -269,7 +271,17 @@ export function watchOnce(cfg: Config, deps: WatchDeps): WatchReport {
 			notify: text => deps.notify(cfg.secrets.redact ? redactSecrets(text, loadKnownSecrets(cfg), cfg.secrets.extra_patterns).text : text),
 		});
 	}
-	return { opened, deduped, closed, detectors };
+	// (f) P9: an owner message that crossed notify.answer_within_min with no hand-back counts M8,
+	// one metric per message — the ledger is the once-only marker, not per-pass state.
+	let ownerWaits = 0;
+	const m8Done = new Set(readMetricEvents(cfg).filter(e => e.type === "m8").map(e => String(e.id)));
+	for (const m of waitingOwnerMessages(cfg, now)) {
+		if (m8Done.has(m.id)) continue;
+		appendMetric(cfg, { type: "m8", id: m.id, waited_sec: now - m.ts, ts: now });
+		ownerWaits++;
+	}
+	if (ownerWaits > 0) log(cfg.paths.guard_log, `watch: M8 ${ownerWaits} owner wait(s) past notify.answer_within_min`);
+	return { opened, deduped, closed, detectors, ownerWaits };
 }
 
 // ---- P11: the release verdict — is the new version better or worse? ----
