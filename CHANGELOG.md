@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.2.64
+### Fixed
+- Guard false positives (plan 20261027_0915 P5g): the owner-page start check reads only real shell commands — bash `command`, eval `!cmd` lines, and `Bun.$` / bare `$` (imported from bun) template tags and spawn arguments — so task brief prose, plan text and string data no longer trip it; the notify-secret glob check refuses only when `new Bun.Glob(pattern).match()` hits a notify secret file or its directory, instead of refusing every glob whose prefix is an ancestor of the secrets dir.
 ### Added
 - Owner answer steer (plan 20261027_1430 P9): a phone-page owner message that has waited more than `notify.answer_within_min` (default 3, 0 = off) with no hand-back after it steers Main once per message — "Owner asked at HH:MM; end your turn with the answer now" — through the omp adapter's tool_result hook; a hand-back clears the wait. The watcher counts each message that crosses the limit as one `m8` metric (once per message — the metrics ledger is the marker), and the release verdict reads M8 in its owner-pain group.
 
