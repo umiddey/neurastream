@@ -1,6 +1,6 @@
 # config.yml
 
-Path: `~/.config/neurastream/config.yml`. `neurastream init` creates it. A second init does not change it.
+Path: `~/.config/neurastream/config.yml`. `neurastream init` creates it. A second init does not change it. `neurastream setup` (guided first run) and `neurastream config set <key> <value>` write these settings through the same line-based editor; every key below can be set that way.
 
 `neurastream init --allow a,b` (or the prompt on a terminal) adds slugs to the subagent allow-list in `paths.subagents`; it never removes one. See the README install section.
 
