@@ -159,7 +159,7 @@ export function approvalProblem(text: string, file: string, pagesDir: string, si
 	if (since === "") return null;
 	const page = pageOfPlan(pagesDir, file);
 	const stamp = /^\d{8}_\d{4}/.exec(basename(file))?.[0] ?? null;
-	const gated = since !== "" && (stamp === null || stamp >= since);
+	const gated = stamp === null || stamp >= since;
 	if (page === null) {
 		if (!gated) return null; // predates the convention
 		return `plan ${file} has no page: publish its page with neurastream pages publish <page.html> --plan ${file}`;
