@@ -51,7 +51,7 @@ export interface CiScan {
 
 export type CiRecord = { ok: true; tries: number; skipped: string[] } | { ok: false; code: number; error: string };
 
-/** Newest merged MRs one run reads per repo. The ledger is the cursor, so an MR is never recorded twice; this only bounds the first backfill. */
+/** Newest merged MRs one run reads per repo. The ledger marks what is recorded, so an MR is never recorded twice; this only bounds the first backfill. */
 const MERGED_LIST = 20;
 /** Newest pipelines one run reads per repo. */
 const PIPELINE_LIST = 100;
