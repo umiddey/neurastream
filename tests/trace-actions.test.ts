@@ -461,20 +461,47 @@ describe("unreported-finding: cross-product reads behind a Findings: none line (
 	});
 
 	test("own-repo activity, unowned paths, missing Findings lines and main runs never fire", () => {
-		const as = (runId: string, ...evs: TraceEvent[]) => evs.map((e) => ({ ...e, runId }));
-		const owned = rules({ owned_repos: ["pm", "gateforge"] });
+		function as(runId: string, ...evs: TraceEvent[]): TraceEvent[] {
+			const out: TraceEvent[] = [];
+			for (const e of evs) out.push({ ...e, runId });
+			return out;
+		}
 		expect(unreportedFindings(as("SubA",
 			call("edit", { path: `${HOME}/Work/pm-x/tests/a.spec.js` }),
 			call("read", { path: `${HOME}/Work/other/notes.md` }),
-			{ kind: "assistantText", ts: 3, runId: "SubA", text: "done\n\nFindings: none" },
-		), owned, OWN)).toEqual([]);
+		), rules({ owned_repos: ["pm", "gateforge"] }), OWN)).toEqual([]);
 		expect(unreportedFindings(as("SubB",
 			call("read", { path: `${HOME}/Work/pm-x/node_modules/@gate-forge/core/index.js` }),
-		), owned, OWN)).toEqual([]);
+		), rules({ owned_repos: ["pm", "gateforge"] }), OWN)).toEqual([]);
 		expect(unreportedFindings(as("MAIN 09-00-00",
 			call("read", { path: `${HOME}/Work/pm-x/node_modules/@gate-forge/core/index.js` }),
-			{ kind: "assistantText", ts: 3, runId: "MAIN 09-00-00", text: "Findings: none" },
-		), owned, OWN)).toEqual([]);
+		), rules({ owned_repos: ["pm", "gateforge"] }), OWN)).toEqual([]);
+	});
+});
+
+describe("unreported-finding: brief- and method-doc-named reads skipped (P10c)", () => {
+	const owned = rules({ owned_repos: ["pm", "gateforge"] });
+	const TARGET = `${HOME}/Work/pm-x/node_modules/@gate-forge/core/dist/mapping/resolve.js`;
+
+	test("a runbook path the method doc names is skipped (exact match)", () => {
+		expect(unreportedFindings([
+			call("read", { path: TARGET }),
+			{ kind: "assistantText", ts: ts + 1, runId: "r1", text: "done\n\nFindings: none" },
+		], owned, { ...OWN, allowed: [TARGET] })).toEqual([]);
+	});
+
+	test("a path the brief names is skipped (glob prefix covers reads below it)", () => {
+		expect(unreportedFindings([
+			call("read", { path: TARGET }),
+			{ kind: "assistantText", ts: ts + 1, runId: "r1", text: "done\n\nFindings: none" },
+		], owned, { ...OWN, allowed: [`${HOME}/Work/pm-x/**`] })).toEqual([]);
+	});
+
+	test("a path named only inside a brief-named worktree file is still flagged", () => {
+		expect(unreportedFindings([
+			call("read", { path: TARGET }),
+			{ kind: "assistantText", ts: ts + 1, runId: "r1", text: "done\n\nFindings: none" },
+		], owned, { ...OWN, allowed: [`${HOME}/Work/pm-x/plan.md`] })).toHaveLength(1);
 	});
 });
 
@@ -691,5 +718,153 @@ console.log(JSON.stringify(out));
 		expect(unreported).toHaveLength(1);
 		expect(unreported[0]!.count).toBe(2);
 		expect(readEvents(p6cfg).filter((e) => e.type === "penalty")).toHaveLength(1);
+	});
+});
+
+describe("live wiring: a Main task call's brief exempts the sub's brief-named reads (P10c)", () => {
+	// Same sandbox shape as the P6 wiring test, plus a Main tool_call in the same child process
+	// (one adapter instance hosts every session, so the capture and the sub's edit share state).
+	// The capture must key the brief by tasks[].name — the spawn name, the sub's ctx.agent.id —
+	// not tasks[].agent (the agent type, "glm"), or the lookup misses and the brief-named read
+	// is flagged. Red while the key is the agent type: both reads fold, the map check fails.
+	const P10 = mkdtempSync(join(tmpdir(), "ns-actions-p10c-"));
+	DIRS.push(P10);
+	const P10AGENT = join(P10, ".omp/agent");
+	const P10REPO = join(P10, "Work/pm-mr196");
+	const P10PLAN = join(P10REPO, "docs/plans/20261025_p10cwire.md");
+	const P10SUB = join(P10AGENT, "sessions/p10-proj/s1/P10WireGlm.jsonl");
+
+	const P10_BEFORE = `# P10c wire toy
+
+Worktree: ${P10REPO}
+Branch: feat/p10c
+
+## Goal
+- Wiring toy.
+
+## Forbidden
+- Never push, tag, publish or install.
+- Never skip tests.
+- Call budget: stop and report within ~100 calls.
+
+## Blockers
+- no-push
+
+## Phases
+- [ ] P1 do it — verify: \`true\`
+
+## Done check
+\`true\`
+
+## Reuse
+- new: none — checked: ${join(P10REPO, "src/core/trace-actions.ts")}:1 — reuse: existing seams cover it.
+
+## Progress
+Status: open
+
+- Started.
+`;
+	const P10_AFTER = P10_BEFORE.replace("- Started.", "- P10c: wired the exemption. Findings: none");
+
+	mkdirSync(join(P10REPO, "docs/plans"), { recursive: true });
+	mkdirSync(join(P10REPO, "src/core"), { recursive: true });
+	writeFileSync(join(P10REPO, "src/core/trace-actions.ts"), "// cited by the toy plan's Reuse line; the readiness lint checks existence\n");
+	mkdirSync(join(P10AGENT, "notes"), { recursive: true });
+	mkdirSync(join(P10AGENT, "blockers"), { recursive: true });
+	mkdirSync(join(P10, "state"), { recursive: true });
+	mkdirSync(join(P10, ".config/neurastream"), { recursive: true });
+	writeFileSync(P10PLAN, P10_BEFORE);
+	writeFileSync(join(P10AGENT, "INDEX.md"), `${P10PLAN}\n`);
+	writeFileSync(join(P10AGENT, "notes/subagents.md"), "## Allowed\n\n- `p10-worker`\n");
+	writeFileSync(join(P10AGENT, "CANCELLED.md"), "");
+	writeFileSync(
+		join(P10, ".config/neurastream/config.yml"),
+		`paths:
+  home: "${P10}"
+  work_roots: ["${P10}/Work"]
+  agent_dir: "${P10AGENT}"
+  queue_index: "${join(P10AGENT, "INDEX.md")}"
+  blockers: "${join(P10AGENT, "blockers")}"
+  subagents: "${join(P10AGENT, "notes/subagents.md")}"
+  cancelled: "${join(P10AGENT, "CANCELLED.md")}"
+  unlock: "${join(P10AGENT, ".guard-unlock")}"
+  queue_state: "${join(P10, "state")}"
+  guard_log: "${join(P10, "g.log")}"
+  plan_guard_log: "${join(P10, "pg.log")}"
+  score_state: "${join(P10, "score")}"
+traces:
+  owned_repos:
+    - gateforge
+    - neurastream
+    - pm
+    - cp
+review:
+  plan: false
+`,
+	);
+	mkdirSync(dirname(P10SUB), { recursive: true });
+	for (const b of ["no-push"]) {
+		const text = readFileSync(join(REPO, "blockers", b), "utf8").replace(
+			"../src/core/blockers.ts",
+			join(REPO, "src/core/blockers.ts"),
+		);
+		writeFileSync(join(P10AGENT, "blockers", b), text);
+		chmodSync(join(P10AGENT, "blockers", b), 0o755);
+	}
+	// The sub's trace: a brief-named cross-product read (the cp handoff notes) and a
+	// non-brief-named one (gateforge's installed core). Only the second may fold as D7.
+	writeFileSync(
+		P10SUB,
+		`{"type":"message","timestamp":"2026-10-25T12:00:00.000Z","message":{"role":"assistant","model":"m1","provider":"p1","content":[{"type":"toolCall","id":"c0","name":"read","arguments":{"path":"${P10}/Work/cp/notes.md","i":"Reading the cp handoff notes"}}]}}\n` +
+			`{"type":"message","timestamp":"2026-10-25T12:00:01.000Z","message":{"role":"assistant","model":"m1","provider":"p1","content":[{"type":"toolCall","id":"c1","name":"read","arguments":{"path":"${P10REPO}/node_modules/@gate-forge/core/dist/mapping/resolve.js","i":"Reading the resolve mapping"}}]}}\n`,
+	);
+
+	// Main's task call and the sub's plan edit, driven through the adapter handlers in ONE
+	// spawned child whose HOME is this sandbox (loadConfig is read at registration time; same
+	// reason the P6 driver spawns). Returns [taskCallVerdict, writeVerdict, contentStays].
+	function p10SpawnEdit(): unknown[] {
+		const mainCtx =
+			`{"agent":{"kind":"main","id":"main"},"cwd":${JSON.stringify(P10)},` +
+			`"sessionManager":{"getSessionId":()=>"main","getSessionFile":()=>"main.jsonl"},` +
+			`"getAsyncJobSnapshot":()=>({running:[],recent:[],delivery:{}}),"waitForIdle":async()=>{},` +
+			`"newSession":async()=>({cancelled:false}),"shutdown":()=>{},` +
+			`"ui":{"notify":()=>{},"getEditorText":()=>""}}`;
+		const subCtx =
+			`{"agent":{"kind":"sub","id":"P10WireGlm"},"cwd":${JSON.stringify(P10REPO)},` +
+			`"sessionManager":{"getSessionId":()=>"P10WireGlm","getSessionFile":()=>${JSON.stringify(P10SUB)}}}`;
+		const body = `const h = {};
+const mod = await import(${JSON.stringify(join(REPO, "src/adapters/omp/index.ts"))});
+mod.default({ on: (ev, cb) => { h[ev] = cb; }, registerCommand: () => {}, sendUserMessage: () => {} });
+const mainCtx = ${mainCtx};
+const subCtx = ${subCtx};
+const taskInput = ${JSON.stringify({
+		tasks: [{ name: "P10WireGlm", agent: "p10-worker", task: `Work the cp handoff: read ${P10}/Work/cp/notes.md first, then the plan at ${P10PLAN} and do its P1. Never push.` }],
+	})};
+const out = [];
+out.push(await h["tool_call"]({ toolName: "task", input: taskInput, toolCallId: "spawn1" }, mainCtx));
+const fs = await import("node:fs");
+out.push(await h["tool_call"]({ toolName: "write", input: { path: ${JSON.stringify(P10PLAN)}, content: ${JSON.stringify(P10_AFTER)} }, toolCallId: "t1" }, subCtx));
+fs.writeFileSync(${JSON.stringify(P10PLAN)}, ${JSON.stringify(P10_AFTER)});
+out.push(await h["tool_result"]({ toolName: "write", input: {}, toolCallId: "t1" }, subCtx));
+out.push(fs.readFileSync(${JSON.stringify(P10PLAN)}, "utf8") === ${JSON.stringify(P10_AFTER)});
+console.log(JSON.stringify(out));
+`;
+		const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("QUEUE_")));
+		const r = spawnSync("bun", ["-e", body], { encoding: "utf8", cwd: "/tmp", env: { ...env, HOME: P10, NEURASTREAM_MAIN_LAUNCHER: "1" }, timeout: 60000 });
+		if (r.status !== 0) throw new Error(`p10 adapter run failed: ${r.stderr}`);
+		const parsed = JSON.parse((r.stdout.trim().split("\n").pop() ?? "null"), (_k, v) => (v === null ? undefined : v)) as unknown[];
+		if (parsed[0]) throw new Error(`p10 task call blocked: ${JSON.stringify(parsed[0])}`);
+		return parsed;
+	}
+
+	test("the brief-named read is exempt, the unnamed one still folds as unreported-finding", () => {
+		const out = p10SpawnEdit();
+		expect(out[3]).toBe(true); // the Progress-only content stays
+		const p10cfg = loadConfig({ home: P10, env: {} });
+		const unreported = readIncidents(p10cfg).filter((i) => i.kind === "unreported-finding");
+		// Exactly the non-brief-named read folds; the cp notes read the brief named does not.
+		expect(unreported.map((i) => i.fingerprint)).toEqual([
+			`unreported-finding:P10WireGlm:${P10REPO}/node_modules/@gate-forge/core/dist/mapping/resolve.js`,
+		]);
 	});
 });
