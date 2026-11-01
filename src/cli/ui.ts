@@ -10,7 +10,7 @@ import { beat, errorLine } from "../core/heartbeat.ts";
 import { startOwnerUi, type OwnerUiOptions, type OwnerUiServer } from "../core/owner-ui.ts";
 import { applyQueueEnv } from "../core/queue/env.ts";
 import { realTailscale, type Tailscale } from "../core/tailscale.ts";
-import { uiOff, uiOn, type Runner } from "../core/ui-setup.ts";
+import { systemTerminal, uiOff, uiOn, type Runner } from "../core/ui-setup.ts";
 
 export interface UiDeps {
 	/** The merged config. Default: loadConfig(). */
@@ -56,7 +56,9 @@ function runUiSetup(args: string[], deps: UiDeps): number {
 			console.error("neurastream ui on: --login <tailscale login> is required — e.g. neurastream ui on --login me@example.com");
 			return 1;
 		}
-		return uiOn({ login, port, ...setup });
+		// A question only on a terminal: scripted runs get the message and exit 1, no prompt.
+		const terminal = process.stdin.isTTY && process.stdout.isTTY ? systemTerminal : undefined;
+		return uiOn({ login, port, terminal, ...setup });
 	}
 	return uiOff(setup);
 }

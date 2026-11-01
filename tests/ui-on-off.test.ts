@@ -10,7 +10,7 @@ import { dirname, join } from "node:path";
 import { uiOff, uiOn, type Runner } from "../src/core/ui-setup.ts";
 import { runUi } from "../src/cli/ui.ts";
 import type { OwnerUiServer } from "../src/core/owner-ui.ts";
-import type { Tailscale } from "../src/core/tailscale.ts";
+import { parseBackendState, type Tailscale } from "../src/core/tailscale.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "ui-on-off-"));
 const HOME = join(TMP, "home");
@@ -53,6 +53,7 @@ function fakeRunner(fail: { call?: number; stderr?: string } = {}): { runner: Ru
 function fixtureTailscale(over: Partial<Tailscale> = {}): Tailscale {
 	return {
 		ip4: () => "100.64.0.9",
+		state: () => "running",
 		dnsName: () => DNS_NAME,
 		whois: () => null,
 		logins: () => [LOGIN, ...OTHER_LOGINS],
@@ -260,4 +261,89 @@ test("ui on: a config that cannot load exits 1 and leaves the file byte-for-byte
 	expect(r.code).toBe(1);
 	expect(readConfig()).toBe(before);
 	expect(r.calls).toEqual([]);
+});
+
+// --- (l) tailscale state is checked first: missing or stopped writes and runs nothing and names the fix ---
+
+const OFF_CONFIG = `ui:\n  enabled: false\n  owner_login: ""\n`;
+
+test("ui on: tailscale missing exits 1 with the install command, writes and runs nothing", () => {
+	writeConfig(OFF_CONFIG);
+	const r = doOn({ tailscale: fixtureTailscale({ state: () => "missing" }) });
+	expect(r.code).toBe(1);
+	expect(r.err.join("\n")).toContain("curl -fsSL https://tailscale.com/install.sh | sh");
+	expect(readConfig()).toBe(OFF_CONFIG);
+	expect(r.calls).toEqual([]);
+});
+
+test("ui on: tailscale installed but stopped exits 1 with the connect command, writes and runs nothing", () => {
+	writeConfig(OFF_CONFIG);
+	const r = doOn({ tailscale: fixtureTailscale({ state: () => "stopped" }) });
+	expect(r.code).toBe(1);
+	expect(r.err.join("\n")).toContain("sudo tailscale up");
+	expect(readConfig()).toBe(OFF_CONFIG);
+	expect(r.calls).toEqual([]);
+});
+
+test("ui on: tailscale running but the login is not on the tailnet exits 1 naming the logins, writes and runs nothing", () => {
+	writeConfig(OFF_CONFIG);
+	const r = doOn({ tailscale: fixtureTailscale({ state: () => "running", logins: () => OTHER_LOGINS }) });
+	expect(r.code).toBe(1);
+	for (const login of OTHER_LOGINS) expect(r.err.join("\n")).toContain(login);
+	expect(readConfig()).toBe(OFF_CONFIG);
+	expect(r.calls).toEqual([]);
+});
+
+test("ui on: tailscale running with the owner's login writes the config, runs the unit and prints the link", () => {
+	writeConfig(OFF_CONFIG);
+	const r = doOn({ tailscale: fixtureTailscale({ state: () => "running" }) });
+	expect(r.code).toBe(0);
+	expect(readConfig()).toContain(LOGIN);
+	expect(r.calls.length).toBe(3);
+	expect(r.out.join("\n")).toContain(`http://${DNS_NAME}:`);
+});
+
+test("ui on: missing tailscale on a terminal asks, and y opens the download page; nothing is written", () => {
+	writeConfig(OFF_CONFIG);
+	const asked: string[] = [];
+	const opened: string[] = [];
+	const err: string[] = [];
+	const code = uiOn({
+		login: LOGIN,
+		home: HOME,
+		runner: fakeRunner().runner,
+		tailscale: fixtureTailscale({ state: () => "missing" }),
+		print: () => {},
+		error: l => err.push(l),
+		terminal: { ask: q => { asked.push(q); return "y"; }, open: url => { opened.push(url); } },
+	});
+	expect(code).toBe(1);
+	expect(asked).toEqual(["Open the Tailscale download page now? [y/N] "]);
+	expect(opened).toEqual(["https://tailscale.com/download"]);
+	expect(err.join("\n")).toContain("curl -fsSL https://tailscale.com/install.sh | sh");
+	expect(readConfig()).toBe(OFF_CONFIG);
+});
+
+test("ui on: a answer other than y on the missing-tailscale prompt opens nothing", () => {
+	writeConfig(OFF_CONFIG);
+	const opened: string[] = [];
+	const code = uiOn({
+		login: LOGIN,
+		home: HOME,
+		runner: fakeRunner().runner,
+		tailscale: fixtureTailscale({ state: () => "missing" }),
+		print: () => {},
+		error: () => {},
+		terminal: { ask: () => "", open: url => { opened.push(url); } },
+	});
+	expect(code).toBe(1);
+	expect(opened).toEqual([]);
+	expect(readConfig()).toBe(OFF_CONFIG);
+});
+
+test("tailscale status: only BackendState Running counts as running; everything else is stopped", () => {
+	expect(parseBackendState(JSON.stringify({ BackendState: "Running" }))).toBe("running");
+	expect(parseBackendState(JSON.stringify({ BackendState: "NeedsLogin" }))).toBe("stopped");
+	expect(parseBackendState("not json")).toBe("stopped");
+	expect(parseBackendState("null")).toBe("stopped");
 });

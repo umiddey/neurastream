@@ -5,12 +5,13 @@
 // ones), so tests record argv and never run systemctl or the tailscale binary.
 
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ConfigError, configFile, loadConfig } from "./config.ts";
 import { realTailscale, type Tailscale } from "./tailscale.ts";
+import { checkEdited, setConfigKeys } from "./config-edit.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const UI_UNIT_TEMPLATE = join(HERE, "../../templates/systemd/neurastream-ui.service");
@@ -28,6 +29,29 @@ export const systemRunner: Runner = args => {
 	return { status: r.status, stderr: r.stderr ?? "" };
 };
 
+export interface Terminal {
+	/** Prints the question on the terminal and returns the answer line. */
+	ask(question: string): string;
+	/** Opens a URL in the default browser. */
+	open(url: string): void;
+}
+
+// Production terminal. sh reads the answer from the inherited terminal, so uiOn stays synchronous.
+export const systemTerminal: Terminal = {
+	ask(question) {
+		const r = spawnSync("sh", ["-c", 'printf "%s" "$1" >&2; read -r answer; printf "%s" "$answer"', "sh", question], { encoding: "utf8", stdio: ["inherit", "pipe", "inherit"] });
+		return r.stdout ?? "";
+	},
+	open(url) {
+		spawnSync(process.platform === "darwin" ? "open" : "xdg-open", [url], { stdio: "ignore" });
+	},
+};
+
+const TAILSCALE_DOWNLOAD = "https://tailscale.com/download";
+const TAILSCALE_MISSING = "The phone page needs Tailscale (free, private network for your devices). Install it: Linux `curl -fsSL https://tailscale.com/install.sh | sh` (asks for your password), macOS: the App Store app, others: https://tailscale.com/download. Then run `neurastream ui on` again.";
+const TAILSCALE_STOPPED = "Tailscale is installed but not connected. Run `sudo tailscale up` (Linux) or open the Tailscale app (macOS), then run this again.";
+export { TAILSCALE_MISSING, TAILSCALE_STOPPED };
+
 export interface UiSetupOptions {
 	/** HOME the config file and the user unit resolve against. Default: the real home. */
 	home?: string;
@@ -43,64 +67,8 @@ export interface UiOnOptions extends UiSetupOptions {
 	login: string;
 	/** The --port N of the command line; null leaves the config's ui.port in place. */
 	port?: number | null;
-}
-
-// Line-based edit of the top-level `ui:` block: replaces only the enabled/owner_login/port
-// lines inside it, keeps every other line of the file byte-for-byte (comments, order, other
-// sections), and appends a fresh block when the config has none. Never re-serialises YAML.
-function editUiBlock(text: string | null, values: { enabled: boolean; owner_login: string | null; port: number | null }): string {
-	const fresh = ["ui:", `  enabled: ${values.enabled}`];
-	if (values.owner_login !== null) fresh.push(`  owner_login: ${values.owner_login}`);
-	if (values.port !== null) fresh.push(`  port: ${values.port}`);
-	if (text === null) return `${fresh.join("\n")}\n`;
-	const lines = text.split("\n");
-	let start = -1;
-	for (let i = 0; i < lines.length; i++) {
-		if (/^ui\s*:(\s*(?:#.*)?)?$/.test(lines[i] ?? "")) {
-			start = i;
-			break;
-		}
-	}
-	if (start === -1) {
-		const base = text === "" || text.endsWith("\n") ? text : `${text}\n`;
-		return `${base}${fresh.join("\n")}\n`;
-	}
-	let end = start + 1;
-	while (end < lines.length && (lines[end] === "" || /^[ \t]/.test(lines[end]!))) end++;
-	const setKey = (key: string, value: string): void => {
-		const re = new RegExp(`^([ \\t]+)${key}\\s*:.*$`);
-		for (let i = start + 1; i < end; i++) {
-			const line = lines[i]!;
-			if (re.test(line)) {
-				lines[i] = line.replace(re, `$1${key}: ${value}`);
-				return;
-			}
-		}
-		// The block has no such key: insert after its last non-blank line, at two-space indent.
-		let at = start + 1;
-		for (let i = start + 1; i < end; i++) if (lines[i]!.trim() !== "") at = i + 1;
-		lines.splice(at, 0, `  ${key}: ${value}`);
-	};
-	setKey("enabled", String(values.enabled));
-	if (values.owner_login !== null) setKey("owner_login", values.owner_login);
-	if (values.port !== null) setKey("port", String(values.port));
-	return lines.join("\n");
-}
-
-// Validates the edited text through loadConfig before anything is written: if it would not
-// load, nothing is written and the caller reports the error (the real file stays untouched).
-function checkEdited(edited: string, home: string, what: string, error: (line: string) => void): boolean {
-	const check = join(tmpdir(), `neurastream-ui-${what}-check-${process.pid}.yml`);
-	try {
-		writeFileSync(check, edited);
-		loadConfig({ file: check, home });
-		return true;
-	} catch (err) {
-		error(err instanceof ConfigError ? err.message : String(err));
-		return false;
-	} finally {
-		rmSync(check, { force: true });
-	}
+	/** Terminal seam for the missing-tailscale question. Absent: no question, only the message. src/cli/ui.ts passes the real one on a TTY. */
+	terminal?: Terminal;
 }
 
 export function uiOn(opts: UiOnOptions): number {
@@ -109,6 +77,18 @@ export function uiOn(opts: UiOnOptions): number {
 	const tailscale = opts.tailscale ?? realTailscale;
 	const print = opts.print ?? console.log;
 	const error = opts.error ?? console.error;
+	// Tailscale comes first (plan 20261028_2356 P2): nothing is read, written or run unless it is up.
+	const state = tailscale.state();
+	if (state === "missing") {
+		error(`neurastream ui: ${TAILSCALE_MISSING}`);
+		const terminal = opts.terminal;
+		if (terminal && terminal.ask("Open the Tailscale download page now? [y/N] ").trim().toLowerCase() === "y") terminal.open(TAILSCALE_DOWNLOAD);
+		return 1;
+	}
+	if (state === "stopped") {
+		error(`neurastream ui: ${TAILSCALE_STOPPED}`);
+		return 1;
+	}
 	const file = configFile(home);
 	let cfg;
 	try {
@@ -125,8 +105,16 @@ export function uiOn(opts: UiOnOptions): number {
 		return 1;
 	}
 	const original = existsSync(file) ? readFileSync(file, "utf8") : null;
-	const edited = editUiBlock(original, { enabled: true, owner_login: opts.login, port: opts.port ?? null });
-	if (!checkEdited(edited, home, "on", error)) return 1;
+	const values: Record<string, string> = { "ui.enabled": "true", "ui.owner_login": opts.login };
+	if (typeof opts.port === "number") values["ui.port"] = String(opts.port);
+	let edited: string;
+	try {
+		edited = setConfigKeys(original, values);
+	} catch (err) {
+		error(err instanceof ConfigError ? err.message : String(err));
+		return 1;
+	}
+	if (!checkEdited(edited, home, error)) return 1;
 	const unitPath = join(home, ".config", "systemd", "user", "neurastream-ui.service");
 	mkdirSync(dirname(unitPath), { recursive: true });
 	copyFileSync(UI_UNIT_TEMPLATE, unitPath);
@@ -165,8 +153,8 @@ export function uiOff(opts: UiSetupOptions): number {
 	}
 	const file = configFile(home);
 	if (existsSync(file)) {
-		const edited = editUiBlock(readFileSync(file, "utf8"), { enabled: false, owner_login: null, port: null });
-		if (!checkEdited(edited, home, "off", error)) return 1;
+		const edited = setConfigKeys(readFileSync(file, "utf8"), { "ui.enabled": "false" });
+		if (!checkEdited(edited, home, error)) return 1;
 		writeFileSync(file, edited);
 	}
 	return 0;
