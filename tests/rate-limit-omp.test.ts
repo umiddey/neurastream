@@ -15,6 +15,7 @@ import { dirname, join } from "node:path";
 import { createOmpAdapter, recordProviderOutFromRateLimit, reset as resetAdapter } from "../src/adapters/omp/index.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { type ProbeRunner, probeStep, readLimitState } from "../src/core/limit-probe.ts";
+import { readMetricEvents } from "../src/core/metrics.ts";
 import { notifyIdle } from "../src/core/notify.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { blockersDirPath, indexPath } from "../src/core/queue/lib.ts";
@@ -321,7 +322,7 @@ test("a limited stop posts once and sends no back message while probes keep fail
 	const ctx = liveCtx(cfg, ticks);
 	await host.emit("session_stop", stopEvent(err429(2000)), ctx);
 	await until(() => rlHits().length === 1);
-	expect(rlHits()[0]!.text).toMatch(/^⏳ Main is rate limited by its provider until \d\d:\d\d \(local\); it resumes on its own\.$/);
+	expect(rlHits()[0]!.text).toMatch(/^⏳ Main hit its limit at \d\d:\d\d; checking every 5 s$/);
 	expect(readLimitState(cfg)).toMatchObject({ back_at: null, next_probe_at: T0 + 5000, probes: 0 });
 	now = T0 + 30_000;
 	ticks.fire(); // probe 1: still limited
@@ -356,6 +357,16 @@ test("a probe that gets through sends one back message and removes the episode",
 	expect(host.sent[0]).toMatch(/^main-guard: the provider limit is over \(back at \d\d:\d\d\)\. Continue the queue where you stopped\.$/);
 	expect(readLimitState(cfg)).toBeNull();
 	expect(logLines().filter(l => l.includes("RATE-LIMIT back"))).toHaveLength(1);
+	// P4: the owner hears exactly one back post (not one per probe), and the finished episode
+	// becomes exactly one metric. Neither carries the probe's error text ("still limited").
+	await until(() => discordHits.some(h => h.text.startsWith("✅")));
+	const backs = discordHits.filter(h => h.text.startsWith("✅"));
+	expect(backs).toHaveLength(1);
+	expect(backs[0]!.text).toMatch(/^✅ Main is back at \d\d:\d\d \(limited 1 min, 2 checks\)$/);
+	expect(JSON.stringify(discordHits)).not.toContain("still limited");
+	expect(readMetricEvents(cfg).filter(e => e.type === "limit" && e.since === T0)).toEqual([
+		{ type: "limit", since: T0, back_at: T0 + 60_000, minutes: 1, probes: 2, reset_named: false },
+	]);
 	ticks.fire(); // the tick is stopped: no second message, no probe
 	expect(host.sent).toHaveLength(1);
 	expect(spawns).toBe(2);

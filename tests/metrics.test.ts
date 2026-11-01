@@ -318,6 +318,26 @@ test("report counts ci-flaky events in the window: a same-commit red then green 
 	expect(buildReport(cfg, source, DAYS, NOW).text).toContain("Flaky jobs: 1 same-commit red→green re-runs");
 });
 
+// Plan 20261027_1500 P4: finished limit episodes show as one line; the raw error text a metric may
+// carry in a last_error field is never lifted into the report — times and counts only.
+test("report shows Main limited over the window's episodes and never the error text", () => {
+	const cfg = cfgWith(join(TMP, "home-limitline"), "");
+	const source = { listRuns: () => [], mainSession: () => null } as unknown as RunSource;
+	appendMetric(cfg, { type: "limit", since: (NOW - 3600) * 1000, back_at: (NOW - 3240) * 1000, minutes: 45, probes: 9, reset_named: true });
+	appendMetric(cfg, { type: "limit", since: (NOW - 1800) * 1000, back_at: null, minutes: 25, probes: 288, reset_named: false, last_error: "429 TOPSECRET-TEXT" });
+	appendMetric(cfg, { type: "limit", since: (NOW - 30 * DAY) * 1000, back_at: (NOW - 30 * DAY) * 1000, minutes: 500, probes: 1, reset_named: false });
+	const r = buildReport(cfg, source, DAYS, NOW);
+	expect(r.text).toContain("Main limited: 1.2 h over 2 episodes");
+	expect(r.text).not.toContain("TOPSECRET-TEXT");
+});
+
+test("report omits the Main limited line when no episode is in the window", () => {
+	const cfg = cfgWith(join(TMP, "home-nolimit"), "");
+	const source = { listRuns: () => [], mainSession: () => null } as unknown as RunSource;
+	appendMetric(cfg, { type: "limit", since: (NOW - 30 * DAY) * 1000, back_at: null, minutes: 10, probes: 2, reset_named: false });
+	expect(buildReport(cfg, source, DAYS, NOW).text).not.toContain("Main limited");
+});
+
 test("metrics report scans the window's runs for the bloat line: a rejected call with no usage flags from its dump", async () => {
 	const home = join(TMP, "home-bloatscan");
 	const sessions = join(home, ".omp/agent/sessions/scan-proj");

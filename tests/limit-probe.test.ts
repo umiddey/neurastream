@@ -4,11 +4,12 @@
 // configured probe command with the model shell-quoted.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, type Config } from "../src/core/config.ts";
-import { onLimited, onProbe, runProbe, type ProbeRunner, type ProbeStep, type ProbeTiming } from "../src/core/limit-probe.ts";
+import { giveUpPost, onLimited, onProbe, probeStep, runProbe, writeLimitState, type ProbeRunner, type ProbeStep, type ProbeTiming } from "../src/core/limit-probe.ts";
+import { readMetricEvents } from "../src/core/metrics.ts";
 import { tryLock } from "../src/core/file-lock.ts";
 
 const NOW = 1_769_322_469_000;
@@ -144,5 +145,48 @@ describe("runProbe", () => {
 		runProbe(cfg, "model-a", run);
 		runProbe(cfg, "model-a", run);
 		expect(calls).toHaveLength(2);
+	});
+});
+
+// Plan 20261027_1500 P4: a finished episode tells the owner (give-up here; the back post rides the
+// adapter's back branch) and appends exactly one metric. Posts and metric carry times and counts
+// only — the error text that onLimited stored in last_error must never leak into either.
+describe("episode finish (P4)", () => {
+	let dir: string;
+	let cfg: Config;
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "nlp-finish-"));
+		cfg = loadConfig({ home: "/nonexistent-limit-probe-home" });
+		cfg.paths.queue_state = dir;
+		cfg.paths.score_state = join(dir, "score");
+	});
+
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	test("a give-up posts one still-limited warning, appends the metric once, and no error text leaks", () => {
+		expect(giveUpPost({ probe_interval_s: 300, max_probes: 288, slack_s: 15 })).toBe("⚠ Main still limited after 24 h");
+		const s0 = onLimited(null, null, "429 SECRET-ERROR-TEXT", NOW, "model-a", T);
+		writeLimitState(cfg, { ...s0, probes: T.max_probes - 1, next_probe_at: NOW });
+		const posts: string[] = [];
+		const { run } = fakeRun(1, "429 SECRET-ERROR-TEXT");
+		expect(probeStep(cfg, NOW + 300_000, run, (t) => posts.push(t))).toBe("give_up");
+		expect(posts).toEqual(["⚠ Main still limited after 15 min"]);
+		expect(readLimitState(cfg)).toBeNull();
+		const evs = readMetricEvents(cfg);
+		expect(evs).toEqual([{ type: "limit", since: NOW, back_at: null, minutes: 5, probes: T.max_probes, reset_named: false }]);
+		expect(JSON.stringify([posts, evs])).not.toContain("SECRET-ERROR-TEXT");
+	});
+
+	test("an episode that is already back is idle: no post and no metric", () => {
+		const s0 = onLimited(null, null, "429", NOW, "model-a", T);
+		writeLimitState(cfg, { ...s0, back_at: NOW + 1000 });
+		const posts: string[] = [];
+		const { run } = fakeRun(0);
+		expect(probeStep(cfg, NOW + 5000, run, (t) => posts.push(t))).toBe("idle");
+		expect(posts).toEqual([]);
+		expect(existsSync(join(cfg.paths.score_state, "metrics.jsonl"))).toBe(false);
 	});
 });
