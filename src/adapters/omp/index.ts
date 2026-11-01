@@ -30,7 +30,9 @@ import { runDetectors, type DetectorInput } from "../../core/incident-detectors.
 import { fileClaimStore } from "../../core/claims.ts";
 import { appendOwnerAnswer, readOwnerAnswers, readOwnerMessages } from "../../core/incidents.ts";
 import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, mainId, mainStateDir, newProgressEntries, planReadNote, recordMainResult, resetMainCalls, revertMainEdit, rekeySpawnFile, reviewSpawnEnd, STOP_PLAN_OFFER_REFUSAL } from "../../core/guards.ts";
-import { rateLimitWait } from "../../core/rate-limit.ts";
+import { rateLimited } from "../../core/rate-limit.ts";
+import { backPost, clearLimitState, limitMetric, limitedPost, onLimited, readLimitState, timingOf, writeLimitState } from "../../core/limit-probe.ts";
+import { appendMetric } from "../../core/metrics.ts";
 import { notifyProviders, ownerAnswerHandback, ownerAnswerSteer, postReply } from "../../core/notify.ts";
 import { loadKnownSecrets, redactSecrets, redactSummary } from "../../core/secret-redact.ts";
 import { inboxPath } from "../../core/owner-ui.ts";
@@ -40,7 +42,7 @@ import { actionsRules, ownedRepoOf, suspiciousActions, unreportedFindings } from
 import { applyQueueEnv } from "../../core/queue/env.ts";
 import { mainDetectors, mainStartText } from "../../core/main-start.ts";
 
-import { buildHandoff, holdsBlock, notePath, noteRequest, OWNER_AWAY, ownerText, relaunchPath, rolloverState, spawnRefusal, unansweredOwnerMessages, withUnanswered, type RolloverState } from "../../core/rollover.ts";
+import { buildHandoff, holdsBlock, notePath, noteRequest, OWNER_AWAY, ownerText, relaunchPath, rolloverState, spawnRefusal, unansweredOwnerMessages, type RolloverState } from "../../core/rollover.ts";
 import { defaultCompletedResults, defaultRunSource, runIdOf } from "./sessions.ts";
 import { adapterLog, MAIN_ENV } from "./launch.ts";
 import { parseTraceFile } from "./traces.ts";
@@ -76,6 +78,7 @@ interface HostCtx {
 	id?: string;
 	cwd?: string;
 	setInterval?: (cb: () => void, ms: number) => unknown;
+	spawnLimitProbe?: () => void;
 }
 
 function asRecord(v: unknown): Record<string, unknown> {
@@ -139,6 +142,9 @@ function asCtx(v: unknown): HostCtx {
 	// Harness-injected timer with the original main-guard signature (ctx.setInterval).
 	const interval = r.setInterval as ((cb: () => void, ms: number) => unknown) | undefined;
 	if (typeof interval === "function") out.setInterval = interval;
+	// Harness-injected probe spawner (tests); the default starts the niced probe child.
+	const probe = r.spawnLimitProbe as (() => void) | undefined;
+	if (typeof probe === "function") out.spawnLimitProbe = probe;
 	return out;
 }
 
@@ -353,14 +359,18 @@ function recordProviderOutFromTask(e: Record<string, unknown>, content: unknown[
 	adapterLog(cfg, `PROVIDER-OUT recorded: ${provider} out until ${new Date(epoch * 1000).toISOString()} (task result)`);
 }
 
-/** Rate-limited turn end: record the reset time the error text names, else the armed wait. */
-function recordProviderOutFromRateLimit(reply: EventReply | null, untilMs: number, cfg: Config): void {
-	const provider = reply?.provider ?? providerOfModel(reply?.model ?? null);
-	if (!provider) return;
+/** Rate-limited turn end: record the reset time the error text names, else the armed wait. Returns the
+ *  named reset in epoch ms (null when the text names none): the one parse of that text, which the call
+ *  site passes on to the rate-limit episode (plan 20261027_1500 P2/P3). */
+export function recordProviderOutFromRateLimit(reply: EventReply | null, untilMs: number, cfg: Config): number | null {
 	const named = reply ? resetEpochFromText(reply.errorMessage ?? "", resetRule(cfg)) : null;
-	const epoch = named ?? Math.floor(untilMs / 1000);
-	recordOut(cfg, provider, epoch, named !== null ? "rate-limit-reset" : "rate-limit");
-	adapterLog(cfg, `PROVIDER-OUT recorded: ${provider} out until ${new Date(epoch * 1000).toISOString()} (${named !== null ? "reset time in error text" : "rate limit, no reset time"})`);
+	const provider = reply?.provider ?? providerOfModel(reply?.model ?? null);
+	if (provider) {
+		const epoch = named ?? Math.floor(untilMs / 1000);
+		recordOut(cfg, provider, epoch, named !== null ? "rate-limit-reset" : "rate-limit");
+		adapterLog(cfg, `PROVIDER-OUT recorded: ${provider} out until ${new Date(epoch * 1000).toISOString()} (${named !== null ? "reset time in error text" : "rate limit, no reset time"})`);
+	}
+	return named === null ? null : named * 1000;
 }
 
 // Session rollover helpers: the harness context read through runtime checks, and the file size and
@@ -595,6 +605,15 @@ export function deliverOwnerInbox(pi: ExtensionHost, cfg: Config): void {
 
 /** The most recently registered createOmpAdapter cleanup, for the exported reset(). */
 let activeAdapterReset: (() => void) | null = null;
+/** The limit tick: one check of the open episode every 30 s (plan 20261027_1500 P3). */
+const LIMIT_TICK_MS = 30_000;
+/** One limit probe as a niced child (cli/limit-probe.ts). It writes the episode state itself;
+ * a failed start is logged and the next tick tries again. */
+function spawnLimitProbeChild(cfg: Config): void {
+	const child = spawn("nice", ["-n", "19", process.execPath, join(import.meta.dir, "../../cli/limit-probe.ts")], { detached: true, stdio: "ignore", env: process.env });
+	child.on("error", err => adapterLog(cfg, `RATE-LIMIT probe: could not start: ${err.message}`));
+	child.unref();
+}
 /** Register the guard handlers on one extension host. `initial` is injectable for tests; `freshConfig` re-reads the config per guarded call. */
 export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig: () => Config = () => initial): void {
 	// Guarded handlers take `cfg = freshConfig()` first, so an edited config.yml reaches the next call (P4e).
@@ -643,24 +662,25 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 	// emits (sessionStopWillContinue) consumes it and posts nothing — a blocked stop's reply is a
 	// mid-work report, never a hand-back.
 	let stopBlocked = false;
-	// Rate-limit wait-it-out (plan 20261025_0640): consecutive turn ends on a provider rate limit
-	// form one episode. Named provider retry-after values remain authoritative; otherwise the
-	// attempt doubles the default wait. The owner chat is told once per episode, and ONE timer
-	// gives Main a new turn when the wait is over; a new Main turn before expiry takes over and
-	// cancels it. Inputs that do not start a turn leave it armed. Any turn that ends without a
-	// limit resets the episode and disarms it.
-	let rateAttempt = 0;
-	let rateTimer: NodeJS.Timeout | null = null;
+	// Rate-limit probe loop (plan 20261027_1500 P3). A limited turn end opens one episode in
+	// main-limit.json: a named reset is waited for; otherwise a niced probe child runs every
+	// probe_interval_s until one gets through or max_probes is spent. ONE tick (LIMIT_TICK_MS)
+	// reads the episode: it spawns a due probe, or, once the provider is back, sends Main ONE new
+	// turn. A new Main turn cancels the tick and keeps the episode (probe count kept); a turn that
+	// ends without a limit clears it.
+	let limitTickArmed = false;
+	let limitTick: NodeJS.Timeout | null = null;
 	const rateClock = (ms: number): string => strftime(ms / 1000, "%H:%M");
-	const clearRateTimer = (): void => {
-		if (rateTimer !== null) {
-			clearTimeout(rateTimer);
-			rateTimer = null;
+	const stopLimitTick = (): void => {
+		limitTickArmed = false;
+		if (limitTick !== null) {
+			clearInterval(limitTick);
+			limitTick = null;
 		}
 	};
 	const disarmRateEpisode = (): void => {
-		clearRateTimer();
-		rateAttempt = 0;
+		stopLimitTick();
+		clearLimitState(cfg);
 	};
 	// P5b: a real turn end answers every owner message it followed — the answer (the turn's own
 	// reply, the page's lastAnswerFor shape) rides the same owner-message store. Rate-limited,
@@ -673,32 +693,69 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 			adapterLog(cfg, `OWNER-ANSWER record failed: ${err instanceof Error ? err.message : String(err)}`);
 		}
 	};
-	// The one resume: replacing any armed timer, exactly one new user message when the wait is over.
-	const armRateResume = (untilMs: number): void => {
-		clearRateTimer();
-		rateTimer = setTimeout(() => {
-			rateTimer = null;
-			// P5b: whichever resume text exists, it quotes owner messages no turn has answered.
-			pi.sendUserMessage(withUnanswered(`main-guard: the provider rate limit is over (waited until ${rateClock(untilMs)}). Continue the queue where you stopped.`, readOwnerMessages(), readOwnerAnswers()));
-			adapterLog(cfg, `RATE-LIMIT resume: new turn sent (waited until ${rateClock(untilMs)})`);
-		}, untilMs - Date.now());
+	const limitTickFire = (c: HostCtx): void => {
+		if (!limitTickArmed) return;
+		const state = readLimitState(cfg);
+		if (state === null) {
+			stopLimitTick();
+			adapterLog(cfg, "RATE-LIMIT give up: episode state gone (max_probes spent or unreadable)");
+			return;
+		}
+		const now = Date.now();
+		if (state.back_at !== null) {
+			if (now < state.back_at) return;
+			stopLimitTick();
+			clearLimitState(cfg);
+			// P4: the finished episode is recorded once and the owner hears one back post; both are
+			// times and counts only — the episode's last_error never reaches chat or ledger.
+			appendMetric(cfg, limitMetric(state, now));
+			adapterLog(cfg, `RATE-LIMIT back: provider limit over (back at ${rateClock(state.back_at)}); new turn sent`);
+			void postReply(backPost(state), cfg).then(results => {
+				for (const r of results) if (!r.posted) adapterLog(cfg, `notify: ${r.provider}: ${r.error}`);
+			});
+			pi.sendUserMessage(`main-guard: the provider limit is over (back at ${rateClock(state.back_at)}). Continue the queue where you stopped.`);
+			return;
+		}
+		if (now < state.next_probe_at) return;
+		(c.spawnLimitProbe ?? (() => spawnLimitProbeChild(cfg)))();
 	};
-	// A turn that ended on a rate limit: log, tell the owner once per episode, arm the resume.
-	const onRateLimitedStop = (untilMs: number, waitMs: number): void => {
-		rateAttempt++;
-		const at = rateClock(untilMs);
-		adapterLog(cfg, `RATE-LIMIT stop: resume at ${at} (${Math.round(waitMs / 1000)}s, attempt ${rateAttempt})`);
-		if (rateAttempt === 1) {
+	const armLimitTick = (c: HostCtx): void => {
+		stopLimitTick();
+		limitTickArmed = true;
+		const t: unknown = c.setInterval ? c.setInterval(() => limitTickFire(c), LIMIT_TICK_MS) : setInterval(() => limitTickFire(c), LIMIT_TICK_MS);
+		if (t && typeof t === "object" && "unref" in t && typeof t.unref === "function") t.unref();
+		limitTick = t as NodeJS.Timeout;
+	};
+	// A turn that ended on a provider rate limit: the episode opens (or continues with its probe
+	// count), the owner chat hears once per episode, and the tick takes over.
+	const onRateLimitedStop = (c: HostCtx, namedResetMs: number | null, errorText: string, model: string): void => {
+		const prev = readLimitState(cfg);
+		const timing = timingOf(cfg);
+		const state = onLimited(prev, namedResetMs, errorText, Date.now(), model, timing);
+		try {
+			writeLimitState(cfg, state);
+		} catch (err) {
+			adapterLog(cfg, `RATE-LIMIT state write failed: ${err instanceof Error ? err.message : String(err)}`);
+			return;
+		}
+		adapterLog(cfg, `RATE-LIMIT stop: ${state.reset_named ? "named reset" : "probe"} at ${rateClock(state.next_probe_at)} (probes ${state.probes} of ${timing.max_probes})`);
+		if (prev === null) {
 			adapterLog(cfg, "notify: posted (rate-limit)");
-			void postReply(`⏳ Main is rate limited by its provider until ${at} (local); it resumes on its own.`, cfg).then(results => {
+			void postReply(limitedPost(state, timing.probe_interval_s), cfg).then(results => {
 				for (const r of results) if (!r.posted) adapterLog(cfg, `notify: ${r.provider}: ${r.error}`);
 			});
 		}
-		armRateResume(untilMs);
+		armLimitTick(c);
 	};
-	// The rate-limit decision for one turn end, from the event's own last assistant message.
-	const rateLimitOf = (reply: EventReply | null): { untilMs: number; waitMs: number } | null =>
-		rateLimitWait(reply?.stopReason ?? null, reply?.errorMessage ?? null, Date.now(), cfg.guards.rate_limit, rateAttempt + 1);
+	// The rate-limit decision for one turn end, from the event's own last assistant message. The
+	// untilMs is the fallback wait recorded with PROVIDER-OUT when the error text names no reset.
+	const rateLimitOf = (reply: EventReply | null): { untilMs: number } | null => {
+		const rl = cfg.guards.rate_limit;
+		const hit = rateLimited(reply?.stopReason ?? null, reply?.errorMessage ?? null, rl);
+		if (!hit) return null;
+		const waitMs = (hit.retryAfterMs ?? rl.probe_interval_s * 1000) + rl.slack_s * 1000;
+		return { untilMs: Date.now() + waitMs };
+	};
 	// One guard-log line per notify decision: `notify: posted|skipped (<why>)`. Fire-and-forget:
 	// the decision never awaits the post; a failed or slow post logs one line and never blocks
 	// or retries.
@@ -871,9 +928,9 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 			const content = unhanded(asString(c.id) || "sub", plans.find(file => prompt.includes(file)) ?? null);
 			return content ? { message: { customType: "main-guard.rules", content, display: false } } : undefined;
 		}
-		if (rateTimer !== null) {
-			clearRateTimer();
-			adapterLog(cfg, "RATE-LIMIT resume cancelled: owner message");
+		if (limitTickArmed) {
+			stopLimitTick();
+			adapterLog(cfg, "RATE-LIMIT tick cancelled: owner message (probe count kept)");
 		}
 		const d = checkInject({ inject: prompt, agent: "main" }, cfg);
 		callsSinceStop = d.state?.callsSinceStop ?? callsSinceStop;
@@ -1133,13 +1190,14 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		const rl = rateLimitOf(reply);
 		if (rl) {
 			// Who is rate-limited is live data (plan 20261025_1700 P1): the error text's own reset
-			// time, else the armed wait. Best effort — a failed write never changes the stop.
+			// time, else the fallback wait. Best effort — a failed write never changes the stop.
+			let named: number | null = null;
 			try {
-				recordProviderOutFromRateLimit(reply, rl.untilMs, cfg);
+				named = recordProviderOutFromRateLimit(reply, rl.untilMs, cfg);
 			} catch (err) {
 				adapterLog(cfg, `PROVIDER-OUT record failed: ${err instanceof Error ? err.message : String(err)}`);
 			}
-			onRateLimitedStop(rl.untilMs, rl.waitMs);
+			onRateLimitedStop(c, named, reply?.errorMessage ?? "", reply?.model ?? "");
 			return undefined;
 		}
 		// Any turn that ends without a rate limit ends the episode and disarms its resume timer.
@@ -1302,7 +1360,10 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 	};
 	// Clear the previous adapter's armed grace timer before this one overwrites the pointer (P3c).
 	activeAdapterReset?.();
-	activeAdapterReset = clearRolloverState;
+	activeAdapterReset = (): void => {
+		clearRolloverState();
+		stopLimitTick();
+	};
 	// The launcher restarts omp: the request file carries the note and the editor draft, and omp
 	// shuts down only after the file is written. A failed write keeps the session running.
 	// Returns whether the request was written.
@@ -1395,12 +1456,20 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		}
 		const reply = lastAssistantIn(asRecord(e).messages);
 		// The same rate-limit check as session_stop (plan 20261025_0640): a rate-limited deferred
-		// hand-back arms the resume timer instead of logging "no reply text" — its reply carries an
+		// hand-back opens the episode instead of logging "no reply text" — its reply carries an
 		// error, no text. A mid-run continuation (tool calls, auto-retry) is not a turn end: the
 		// episode state stays as it is.
 		const rl = rateLimitOf(reply);
 		if (rl) {
-			onRateLimitedStop(rl.untilMs, rl.waitMs);
+			// The same one parse as session_stop (plan 20261027_1500 P1/P3): the error text's own
+			// reset time, else the fallback wait. Best effort — a failed write never changes the stop.
+			let named: number | null = null;
+			try {
+				named = recordProviderOutFromRateLimit(reply, rl.untilMs, cfg);
+			} catch (err) {
+				adapterLog(cfg, `PROVIDER-OUT record failed: ${err instanceof Error ? err.message : String(err)}`);
+			}
+			onRateLimitedStop(asCtx(ctx), named, reply?.errorMessage ?? "", reply?.model ?? "");
 			return;
 		}
 		const jobCount = asRolloverCtx(ctx)?.runningJobs().length ?? 0;

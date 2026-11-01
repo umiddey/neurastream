@@ -209,6 +209,13 @@ const enqueuePost = <T>(operation: () => Promise<T>): Promise<T> => {
 	return result;
 }
 
+/** Resolves once every post enqueued so far has finished. Posts are fire-and-forget for callers;
+ * tests drain the queue before clearing their hit lists, so one test's late post never lands in
+ * the next test's window. */
+export function notifyIdle(): Promise<void> {
+	return postQueue;
+}
+
 /** Post Main's final reply to every configured provider, serially across calls. 429s retry once
  *  after Discord's requested delay (capped at 10 seconds); other failures return to the caller. */
 export function postReply(text: string, cfg: Config): Promise<NotifyPostResult[]> {

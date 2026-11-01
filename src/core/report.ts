@@ -292,10 +292,18 @@ export function buildReport(cfg: Config, source: RunSource, days: number, now: n
 		}),
 	];
 	const falseAlarms = events.filter((e) => e.type === "false-alarm" && inWindow(Number(e.ts), cur)).length;
+	// Plan 20261027_1500 P4: finished main-agent limit episodes, one line over the window. The
+	// metric record is numbers + a boolean, but read only the pinned fields here, so a stray
+	// last_error can never reach the report.
+	const limitEvents = events.filter((e) => e.type === "limit" && inWindow(Number(e.since) / 1000, cur));
+	const limitMinutes = limitEvents.reduce((n, e) => n + Number(e.minutes ?? 0), 0);
 	const noisy = noisyDetectors(incidents, cur, cfg.watch);
 	const quality = [
 		`Silent failures: ${silentFailures(incidents, cur)} watch incidents; suspected false blocks: ${m7(incidents, falseAlarms, cur)}`,
 		`Flaky jobs: ${events.filter((e) => e.type === "ci-flaky" && inWindow(Number(e.ts), cur)).length} same-commit red→green re-runs`,
+		...(limitEvents.length > 0
+			? [`Main limited: ${limitMinutes >= 60 ? `${Math.round(limitMinutes / 6) / 10} h` : `${limitMinutes} min`} over ${limitEvents.length} episodes`]
+			: []),
 		"Dismiss rate by kind (opened, planned, dismissed):",
 		...kindStats(incidents, cur).map((k) => `- ${k.kind}: ${k.opened}, ${k.planned}, ${k.dismissed} (${Math.round(k.dismissRate * 100)}% dismissed)`),
 	];
