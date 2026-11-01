@@ -1,6 +1,7 @@
 # Changelog
 ## Unreleased
 ### Changed
+- Review spawns skip the priority gate (plan 20261028_1600 P8): `priorityGate` drops the plans a Main-authored brief reviews (`Plan review: <plan>` line, agent in `review.agents`, main-launched) before the rank check, so reviews of plans #3+ start while higher plans are idle; implementer spawns and sub-launched calls keep the gate (I-20261031-353).
 - The review spawn's shell is an allow list (plan 20261028_1600 P7): `eval` is denied outright, and bash runs only single-line commands whose every `|`/`&&`/`||`/`;`/`&` segment starts with an entry of the new `review.shell_allow` config key (default `git show/log/diff/blame/rev-parse/ls-files/status/merge-base`, `grep`, `cat`, `head`, `tail`, `wc`, `ls`, `jq`, `glab mr list/view/diff`, `gh pr list/view/diff`, `date`), with no redirects, no substitution and no writing/executing options — the old MUTATING ban list missed `fs.renameSync`-style writes (I-20261031-348, I-20261031-350). MUTATING gains the `*Sync` file-write names for its other callers, and plan-approval drops a tautological `since !== ""` check.
 
 ## 0.2.62

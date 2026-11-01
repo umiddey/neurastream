@@ -765,9 +765,10 @@ export function priorityProblem(plans: Plan[], named: string[], staffed: string[
 	return skips.length ? { skips } : null;
 }
 
-/** Load staffing and the owner's recorded words, run the pure priority gate and log its outcome; the refusal comes back with the caller's label, or null. */
-function priorityGate(named: string[], runningJobs: string[] | undefined, brief: string, cfg: Config, label: string): string | null {
-	const outcome = priorityProblem(q.activePlans(), named, runningJobs === undefined ? undefined : staffedPlans(readStaffing(), runningJobs), brief, readOwnerMessages(), nowSec(), cfg);
+/** Load staffing and the owner's recorded words, run the pure priority gate and log its outcome; the refusal comes back with the caller's label, or null. P8 (I-20261031-353): the plans a Main-authored brief reviews drop out first — a plan waiting for its reviewer is not a priority slot, so a call naming only reviewed plans passes with no skip line; implementer plans keep the gate. */
+function priorityGate(named: string[], runningJobs: string[] | undefined, brief: string, cfg: Config, label: string, agent: string, spawner: Spawner): string | null {
+	const implementer = named.filter(f => !isReviewSpawn(f, brief, agent, cfg, spawner));
+	const outcome = priorityProblem(q.activePlans(), implementer, runningJobs === undefined ? undefined : staffedPlans(readStaffing(), runningJobs), brief, readOwnerMessages(), nowSec(), cfg);
 	if (outcome?.unknown) log(cfg.paths.guard_log, "PRIORITY unknown jobs");
 	for (const s of outcome?.skips ?? []) log(cfg.paths.guard_log, `PRIORITY skip ${s.plan}: ${s.why}`);
 	return outcome?.problem ? `${label}: ${outcome.problem}` : null;
@@ -993,6 +994,8 @@ export function spawnProblem(
 		joined,
 		cfg,
 		String((tasks[0] && (tasks[0].name ?? tasks[0].agent)) ?? "task"),
+		String((tasks[0] && tasks[0].agent) ?? "task"),
+		spawner,
 	);
 	if (gate) problems.push(gate);
 	const inc = incidentSpawnProblem("spawn", JSON.stringify(input), files, cfg);
@@ -1594,7 +1597,7 @@ export function checkSpawn(e: SpawnEvent, cfg: Config, runner: CommandRunner = d
 	const problems: string[] = [];
 	const [why, named] = planGate(e.brief, e.agent, cfg);
 	if (why) problems.push(why);
-	const gate = priorityGate(named, e.runningJobs, e.brief, cfg, e.agent);
+	const gate = priorityGate(named, e.runningJobs, e.brief, cfg, e.agent, e.agent, "main");
 	if (gate) problems.push(gate);
 	const pendingWork = pendingWorkProblem(named, e.brief, cfg, runner);
 	if (pendingWork) problems.push(pendingWork);
