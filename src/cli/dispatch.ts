@@ -2,7 +2,13 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { pagesDoctor } from "../core/pages-doctor.ts";
 import { ConfigError, configFile, loadConfig, type Config } from "../core/config.ts";
+import { beat, withHeartbeat } from "../core/heartbeat.ts";
+import { watchOnce, systemUnitLister, watchDoctorLine, watchHealth, timerStaffedPlans } from "../core/watch.ts";
+import { defaultGather } from "../core/main-start.ts";
+import { gatherTags } from "../core/results.ts";
+import { nowSec } from "../core/clock.ts";
 import { postReply } from "../core/notify.ts";
+import { log } from "../core/guards.ts";
 import { loadKnownSecrets, redactSecrets, redactSummary } from "../core/secret-redact.ts";
 import { applyQueueEnv } from "../core/queue/env.ts";
 import { getAdapter } from "../adapters/index.ts";
@@ -16,9 +22,11 @@ import { runUi } from "./ui.ts";
 import { runDiagram } from "./diagram.ts";
 import { runNotes } from "./notes.ts";
 import { runPages } from "./pages.ts";
+import { watchOn, watchOff } from "./watch-setup.ts";
 import { runUninstall } from "../core/uninstall.ts";
 import { queueMigrate } from "../core/queue-migrate.ts";
-import { allowedAgents, enforceReadOnlyIndex, indexPath, readIndex, subagentsPath, writeIndex } from "../core/queue/lib.ts";
+import { activePlans, allowedAgents, enforceReadOnlyIndex, gitTop, indexPath, readIndex, subagentsPath, writeIndex } from "../core/queue/lib.ts";
+import { defaultRunner } from "../core/mr-sweep.ts";
 import { allowAgents, denyAgents, invalidSlugs } from "../core/subagents.ts";
 
 const BINS = [
@@ -139,11 +147,73 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 		try {
 			const was = enforceReadOnlyIndex(loadConfig().paths.queue_index);
 			if (was) console.warn(`warning: ${indexPath()} — was ${was}, set 0444 (the plan index is read-only on disk)`);
+			console.log(watchDoctorLine(watchHealth(loadConfig(), Date.now())));
 		} catch {} // a broken config is doctor's own report; the adapter doctor names it
 		return getAdapter().doctor();
 	}
 	if (cmd === "notify") return runNotify(args);
 	if (cmd === "redact") return runRedact(args);
+	// Hidden: not in helpText. Beats once — the live check (plan P8) and the owner's own cron jobs.
+	if (cmd === "heartbeat") {
+		const failIdx = args.indexOf("--fail");
+		const fail = failIdx >= 0 ? args[failIdx + 1] : undefined;
+		const name = args.find((a, i) => a !== "--fail" && i !== failIdx + 1 && !a.startsWith("--"));
+		if (!name || (failIdx >= 0 && fail === undefined)) {
+			console.error('usage: neurastream heartbeat <name> [--fail "<text>"]');
+			return 2;
+		}
+		try {
+			beat(loadConfig(), name, { ok: fail === undefined, detail: fail ?? "" });
+		} catch (err) {
+			console.error(err instanceof ConfigError ? err.message : String(err));
+			return 1;
+		}
+		return 0;
+	}
+	// One watcher pass (plan 20261027_1430 P2); the P4 timer calls this every watch interval.
+	// Beats its own "watch" heartbeat AFTER the pass: ok only when the watcher itself ran.
+	if (cmd === "watch") {
+		if (args.length === 1 && args[0] === "on") return watchOn();
+		if (args.length === 1 && args[0] === "off") return watchOff();
+		if (args.length) {
+			console.error("usage: neurastream watch [on|off]");
+			return 2;
+		}
+		try {
+			const cfg = loadConfig();
+			// main.ts calls process.exit right after run() returns, so every post is awaited
+			// before the exit; a failed provider lands in guard.log, never crashes the watcher.
+			const sends: Promise<void>[] = [];
+			const code = withHeartbeat(cfg, "watch", () => {
+				const report = watchOnce(cfg, {
+					now: nowSec,
+					listUnits: systemUnitLister,
+					gather: defaultGather(cfg, getAdapter(cfg)),
+					// P11: the self repo's tags and the session source feed the release verdict; no tags — no verdicts.
+					source: getAdapter(cfg).runSource(cfg),
+					tags: gatherTags(gitTop(import.meta.dir)?.repo ?? null),
+					notify: text => {
+						sends.push(
+							postReply(text, cfg).then(rs => {
+								for (const r of rs) if (!r.posted) log(cfg.paths.guard_log, `watch notify failed [${r.provider}]: ${r.error}`);
+							}),
+						);
+					},
+					runner: defaultRunner,
+					plans: () => activePlans(),
+					// Plans whose newest spawn (staffing.json) is inside the watch.ci_red_hours window: a timer run has no live job list to ask.
+					staffed: now => timerStaffedPlans(now, cfg.watch.ci_red_hours),
+				});
+				console.log(`watch: ${report.opened.length} opened, ${report.deduped.length} deduped, ${report.closed.length} recovered, ${report.detectors.length} detector findings`);
+				return 0;
+			});
+			await Promise.allSettled(sends);
+			return code;
+		} catch (err) {
+			console.error(err instanceof ConfigError ? err.message : String(err));
+			return 1;
+		}
+	}
 	if (cmd === "uninstall") return runUninstall(args);
 	if (cmd === "queue" && args[0] === "migrate") {
 		try {

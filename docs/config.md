@@ -79,6 +79,8 @@ incidents:
   contradiction_grace_min: 3   # minutes after a finished task-result before a RUNNING/WAITING ledger row is a contradiction (detector D1)
   block_repeat: 20             # same guard BLOCK reason within 60 minutes that means a block loop (detector D3)
   scan_interval_sec: 120       # seconds between scans of the expensive detectors (D1 ledger, D3 block loop); the cheap ones run on every event
+  bypass_window_sec: 600       # seconds after a guard block within which a similar call of the same tool is a bypass (detector D8)
+  bypass_similarity: 0.6       # token-set Jaccard similarity (0, 1] between the blocked call's args and the bypass (detector D8)
   daily_worse_pct: 25          # a daily metric must be worse than the 7-day mean by at least this percent
   daily_floor:                 # per-metric daily floors: a regression below the floor is noise
     m1: 0.5                    # $ per merge
@@ -87,6 +89,20 @@ incidents:
     m4_corrections: 1          # owner corrections/day
     m4_questions: 3            # Main questions/day
     m5: 50                     # guard blocks/day
+
+watch:                         # the watcher (src/core/watch.ts): `neurastream watch` runs one pass
+  expect:                      # hours after which a job's last heartbeat is stale (beat-stale); only listed jobs must beat at all
+    wip-snapshot: 2            # hourly snapshot
+    wip-backup: 26             # nightly 23:30 backup; one missed day is not yet stale
+    metrics-report: 192        # 8 days; the weekly report job
+  units:                       # user units the watcher reports when failed (unit-failed), as globs
+    - "neurastream-*"
+    - "wip-*"
+  max_posts_per_run: 3         # per run: at most this many new-incident posts, then one "+N more, see `neurastream incident list --open`" line
+  interval_min: 15            # minutes between watcher runs; `neurastream watch on` installs the timer at this interval
+  noisy_min: 5                # weekly report: a detector kind with at least this many incidents in the window ...
+  noisy_ratio: 0.5            # ... and at least this dismiss rate opens one "noisy detector" incident
+  ci_red_hours: 2              # an open MR whose pipeline stays failed longer than this opens incident "ci-red-mr" (the watcher also runs metrics.ci_pipelines_cmd for merged MRs)
 
 ledger:
   default_hours: 24

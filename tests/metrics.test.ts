@@ -283,6 +283,14 @@ test("report ends with the weekly prompt-bloat line when the caller supplies one
 	expect(buildReport(cfg, source, DAYS, NOW).text).not.toContain("Prompt bloat");
 });
 
+test("report counts ci-flaky events in the window: a same-commit red then green is one flaky job", () => {
+	const cfg = cfgWith(join(TMP, "home-flaky"), "");
+	const source = { listRuns: () => [], mainSession: () => null } as unknown as RunSource;
+	appendMetric(cfg, { type: "ci-flaky", repo: "/w/app", sha: "abc123", ts: NOW - 10 });
+	appendMetric(cfg, { type: "ci-flaky", repo: "/w/app", sha: "old999", ts: NOW - 30 * DAY });
+	expect(buildReport(cfg, source, DAYS, NOW).text).toContain("Flaky jobs: 1 same-commit red→green re-runs");
+});
+
 test("metrics report scans the window's runs for the bloat line: a rejected call with no usage flags from its dump", async () => {
 	const home = join(TMP, "home-bloatscan");
 	const sessions = join(home, ".omp/agent/sessions/scan-proj");

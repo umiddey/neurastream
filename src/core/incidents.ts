@@ -6,7 +6,8 @@
 // not remembered. A repeat sighting of an open fingerprint updates count and lastSeen on the
 // existing record instead of adding a second incident; after a resolution the same fingerprint
 // opens a new incident. Sources: realtime (detectors), daily, weekly, main (`incident add`),
-// findings (plan-guard: the Findings: items of a subagent's new Progress entry).
+// findings (plan-guard: the Findings: items of a subagent's new Progress entry), watch (the
+// src/core/watch.ts watcher: failed/stale heartbeats, failed units).
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -14,7 +15,7 @@ import { nowSec, strftime } from "./clock.ts";
 import type { Config } from "./config.ts";
 import * as q from "./queue/lib.ts";
 
-export type IncidentSource = "realtime" | "daily" | "weekly" | "main" | "findings" | "traces";
+export type IncidentSource = "realtime" | "daily" | "weekly" | "main" | "findings" | "traces" | "watch";
 
 export interface IncidentRec {
 	id: string;
@@ -94,7 +95,7 @@ function parseLine(line: string): IncidentRec | ResolutionRec | ProposalRec | nu
 	if (rec.type !== undefined) return null;
 	if (typeof rec.fingerprint !== "string" || typeof rec.kind !== "string" || typeof rec.summary !== "string" || typeof rec.ts !== "number")
 		return null;
-	const source = rec.source === "realtime" || rec.source === "daily" || rec.source === "weekly" || rec.source === "findings" || rec.source === "traces" ? rec.source : "main";
+	const source = rec.source === "realtime" || rec.source === "daily" || rec.source === "weekly" || rec.source === "findings" || rec.source === "traces" || rec.source === "watch" ? rec.source : "main";
 	return {
 		id: rec.id,
 		fingerprint: rec.fingerprint,

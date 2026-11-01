@@ -190,14 +190,32 @@ incidents:
   contradiction_grace_min: 3   # minutes after a finished task-result before a RUNNING/WAITING ledger row is a contradiction
   block_repeat: 20             # same guard BLOCK reason within 60 minutes that means a block loop
   scan_interval_sec: 120       # seconds between scans of the expensive detectors (D1 ledger, D3 block loop); the cheap ones run on every event
+  bypass_window_sec: 600       # seconds after a guard block within which a similar call of the same tool is a bypass (detector D8)
+  bypass_similarity: 0.6       # token-set Jaccard similarity (0, 1] between the blocked call's args and the bypass (detector D8)
   daily_worse_pct: 25          # a daily metric must be worse than the 7-day mean by at least this percent
   daily_floor:                 # per-metric daily floors: a regression below the floor is noise
     m1: 0.5                    # $ per merge
     m2: 50                     # idle calls/day
     m3: 1.5                    # mean CI tries
-    m4_corrections: 1          # owner corrections/day
-    m4_questions: 3            # Main questions/day
-    m5: 50                     # guard blocks/day
+    m4_corrections: 1        # owner corrections/day
+    m4_questions: 3          # Main questions/day
+    m5: 50                   # guard blocks/day
+
+watch:                       # the watcher (src/core/watch.ts): heartbeats, failed units, detectors
+  expect:                    # hours after which a job's last heartbeat is stale; only listed jobs must beat at all
+    wip-snapshot: 2          # hourly snapshot
+    wip-backup: 26           # nightly 23:30 backup; one missed day is not yet stale
+    metrics-report: 192      # 8 days; the weekly report job
+  units:                     # user units the watcher reports when failed
+    - "neurastream-*"
+    - "wip-*"
+  max_posts_per_run: 3       # per run: at most this many new-incident posts, then one "+N more" line
+  interval_min: 15          # minutes between watcher runs; `neurastream watch on` installs the timer at this interval
+  noisy_min: 5             # weekly report: a detector kind with at least this many incidents in the window ...
+  noisy_ratio: 0.5         # ... and at least this dismiss rate opens one "noisy detector" incident
+  ci_red_hours: 2         # an open MR whose last finished pipeline stays failed longer than this opens incident "ci-red-mr"
+  release_regress_pct: 25  # release verdict: any group but owner pain worse by this percent over the before window reads WORSE
+  release_min_calls: 300   # release verdict: fewer Main tool calls on either side reads "not enough data yet", no verdict
 
 machine:
   load_over_cores: 4

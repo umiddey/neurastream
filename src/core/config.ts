@@ -198,6 +198,31 @@ export interface Config {
 		daily_worse_pct: number;
 		/** Per-metric daily floors (keys: m1, m2, m3, m4_corrections, m4_questions, m5): a regression below the floor is noise. */
 		daily_floor: Record<string, number>;
+		/** D8: seconds after a guard block within which a similar call of the same tool counts as a bypass. */
+		bypass_window_sec: number;
+		/** D8: token-set Jaccard similarity in (0, 1] between a blocked call's args and the bypass. */
+		bypass_similarity: number;
+	};
+	/** The watcher (src/core/watch.ts, plan 20261027_1430 P2): job heartbeats, failed units, detectors. */
+	watch: {
+		/** Per job: hours after which its last heartbeat is stale. Only listed jobs are expected to beat at all. */
+		expect: Record<string, number>;
+		/** Globs of the user units the watcher reports when failed. */
+		units: string[];
+		/** Per watcher run: at most this many new-incident posts; the rest fold into one "+N more" line. */
+		max_posts_per_run: number;
+		/** Minutes between watcher runs; `neurastream watch on` writes this into the timer (plan 20261027_1430 P4). */
+		interval_min: number;
+		/** Weekly report: a detector kind with at least this many incidents in the window and a dismiss rate >= noisy_ratio opens one "noisy detector" incident (plan 20261027_1430 P6). */
+		noisy_min: number;
+		/** Dismiss-rate threshold (0 < ratio <= 1) for the noisy-detector rule (plan 20261027_1430 P6). */
+		noisy_ratio: number;
+		/** Hours an open MR's pipeline may stay failed before incident "ci-red-mr" opens (plan 20261027_1430 P6b). */
+		ci_red_hours: number;
+		/** Release verdict (P11): any group but owner pain reads WORSE when its number grows by at least this percent over the before window. */
+		release_regress_pct: number;
+		/** Release verdict: fewer Main tool calls than this on either side reads "not enough data yet" — no verdict. */
+		release_min_calls: number;
 	};
 	machine: {
 		load_over_cores: number;
@@ -562,6 +587,33 @@ function check(cfg: Config): void {
 		if (typeof r !== "string" || r.length === 0) throw new ConfigError("knowledge.roots entries must be non-empty paths");
 	}
 	if (!Number.isInteger(cfg.knowledge.max_age_s) || cfg.knowledge.max_age_s < 1) throw new ConfigError("knowledge.max_age_s must be an integer >= 1");
+	for (const [job, hours] of Object.entries(cfg.watch.expect)) {
+		if (typeof hours !== "number" || !(hours > 0)) throw new ConfigError(`watch.expect.${job} must be a positive number of hours`);
+	}
+	if (!Array.isArray(cfg.watch.units) || cfg.watch.units.some(u => typeof u !== "string" || u === "")) {
+		throw new ConfigError("watch.units must be a list of non-empty glob strings");
+	}
+	if (!Number.isInteger(cfg.watch.max_posts_per_run) || cfg.watch.max_posts_per_run < 1) {
+		throw new ConfigError("watch.max_posts_per_run must be an integer >= 1");
+	}
+	if (!Number.isInteger(cfg.watch.interval_min) || cfg.watch.interval_min < 1) {
+		throw new ConfigError("watch.interval_min must be an integer >= 1");
+	}
+	if (!Number.isInteger(cfg.watch.noisy_min) || cfg.watch.noisy_min < 1) {
+		throw new ConfigError("watch.noisy_min must be an integer >= 1");
+	}
+	if (typeof cfg.watch.noisy_ratio !== "number" || !(cfg.watch.noisy_ratio > 0 && cfg.watch.noisy_ratio <= 1)) {
+		throw new ConfigError("watch.noisy_ratio must be a number in (0, 1]");
+	}
+	if (typeof cfg.watch.ci_red_hours !== "number" || !(cfg.watch.ci_red_hours > 0)) {
+		throw new ConfigError("watch.ci_red_hours must be a number > 0");
+	}
+	if (typeof cfg.watch.release_regress_pct !== "number" || !(cfg.watch.release_regress_pct > 0)) {
+		throw new ConfigError("watch.release_regress_pct must be a number > 0");
+	}
+	if (!Number.isInteger(cfg.watch.release_min_calls) || cfg.watch.release_min_calls < 1) {
+		throw new ConfigError("watch.release_min_calls must be an integer >= 1");
+	}
 	for (const p of cfg.metrics.correction_patterns) {
 		try {
 			new RegExp(p, "i");
@@ -614,6 +666,12 @@ function check(cfg: Config): void {
 		new RegExp(cfg.traces.bloat.tool_group);
 	} catch {
 		throw new ConfigError(`traces.bloat.tool_group: not a valid regex: ${cfg.traces.bloat.tool_group}`);
+	}
+	if (!Number.isInteger(cfg.incidents.bypass_window_sec) || cfg.incidents.bypass_window_sec < 1) {
+		throw new ConfigError("incidents.bypass_window_sec must be an integer >= 1");
+	}
+	if (typeof cfg.incidents.bypass_similarity !== "number" || !(cfg.incidents.bypass_similarity > 0) || cfg.incidents.bypass_similarity > 1) {
+		throw new ConfigError("incidents.bypass_similarity must be a number in (0, 1]");
 	}
 	for (const rule of cfg.brief.repo_rules) {
 		for (const key of ["match", "require", "first", "unless"] as const) {

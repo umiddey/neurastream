@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the neurastream watcher every __INTERVAL_MIN__ minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=__INTERVAL_MIN__min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

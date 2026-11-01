@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.neurastream.watch</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>__HOME__/.bun/bin/neurastream</string>
+		<string>watch</string>
+	</array>
+	<key>StartInterval</key>
+	<integer>__INTERVAL_SEC__</integer>
+	<key>RunAtLoad</key>
+	<true/>
+</dict>
+</plist>

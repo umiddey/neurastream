@@ -9,6 +9,7 @@ import { basename, dirname, join } from "node:path";
 import type { LaunchOptions } from "../../core/adapter.ts";
 import type { Config } from "../../core/config.ts";
 import { mainStartText } from "../../core/main-start.ts";
+import { appendMetric } from "../../core/metrics.ts";
 import { applyQueueEnv } from "../../core/queue/env.ts";
 import * as q from "../../core/queue/lib.ts";
 import { buildHandoff, holdsBlock, MAX_NOTE_AGE_MS, OWNER_AWAY, relaunchPath } from "../../core/rollover.ts";
@@ -186,6 +187,8 @@ export async function runMainLauncher(args: string[], cfg: Config, opts: LaunchO
 		const changed = loaded === null || installed === null || loaded !== installed;
 		if (changed && noteReadable(req.notePath)) {
 			adapterLog(cfg, `rollover: relaunch handed to a fresh launcher (${loaded ?? "unknown"} → ${installed ?? "unknown"})`);
+			// P11: one version-change ledger event per relaunch on a version change; the release verdict reads a to < from event as a downgrade.
+			appendMetric(cfg, { type: "version-change", from: loaded ?? "unknown", to: installed ?? "unknown", ts: Math.floor(Date.now() / 1000) });
 			return runChild(process.execPath, [join(PACKAGE_ROOT, "src", "cli", "main.ts"), "main", ...carried], {
 				...process.env,
 				NEURASTREAM_RELAUNCH_SINCE: String(started),

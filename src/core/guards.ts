@@ -424,17 +424,33 @@ function recordOwnerMessage(text: string, cfg: Config): void {
 	}
 }
 
-/** plan → the task names of its newest spawn (staffing.json); read for the staffed check. */
-export function readStaffing(): Record<string, string[]> {
+/** One staffing.json entry: the task names of a plan's newest spawn and when it was spawned (epoch sec). An old bare-array entry has no spawn time and reads as at 0. */
+export interface StaffingEntry {
+	names: string[];
+	at: number;
+}
+
+/** plan → its staffing entry (staffing.json). */
+export function readStaffingEntries(): Record<string, StaffingEntry> {
 	try {
 		const raw: unknown = JSON.parse(readFileSync(staffingFile(), "utf8"));
 		if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
-		const out: Record<string, string[]> = {};
-		for (const [k, v] of Object.entries(raw)) if (Array.isArray(v)) out[k] = v.map(String);
+		const out: Record<string, StaffingEntry> = {};
+		for (const [k, v] of Object.entries(raw)) {
+			if (Array.isArray(v)) out[k] = { names: v.map(String), at: 0 };
+			else if (v && typeof v === "object" && "names" in v && Array.isArray(v.names)) {
+				out[k] = { names: v.names.map(String), at: "at" in v ? Number(v.at) || 0 : 0 };
+			}
+		}
 		return out;
 	} catch {
 		return {};
 	}
+}
+
+/** plan → the task names of its newest spawn (staffing.json); read for the staffed check. */
+export function readStaffing(): Record<string, string[]> {
+	return Object.fromEntries(Object.entries(readStaffingEntries()).map(([f, e]) => [f, e.names]));
 }
 
 function readSpawns(): Record<string, string> {
@@ -464,8 +480,9 @@ export function recordSpawns(files: string[], staffing: Record<string, string[]>
 		log(`${q.STATE_DIR}/../main-guard.log`, `cannot write ${spawnsFile()}: ${err}`);
 	}
 	if (!Object.keys(staffing).length) return;
-	const st = readStaffing();
-	for (const [f, names] of Object.entries(staffing)) if (names.length) st[f] = [...names];
+	const st = readStaffingEntries();
+	const at = nowSec();
+	for (const [f, names] of Object.entries(staffing)) if (names.length) st[f] = { names: [...names], at };
 	try {
 		mkdirSync(q.STATE_DIR, { recursive: true });
 		writeFileSync(staffingFile(), JSON.stringify(st, null, 1));

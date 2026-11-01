@@ -18,15 +18,15 @@
 import { execFileSync, spawn } from "node:child_process";
 import { appendFileSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, join, resolve } from "node:path";
-import type { Decision } from "../../core/adapter.ts";
+import type { Decision, TraceEvent } from "../../core/adapter.ts";
 import { AGENTS_TEMPLATE, renderBlock } from "../../core/agents-md.ts";
 import { chatGo, chatTier, type Tier } from "../../core/autonomy.ts";
 import { chatApprove } from "../../core/plan-approval.ts";
 import { burdenRule, repoRules, rulesChanged } from "../../core/repo-rules.ts";
 import { configFile, loadConfig, reloadingConfig, type Config } from "../../core/config.ts";
 import { checkWrite, deferSteer, type WriteCheckConfig } from "../../core/write-check.ts";
-import { nowSec, strftime } from "../../core/clock.ts";
-import { runDetectors, runDetectorsGated, type DetectorInput } from "../../core/incident-detectors.ts";
+import { strftime } from "../../core/clock.ts";
+import { runDetectors, type DetectorInput } from "../../core/incident-detectors.ts";
 import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, newProgressEntries, planReadNote, recordMainResult, resetMainCalls, revertMainEdit, rekeySpawnFile, reviewSpawnEnd, STOP_PLAN_OFFER_REFUSAL } from "../../core/guards.ts";
 import { rateLimitWait } from "../../core/rate-limit.ts";
 import { notifyProviders, postReply } from "../../core/notify.ts";
@@ -35,8 +35,8 @@ import { inboxPath } from "../../core/owner-ui.ts";
 import { realTailscale } from "../../core/tailscale.ts";
 import { actionsRules, ownedRepoOf, suspiciousActions, unreportedFindings } from "../../core/trace-actions.ts";
 import { applyQueueEnv } from "../../core/queue/env.ts";
-import { mainStartText, runDailyCheck } from "../../core/main-start.ts";
-import { readBlocks } from "../../core/metrics.ts";
+import { mainDetectors, mainStartText } from "../../core/main-start.ts";
+
 import { buildHandoff, holdsBlock, notePath, noteRequest, OWNER_AWAY, ownerText, relaunchPath, rolloverState, spawnRefusal, type RolloverState } from "../../core/rollover.ts";
 import { defaultCompletedResults, defaultRunSource, runIdOf } from "./sessions.ts";
 import { adapterLog, MAIN_ENV } from "./launch.ts";
@@ -47,6 +47,16 @@ import { pinModel, providerOfModel, recordOut, resetEpochFromText } from "../../
 import { annotateResetTimes } from "../../core/reset-time.ts";
 // Registers the plugin-command matcher into core's writeTargets (side effect).
 import "./package-ops.ts";
+
+/** TraceEvents of the newest Main session file (D8's input); [] when there is none or it cannot be read. */
+function defaultMainEvents(cfg: Config): TraceEvent[] {
+	try {
+		const s = defaultRunSource(cfg).mainSession();
+		return s ? parseTraceFile(s.file, runIdOf(s.file)) : [];
+	} catch {
+		return [];
+	}
+}
 
 /** Subset of the harness extension host the adapter needs. */
 export interface ExtensionHost {
@@ -142,27 +152,6 @@ const PUSH_MERGE = /\bgit\b[^\n;|&]*\bpush\b|\b(glab\s+mr|gh\s+pr)\s+merge\b/;
 // The installed package and its version: see ./package-root.ts.
 
 export { adapterLog };
-
-/**
- * Real-time incident detectors (plan 20261022_2330 P3) at Main's prompt and after each Main bash
- * result, plus the once-per-day metrics check (P4, retried until it marks the day). The cheap
- * detectors (D2 bash, D4 prompt) run on every call; D1/D3 and their inputs — Main's session
- * file, the ledger runs, both guard logs — are gathered behind the scan interval
- * (incidents.scan_interval_sec, see runDetectorsGated). Best effort: a failed check is logged,
- * never thrown.
- */
-function mainDetectors(cfg: Config, extra: { prompt?: string; bash?: { command: string; output: string } }): void {
-	try {
-		runDetectorsGated(cfg, extra, () => ({
-			results: defaultCompletedResults(cfg),
-			runs: defaultRunSource(cfg).listRuns(nowSec() - 2 * 86400),
-			blocks: readBlocks(cfg),
-		}));
-		runDailyCheck(cfg, defaultRunSource(cfg), nowSec());
-	} catch (err) {
-		adapterLog(cfg, `incident detectors failed: ${err instanceof Error ? err.message : String(err)}`);
-	}
-}
 
 /**
  * D6 + D7 over a subagent's own trace, right after an allowed Progress edit (plan
@@ -822,7 +811,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		// A turn the harness starts from the guard's own stop continuation is not an owner
 		// message: D4 (owner-correction) only sees real prompts; D1/D3 run either way.
 		// Machine prompts (guard continuation, rollover note request, handoff note) are not owner messages.
-		mainDetectors(cfg, { prompt: ownerText(prompt) });
+		mainDetectors(cfg, { runSource: defaultRunSource, completedResults: defaultCompletedResults, mainEvents: defaultMainEvents }, { prompt: ownerText(prompt) });
 		// The rules of a repo this session has just worked in (P3): one hand-over per repo per file
 		// version — rulesChanged holds the hash, and the set holds only what was touched.
 		const rules: string[] = [];
@@ -1028,7 +1017,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		}
 		// Real-time detectors after each Main bash result, crashes included (D2 wants the stack).
 		if ((!c.hasAgent || c.kind === "main") && asString(e.toolName) === "bash") {
-			mainDetectors(cfg, {
+			mainDetectors(cfg, { runSource: defaultRunSource, completedResults: defaultCompletedResults, mainEvents: defaultMainEvents }, {
 				bash: { command: asString(asRecord(e.input).command), output: content.map(p => asString(asRecord(p).text)).join("\n") },
 			});
 		}

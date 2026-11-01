@@ -1,0 +1,6 @@
+[Unit]
+Description=neurastream watcher (heartbeats, failed units, incident detectors)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.bun/bin/neurastream watch

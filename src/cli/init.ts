@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { configFile, loadConfig, TEMPLATE_PATH, type Config } from "../core/config.ts";
 import { allowedAgents } from "../core/queue/lib.ts";
 import { allowAgents, invalidSlugs, InvalidSlugError } from "../core/subagents.ts";
+import { watchOn } from "./watch-setup.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const PACKAGE_ROOT = resolve(HERE, "../..");
@@ -181,6 +182,13 @@ export function runInit(args: string[] = []): number {
 		const interactive = allow === undefined && Boolean(process.stdin.isTTY && process.stdout.isTTY);
 		const ask = interactive ? () => askLine("Subagents allowed to spawn (comma-separated names, empty = none): ") : undefined;
 		printInit(initHome(homedir(), { invoked: process.argv[1] ?? "", env: process.env, agentDir, allow, ask }));
+		// Interactive only (plan 20261027_1430 P4): empty, y or yes installs the watcher timer.
+		if (interactive) {
+			const answer = askLine("Watch neurastream jobs and alert me? [Y/n] ").trim().toLowerCase();
+			if ((answer === "" || answer === "y" || answer === "yes") && watchOn() !== 0) {
+				console.log("watch not set up; fix the error above, then run `neurastream watch on`");
+			}
+		}
 		return 0;
 	} catch (err) {
 		console.error(err instanceof Error ? err.message : String(err));

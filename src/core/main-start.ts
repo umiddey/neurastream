@@ -2,11 +2,11 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "no
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { RunSource } from "./adapter.ts";
+import type { RunSource, TraceEvent } from "./adapter.ts";
 import { readEvents } from "./agent-score.ts";
 import type { Config } from "./config.ts";
 import { nowSec, strftime } from "./clock.ts";
-import { runDetectors, type TaskResult } from "./incident-detectors.ts";
+import { runDetectors, runDetectorsGated, type GatedInputs, type TaskResult } from "./incident-detectors.ts";
 import { addIncident, type IncidentView } from "./incidents.ts";
 import { log as logGuard } from "./guards.ts";
 import { dailyChecks, readBlocks, readMetricEvents, worseThanMean } from "./metrics.ts";
@@ -14,6 +14,7 @@ import { buildReport } from "./report.ts";
 import { loadavgLine } from "./host.ts";
 import { providersLine } from "./provider-state.ts";
 import { mrSweep } from "./mr-sweep.ts";
+import { watchHealth } from "./watch.ts";
 
 function bin(name: string, cfg: Config): string {
 	return join(cfg.paths.home, ".local/bin", name);
@@ -112,6 +113,32 @@ export async function mainStartText(args: string[], cfg: Config, opts: { inherit
 		const due = metricsDueLine(cfg, Date.now());
 		if (due) say(due);
 	}
+	// Watcher health (plan 20261027_1430 P4): silent unless `watch on` installed the timer. A run older
+	// than 3 intervals (or never) prints NOT RUNNING and opens a watch incident; watchOnce closes it
+	// again on the next successful pass.
+	const watchState = watchHealth(cfg, Date.now());
+	if (watchState.installed) {
+		if (watchState.lastRunMin !== null && watchState.lastRunMin <= 3 * watchState.intervalMin) {
+			say(`watch: last run ${watchState.lastRunMin} min ago`);
+		} else {
+			say(`watch: NOT RUNNING since ${watchState.lastRunAt ?? "never"}`);
+			try {
+				addIncident(
+					cfg,
+					{
+						source: "watch",
+						kind: "not-running",
+						summary: `watcher has not run since ${watchState.lastRunAt ?? "install"} (interval ${watchState.intervalMin} min)`,
+						evidence: `last watch heartbeat: ${watchState.lastRunAt ?? "none"}`,
+						fingerprint: "watch:not-running",
+					},
+					nowSec(),
+				);
+			} catch (err) {
+				logGuard(cfg.paths.guard_log, `watch incident failed: ${err instanceof Error ? err.message : String(err)}`);
+			}
+		}
+	}
 	say("=== machine");
 	const mg = await run(bin("machine-guard", cfg), [], { stderr: "ignore" });
 	const mgLines = mg.stdout.trim().split("\n");
@@ -195,6 +222,46 @@ function fmtMetric(v: number | null): string {
 	return v === null ? "n/a" : v >= 10 ? String(Math.round(v)) : v.toFixed(2);
 }
 
+/** Where the expensive detector inputs come from: the harness adapter's session readers
+ *  (src/adapters/<harness>; core never imports one — the caller hands the seam in). */
+export interface DetectorSeam {
+	runSource(cfg: Config): RunSource;
+	completedResults(cfg: Config): TaskResult[];
+	/** D8 input. A seam without it gives the detectors no main events, so D8 stays silent. */
+	mainEvents?(cfg: Config): TraceEvent[];
+}
+
+/**
+ * The gather the prompt-time detectors and the watcher (src/core/watch.ts) share: fresh
+ * completed task-results, the last two days of ledger runs and the guard-log blocks — read
+ * only when runDetectorsGated's scan gate opens (incidents.scan_interval_sec).
+ */
+export function defaultGather(cfg: Config, seam: DetectorSeam): () => GatedInputs {
+	return () => ({
+		results: seam.completedResults(cfg),
+		runs: seam.runSource(cfg).listRuns(nowSec() - 2 * 86400),
+		blocks: readBlocks(cfg),
+		mainEvents: seam.mainEvents?.(cfg) ?? [],
+	});
+}
+
+/**
+ * Real-time incident detectors (plan 20261022_2330 P3) at Main's prompt and after each Main bash
+ * result, plus the once-per-day metrics check (P4, retried until it marks the day). The cheap
+ * detectors (D2 bash, D4 prompt) run on every call; D1/D3 and their inputs — Main's session
+ * file, the ledger runs, both guard logs — are gathered behind the scan interval
+ * (incidents.scan_interval_sec, see runDetectorsGated). Best effort: a failed check is logged,
+ * never thrown.
+ */
+export function mainDetectors(cfg: Config, seam: DetectorSeam, extra: { prompt?: string; bash?: { command: string; output: string } }): void {
+	try {
+		runDetectorsGated(cfg, extra, defaultGather(cfg, seam));
+		runDailyCheck(cfg, seam.runSource(cfg), nowSec());
+	} catch (err) {
+		logGuard(cfg.paths.guard_log, `incident detectors failed: ${err instanceof Error ? err.message : String(err)}`);
+	}
+}
+
 /**
  * Once per calendar day (state file in queue_state), at the first main-start or Main
  * before_agent_start: M1-M5 for the last 24h against the mean of the 7 days before; each metric
@@ -249,6 +316,20 @@ export function runWeeklyCheck(cfg: Config, source: RunSource, now: number): str
 		const rep = buildReport(cfg, source, cfg.metrics.report_days, now);
 		mkdirSync(cfg.paths.notes, { recursive: true });
 		writeFileSync(join(cfg.paths.notes, "metrics.md"), rep.md);
+		for (const n of rep.noisy) {
+			const { incident: noisy } = addIncident(
+				cfg,
+				{
+					source: "weekly",
+					kind: n.kind,
+					summary: n.summary,
+					evidence: n.evidence,
+					fingerprint: `noisy:${n.detector}:${strftime(now, "%Y%m%d")}`,
+				},
+				now,
+			);
+			logGuard(cfg.paths.guard_log, `incident ${noisy.id} [weekly/${noisy.kind}] opened: ${noisy.summary}`);
+		}
 		const w = rep.worst;
 		if (!w || w.change === null) {
 			return `metrics: report due (last: ${last}) — wrote ${join(cfg.paths.notes, "metrics.md")}; no ranked metric moved this window`;
