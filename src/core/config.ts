@@ -134,16 +134,20 @@ export interface Config {
 		idle_stops: number;
 		/** A Main stop reply matching this regex (case-insensitive) offers to plan instead of planning; the stop is refused (20261028_0900 P2). */
 		plan_offer: string;
-		/** Provider rate limits (src/core/rate-limit.ts): a turn that ends on one waits it out instead of
-		 *  asking again straight into the limit. The words and the waits come from here. */
+		/** Provider rate limits (src/core/rate-limit.ts, src/core/limit-probe.ts): a turn that ends on one waits for the
+		 *  named reset, or probes the provider until it answers. The words and the timings come from here. */
 		rate_limit: {
 			/** Case-insensitive substrings in the error text that mark a rate limit. */
 			patterns: string[];
-			/** Wait when the error text names no retry-after. */
-			default_wait_s: number;
-			/** Cap for the parsed (or doubled) wait, before slack. */
-			max_wait_s: number;
-			/** Added on top of every wait. */
+			/** Probe the provider this often (s) while it names no reset. */
+			probe_interval_s: number;
+			/** Probes before the episode gives up. */
+			max_probes: number;
+			/** Kill a probe that runs longer than this (s). */
+			probe_timeout_s: number;
+			/** Shell command that probes the provider; {model} is replaced by the shell-quoted model. Exit 0 means it answered. */
+			probe_cmd: string;
+			/** Added on top of every wait (s). */
 			slack_s: number;
 		};
 		blocker_timeout_ms: number;
@@ -581,8 +585,12 @@ function check(cfg: Config): void {
 	if (!Array.isArray(cfg.guards.rate_limit.patterns) || cfg.guards.rate_limit.patterns.some(p => typeof p !== "string" || p === "")) {
 		throw new ConfigError("guards.rate_limit.patterns must be a list of non-empty strings");
 	}
-	if (!(cfg.guards.rate_limit.default_wait_s >= 1)) throw new ConfigError("guards.rate_limit.default_wait_s must be >= 1");
-	if (!(cfg.guards.rate_limit.max_wait_s >= 1)) throw new ConfigError("guards.rate_limit.max_wait_s must be >= 1");
+	if (!(cfg.guards.rate_limit.probe_interval_s >= 1)) throw new ConfigError("guards.rate_limit.probe_interval_s must be >= 1");
+	if (!(cfg.guards.rate_limit.max_probes >= 1)) throw new ConfigError("guards.rate_limit.max_probes must be >= 1");
+	if (!(cfg.guards.rate_limit.probe_timeout_s >= 1)) throw new ConfigError("guards.rate_limit.probe_timeout_s must be >= 1");
+	if (typeof cfg.guards.rate_limit.probe_cmd !== "string" || !cfg.guards.rate_limit.probe_cmd.includes("{model}")) {
+		throw new ConfigError("guards.rate_limit.probe_cmd must be a string containing {model}");
+	}
 	if (!(cfg.guards.rate_limit.slack_s >= 0)) throw new ConfigError("guards.rate_limit.slack_s must be >= 0");
 	if (!(cfg.rollover.exit_grace_s > 0)) throw new ConfigError("rollover.exit_grace_s must be > 0");
 	if (!(cfg.metrics.report_days >= 1)) throw new ConfigError("metrics.report_days must be >= 1");

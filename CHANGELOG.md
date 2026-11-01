@@ -3,6 +3,10 @@
 ### Fixed
 - Rollover across a version change (I-20261101-47): a relaunch request written by an older version to the legacy `<queue_state>/rollover/relaunch.json` is still picked up — the launcher falls back to it when the new-path file is missing or stale (main id only), and a consumed request now clears both paths, so a leftover copy cannot re-inject at the next fresh start.
 
+## 0.2.67
+### Added
+- Limit episodes are told and recorded (plan 20261027_1500 P4): the owner chat hears exactly two posts per episode — "⏳ Main hit its limit at HH:MM; <resets at HH:MM | checking every 5 min>" when the episode opens and "✅ Main is back at HH:MM (limited N min, M checks)" when the probe gets through or the named reset passes, or "⚠ Main still limited after 24 h" once `max_probes` is spent — and each finished episode appends one `{type: "limit", since, back_at, minutes, probes, reset_named}` metric that the weekly report shows as "Main limited: N h over K episodes". Posts, metric and report carry times and counts only, never the provider error text.
+
 ## 0.2.66
 ### Added
 - `neurastream config set|get|list <key> [value]` reads or writes one config key through the line-based editor in `src/core/config-edit.ts` (the one `ui on|off` and `pages on|off` now share). Keys are the leaf paths of `templates/config.yml`; an unknown key, or a value that would not load, is refused and the file is left untouched. Comments and every other line of the file are kept byte-for-byte.
@@ -10,6 +14,7 @@
 - `ui on` checks Tailscale first: a missing binary prints the install steps and, on a terminal, asks `Open the Tailscale download page now? [y/N]`; installed but not connected prints `sudo tailscale up`. Nothing is written or started until Tailscale runs. `neurastream doctor` reports `tailscale: ok`, `tailscale: missing` or `tailscale: logged out` when the owner page is enabled.
 - `neurastream setup [--yes]` is the guided first run: it detects this machine (harness, Tailscale, pages, notify, secrets), asks the settings in groups with the detected values as defaults, installs the adapter, runs the doctor and prints `Next: neurastream main` only when it passes. Re-running it offers the current values. `--yes` takes the detected settings without asking; with no terminal and no `--yes` it refuses (exit 2) and writes nothing. Config changes go through the same byte-for-byte editor as `config set`.
 - `neurastream setup` offers a test post when the owner has set a notify webhook file: after the questions it asks `send a test message now? [y/N]`; yes runs `neurastream notify test` and prints its per-provider lines. No, or `--yes`, skips it, and a failed test does not fail setup.
+
 - Multi-main P5: the owner side — phone-page queue cards show a `Main <id>` chip for whoever holds the plan, the message box gains a to-picker (All / each running Main), text starting `@<id> ` goes only to that Main and anything else reaches all running Mains (`@<id>` naming a Main that is not running is refused — `Main <id> is not running; running: a, b` — before anything is stored, and the chosen `to` is persisted in the message and the inbox row), and each Main keeps its own owner-inbox read cursor under `mains/<id>/inbox-cursor` (a pre-multi-main top-level cursor moves in once).
 - Multi-main P6: docs — README "Several Mains" (starting two, what each Main keeps under `mains/<id>/`, the 30-minute rule, `claim next|list|release` and `--force` as the owner's terminal move, claim heartbeats vs job heartbeats) and docs/adapter.md (the omp extension's 60 s claim-heartbeat timer; `session_shutdown` releases nothing).
 
@@ -27,7 +32,6 @@
 - Guard false positives (plan 20261027_0915 P5g): the owner-page start check reads only real shell commands — bash `command`, eval `!cmd` lines, and `Bun.$` / bare `$` (imported from bun) template tags and spawn arguments — so task brief prose, plan text and string data no longer trip it; the notify-secret glob check refuses only when `new Bun.Glob(pattern).match()` hits a notify secret file or its directory, instead of refusing every glob whose prefix is an ancestor of the secrets dir.
 ### Added
 - Owner answer steer (plan 20261027_1430 P9): a phone-page owner message that has waited more than `notify.answer_within_min` (default 3, 0 = off) with no hand-back after it steers Main once per message — "Owner asked at HH:MM; end your turn with the answer now" — through the omp adapter's tool_result hook; a hand-back clears the wait. The watcher counts each message that crosses the limit as one `m8` metric (once per message — the metrics ledger is the marker), and the release verdict reads M8 in its owner-pain group.
-
 ## 0.2.63
 ### Added
 - Guard false-positive detector D8 `block-then-bypass` (plan 20261027_1430 P5): a guard refusal (`main-guard:` / `plan-guard:`) followed within `incidents.bypass_window_sec` (default 600) by an allowed call of the same tool whose args share at least `incidents.bypass_similarity` (default 0.6, token Jaccard) opens a `possible guard false positive: <reason>` incident with both call excerpts as evidence. Main's session events feed it through the gated detector path, so the session is parsed at most once per `incidents.scan_interval_sec`. `neurastream watch` does not run D8 yet (its gather passes no main-session events).
@@ -69,6 +73,9 @@
 - Review spawns may run read-only shell; secret paths judged under both config home and OS home; stop is released at `main_max_calls`; `approval.since: ""` turns approval fully off.
 - Injected queue summary and stop refusal show the top 10 plans plus "… N more".
 - Read tools and non-writing shell skip blocker scripts; a denial names the hit paths and the script's output.
+### Changed
+- `guards.rate_limit` replaces `default_wait_s` and `max_wait_s` (the doubling is gone) with `probe_interval_s` (300), `max_probes` (288), `probe_timeout_s` (90) and `probe_cmd` (the shell command that probes the provider; `{model}` is replaced by the shell-quoted model). A named retry-after is still waited for, plus `slack_s`. A config that still sets the retired keys is refused as an unknown key (P2, plan 20261027_1500).
+- A rate-limited Main turn end opens a probe episode in `<queue_state>/main-limit.json` (P3, plan 20261027_1500): a named reset is waited for, otherwise the omp adapter spawns a niced child running `guards.rate_limit.probe_cmd` every `probe_interval_s`; the first good probe (or the named reset) sends Main one back message within one 30 s tick, the owner chat hears once per episode, a turn that ends without a limit closes the episode, and an owner message mid-episode cancels the tick with the probe count kept.
 ## 0.2.57
 ### Changed
 - Plan approval records a hash of the plan text in `<queue_state>/plan-approvals.json` instead of writing an `Approved:` line into the plan; the plan file is never edited, and `Approval: self` is gone (P1, plan 20261029_1455). main-guard refuses a spawn until the record matches the plan's current text.
