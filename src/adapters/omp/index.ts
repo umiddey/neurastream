@@ -25,12 +25,12 @@ import { chatApprove } from "../../core/plan-approval.ts";
 import { burdenRule, repoRules, rulesChanged } from "../../core/repo-rules.ts";
 import { configFile, loadConfig, reloadingConfig, type Config } from "../../core/config.ts";
 import { checkWrite, deferSteer, type WriteCheckConfig } from "../../core/write-check.ts";
-import { strftime } from "../../core/clock.ts";
+import { nowSec, strftime } from "../../core/clock.ts";
 import { runDetectors, type DetectorInput } from "../../core/incident-detectors.ts";
 import { appendOwnerAnswer, readOwnerAnswers, readOwnerMessages } from "../../core/incidents.ts";
 import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, newProgressEntries, planReadNote, recordMainResult, resetMainCalls, revertMainEdit, rekeySpawnFile, reviewSpawnEnd, STOP_PLAN_OFFER_REFUSAL } from "../../core/guards.ts";
 import { rateLimitWait } from "../../core/rate-limit.ts";
-import { notifyProviders, postReply } from "../../core/notify.ts";
+import { notifyProviders, ownerAnswerHandback, ownerAnswerSteer, postReply } from "../../core/notify.ts";
 import { loadKnownSecrets, redactSecrets, redactSummary } from "../../core/secret-redact.ts";
 import { inboxPath } from "../../core/owner-ui.ts";
 import { realTailscale } from "../../core/tailscale.ts";
@@ -926,6 +926,12 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 
 	pi.on("tool_result", (event, ctx) => {
 		cfg = freshConfig();
+		// P9: an owner message past notify.answer_within_min with no hand-back steers once per
+		// message; sendUserMessage reaches Main mid-turn through the steer queue.
+		if (isMain(ctx)) {
+			const steer = ownerAnswerSteer(cfg, nowSec());
+			if (steer) pi.sendUserMessage(steer);
+		}
 		onSizeCheck("tool_result", event, ctx);
 		const e = asRecord(event);
 		const c = asCtx(ctx);
@@ -1350,9 +1356,11 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		// A real hand-back: the turn ended without a rate limit — the episode is over.
 		disarmRateEpisode();
 		recordTurnAnswer(reply);
-		// A deferred hand-back fires no session_stop: reset the per-turn cap here (I-20261030-24)
-		// and steer a promise like checkStop refuses it (I-20261030-32).
+		// A deferred hand-back fires no session_stop: reset the per-turn cap here (I-20261030-24),
+		// record the hand-back for the owner-answer wait (P9), and steer a promise like checkStop
+		// refuses it (I-20261030-32).
 		resetMainCalls();
+		ownerAnswerHandback(nowSec());
 		if (new RegExp(cfg.guards.plan_offer, "i").test(reply.text)) {
 			pi.sendUserMessage(STOP_PLAN_OFFER_REFUSAL);
 		}
@@ -1396,6 +1404,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		if (!isMain(ctx)) return;
 		if (asRecord(e).willContinue === true) return;
 		resetMainCalls();
+		ownerAnswerHandback(nowSec());
 	});
 	// P4k backstop (plan 20261028_1600): a named review spawn that ends with no verdict recorded at its edit is judged here, from its own plan file; the note tells Main at its next prompt.
 	pi.on("agent_end", (_e, ctx) => {

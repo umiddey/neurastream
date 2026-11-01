@@ -243,7 +243,7 @@ export interface Config {
 	quota: { reset_tz: string; reset_pattern: string; label: string };
 	/** Chat notify (src/core/notify.ts): Main's final reply goes to these webhooks at session_stop.
 	 *  The values are paths to secret files holding the webhook URLs — never the URLs themselves. */
-	notify: { discord_webhook_file: string; slack_webhook_file: string; prefix: string };
+	notify: { discord_webhook_file: string; slack_webhook_file: string; prefix: string; /** Minutes a phone-page owner message may wait before the answer steer (P9; 0 = off). */ answer_within_min: number };
 	/** Content redaction (src/core/secret-redact.ts, plan 20261025_2204): every tool result, every
 	 *  notify post and `neurastream redact` go through it. Detection is by content, not file name. */
 	secrets: {
@@ -525,6 +525,8 @@ function check(cfg: Config): void {
 	}
 	const wc = cfg.write_check;
 	if (wc.applies_to !== "sub" && wc.applies_to !== "all") throw new ConfigError('write_check.applies_to must be "sub" or "all"');
+	if (!(Number.isFinite(cfg.notify.answer_within_min) && cfg.notify.answer_within_min >= 0))
+		throw new ConfigError("notify.answer_within_min must be a number >= 0 (minutes an owner message may wait; 0 = off)");
 	if (!(wc.timeout_ms > 0)) throw new ConfigError("write_check.timeout_ms must be > 0");
 	if (!Array.isArray(wc.linters)) throw new ConfigError("write_check.linters must be a list");
 	if (!Array.isArray(wc.defer_rules) || wc.defer_rules.some((r) => typeof r !== "string" || r === ""))
