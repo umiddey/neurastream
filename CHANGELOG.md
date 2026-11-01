@@ -1,4 +1,8 @@
 # Changelog
+## Unreleased
+### Fixed
+- Rollover across a version change (I-20261101-47): a relaunch request written by an older version to the legacy `<queue_state>/rollover/relaunch.json` is still picked up — the launcher falls back to it when the new-path file is missing or stale (main id only), and a consumed request now clears both paths, so a leftover copy cannot re-inject at the next fresh start.
+
 ## 0.2.67
 ### Added
 - Limit episodes are told and recorded (plan 20261027_1500 P4): the owner chat hears exactly two posts per episode — "⏳ Main hit its limit at HH:MM; <resets at HH:MM | checking every 5 min>" when the episode opens and "✅ Main is back at HH:MM (limited N min, M checks)" when the probe gets through or the named reset passes, or "⚠ Main still limited after 24 h" once `max_probes` is spent — and each finished episode appends one `{type: "limit", since, back_at, minutes, probes, reset_named}` metric that the weekly report shows as "Main limited: N h over K episodes". Posts, metric and report carry times and counts only, never the provider error text.
