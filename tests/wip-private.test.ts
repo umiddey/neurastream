@@ -3,8 +3,9 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig } from "../src/core/config.ts";
+import { loadConfig, type Config } from "../src/core/config.ts";
 import { wipBackup } from "../src/core/wip-backup.ts";
+import { backupVisibility } from "../src/core/wip-private.ts";
 
 const DIRS: string[] = [];
 afterAll(() => {
@@ -51,7 +52,7 @@ test("wip-backup pushes refs/heads/wip/<key> to the backup URL and writes the lo
 		// a save exactly as wip-snapshot leaves it: a hidden ref, nothing pushed anywhere yet
 		git(["update-ref", "refs/wip/Work_demo/20261102-1200", "HEAD"], repo);
 
-		expect(wipBackup([], cfg)).toBe(0);
+		expect(wipBackup([], cfg, () => "private")).toBe(0);
 
 		// the backup got the newest save under refs/heads/wip/<key>, same commit as the source ref
 		const local = git(["rev-parse", "refs/wip/Work_demo/20261102-1200"], repo).trim();
@@ -104,7 +105,7 @@ test("a corrupt repo is recorded and backup still pushes the healthy repo", () =
 		git(["commit", "-m", "init"], repo);
 		git(["update-ref", "refs/wip/Work_good/20261102-1200", "HEAD"], repo);
 
-		expect(wipBackup([], cfg)).toBe(1);
+		expect(wipBackup([], cfg, () => "private")).toBe(1);
 
 		expect(git(["for-each-ref", "--format=%(refname)", "refs/heads/wip/"], remote).split("\n").filter(Boolean)).toEqual([
 			"refs/heads/wip/Work_good",
@@ -126,4 +127,164 @@ test("a corrupt repo is recorded and backup still pushes the healthy repo", () =
 	} finally {
 		process.env.HOME = origHome;
 	}
+});
+
+// A temp home with one repo under Work and a local bare backup target: no network, no real home.
+function target(name: string): { cfg: Config; repo: string; remote: string } {
+	const base = mkdtempSync(join(tmpdir(), name));
+	DIRS.push(base);
+	const home = join(base, "home");
+	const repo = join(home, "Work/demo");
+	const remote = join(base, "backup.git");
+	mkdirSync(repo, { recursive: true });
+	mkdirSync(join(home, ".local/bin"), { recursive: true });
+	writeFileSync(join(home, ".local/bin/git-secret-gate"), "#!/bin/sh\nexit 0\n");
+	chmodSync(join(home, ".local/bin/git-secret-gate"), 0o755);
+	const cfg = loadConfig({ home, file: join(home, "config.yml"), env: {} });
+	cfg.wip.roots = [join(home, "Work")];
+	cfg.wip.backup_url = remote;
+	cfg.wip.backup_log = join(home, "Work/WIP-BACKUP.md");
+	cfg.wip.secret_gate = join(home, ".local/bin/git-secret-gate");
+	cfg.paths.alert_state = join(home, "alerts");
+	cfg.paths.queue_state = join(home, "queue");
+	git(["init", "-q", "--bare", remote], base);
+	git(["init", "-q", "-b", "main"], repo);
+	git(["config", "user.email", "t@example.com"], repo);
+	git(["config", "user.name", "t"], repo);
+	writeFileSync(join(repo, "a.txt"), "one\n");
+	git(["add", "a.txt"], repo);
+	git(["commit", "-m", "init"], repo);
+	git(["update-ref", "refs/wip/Work_demo/20261102-1200", "HEAD"], repo);
+	return { cfg, repo, remote };
+}
+
+function ghAnswer(out: string, code = 0) {
+	return backupVisibility("git@github.com:o/r.git", () => ({ code, stdout: out, stderr: "" }));
+}
+
+function probeRun(code: number, out: string) {
+	return () => ({ code, stdout: out, stderr: "" });
+}
+
+// P3: only the exact answer "private" marks a target safe to push to. The URL is parsed first, so a
+// hostile or malformed one never reaches a command.
+test("backupVisibility parses the URL first and asks gh for a github repo", () => {
+	const calls: string[][] = [];
+	const run = (argv: string[]) => {
+		calls.push(argv);
+		return { code: 0, stdout: "private\n", stderr: "" };
+	};
+	expect(backupVisibility("git@github.com:owner/repo.git", run)).toBe("private");
+	expect(calls).toEqual([["gh", "api", "repos/owner/repo", "--jq", ".visibility"]]);
+	calls.length = 0;
+	expect(backupVisibility("https://github.com/owner/repo", run)).toBe("private");
+	expect(calls).toEqual([["gh", "api", "repos/owner/repo", "--jq", ".visibility"]]);
+	calls.length = 0;
+	for (const bad of [
+		"https://github.com/owner/../repo",
+		"https://github.com/owner/repo?x=1",
+		"https://github.com/owner/repo#frag",
+		"https://github.com/owner/re%70o",
+		"https://github.com/owner//repo",
+		"https://github.com/owner/",
+		"https://github.com/",
+		"not a url",
+		"",
+	]) {
+		expect(backupVisibility(bad, run)).toBe("unknown");
+	}
+	expect(calls).toEqual([]);
+});
+
+test("backupVisibility counts only private; internal, public, errors and bad JSON are not", () => {
+	expect(ghAnswer("public\n")).toBe("public");
+	expect(ghAnswer("internal\n")).toBe("internal");
+	expect(ghAnswer("Private\n")).toBe("unknown");
+	expect(ghAnswer("")).toBe("unknown");
+	expect(ghAnswer("private\n", 1)).toBe("unknown");
+
+	const calls: string[][] = [];
+	expect(
+		backupVisibility("git@gitlab.com:group/sub/repo.git", (argv) => {
+			calls.push(argv);
+			return { code: 0, stdout: JSON.stringify({ visibility: "private" }), stderr: "" };
+		}),
+	).toBe("private");
+	expect(calls).toEqual([["glab", "api", "projects/group%2Fsub%2Frepo"]]);
+	expect(backupVisibility("git@gitlab.com:group/repo.git", () => ({ code: 0, stdout: "not json", stderr: "" }))).toBe("unknown");
+
+	// an unknown host is settled by wip.private_check: exit 0 and exactly "private"; empty setting is unknown
+	expect(backupVisibility("git@git.example.com:o/r.git", probeRun(0, "private\n"))).toBe("unknown");
+	expect(backupVisibility("git@git.example.com:o/r.git", probeRun(0, "private\n"), "check --probe")).toBe("private");
+	expect(backupVisibility("git@git.example.com:o/r.git", probeRun(0, "yes\n"), "check")).toBe("unknown");
+	expect(backupVisibility("git@git.example.com:o/r.git", probeRun(1, "private\n"), "check")).toBe("unknown");
+	// a local path is not a remote URL: fail closed, never guess
+	expect(backupVisibility("/tmp/backup.git", probeRun(0, "private\n"), "check")).toBe("unknown");
+});
+
+// P3: the check runs first, so a public or internal target pushes nothing and says why.
+test("wip-backup refuses a target that is not verifiably private", () => {
+	const { cfg, remote } = target("wip-backup-refuse-");
+	const run = (visibility: "private" | "public" | "internal" | "unknown") => {
+		const logs: string[] = [];
+		const orig = console.log;
+		console.log = (...a: unknown[]) => {
+			logs.push(a.map(String).join(" "));
+		};
+		try {
+			return { code: wipBackup([], cfg, () => visibility), logs: logs.join("\n") };
+		} finally {
+			console.log = orig;
+		}
+	};
+
+	const refused = run("public");
+	expect(refused.code).toBe(1);
+	expect(refused.logs).toContain(`Backup stopped: ${remote} is public. Make it private; nothing was uploaded.`);
+	const last = JSON.parse(readFileSync(join(cfg.paths.alert_state, "wip-last.json"), "utf8")) as {
+		ok: boolean;
+		refused: string | null;
+		failed: string[];
+	};
+	expect(last.ok).toBe(false);
+	expect(last.refused).toBe(`${remote} is public`);
+	expect(last.failed).toEqual([]);
+
+	// internal is not private either, and repeating the state updates one incident instead of adding one
+	expect(run("internal").logs).toContain(`Backup stopped: ${remote} is internal.`);
+	expect(run("internal").code).toBe(1);
+	const incidents = readFileSync(join(cfg.paths.queue_state, "incidents.jsonl"), "utf8")
+		.trim()
+		.split("\n")
+		.map((line) => JSON.parse(line) as { kind: string; count: number; fingerprint: string });
+	expect(incidents).toHaveLength(1);
+	expect(incidents[0]).toMatchObject({ kind: "wip-backup-refused", count: 3, fingerprint: `wip-backup-refused:${remote}` });
+
+	// nothing was ever pushed
+	expect(git(["for-each-ref", "--format=%(refname)", "refs/heads/"], remote).trim()).toBe("");
+});
+
+// P3: wip.private_check is the real runner's answer for a host it does not know.
+test("wip-backup asks wip.private_check about an unknown host before pushing", () => {
+	const { cfg, remote } = target("wip-backup-check-");
+	cfg.wip.backup_url = "git@git.example.com:owner/repo.git";
+	cfg.wip.private_check = join(cfg.paths.home, ".local/bin/private-check");
+	// the URL is the last argv; anything but exactly "private" on exit 0 is not private
+	const seen = join(cfg.paths.home, "probe-args");
+	writeFileSync(cfg.wip.private_check, `#!/bin/sh\nprintf '%s\\n' "$@" > '${seen}'\necho public\n`);
+	chmodSync(cfg.wip.private_check, 0o755);
+
+	const orig = console.log;
+	console.log = () => {};
+	let code = 0;
+	try {
+		code = wipBackup([], cfg);
+	} finally {
+		console.log = orig;
+	}
+	expect(code).toBe(1);
+	expect(readFileSync(seen, "utf8").trim()).toBe("git@git.example.com:owner/repo.git");
+	const last = JSON.parse(readFileSync(join(cfg.paths.alert_state, "wip-last.json"), "utf8")) as { refused: string | null };
+	expect(last.refused).toBe("git@git.example.com:owner/repo.git is unknown");
+	expect(git(["for-each-ref", "--format=%(refname)", "refs/heads/"], remote).trim()).toBe("");
 });
