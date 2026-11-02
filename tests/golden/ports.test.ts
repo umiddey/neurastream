@@ -88,6 +88,9 @@ function homeFor(name: string): string {
 function envFor(home: string, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
 	mkdirSync(join(home, ".config/neurastream"), { recursive: true });
 	writeFileSync(join(home, ".config/neurastream/config.yml"), LEGACY_CONFIG);
+	// CI has no authenticated gh: stub it so wip-backup's private-visibility probe (github.com
+	// backup_url) always answers "private" instead of asking a real, unauthenticated gh.
+	stub(home, "gh", "#!/bin/sh\necho private\n");
 	const env: NodeJS.ProcessEnv = {
 		...process.env,
 		HOME: home,

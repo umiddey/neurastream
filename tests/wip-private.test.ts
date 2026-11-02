@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,7 +22,9 @@ function git(args: string[], cwd: string): string {
 // wip saves to the configured backup URL and writes the log. P1 moved the repo walk to wip.roots,
 // so the oracle comparison is gone; the protection stays, import-driven.
 test("wip-backup pushes refs/heads/wip/<key> to the backup URL and writes the log", () => {
-	const base = mkdtempSync(join(tmpdir(), "wip-backup-guard-"));
+	// macOS tmpdir is /var/... but git and realpath print /private/var/...: resolve once, so every
+	// path below it (and so every expected string) is canonical on both OSes.
+	const base = realpathSync(mkdtempSync(join(tmpdir(), "wip-backup-guard-")));
 	DIRS.push(base);
 	const home = join(base, "home");
 	const repo = join(home, "Work/demo");
@@ -71,7 +73,7 @@ test("wip-backup pushes refs/heads/wip/<key> to the backup URL and writes the lo
 // P2: a corrupt repo is recorded, never fatal — the healthy repo is still pushed, and the log and
 // wip-last.json name the failure.
 test("a corrupt repo is recorded and backup still pushes the healthy repo", () => {
-	const base = mkdtempSync(join(tmpdir(), "wip-backup-isolation-"));
+	const base = realpathSync(mkdtempSync(join(tmpdir(), "wip-backup-isolation-")));
 	DIRS.push(base);
 	const home = join(base, "home");
 	const root = join(home, "Work");
@@ -131,7 +133,7 @@ test("a corrupt repo is recorded and backup still pushes the healthy repo", () =
 
 // A temp home with one repo under Work and a local bare backup target: no network, no real home.
 function target(name: string): { cfg: Config; repo: string; remote: string } {
-	const base = mkdtempSync(join(tmpdir(), name));
+	const base = realpathSync(mkdtempSync(join(tmpdir(), name)));
 	DIRS.push(base);
 	const home = join(base, "home");
 	const repo = join(home, "Work/demo");
@@ -295,7 +297,7 @@ test("wip-backup asks wip.private_check about an unknown host before pushing", (
 
 // A repo with a failing pre-push hook, a GitHub origin, and one hidden save; nothing uploaded yet.
 function hookSandbox(): { home: string; repo: string; remote: string; cfg: Config } {
-	const base = mkdtempSync(join(tmpdir(), "wip-backup-hook-"));
+	const base = realpathSync(mkdtempSync(join(tmpdir(), "wip-backup-hook-")));
 	DIRS.push(base);
 	const home = join(base, "home");
 	const repo = join(home, "Work/demo");
@@ -377,7 +379,7 @@ test("a substring entry never opts a repo in", () => {
 });
 
 test("an empty wip.backup_hook_off entry is a config error", () => {
-	const base = mkdtempSync(join(tmpdir(), "wip-backup-hookcfg-"));
+	const base = realpathSync(mkdtempSync(join(tmpdir(), "wip-backup-hookcfg-")));
 	DIRS.push(base);
 	const home = join(base, "home");
 	mkdirSync(home, { recursive: true });

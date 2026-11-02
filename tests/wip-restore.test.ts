@@ -3,7 +3,7 @@
 
 import { afterAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { loadConfig, type Config } from "../src/core/config.ts";
@@ -23,7 +23,9 @@ function git(cwd: string, args: string[]): string {
 
 /** A temp HOME holding one repo with a.txt committed as "one", and the config that names it. */
 function sandbox(): { home: string; repo: string; cfg: Config } {
-	const base = mkdtempSync(join(tmpdir(), "wip-restore-"));
+	// macOS tmpdir is /var/... but git and realpath print /private/var/...: resolve once, so every
+	// path below it (and so every expected string) is canonical on both OSes.
+	const base = realpathSync(mkdtempSync(join(tmpdir(), "wip-restore-")));
 	DIRS.push(base);
 	const home = join(base, "home");
 	const repo = join(home, "Work/demo");

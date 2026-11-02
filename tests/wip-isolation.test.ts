@@ -1,5 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,7 +18,9 @@ function git(args: string[], cwd: string): string {
 }
 
 function sandbox(name: string) {
-	const base = mkdtempSync(join(tmpdir(), name));
+	// macOS tmpdir is /var/... but git and realpath print /private/var/...: resolve once, so every
+	// path below it (and so every expected string) is canonical on both OSes.
+	const base = realpathSync(mkdtempSync(join(tmpdir(), name)));
 	DIRS.push(base);
 	const home = join(base, "home");
 	const root = join(home, "Work");
