@@ -2079,7 +2079,7 @@ export function plannerBody(text: string): string {
 	let section = "";
 	return body
 		.map((l) => {
-			if (/^## /.test(l)) section = l;
+			if (l.startsWith("## ")) section = l;
 			if (/^## +Done check\b/i.test(section)) return "";
 			if (/^## +Phases\b/i.test(section) && /^- \[[ x]\]/.test(l)) l = l.replace(/`verify:[^`]*`/g, "`verify:`");
 			return MAIN_ONLY_LINE.test(l) ? "" : l;
