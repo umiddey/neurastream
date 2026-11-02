@@ -20,7 +20,7 @@ import { appendFileSync, existsSync, mkdirSync, openSync, readFileSync, renameSy
 import { basename, dirname, extname, join, resolve } from "node:path";
 import type { Decision, TraceEvent } from "../../core/adapter.ts";
 import { AGENTS_TEMPLATE, renderBlock } from "../../core/agents-md.ts";
-import { chatGo, chatTier, type Tier } from "../../core/autonomy.ts";
+import { chatGo, chatPlanner, chatTier, type Tier } from "../../core/autonomy.ts";
 import { chatApprove } from "../../core/plan-approval.ts";
 import { burdenRule, repoRules, rulesChanged } from "../../core/repo-rules.ts";
 import { configFile, loadConfig, reloadingConfig, type Config } from "../../core/config.ts";
@@ -1617,6 +1617,11 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		const t = chatTier(text, cfg, "interactive");
 		if (t.applied) {
 			notifyTier(ctx, t);
+			return { handled: true };
+		}
+		const p = chatPlanner(text, cfg, "interactive");
+		if (p.applied) {
+			asRolloverCtx(ctx)?.notify(`planner now ${p.planner}`);
 			return { handled: true };
 		}
 		const g = chatGo(text, cfg, "interactive");

@@ -101,3 +101,53 @@ export function takeGo(cfg: Config, now = Date.now()): boolean {
 	rmSync(goFile(), { force: true });
 	return now - mtimeMs < cfg.autonomy.go_minutes * 60_000;
 }
+
+// Planner mode (plan 20261102_1515): who writes the plans. "main" is today's behaviour; in
+// "delegated" the planner agent plans and Main routes. Same owner-switch family as the tier: a
+// state file beside tierFile(), a whole-message chat command behind guards.chat_unlock, and the
+// config value as the default when the file is absent or junk.
+
+export type PlannerMode = "main" | "delegated";
+const PLANNER_MODES: readonly PlannerMode[] = ["main", "delegated"];
+
+export function plannerFile(): string {
+	return path.join(stateDirPath(), "planner-mode");
+}
+
+/** The planner mode in force: the file twin of tierFile() when it names one of the two (one word), else the config value. */
+export function currentPlanner(cfg: Config): PlannerMode {
+	try {
+		const word = readFileSync(plannerFile(), "utf8").trim().toLowerCase();
+		if ((PLANNER_MODES as readonly string[]).includes(word)) return word as PlannerMode;
+	} catch {}
+	return cfg.autonomy.planner;
+}
+
+export interface ChatPlannerResult {
+	/** True when the text was a whole-message `planner <mode>` command that took effect. */
+	applied: boolean;
+	/** The planner mode now in force. */
+	planner?: PlannerMode;
+}
+
+const PLANNER_CMD = /^planner\s+(main|delegated)$/i;
+
+/**
+ * Owner planner switch by chat (guards.chat_unlock, the same flag as chatTier): the whole trimmed
+ * message — "planner main" or "planner delegated", case-insensitive — writes the file twin of
+ * tierFile(). Only the adapter and the owner page call this, with text the owner really typed or
+ * tapped; a model, a tool result or a machine prompt must never reach it. Every applied switch is
+ * logged to the plan-guard log with `word` naming the entry point ("chat" or "ui").
+ */
+export function chatPlanner(text: string, cfg: Config, source: string, word: "chat" | "ui" = "chat"): ChatPlannerResult {
+	if (!cfg.guards.chat_unlock) return { applied: false };
+	const m = PLANNER_CMD.exec(text.trim());
+	if (!m) return { applied: false };
+	const planner = (m[1] ?? "").toLowerCase() as PlannerMode;
+	mkdirSync(stateDirPath(), { recursive: true });
+	writeFileSync(plannerFile(), `${planner}\n`);
+	try {
+		appendFileSync(cfg.paths.plan_guard_log, `${new Date().toISOString()} PLANNER ${planner} ${word} source=${source}\n`);
+	} catch {}
+	return { applied: true, planner };
+}

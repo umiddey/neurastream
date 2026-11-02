@@ -72,12 +72,13 @@ const TEMPLATE = Bun.YAML.parse(TEMPLATE_TEXT);
 const COMMENTS = templateComments(TEMPLATE_TEXT);
 const VALID_KEYS = leafKeys(TEMPLATE);
 const TIERS = ["strict", "opinionated", "full"];
+const PLANNERS = ["main", "delegated"];
 
 // The asked groups, in order. Keys outside them form the advanced walk.
 const GROUPS: { name: string; keys: string[] }[] = [
 	{ name: "Paths", keys: ["paths.work_roots"] },
 	{ name: "Harness", keys: ["harness"] },
-	{ name: "Autonomy", keys: ["autonomy.tier", "autonomy.strict_edit_limit", "autonomy.go_minutes", "autonomy.go_phrase"] },
+	{ name: "Autonomy", keys: ["autonomy.tier", "autonomy.planner", "autonomy.strict_edit_limit", "autonomy.go_minutes", "autonomy.go_phrase"] },
 	{ name: "Phone page", keys: ["ui.enabled", "ui.owner_login"] },
 	{ name: "Static pages", keys: ["pages.enabled", "pages.port", "pages.dir"] },
 	{ name: "Notify", keys: ["notify.discord_webhook_file", "notify.slack_webhook_file"] },
@@ -301,6 +302,7 @@ function validate(ctx: Ctx, key: string, value: unknown): string | null {
 
 function rule(ctx: Ctx, key: string, value: unknown): string | null {
 	if (key === "autonomy.tier" && !TIERS.includes(String(value))) return `autonomy.tier must be ${TIERS.join(", ")}`;
+	if (key === "autonomy.planner" && !PLANNERS.includes(String(value))) return `autonomy.planner must be ${PLANNERS.join(", ")}`;
 	if (key === "harness" && !ctx.deps.seams.harnesses.some((h) => h.name === value)) {
 		return `harness must be one of: ${ctx.deps.seams.harnesses.map((h) => h.name).join(", ")}`;
 	}
