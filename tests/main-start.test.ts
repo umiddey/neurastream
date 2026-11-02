@@ -7,6 +7,7 @@ import { afterAll, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { strftime } from "../src/core/clock.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { openIncidents } from "../src/core/incidents.ts";
 import { mainStartText } from "../src/core/main-start.ts";
@@ -78,4 +79,17 @@ test("with no watch installed the preflight says nothing about the watch", async
 	// The doctor section runs `neurastream doctor`, which always prints its own watch line; only the
 	// main-start health lines (last run / NOT RUNNING) must be absent when nothing is installed.
 	expect(text).not.toMatch(/^watch: (last run|NOT RUNNING)/m);
+});
+
+// P5 (plan 20261027_1130): the last wip run's state is printed above the sections, from wip-last.json.
+test("a failed snapshot run prints its first failure", async () => {
+	const { cfg } = sandbox("wip", false);
+	const at = Math.floor(Date.now() / 1000) - 60;
+	mkdirSync(cfg.paths.alert_state, { recursive: true });
+	writeFileSync(
+		join(cfg.paths.alert_state, "wip-last.json"),
+		JSON.stringify({ snapshot: { kind: "snapshot", at, ok: false, failed: ["FAILED: /x: git add -u: boom"], refused: null } }),
+	);
+	const lines = (await mainStartText([], cfg, { inheritStdin: false })).split("\n");
+	expect(lines).toContain(`wip: snapshot failed at ${strftime(at, "%Y-%m-%d %H:%M")}: FAILED: /x: git add -u: boom`);
 });

@@ -42,8 +42,12 @@ function dirtyRepo(path: string): void {
 	writeFileSync(join(path, "a.txt"), "two\n");
 }
 
+/** The snapshot's own record: wip-last.json holds one record per run kind. */
 function wipLast(cfg: Config): Record<string, unknown> {
-	return JSON.parse(readFileSync(join(cfg.paths.alert_state, "wip-last.json"), "utf8")) as Record<string, unknown>;
+	const last = JSON.parse(readFileSync(join(cfg.paths.alert_state, "wip-last.json"), "utf8")) as {
+		snapshot?: Record<string, unknown>;
+	};
+	return last.snapshot ?? {};
 }
 
 // P2: one broken repo never kills the run. A `.git` replaced by a junk file makes every git call

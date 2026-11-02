@@ -114,7 +114,7 @@ test("a corrupt repo is recorded and backup still pushes the healthy repo", () =
 		expect(log).toContain("repos failed: 1");
 		expect(log).toContain(`FAILED: ${bad}: git rev-parse --git-common-dir: fatal: invalid gitfile format: ${join(bad, ".git")}`);
 
-		const last = JSON.parse(readFileSync(join(cfg.paths.alert_state, "wip-last.json"), "utf8")) as {
+		const last = JSON.parse(readFileSync(join(cfg.paths.alert_state, "wip-last.json"), "utf8")).backup as {
 			kind: string;
 			ok: boolean;
 			failed: string[];
@@ -241,7 +241,7 @@ test("wip-backup refuses a target that is not verifiably private", () => {
 	const refused = run("public");
 	expect(refused.code).toBe(1);
 	expect(refused.logs).toContain(`Backup stopped: ${remote} is public. Make it private; nothing was uploaded.`);
-	const last = JSON.parse(readFileSync(join(cfg.paths.alert_state, "wip-last.json"), "utf8")) as {
+	const last = JSON.parse(readFileSync(join(cfg.paths.alert_state, "wip-last.json"), "utf8")).backup as {
 		ok: boolean;
 		refused: string | null;
 		failed: string[];
@@ -284,7 +284,7 @@ test("wip-backup asks wip.private_check about an unknown host before pushing", (
 	}
 	expect(code).toBe(1);
 	expect(readFileSync(seen, "utf8").trim()).toBe("git@git.example.com:owner/repo.git");
-	const last = JSON.parse(readFileSync(join(cfg.paths.alert_state, "wip-last.json"), "utf8")) as { refused: string | null };
+	const last = JSON.parse(readFileSync(join(cfg.paths.alert_state, "wip-last.json"), "utf8")).backup as { refused: string | null };
 	expect(last.refused).toBe("git@git.example.com:owner/repo.git is unknown");
 	expect(git(["for-each-ref", "--format=%(refname)", "refs/heads/"], remote).trim()).toBe("");
 });

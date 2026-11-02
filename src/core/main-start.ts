@@ -15,6 +15,7 @@ import { loadavgLine } from "./host.ts";
 import { providersLine } from "./provider-state.ts";
 import { mrSweep } from "./mr-sweep.ts";
 import { watchHealth } from "./watch.ts";
+import { wipAlerts } from "./wip-alerts.ts";
 
 function bin(name: string, cfg: Config): string {
 	return join(cfg.paths.home, ".local/bin", name);
@@ -138,6 +139,13 @@ export async function mainStartText(args: string[], cfg: Config, opts: { inherit
 				logGuard(cfg.paths.guard_log, `watch incident failed: ${err instanceof Error ? err.message : String(err)}`);
 			}
 		}
+	}
+	// WIP health (plan 20261027_1130 P5): the last snapshot and backup runs, one incident per state
+	// and one post per new state; nothing prints when both are fresh and clean.
+	try {
+		for (const line of wipAlerts(cfg)) say(line);
+	} catch (err) {
+		logGuard(cfg.paths.guard_log, `wip alerts failed: ${err instanceof Error ? err.message : String(err)}`);
 	}
 	say("=== machine");
 	const mg = await run(bin("machine-guard", cfg), [], { stderr: "ignore" });
