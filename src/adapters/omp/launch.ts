@@ -13,7 +13,7 @@ import { mainStartText } from "../../core/main-start.ts";
 import { appendMetric } from "../../core/metrics.ts";
 import { applyQueueEnv } from "../../core/queue/env.ts";
 import { tryLock } from "../../core/file-lock.ts";
-import { MAIN_ID_RE, mainStateDir } from "../../core/guards.ts";
+import { MAIN_ID_RE, mainId, mainStateDir } from "../../core/guards.ts";
 import * as q from "../../core/queue/lib.ts";
 import { buildHandoff, holdsBlock, MAX_NOTE_AGE_MS, OWNER_AWAY, relaunchPath, unansweredOwnerMessages } from "../../core/rollover.ts";
 import { PROXY_BIN, proxyOnPath } from "../../core/secret-redact.ts";
@@ -210,7 +210,7 @@ export async function runMainLauncher(args: string[], cfg: Config, opts: LaunchO
 				if (message === null) return 1;
 				// The request is removed only once its message exists: a kill during main-start
 				// (I-20261024-4) must leave it for the next launcher to continue.
-				rmSync(relaunchPath(), { force: true });
+				clearRelaunchFiles(cfg);
 				runArgs = [...carried, message];
 			}
 		} else if (!hasPositional(harnessArgs)) {
@@ -223,7 +223,7 @@ export async function runMainLauncher(args: string[], cfg: Config, opts: LaunchO
 				console.error(HANDOFF_PENDING_LINE);
 				const message = await nextMessage(req, cfg, mainStart);
 				if (message !== null) {
-					rmSync(relaunchPath(), { force: true });
+					clearRelaunchFiles(cfg);
 					runArgs = [...carried, message];
 				}
 			}
@@ -248,7 +248,7 @@ export async function runMainLauncher(args: string[], cfg: Config, opts: LaunchO
 			console.error(HANDOFF_PENDING_LINE);
 			const message = await nextMessage(req, cfg, mainStart);
 			if (message === null) return code;
-			rmSync(relaunchPath(), { force: true });
+			clearRelaunchFiles(cfg);
 			runArgs = [...carried, message];
 		}
 	} finally {
@@ -268,20 +268,18 @@ function runChild(cmd: string, args: string[], env: NodeJS.ProcessEnv): Promise<
 	return promise;
 }
 
-/**
- * The request the last run left behind, only if it was written during that run (mtime at or after
- * `since`). Not consumed: the caller removes it once it has decided to use it. A request without the
- * required fields is removed and logged; an unreadable one is logged and left in place.
- */
-function readRequest(since: number, cfg: Config): RelaunchRequest | null {
-	const path = relaunchPath();
-	let mtimeMs: number;
-	try {
-		mtimeMs = statSync(path).mtimeMs;
-	} catch {
-		return null;
-	}
-	if (mtimeMs < since) return null;
+/** Pre-multi-main relaunch request location; only read when mainId is `main`. */
+function legacyRelaunchPath(cfg: Config): string {
+	return join(cfg.paths.queue_state, "rollover", "relaunch.json");
+}
+
+/** After a successful consume, drop the request on the new path and any legacy copy for id main. */
+function clearRelaunchFiles(cfg: Config): void {
+	rmSync(relaunchPath(), { force: true });
+	if (mainId() === "main") rmSync(legacyRelaunchPath(cfg), { force: true });
+}
+
+function parseRelaunchFile(path: string, cfg: Config): RelaunchRequest | null {
 	let raw: Partial<RelaunchRequest>;
 	try {
 		raw = JSON.parse(readFileSync(path, "utf8")) as Partial<RelaunchRequest>;
@@ -295,6 +293,35 @@ function readRequest(since: number, cfg: Config): RelaunchRequest | null {
 		return null;
 	}
 	return { previousSessionFile: raw.previousSessionFile, notePath: raw.notePath, draft: raw.draft ?? "" };
+}
+
+/**
+ * The request the last run left behind, only if it was written during that run (mtime at or after
+ * `since`). Not consumed: the caller removes it once it has decided to use it. A request without the
+ * required fields is removed and logged; an unreadable one is logged and left in place.
+ */
+function readRequest(since: number, cfg: Config): RelaunchRequest | null {
+	const newPath = relaunchPath();
+	let newMtime: number | undefined;
+	try {
+		newMtime = statSync(newPath).mtimeMs;
+	} catch {
+		newMtime = undefined;
+	}
+	if (newMtime !== undefined && newMtime >= since) {
+		return parseRelaunchFile(newPath, cfg);
+	}
+	if (mainId() !== "main") return null;
+	const legacyPath = legacyRelaunchPath(cfg);
+	let legacyMtime: number;
+	try {
+		legacyMtime = statSync(legacyPath).mtimeMs;
+	} catch {
+		return null;
+	}
+	if (legacyMtime < since) return null;
+	adapterLog(cfg, `rollover: relaunch request read from legacy path ${legacyPath}`);
+	return parseRelaunchFile(legacyPath, cfg);
 }
 
 /** Whether the handoff note can be read now: a launcher cannot relaunch without it. */

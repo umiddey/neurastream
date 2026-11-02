@@ -11,7 +11,7 @@ import { carriedArgs, runMainLauncher } from "../src/adapters/omp/launch.ts";
 import { loadConfig } from "../src/core/config.ts";
 import { ownerMessagesFile } from "../src/core/incidents.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
-import { notePath, relaunchPath } from "../src/core/rollover.ts";
+import { MAX_NOTE_AGE_MS, notePath, relaunchPath } from "../src/core/rollover.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "nsar-launch-"));
 // applyQueueEnv() writes QUEUE_* into process.env; save what the parent exported and restore it.
@@ -26,6 +26,7 @@ afterAll(() => {
 // state dir). Load with an empty env so only the sandbox home decides the paths.
 const cfg = loadConfig({ home: join(TMP, "home"), env: {} });
 applyQueueEnv(cfg); // relaunchPath() and notePath() resolve into the sandbox state dir
+const LEGACY_RELAUNCH = join(cfg.paths.queue_state, "rollover", "relaunch.json");
 const SESSION_ID = "sess-launch";
 const SESSION_FILE = join(TMP, "prev.jsonl");
 const NOTE = notePath(SESSION_ID);
@@ -65,8 +66,14 @@ function newCase(): string {
 	mkdirSync(dir, { recursive: true });
 	mkdirSync(dirname(relaunchPath()), { recursive: true });
 	rmSync(relaunchPath(), { force: true });
+	rmSync(LEGACY_RELAUNCH, { force: true });
 	rmSync(NOTE, { force: true });
 	return dir;
+}
+
+function writeRelaunchReq(path: string, draft = "typed earlier"): void {
+	mkdirSync(dirname(path), { recursive: true });
+	writeFileSync(path, JSON.stringify({ previousSessionFile: SESSION_FILE, notePath: NOTE, draft }));
 }
 
 async function launch(args: string[], dir: string, extra: Record<string, string> = {}, opts: Partial<LaunchOptions> = {}): Promise<number> {
@@ -344,4 +351,134 @@ test("a fresh launcher with a positional message does not continue an interrupte
 	expect(runsOf(dir)[0]?.argv).toEqual(["hello"]);
 	expect(existsSync(relaunchPath())).toBe(true);
 	expect(code).toBe(7);
+}, 60_000);
+
+// P2 legacy path skew (I-20261101-47): readRequest falls back to `<queue_state>/rollover/relaunch.json`.
+
+test("(a) legacy-only relaunch newer than since is consumed and the legacy file is removed", async () => {
+	const dir = newCase();
+	mkdirSync(dirname(NOTE), { recursive: true });
+	writeFileSync(NOTE, "Note: continue the parser work; the next step is the tests.");
+	writeRelaunchReq(LEGACY_RELAUNCH);
+	writeFileSync(join(dir, "mark"), "");
+	const code = await launch([], dir);
+	const runs = runsOf(dir);
+	expect(runs.length).toBe(1);
+	expect(String(runs[0]?.argv.at(-1))).toContain("Note: continue the parser work");
+	expect(existsSync(LEGACY_RELAUNCH)).toBe(false);
+	expect(existsSync(relaunchPath())).toBe(false);
+	expect(code).toBe(7);
+}, 60_000);
+
+test("(b) a legacy relaunch older than since is ignored and left in place", async () => {
+	const dir = newCase();
+	writeRelaunchReq(LEGACY_RELAUNCH);
+	const old = (Date.now() - 2 * 3_600_000) / 1000;
+	utimesSync(LEGACY_RELAUNCH, old, old);
+	writeFileSync(join(dir, "mark"), "");
+	const code = await launch([], dir);
+	expect(runsOf(dir)[0]?.argv).toEqual([]);
+	expect(existsSync(LEGACY_RELAUNCH)).toBe(true);
+	expect(code).toBe(7);
+}, 60_000);
+
+test("(c) when both paths are fresh the new-path request wins and both files are removed", async () => {
+	const dir = newCase();
+	mkdirSync(dirname(NOTE), { recursive: true });
+	writeFileSync(NOTE, "Note: continue the parser work; the next step is the tests.");
+	writeRelaunchReq(relaunchPath(), "from new path");
+	writeRelaunchReq(LEGACY_RELAUNCH, "from legacy");
+	writeFileSync(join(dir, "mark"), "");
+	const code = await launch([], dir);
+	const runs = runsOf(dir);
+	expect(runs.length).toBe(1);
+	expect(String(runs[0]?.argv.at(-1))).toContain("from new path");
+	expect(existsSync(relaunchPath())).toBe(false);
+	expect(existsSync(LEGACY_RELAUNCH)).toBe(false);
+	expect(code).toBe(7);
+}, 60_000);
+
+test("(d) NEURASTREAM_RELAUNCH_SINCE consumes a fresh legacy-only request", async () => {
+	const dir = newCase();
+	mkdirSync(dirname(NOTE), { recursive: true });
+	writeFileSync(NOTE, "Note: continue the parser work; the next step is the tests.");
+	writeRelaunchReq(LEGACY_RELAUNCH);
+	writeFileSync(join(dir, "mark"), "");
+	const before = process.env.NEURASTREAM_RELAUNCH_SINCE;
+	process.env.NEURASTREAM_RELAUNCH_SINCE = String(Date.now() - 60_000);
+	try {
+		const code = await launch([], dir);
+		const runs = runsOf(dir);
+		expect(runs.length).toBe(1);
+		expect(String(runs[0]?.argv.at(-1))).toContain("Note: continue the parser work");
+		expect(existsSync(LEGACY_RELAUNCH)).toBe(false);
+		expect(code).toBe(7);
+	} finally {
+		if (before === undefined) delete process.env.NEURASTREAM_RELAUNCH_SINCE;
+		else process.env.NEURASTREAM_RELAUNCH_SINCE = before;
+	}
+}, 60_000);
+
+test("(e) a stale new-path file lets a fresh legacy request through and both are removed", async () => {
+	const dir = newCase();
+	mkdirSync(dirname(NOTE), { recursive: true });
+	writeFileSync(NOTE, "Note: continue the parser work; the next step is the tests.");
+	writeRelaunchReq(relaunchPath());
+	writeRelaunchReq(LEGACY_RELAUNCH);
+	const stale = (Date.now() - 2 * 3_600_000) / 1000;
+	utimesSync(relaunchPath(), stale, stale);
+	writeFileSync(join(dir, "mark"), "");
+	const code = await launch([], dir);
+	const runs = runsOf(dir);
+	expect(runs.length).toBe(1);
+	expect(String(runs[0]?.argv.at(-1))).toContain("Note: continue the parser work");
+	expect(existsSync(relaunchPath())).toBe(false);
+	expect(existsSync(LEGACY_RELAUNCH)).toBe(false);
+	expect(code).toBe(7);
+}, 60_000);
+
+test("(f) a non-main launcher never reads the legacy file", async () => {
+	const dir = newCase();
+	mkdirSync(dirname(NOTE), { recursive: true });
+	writeFileSync(NOTE, "Note: x");
+	writeRelaunchReq(LEGACY_RELAUNCH);
+	writeFileSync(join(dir, "mark"), "");
+	const savedId = process.env.NEURASTREAM_MAIN_ID;
+	process.env.NEURASTREAM_MAIN_ID = "worker-a";
+	try {
+		const code = await launch(["--name", "worker-a"], dir);
+		expect(runsOf(dir)[0]?.argv).toEqual([]);
+		expect(existsSync(LEGACY_RELAUNCH)).toBe(true);
+		expect(code).toBe(7);
+	} finally {
+		if (savedId === undefined) delete process.env.NEURASTREAM_MAIN_ID;
+		else process.env.NEURASTREAM_MAIN_ID = savedId;
+	}
+}, 60_000);
+
+test("(g) a fresh new-path request clears the legacy copy even when legacy is older than since but still within MAX_NOTE_AGE_MS", async () => {
+	const dir = newCase();
+	mkdirSync(dirname(NOTE), { recursive: true });
+	writeFileSync(NOTE, "Note: continue the parser work; the next step is the tests.");
+	const since = Date.now() - 60_000;
+	writeRelaunchReq(relaunchPath());
+	writeRelaunchReq(LEGACY_RELAUNCH);
+	const legacyWhen = (since - 30_000) / 1000;
+	utimesSync(LEGACY_RELAUNCH, legacyWhen, legacyWhen);
+	expect(Date.now() - since - 30_000).toBeLessThan(MAX_NOTE_AGE_MS);
+	writeFileSync(join(dir, "mark"), "");
+	const before = process.env.NEURASTREAM_RELAUNCH_SINCE;
+	process.env.NEURASTREAM_RELAUNCH_SINCE = String(since);
+	try {
+		const code = await launch([], dir);
+		const runs = runsOf(dir);
+		expect(runs.length).toBe(1);
+		expect(String(runs[0]?.argv.at(-1))).toContain("Note: continue the parser work");
+		expect(existsSync(relaunchPath())).toBe(false);
+		expect(existsSync(LEGACY_RELAUNCH)).toBe(false);
+		expect(code).toBe(7);
+	} finally {
+		if (before === undefined) delete process.env.NEURASTREAM_RELAUNCH_SINCE;
+		else process.env.NEURASTREAM_RELAUNCH_SINCE = before;
+	}
 }, 60_000);
