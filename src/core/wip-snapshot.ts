@@ -91,7 +91,6 @@ export function wipSnapshot(args: string[], cfg: Config): number {
 	const stamp = strftime(nowSec(), "%Y%m%d-%H%M");
 	// git prints worktree paths resolved (macOS: /var → /private/var), so the home prefix must be resolved too.
 	const home = existsSync(cfg.paths.home) ? realpathSync(cfg.paths.home) : cfg.paths.home;
-	const homePrefix = home.endsWith("/") ? home : `${home}/`;
 	const failed: string[] = [];
 	const seen = new Map<string, string>();
 	const worktrees: string[] = [];
@@ -160,7 +159,10 @@ export function wipSnapshot(args: string[], cfg: Config): number {
 			const headTree = gitOrFail(failed, wt, ["rev-parse", "HEAD^{tree}"]);
 			if (!headTree) continue;
 			if (tree.stdout === headTree.stdout) continue;
-			const key = wt.replaceAll(homePrefix, "").replaceAll("/", "_");
+			// P8b (plan 20261027_1130): the one key the backup and restore also read, from the
+			// realpath of home and worktree - a HOME behind a symlink, or a root outside it, used to
+			// grow a key the other two could never match.
+			const key = keyOf(wt, home);
 			const lastRef = gitOrFail(failed, wt, ["for-each-ref", "--sort=-refname", "--count=1", "--format=%(objectname)", `refs/wip/${key}/`]);
 			if (!lastRef) continue;
 			if (lastRef.stdout) {

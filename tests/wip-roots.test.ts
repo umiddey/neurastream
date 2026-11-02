@@ -253,3 +253,55 @@ test("wip-snapshot over a wip.roots repo leaves the worktree and its index untou
 		process.env.PATH = origPath;
 	}
 });
+
+function gitAt(cwd: string, args: string[]): string {
+	const r = spawnSync("git", args, { cwd, encoding: "utf8" });
+	if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
+	return r.stdout;
+}
+
+// P8b (plan 20261027_1130): a HOME reached through a symlink must still name a worktree the same
+// way for the snapshot, the backup and the restore - one key, Work_demo-wt, built from the
+// realpath of home and worktree instead of string-replacing a home prefix.
+test("a HOME reached through a symlink gives the worktree its plain key", () => {
+	const base = mkdtempSync(join(tmpdir(), "wip-symlink-"));
+	DIRS.push(base);
+	const real = join(base, "real");
+	const link = join(base, "link");
+	mkdirSync(real, { recursive: true });
+	symlinkSync(real, link);
+	const repo = join(link, "Work/demo");
+	mkdirSync(repo, { recursive: true });
+	const remote = join(base, "backup.git");
+	gitAt(base, ["init", "-q", "--bare", remote]);
+	gitAt(repo, ["init", "-q", "-b", "main"]);
+	gitAt(repo, ["config", "user.email", "t@example.com"]);
+	gitAt(repo, ["config", "user.name", "t"]);
+	writeFileSync(join(repo, "a.txt"), "one\n");
+	gitAt(repo, ["add", "a.txt"]);
+	gitAt(repo, ["commit", "-q", "-m", "init"]);
+	const wt = join(link, "Work/demo-wt");
+	gitAt(repo, ["worktree", "add", "-q", "-b", "feat", wt]);
+	writeFileSync(join(wt, "b.txt"), "unsaved\n");
+	const cfg = loadConfig({ home: link, file: join(link, "config.yml"), env: {} });
+	mkdirSync(cfg.paths.alert_state, { recursive: true });
+	mkdirSync(join(cfg.paths.home, ".local/state/neurastream"), { recursive: true });
+	mkdirSync(join(cfg.paths.home, ".local/bin"), { recursive: true });
+	writeFileSync(cfg.wip.secret_gate, "#!/bin/sh\nexit 0\n");
+	chmodSync(cfg.wip.secret_gate, 0o755);
+	cfg.wip.roots = [join(link, "Work")];
+	cfg.wip.backup_url = remote;
+	cfg.wip.backup_log = join(base, "WIP-BACKUP.md");
+	const origHome = process.env.HOME;
+	process.env.HOME = link;
+	try {
+		expect(wipSnapshot(["--quiet"], cfg)).toBe(0);
+		const keys = gitAt(repo, ["for-each-ref", "--format=%(refname)", "refs/wip"]).trim().split("\n");
+		expect(keys.some(r => r.startsWith("refs/wip/Work_demo-wt/"))).toBe(true);
+		expect(keys.every(r => r.startsWith("refs/wip/Work_demo-wt/"))).toBe(true);
+		expect(wipBackup([], cfg, () => "private")).toBe(0);
+		expect(gitAt(remote, ["for-each-ref", "--format=%(refname)", "refs/heads/wip"]).trim()).toContain("refs/heads/wip/Work_demo-wt");
+	} finally {
+		process.env.HOME = origHome;
+	}
+});
