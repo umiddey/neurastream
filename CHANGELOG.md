@@ -1,5 +1,5 @@
 # Changelog
-## Unreleased
+## 0.2.68
 ### Added
 - Planner mode (plan 20261102_1515): one owner word decides who writes the plans — `autonomy.planner` (default `main`), moved any time by the owner's whole chat message `planner main|delegated` when `guards.chat_unlock` is on, or by a config write of the key at the owner's terminal. In `delegated` mode a planner subagent writes the plan (a `Planner: <agent>` header, its brief names the plan path) and Main becomes a pure orchestrator: it routes the owner's asks, dispatches implementers, checks the outcomes (verify commands, CI, the reviewer's PASS) and lands, and its own plan create or body rewrite is refused; a Planner-role brief while the mode is `main` is refused too. The facts are owner-only: the guard baseline `<config dir>/guard-baseline` records them, every omp adapter event and the guard's first load restore a non-owner edit, only the chat command, a terminal mode write and a clean shutdown stamp it, and the baseline path is in the protected set. With no baseline the mode is `main`.
 
