@@ -1,9 +1,10 @@
-import { accessSync, constants, realpathSync, writeFileSync } from "node:fs";
+import { accessSync, constants, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { Config } from "./config.ts";
 import { nowSec, strftime } from "./clock.ts";
 import { printText } from "./help.ts";
 import { cmd, gitRaw } from "./proc.ts";
+import { failureLine, gitOrFail, realpathOrFail, recordWipRun } from "./wip-fail.ts";
 import { keyOf, wipRepos } from "./wip-roots.ts";
 
 function executable(path: string): boolean {
@@ -19,6 +20,7 @@ function executable(path: string): boolean {
 export function wipBackup(args: string[], cfg: Config): number {
 	if (cfg.wip.roots.length === 0) {
 		console.log("wip: no wip.roots set — run `neurastream wip add <path>`");
+		recordWipRun(cfg, "backup", [], "no wip.roots set");
 		return 0;
 	}
 	const dry = args.includes("--dry-run");
@@ -29,9 +31,10 @@ export function wipBackup(args: string[], cfg: Config): number {
 	const failed: string[] = [];
 
 	for (const repo of wipRepos(cfg)) {
-		const commonRaw = gitRaw(repo, ["rev-parse", "--git-common-dir"]).stdout || ".";
-		const common = realpathSync(resolve(repo, commonRaw));
-		if (seen.has(common)) continue;
+		const commonRaw = gitOrFail(failed, repo, ["rev-parse", "--git-common-dir"]);
+		if (!commonRaw) continue;
+		const common = realpathOrFail(failed, resolve(repo, commonRaw.stdout || "."));
+		if (common === null || seen.has(common)) continue;
 		seen.add(common);
 		const du = cmd(["du", "-sm", common]);
 		const mb = Number(du.stdout.split(/\s+/)[0] ?? "NaN");
@@ -40,30 +43,38 @@ export function wipBackup(args: string[], cfg: Config): number {
 			skipped.push(`${rkeyWhole}: whole repo (${mb} MB git dir > ${cfg.wip.backup_max_repo_mb} MB limit)`);
 			continue;
 		}
-		const hooks = gitRaw(repo, ["rev-parse", "--git-path", "hooks"]).stdout;
-		const prePush = join(repo, hooks, "pre-push");
+		const hooks = gitOrFail(failed, repo, ["rev-parse", "--git-path", "hooks"]);
+		if (!hooks) continue;
+		const prePush = join(repo, hooks.stdout, "pre-push");
+		// No origin (exit 2) is normal: it only feeds the hook opt-in match; the push goes to wip.backup_url.
 		const origin = gitRaw(repo, ["remote", "get-url", "origin"]).stdout;
 		const noHooks = cfg.wip.backup_hook_off.some(n => origin.includes(n));
 		if (executable(prePush) && !noHooks) {
 			skipped.push(`${rkeyWhole}: whole repo (has a pre-push gate; not bypassed)`);
 			continue;
 		}
-		if (gitRaw(repo, ["rev-parse", "--is-shallow-repository"]).stdout === "true") {
+		const shallow = gitOrFail(failed, repo, ["rev-parse", "--is-shallow-repository"]);
+		if (!shallow) continue;
+		if (shallow.stdout === "true") {
 			skipped.push(`${rkeyWhole}: whole repo (shallow clone; GitHub refuses it)`);
 			continue;
 		}
-		const top = gitRaw(repo, ["worktree", "list", "--porcelain"]).stdout;
-		const mainWt = top ? top.split("\n")[0]!.slice(9) : repo;
+		const top = gitOrFail(failed, repo, ["worktree", "list", "--porcelain"]);
+		if (!top) continue;
+		const mainWt = top.stdout ? top.stdout.split("\n")[0]!.slice(9) : repo;
 		const rkey = keyOf(mainWt, cfg.paths.home);
 		const specs: { src: string; dst: string }[] = [];
-		const heads = gitRaw(repo, ["for-each-ref", "--format=%(refname:short)", "refs/heads"]).stdout;
-		for (const b of heads.split("\n").filter(Boolean)) {
-			const n = gitRaw(repo, ["rev-list", "--count", b, "--not", "--remotes"]).stdout;
-			if (/^\d+$/.test(n) && Number(n) > 0) specs.push({ src: `refs/heads/${b}`, dst: `refs/heads/${rkey}/${b}` });
+		const heads = gitOrFail(failed, repo, ["for-each-ref", "--format=%(refname:short)", "refs/heads"]);
+		if (!heads) continue;
+		for (const b of heads.stdout.split("\n").filter(Boolean)) {
+			const n = gitOrFail(failed, repo, ["rev-list", "--count", b, "--not", "--remotes"]);
+			if (!n) continue;
+			if (/^\d+$/.test(n.stdout) && Number(n.stdout) > 0) specs.push({ src: `refs/heads/${b}`, dst: `refs/heads/${rkey}/${b}` });
 		}
-		const wips = gitRaw(repo, ["for-each-ref", "--sort=-refname", "--format=%(refname)", "refs/wip"]).stdout;
+		const wips = gitOrFail(failed, repo, ["for-each-ref", "--sort=-refname", "--format=%(refname)", "refs/wip"]);
+		if (!wips) continue;
 		const newest: Record<string, string> = {};
-		for (const r of wips.split("\n").filter(Boolean)) {
+		for (const r of wips.stdout.split("\n").filter(Boolean)) {
 			const prefix = r.slice(0, r.lastIndexOf("/"));
 			if (!(prefix in newest)) newest[prefix] = r;
 		}
@@ -86,7 +97,7 @@ export function wipBackup(args: string[], cfg: Config): number {
 		// backupVisibility gates push (P3).
 		const pushedRun = cmd(["git", "-C", repo, ...hookOff, "push", "--quiet", cfg.wip.backup_url, ...ok]);
 		if (pushedRun.code) {
-			failed.push(`${rkey}: ${pushedRun.stderr.trim().slice(-200)}`);
+			failed.push(failureLine(repo, `git push --quiet ${cfg.wip.backup_url} ${ok.join(" ")}`, pushedRun.stderr));
 		} else {
 			pushed.push(...ok.map(s => `${rkey}: ${s}`));
 		}
@@ -106,5 +117,5 @@ export function wipBackup(args: string[], cfg: Config): number {
 	lines.push("## Pushed", ...pushed.map(s => `- ${s}`));
 	if (!dry) writeFileSync(cfg.wip.backup_log, `${lines.join("\n")}\n`);
 	printText((quiet ? lines.slice(0, 6) : lines).join("\n"));
-	return failed.length ? 1 : 0;
+	return recordWipRun(cfg, "backup", failed) ? 0 : 1;
 }
