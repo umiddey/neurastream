@@ -20,7 +20,7 @@ import { appendFileSync, existsSync, mkdirSync, openSync, readFileSync, renameSy
 import { basename, dirname, extname, join, resolve } from "node:path";
 import type { Decision, TraceEvent } from "../../core/adapter.ts";
 import { AGENTS_TEMPLATE, renderBlock } from "../../core/agents-md.ts";
-import { chatGo, chatPlanner, chatTier, type Tier } from "../../core/autonomy.ts";
+import { chatGo, chatPlanner, chatTier, currentPlanner, type Tier } from "../../core/autonomy.ts";
 import { chatApprove } from "../../core/plan-approval.ts";
 import { burdenRule, repoRules, rulesChanged } from "../../core/repo-rules.ts";
 import { configFile, loadConfig, reloadingConfig, type Config } from "../../core/config.ts";
@@ -29,7 +29,7 @@ import { nowSec, strftime } from "../../core/clock.ts";
 import { runDetectors, type DetectorInput } from "../../core/incident-detectors.ts";
 import { fileClaimStore } from "../../core/claims.ts";
 import { appendOwnerAnswer, readOwnerAnswers, readOwnerMessages } from "../../core/incidents.ts";
-import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, mainId, mainStateDir, newProgressEntries, planReadNote, recordMainResult, resetMainCalls, revertMainEdit, rekeySpawnFile, reviewSpawnEnd, STOP_PLAN_OFFER_REFUSAL } from "../../core/guards.ts";
+import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, mainId, mainStateDir, newProgressEntries, planReadNote, plannerSpawnPlan, recordMainResult, resetMainCalls, revertMainEdit, rekeySpawnFile, reviewSpawnEnd, STOP_PLAN_OFFER_REFUSAL } from "../../core/guards.ts";
 import { rateLimited } from "../../core/rate-limit.ts";
 import { backPost, clearLimitState, limitMetric, limitedPost, onLimited, readLimitState, timingOf, writeLimitState } from "../../core/limit-probe.ts";
 import { appendMetric } from "../../core/metrics.ts";
@@ -289,8 +289,9 @@ function writeCheckSnapshot(tool: string, input: Record<string, unknown>, cwd: s
 
 // Plan files a subagent write/edit may touch: snapshot before the call so tool_result can verify
 // and restore (the original snapshotted inside checkCall; core returns pure decisions now).
-function snapshotPlans(tool: string, input: Record<string, unknown>, cwd: string, snap: Map<string, string>, main: boolean): void {
+function snapshotPlans(tool: string, input: Record<string, unknown>, cwd: string, snap: Map<string, string>, main: boolean, plannerPlan: string | null, cfg: Config): void {
 	if (tool !== "write" && tool !== "edit") return;
+	const delegated = currentPlanner(cfg) === "delegated";
 	const plans = q.activePlans();
 	for (const p of q.writeTargets(tool, input, cwd)) {
 		if (snap.has(p)) continue;
@@ -304,7 +305,12 @@ function snapshotPlans(tool: string, input: Record<string, unknown>, cwd: string
 			}
 			continue;
 		}
-		if (!q.isOrchestrationPath(p, plans) || !q.planAt(p, plans)) continue;
+		if (!q.isOrchestrationPath(p, plans) || !q.planAt(p, plans)) {
+			// planner mode P2 (b): the brief's named plan snapshots before its create/edit so
+			// checkPlanEdit judges it (Planner header, Main-only lines) — a new plan file is not
+			// an indexed path yet, and every other plan write is refused pre-tool while delegated.
+			if (!(delegated && p === plannerPlan)) continue;
+		}
 		try {
 			snap.set(p, readFileSync(p, "utf8"));
 		} catch {}
@@ -989,8 +995,11 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		if (isSub) calls.set(id, n);
 		if (!isSub) callsSinceStop++;
 		const cwd = c.cwd ?? process.cwd();
+		// planner mode P2 (plan 20261102_1515): the plan a sub's approved spawn bound to it (the
+		// brief's `Planner role for <plan path>` line) — the gates check it against plan-path writes.
+		const plannerPlan = isSub ? plannerSpawnPlan(id) : null;
 		const snap = new Map<string, string>();
-		snapshotPlans(tool, input, cwd, snap, !isSub);
+		snapshotPlans(tool, input, cwd, snap, !isSub, plannerPlan, cfg);
 		// Drain (src/core/rollover.ts): while a rollover is pending no new subagent starts; the
 		// running ones finish first. Subagents' own tool calls are unaffected. Main's task calls
 		// also carry the running job labels for the priority gate (20261025_0215 P2).

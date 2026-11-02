@@ -6,10 +6,11 @@
 import { afterAll, beforeEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { runConfigKeys } from "../src/cli/config-set.ts";
 import { chatPlanner, currentPlanner, plannerFile } from "../src/core/autonomy.ts";
 import { configFile, loadConfig, type Config } from "../src/core/config.ts";
+import { checkPlanEdit, checkTool, spawnProblem } from "../src/core/guards.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
 
 const roots: string[] = [];
@@ -156,6 +157,112 @@ test("config set autonomy.planner round-trips: set, get, effective mode, back to
 	clearPlannerFile();
 	expect((await capture(() => runConfigKeys(["set", "autonomy.planner", "main"], root))).code).toBe(0);
 	expect((await capture(() => runConfigKeys(["get", "autonomy.planner"], root))).out).toBe("main");
+});
+
+// --- P2 guard teeth (plan 20261102_1515 P2 a-c): the denials ---
+
+const MAIN_REFUSAL = "planner is delegated — route the ask to the planner agent";
+
+// Mirrors a real plan's shape: the body Main plans, then the Progress section (Status: lives
+// inside it, like every plan file's tail).
+const PLAN_BODY = `# Thing
+
+## Phases
+- [ ] P1 do it
+
+## Code read by Main
+- src/core/guards.ts
+
+## Progress
+Status: open
+`;
+
+function planPath(name: string): string {
+	return join(root, "docs/plans", name);
+}
+
+// The real spawn path binds a delegated planner spawn's name to the plan its brief named in the
+// `Planner role for` line; the `## Allowed` fixture lists the plain task agent.
+function bindPlanner(name: string, plan: string): string | null {
+	mkdirSync(dirname(cfg.paths.subagents), { recursive: true });
+	writeFileSync(cfg.paths.subagents, "## Allowed\n\n- `task`\n");
+	return spawnProblem({ context: "# Goal\nRoute the planning.\n", tasks: [{ name, agent: "task", task: `Planner role for ${plan}\n\nDraft the plan for the thing.` }] }, cfg);
+}
+
+test("delegated: Main writing a NEW plan file is refused", () => {
+	writePlannerFile("delegated");
+	const d = checkPlanEdit({ path: planPath("20261102_1800_new_thing.md"), before: "", after: PLAN_BODY, agent: "main", agentId: "main" }, cfg);
+	expect(d.allow).toBe(false);
+	expect(d.reason).toContain(MAIN_REFUSAL);
+	// before "" → the adapter deletes the file the call created.
+	expect(d.restore?.text).toBeNull();
+});
+
+test("delegated: Main rewriting a plan's non-Progress body is refused", () => {
+	writePlannerFile("delegated");
+	const p = planPath("20261102_1500_existing.md");
+	const d = checkPlanEdit({ path: p, before: PLAN_BODY, after: PLAN_BODY.replace("- [ ] P1 do it", "- [ ] P1 do something else entirely"), agent: "main", agentId: "main" }, cfg);
+	expect(d.allow).toBe(false);
+	expect(d.reason).toContain(MAIN_REFUSAL);
+	expect(d.restore?.text).toBe(PLAN_BODY);
+});
+
+test("delegated: Main appending a Progress entry stays allowed", () => {
+	writePlannerFile("delegated");
+	const p = planPath("20261102_1500_existing.md");
+	const after = `${PLAN_BODY}- 2026-11-02 18:00 Main: parked the plan for the planner\n  Findings: none\n`;
+	const d = checkPlanEdit({ path: p, before: PLAN_BODY, after, agent: "main", agentId: "main" }, cfg);
+	expect(d.allow).toBe(true);
+});
+
+test("delegated: the planner sub's brief-named NEW plan with its Planner header is allowed", () => {
+	writePlannerFile("delegated");
+	const plan = planPath("immediate/20261102_1801_planner_work.md");
+	const content = "# Planner work\n\nPlanner: PlannerGlm\n\n## Phases\n- [ ] P1 research and draft\n\n## Progress\n";
+	// The approved spawn binds the role; the create then passes the pre-tool seam (a new plan file
+	// is invisible to the indexed gates) and the plan-edit seam (header + no Main-only lines).
+	expect(bindPlanner("PlannerGlm", plan)).toBeNull();
+	const pre = checkTool({ tool: "write", input: { path: plan, content }, cwd: root, agent: "sub", agentId: "PlannerGlm", calls: 0, paths: [], writes: [], command: "" }, cfg);
+	expect(pre.allow).toBe(true);
+	const d = checkPlanEdit({ path: plan, before: "", after: content, agent: "sub", agentId: "PlannerGlm" }, cfg);
+	expect(d.allow).toBe(true);
+});
+
+test("delegated: the planner sub writing a DIFFERENT plan path is refused", () => {
+	writePlannerFile("delegated");
+	const named = planPath("immediate/20261102_1801_planner_work.md");
+	const other = planPath("20261102_1802_someone_elses.md");
+	expect(bindPlanner("PlannerGlm", named)).toBeNull();
+	const pre = checkTool({ tool: "write", input: { path: other, content: "# Other\n" }, cwd: root, agent: "sub", agentId: "PlannerGlm", calls: 0, paths: [], writes: [], command: "" }, cfg);
+	expect(pre.allow).toBe(false);
+	expect(pre.reason).toContain("planner is delegated");
+	expect(pre.reason).toContain(named);
+});
+
+test("delegated: the planner sub editing a Main-only line is refused", () => {
+	writePlannerFile("delegated");
+	const plan = planPath("immediate/20261102_1801_planner_work.md");
+	const before = "# Planner work\n\nPlanner: PlannerGlm\n\n## Phases\n- [ ] P1 research\n\n## Progress\nStatus: open\n";
+	expect(bindPlanner("PlannerGlm", plan)).toBeNull();
+	const d = checkPlanEdit({ path: plan, before, after: before.replace("Status: open", "Status: WAITING on owner: a reply"), agent: "sub", agentId: "PlannerGlm" }, cfg);
+	expect(d.allow).toBe(false);
+	expect(d.reason).toContain("Main-only lines");
+	expect(d.restore?.text).toBe(before);
+});
+
+test("delegated: a sub WITHOUT a Planner-role brief writing any new plan file is refused", () => {
+	writePlannerFile("delegated");
+	const plan = planPath("20261102_1803_smuggled.md");
+	const pre = checkTool({ tool: "write", input: { path: plan, content: "# Smuggled\n" }, cwd: root, agent: "sub", agentId: "HelperOne", calls: 0, paths: [], writes: [], command: "" }, cfg);
+	expect(pre.allow).toBe(false);
+	expect(pre.reason).toContain("planner is delegated");
+	expect(pre.reason).toContain("Planner role for");
+});
+
+test("mode main: a task brief with a Planner-role line is refused at spawn", () => {
+	const plan = planPath("immediate/20261102_1804_future_plan.md");
+	const why = spawnProblem({ context: "# Goal\nRoute the planning.\n", tasks: [{ name: "PlanThing", agent: "task", task: `Planner role for ${plan}\n\nDraft the plan for the thing.` }] }, cfg);
+	expect(why).toContain("planner mode is main");
 });
 
 test("a bad planner value is refused by config set and the file is untouched", async () => {
