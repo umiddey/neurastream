@@ -1977,8 +1977,11 @@ export function checkPlanEdit(e: PlanEditEvent, cfg: Config): PlanEditDecision {
 			};
 		}
 		const name = e.agentId ?? "";
+		// The header records the agent the owner picked, not the spawn instance: a `glm-3` spawn
+		// satisfies `Planner: glm`, and the spawn form still works for plans written before this.
+		const names = new Set([name, name.replace(/-\d+$/, "")]);
 		const head = e.after.split(/^## /m)[0] ?? "";
-		if (!head.split("\n").some((l) => l.trim() === `Planner: ${name}`)) {
+		if (!head.split("\n").some((l) => l.trim().startsWith("Planner: ") && names.has(l.trim().slice("Planner: ".length).trim()))) {
 			log(cfg.paths.plan_guard_log, `RESTORE ${e.path} (no Planner header)`);
 			return {
 				allow: false,
@@ -2070,12 +2073,17 @@ function codeReviewProblem(file: string, after: string, ids: string[]): string |
 	return null;
 }
 
-/** The plan text a planner agent owns: everything outside "## Progress" and the Main-only lines (planner mode P2a, plan 20261102_1515). */
-function plannerBody(text: string): string {
-	return q
-		.outsideProgress(text)
-		.split("\n")
-		.filter((l) => !MAIN_ONLY_LINE.test(l))
+/** The plan text a planner agent owns: everything outside "## Progress" and the Main-only lines (planner mode P2a, plan 20261102_1515) — minus the two zones Main may still correct (punch list, plan 20261102_2315): a "## Done check" section's body, and the backticked `verify:` span on a "## Phases" checkbox line. */
+export function plannerBody(text: string): string {
+	const body = q.outsideProgress(text).split("\n");
+	let section = "";
+	return body
+		.map((l) => {
+			if (l.startsWith("## ")) section = l;
+			if (/^## +Done check\b/i.test(section)) return "";
+			if (/^## +Phases\b/i.test(section) && /^- \[[ x]\]/.test(l)) l = l.replace(/`verify:[^`]*`/g, "`verify:`");
+			return MAIN_ONLY_LINE.test(l) ? "" : l;
+		})
 		.join("\n");
 }
 

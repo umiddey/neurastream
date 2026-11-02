@@ -10,7 +10,7 @@ import { dirname, join } from "node:path";
 import { runConfigKeys } from "../src/cli/config-set.ts";
 import { chatPlanner, currentPlanner, plannerBaselineFile, plannerFile, plannerPin, verifyPlannerMode } from "../src/core/autonomy.ts";
 import { configFile, loadConfig, type Config } from "../src/core/config.ts";
-import { checkPlanEdit, checkTool, spawnProblem } from "../src/core/guards.ts";
+import { checkPlanEdit, checkTool, plannerBody, spawnProblem } from "../src/core/guards.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { PROTECTED, protectedHit, STATE_DIR } from "../src/core/queue/lib.ts";
 
@@ -242,6 +242,47 @@ test("delegated: the named review spawn may write its own plan's verdict, anyone
 	const other = checkTool({ tool: "write", input: { path: plan, content: "# Other\n" }, cwd: root, agent: "sub", agentId: "revOther", calls: 0, paths: [], writes: [], command: "" }, cfg);
 	expect(other.allow).toBe(false);
 	expect(other.reason).toContain("planner is delegated");
+});
+
+// Punch list (plan 20261102_2315): Main keeps two zones of the plan text in delegated mode — a
+// Done check command and a phase line's `verify:` command — and a planner header names the agent,
+// not the spawn instance.
+const PUNCH_BODY = `# Punch
+Planner: glm
+
+## Phases
+- [ ] P1 the work \`verify: bun test tests/a.test.ts\`
+
+## Done check
+\`\`\`bash
+git log --grep=x -1
+\`\`\`
+
+## Progress
+`;
+
+test("delegated: a Done check command and a phase verify command are not the planner's text", () => {
+	writePlannerFile("delegated");
+	// Identical once masked: these two zones are Main's to correct.
+	expect(plannerBody(PUNCH_BODY.replace("git log --grep=x -1", "git log --grep=y -1"))).toBe(plannerBody(PUNCH_BODY));
+	expect(plannerBody(PUNCH_BODY.replace("bun test tests/a.test.ts", "bun test tests/b.test.ts"))).toBe(plannerBody(PUNCH_BODY));
+	// Anything else is still the planner's.
+	expect(plannerBody(PUNCH_BODY.replace("## Phases", "## Phases\nSome new prose."))).not.toBe(plannerBody(PUNCH_BODY));
+	// And the delegated refusal still fires for that prose.
+	const prose = checkPlanEdit({ path: planPath("20261102_1900_punch.md"), before: PUNCH_BODY, after: PUNCH_BODY.replace("## Phases", "## Phases\nSome new prose."), agent: "main", agentId: "main" }, cfg);
+	expect(prose.allow).toBe(false);
+	expect(prose.reason).toContain("planner is delegated");
+});
+
+test("delegated: a spawn may head its plan with its agent, not only its instance id", () => {
+	writePlannerFile("delegated");
+	const plan = planPath("immediate/20261102_1901_family.md");
+	expect(bindPlanner("glm-3", plan)).toBeNull();
+	const ok = checkPlanEdit({ path: plan, before: "", after: "# Family\nPlanner: glm\n\n## Progress\n", agent: "sub", agentId: "glm-3" }, cfg);
+	expect(ok.allow).toBe(true);
+	const foreign = checkPlanEdit({ path: plan, before: "", after: "# Family\nPlanner: opus-planner\n\n## Progress\n", agent: "sub", agentId: "glm-3" }, cfg);
+	expect(foreign.allow).toBe(false);
+	expect(foreign.reason).toContain("carries no \"Planner: glm-3\" header");
 });
 
 test("delegated: the planner sub writing a DIFFERENT plan path is refused", () => {
