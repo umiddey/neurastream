@@ -16,3 +16,6 @@ git dir exceeds wip.backup_max_repo_mb and shallow clones are skipped whole.
 
 Restore: git fetch '<wip.backup_url>' '<repo-key>/<branch>:<branch>'
 Usage: wip-backup [--dry-run] [--quiet]
+
+Private only: the target is checked first (gh, glab, or wip.private_check);
+anything but an exact "private" answer uploads nothing and is listed as refused.

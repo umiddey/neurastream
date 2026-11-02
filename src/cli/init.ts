@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { configFile, loadConfig, TEMPLATE_PATH, type Config } from "../core/config.ts";
 import { allowedAgents } from "../core/queue/lib.ts";
 import { allowAgents, invalidSlugs, InvalidSlugError } from "../core/subagents.ts";
+import { wipOn } from "../core/wip-setup.ts";
 import { watchOn } from "./watch-setup.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -189,6 +190,11 @@ export function runInit(args: string[] = []): number {
 			const answer = askLine("Watch neurastream jobs and alert me? [Y/n] ").trim().toLowerCase();
 			if ((answer === "" || answer === "y" || answer === "yes") && watchOn() !== 0) {
 				console.log("watch not set up; fix the error above, then run `neurastream watch on`");
+			}
+			// P6 (plan 20261027_1130): empty or n leaves it off; the same path as `neurastream wip on`.
+			const save = askLine("Save unsaved work every hour? [y/N] ").trim().toLowerCase();
+			if ((save === "y" || save === "yes") && wipOn() !== 0) {
+				console.log("wip not set up; fix the error above, then run `neurastream wip on`");
 			}
 		}
 		return 0;

@@ -1,9 +1,13 @@
-import { accessSync, constants, existsSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { accessSync, constants, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import type { Config } from "./config.ts";
 import { nowSec, strftime } from "./clock.ts";
 import { printText } from "./help.ts";
+import { addIncident } from "./incidents.ts";
 import { cmd, gitRaw } from "./proc.ts";
+import { failureLine, gitOrFail, realpathOrFail, recordWipRun } from "./wip-fail.ts";
+import { backupVisibility, originMatches, type Visibility } from "./wip-private.ts";
+import { keyOf, wipRepos } from "./wip-roots.ts";
 
 function executable(path: string): boolean {
 	try {
@@ -14,23 +18,38 @@ function executable(path: string): boolean {
 	}
 }
 
-function keyOf(path: string, home: string): string {
-	return relative(home, path).replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^_+|_+$/g, "");
-}
 
-function repos(roots: string[]): string[] {
-	const out: string[] = [];
-	for (const root of roots) {
-		if (!existsSync(root) || !statSync(root).isDirectory()) continue;
-		for (const d of readdirSync(root)) {
-			if (existsSync(join(root, d, ".git"))) out.push(join(root, d));
-		}
+export function wipBackup(
+	args: string[],
+	cfg: Config,
+	visibility?: (target: string) => Visibility,
+): number {
+	if (cfg.wip.roots.length === 0) {
+		console.log("wip: no wip.roots set — run `neurastream wip add <path>`");
+		recordWipRun(cfg, "backup", [], "no wip.roots set");
+		return 0;
 	}
-	out.sort();
-	return out;
-}
-
-export function wipBackup(args: string[], cfg: Config): number {
+	// The target is checked first, on every run, even when there is nothing to push: a repo that
+	// turned public must stop the upload before any ref is sent.
+	const target = cfg.wip.backup_url;
+	const state = target === "" ? "unknown" : (visibility ?? ((url: string) => backupVisibility(url, (a) => cmd(a), cfg.wip.private_check)))(target);
+	if (target === "" || state !== "private") {
+		const refused = target === "" ? "no wip.backup_url set" : `${target} is ${state}`;
+		console.log(
+			target === ""
+				? "Backup stopped: no wip.backup_url set; nothing was uploaded."
+				: `Backup stopped: ${refused}. Make it private; nothing was uploaded.`,
+		);
+		addIncident(cfg, {
+			source: "watch",
+			kind: "wip-backup-refused",
+			summary: `wip backup refused: ${refused}`,
+			evidence: `wip-backup ran at ${strftime(nowSec(), "%Y-%m-%d %H:%M")}`,
+			fingerprint: `wip-backup-refused:${target}`,
+		});
+		recordWipRun(cfg, "backup", [], refused);
+		return 1;
+	}
 	const dry = args.includes("--dry-run");
 	const quiet = args.includes("--quiet");
 	const seen = new Set<string>();
@@ -38,10 +57,11 @@ export function wipBackup(args: string[], cfg: Config): number {
 	const skipped: string[] = [];
 	const failed: string[] = [];
 
-	for (const repo of repos(cfg.paths.work_roots)) {
-		const commonRaw = gitRaw(repo, ["rev-parse", "--git-common-dir"]).stdout || ".";
-		const common = realpathSync(resolve(repo, commonRaw));
-		if (seen.has(common)) continue;
+	for (const repo of wipRepos(cfg)) {
+		const commonRaw = gitOrFail(failed, repo, ["rev-parse", "--git-common-dir"]);
+		if (!commonRaw) continue;
+		const common = realpathOrFail(failed, resolve(repo, commonRaw.stdout || "."));
+		if (common === null || seen.has(common)) continue;
 		seen.add(common);
 		const du = cmd(["du", "-sm", common]);
 		const mb = Number(du.stdout.split(/\s+/)[0] ?? "NaN");
@@ -50,30 +70,39 @@ export function wipBackup(args: string[], cfg: Config): number {
 			skipped.push(`${rkeyWhole}: whole repo (${mb} MB git dir > ${cfg.wip.backup_max_repo_mb} MB limit)`);
 			continue;
 		}
-		const hooks = gitRaw(repo, ["rev-parse", "--git-path", "hooks"]).stdout;
-		const prePush = join(repo, hooks, "pre-push");
+		const hooks = gitOrFail(failed, repo, ["rev-parse", "--git-path", "hooks"]);
+		if (!hooks) continue;
+		const prePush = join(repo, hooks.stdout, "pre-push");
+		// No origin (exit 2) is normal: it only feeds the hook opt-in match; the push goes to wip.backup_url.
 		const origin = gitRaw(repo, ["remote", "get-url", "origin"]).stdout;
-		const noHooks = cfg.wip.backup_hook_off.some(n => origin.includes(n));
+		// Exact `host/owner` or `host/owner/repo` only: a substring would opt in every repo at once.
+		const noHooks = cfg.wip.backup_hook_off.some(entry => originMatches(entry, origin));
 		if (executable(prePush) && !noHooks) {
-			skipped.push(`${rkeyWhole}: whole repo (has a pre-push gate; not bypassed)`);
+			skipped.push(`${rkeyWhole}: whole repo (has a pre-push gate; not bypassed — add its origin to wip.backup_hook_off to back it up)`);
 			continue;
 		}
-		if (gitRaw(repo, ["rev-parse", "--is-shallow-repository"]).stdout === "true") {
+		const shallow = gitOrFail(failed, repo, ["rev-parse", "--is-shallow-repository"]);
+		if (!shallow) continue;
+		if (shallow.stdout === "true") {
 			skipped.push(`${rkeyWhole}: whole repo (shallow clone; GitHub refuses it)`);
 			continue;
 		}
-		const top = gitRaw(repo, ["worktree", "list", "--porcelain"]).stdout;
-		const mainWt = top ? top.split("\n")[0]!.slice(9) : repo;
+		const top = gitOrFail(failed, repo, ["worktree", "list", "--porcelain"]);
+		if (!top) continue;
+		const mainWt = top.stdout ? top.stdout.split("\n")[0]!.slice(9) : repo;
 		const rkey = keyOf(mainWt, cfg.paths.home);
 		const specs: { src: string; dst: string }[] = [];
-		const heads = gitRaw(repo, ["for-each-ref", "--format=%(refname:short)", "refs/heads"]).stdout;
-		for (const b of heads.split("\n").filter(Boolean)) {
-			const n = gitRaw(repo, ["rev-list", "--count", b, "--not", "--remotes"]).stdout;
-			if (/^\d+$/.test(n) && Number(n) > 0) specs.push({ src: `refs/heads/${b}`, dst: `refs/heads/${rkey}/${b}` });
+		const heads = gitOrFail(failed, repo, ["for-each-ref", "--format=%(refname:short)", "refs/heads"]);
+		if (!heads) continue;
+		for (const b of heads.stdout.split("\n").filter(Boolean)) {
+			const n = gitOrFail(failed, repo, ["rev-list", "--count", b, "--not", "--remotes"]);
+			if (!n) continue;
+			if (/^\d+$/.test(n.stdout) && Number(n.stdout) > 0) specs.push({ src: `refs/heads/${b}`, dst: `refs/heads/${rkey}/${b}` });
 		}
-		const wips = gitRaw(repo, ["for-each-ref", "--sort=-refname", "--format=%(refname)", "refs/wip"]).stdout;
+		const wips = gitOrFail(failed, repo, ["for-each-ref", "--sort=-refname", "--format=%(refname)", "refs/wip"]);
+		if (!wips) continue;
 		const newest: Record<string, string> = {};
-		for (const r of wips.split("\n").filter(Boolean)) {
+		for (const r of wips.stdout.split("\n").filter(Boolean)) {
 			const prefix = r.slice(0, r.lastIndexOf("/"));
 			if (!(prefix in newest)) newest[prefix] = r;
 		}
@@ -95,7 +124,7 @@ export function wipBackup(args: string[], cfg: Config): number {
 		const hookOff = noHooks ? ["-c", "core.hooksPath=/dev/null"] : [];
 		const pushedRun = cmd(["git", "-C", repo, ...hookOff, "push", "--quiet", cfg.wip.backup_url, ...ok]);
 		if (pushedRun.code) {
-			failed.push(`${rkey}: ${pushedRun.stderr.trim().slice(-200)}`);
+			failed.push(failureLine(repo, `git push --quiet ${cfg.wip.backup_url} ${ok.join(" ")}`, pushedRun.stderr));
 		} else {
 			pushed.push(...ok.map(s => `${rkey}: ${s}`));
 		}
@@ -115,5 +144,5 @@ export function wipBackup(args: string[], cfg: Config): number {
 	lines.push("## Pushed", ...pushed.map(s => `- ${s}`));
 	if (!dry) writeFileSync(cfg.wip.backup_log, `${lines.join("\n")}\n`);
 	printText((quiet ? lines.slice(0, 6) : lines).join("\n"));
-	return failed.length ? 1 : 0;
+	return recordWipRun(cfg, "backup", failed, null, skipped.length) ? 0 : 1;
 }
