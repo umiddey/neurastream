@@ -1,4 +1,11 @@
 # Changelog
+## 0.2.69
+### Fixed
+- The named review spawn records its own verdict while the planner is delegated (I-20261102-27): the delegated pre-tool seam refused every sub write to a plan path except the bound planner's, so a `PLAN REVIEW` line could never land and no plan could pass review — no implementer could spawn. The seam now allows exactly the plan the spawn was named on, using the same predicate the review lock already uses; any other reviewer is still refused.
+### Added
+- Planner punch list (plan 20261102_2315): in delegated mode Main keeps two zones of a plan's text — a `## Done check` section's command and the backticked `verify:` command on a `## Phases` line — because those are the plan's executable commands, not its design; every other line stays the planner's. A plan's `Planner:` header may name the agent (`Planner: glm`) instead of the spawn instance (`Planner: glm-3`), so the record says which planner model wrote the plan; both forms pass.
+- The orchestrator rules carry the routing: small mechanical plans go to the fast planner (with its fallback), design-heavy plans to the deep planner, and the plan's `Planner:` header is the record — no tier code, no classifier.
+
 ## 0.2.68
 ### Added
 - Planner mode (plan 20261102_1515): one owner word decides who writes the plans — `autonomy.planner` (default `main`), moved any time by the owner's whole chat message `planner main|delegated` when `guards.chat_unlock` is on, or by a config write of the key at the owner's terminal. In `delegated` mode a planner subagent writes the plan (a `Planner: <agent>` header, its brief names the plan path) and Main becomes a pure orchestrator: it routes the owner's asks, dispatches implementers, checks the outcomes (verify commands, CI, the reviewer's PASS) and lands, and its own plan create or body rewrite is refused; a Planner-role brief while the mode is `main` is refused too. The facts are owner-only: the guard baseline `<config dir>/guard-baseline` records them, every omp adapter event and the guard's first load restore a non-owner edit, only the chat command, a terminal mode write and a clean shutdown stamp it, and the baseline path is in the protected set. With no baseline the mode is `main`.
