@@ -1,5 +1,7 @@
 # <short title>
 Worktree: <work root>/<repo>-<topic> (configure paths.work_roots, e.g. {{HOME}}/work)
+<!-- Planner mode: in `planner delegated` the planner agent writes the plan, and the plan carries a
+     bare `Planner: <agent>` line above the first `##` (no trailing comment). Omit it while Main plans. -->
 Branch: <type>/<topic>
 Summary: <one or two plain sentences: what this plan gives the owner>
 PRIORITY-ID: <optional, e.g. PR01>
