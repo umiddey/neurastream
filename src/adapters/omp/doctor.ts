@@ -17,6 +17,7 @@ import { allowedAgents, readIndex, reviewAgentsProblem } from "../../core/queue/
 import { systemRunner, type Runner } from "../../core/pages-setup.ts";
 import { packageJsonPath } from "./package-root.ts";
 import { realTailscale, type Tailscale } from "../../core/tailscale.ts";
+import { wipHealth } from "../../core/wip-setup.ts";
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
@@ -225,6 +226,18 @@ export function doctorReport(home: string, env: NodeJS.ProcessEnv = process.env,
 		else problems.push(`tailscale: ${state === "missing" ? "missing" : "logged out"}`);
 		if (!cfg.ui.owner_login) problems.push("ui.enabled but ui.owner_login is empty");
 		else if (state === "running") ok.push(`ui owner page: login ${cfg.ui.owner_login}`);
+	}
+	// WIP timers (plan 20261027_1130 P6): roots set with nothing scheduled is a silent stop, and so
+	// is a run that failed — the state that went unnoticed for a week before this plan.
+	if (cfg.wip.roots.length > 0) {
+		const health = wipHealth(cfg);
+		if (!health.installed) problems.push("wip: timers missing — run: neurastream wip on");
+		else {
+			ok.push(`wip: ${health.backupInstalled ? "snapshot + backup" : "snapshot only"}`);
+			for (const rec of [health.last.snapshot, health.last.backup]) {
+				if (rec && !rec.ok) problems.push(`wip: last ${rec.kind} run failed — ${rec.failed[0] ?? rec.refused ?? "see wip-last.json"}`);
+			}
+		}
 	}
 	// One index (20261024_1400_one_index): repo-directory lines in the main index are the old
 	// two-level queue; the plans they hold are invisible to queue-check until migrate folds them.

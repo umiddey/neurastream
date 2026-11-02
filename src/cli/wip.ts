@@ -3,13 +3,25 @@ import { homedir } from "node:os";
 import { dirname } from "node:path";
 import { checkEdited, setConfigKeys, yamlValue } from "../core/config-edit.ts";
 import { configFile, loadConfig } from "../core/config.ts";
+import { wipOff, wipOn } from "../core/wip-setup.ts";
 
 export function runWip(args: string[], home: string = homedir()): number {
 	const verb = args[0];
 	if (!verb || verb === "--help" || verb === "-h") {
-		console.log("usage: neurastream wip add|remove|list [path]");
+		console.log("usage: neurastream wip add|remove|list|on|off [path]");
 		return 0;
 	}
+
+	// P6 (plan 20261027_1130): the timers that run the snapshot hourly and the backup nightly.
+	if (verb === "on") {
+		const i = args.indexOf("--backup-url");
+		if (i >= 0 && !args[i + 1]) {
+			console.error("usage: neurastream wip on [--backup-url <url>]");
+			return 2;
+		}
+		return wipOn({ home, backupUrl: i >= 0 ? args[i + 1] : null });
+	}
+	if (verb === "off") return wipOff({ home });
 
 	if (verb === "list") {
 		const file = configFile(home);

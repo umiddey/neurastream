@@ -1,0 +1,6 @@
+[Unit]
+Description=neurastream wip snapshot (unsaved work into the wip refs)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.bun/bin/neurastream wip-snapshot --quiet
