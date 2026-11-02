@@ -95,6 +95,27 @@ Every tool is one program, selected by the name it was called with: `agent-score
 
 The first skill is `architecture-drilldown`: a self-contained HTML atlas with drill-down boxes. Its data is the `T` tree between `/* === DATA === */` and `/* === END DATA === */` in `template.html`; replace that block and leave the engine below it alone. `SKILL.md` lists the schema and the checks.
 
+## Saving unsaved work (wip)
+
+`neurastream wip on` turns the hourly safety net on: every hour each worktree with uncommitted
+changes gets a hidden commit at `refs/wip/<key>/<stamp>` (working tree, index, HEAD and branches are
+never touched), and the nightly backup sends those saves to one repo.
+
+- Roots: `neurastream wip add <path>`, `wip remove <path>`, `wip list` - any number of folders, or a
+  single repo on its own; `.git` folders are found down to `wip.depth`. Every root is independent: a
+  corrupt or vanished repo is recorded in `WIP-STATUS.md` and `wip-last.json` and the run goes on.
+- Private only: the target URL is checked before anything is uploaded - GitHub through `gh`, GitLab
+  through `glab`, any other host through `wip.private_check`. Only an exact `private` answer uploads;
+  `public`, `internal`, `unknown`, an error or bad JSON uploads nothing, is listed as refused and
+  alerts you. Making the repo private again resumes the backup.
+- Hooks are never bypassed: a repo with a pre-push hook is skipped until `wip.backup_hook_off` names
+  it (a substring, or `owner` / `host/owner/repo` to name it exactly).
+- Restore: `neurastream wip restore [--repo <path>] [--pick N]` lists a worktree's saves and puts one
+  back - files and index by default, `--worktree` for files only.
+- Alerts: a failed run, a refused target or a run that never happened is posted once per state to
+  `cfg.wip.alert_url`, listed by `neurastream wip`, and reported by the heartbeat check.
+- Off: `neurastream wip off` removes the hourly timer and the nightly backup timer.
+
 ## Develop
 
 ```sh

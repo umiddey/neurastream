@@ -1,6 +1,7 @@
 # Changelog
 ## Unreleased
 ### Fixed
+- Wip hardening (plan 20261027_1130 P1-P9): roots are managed with `neurastream wip add|remove|list` (any number of folders or single repos), one broken repo no longer stops a run, the backup target must be verified private before anything is uploaded, failures are recorded and alerted once per state, `neurastream wip` sets everything up or restores a save, hooked repos are opt-in, and snapshot, backup and restore share one key built from the realpath of home and worktree.
 - Rollover across a version change (I-20261101-47): a relaunch request written by an older version to the legacy `<queue_state>/rollover/relaunch.json` is still picked up — the launcher falls back to it when the new-path file is missing or stale (main id only), and a consumed request now clears both paths, so a leftover copy cannot re-inject at the next fresh start.
 
 ## 0.2.67
