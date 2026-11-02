@@ -8,10 +8,11 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { runConfigKeys } from "../src/cli/config-set.ts";
-import { chatPlanner, currentPlanner, plannerFile } from "../src/core/autonomy.ts";
+import { chatPlanner, currentPlanner, plannerBaselineFile, plannerFile, plannerPin, verifyPlannerMode } from "../src/core/autonomy.ts";
 import { configFile, loadConfig, type Config } from "../src/core/config.ts";
 import { checkPlanEdit, checkTool, spawnProblem } from "../src/core/guards.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
+import { PROTECTED, protectedHit } from "../src/core/queue/lib.ts";
 
 const roots: string[] = [];
 const queueEnvBefore = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("QUEUE_")));
@@ -271,4 +272,112 @@ test("a bad planner value is refused by config set and the file is untouched", a
 	expect(set.code).toBe(1);
 	expect(readFileSync(configFile(root), "utf8")).toBe(before);
 	expect(currentPlanner(cfg)).toBe("main");
+});
+
+// --- P2 (d): the mode facts are owner-only and baseline-anchored ---
+
+// The config as it now stands on disk, read the way a seam reads it (no QUEUE_* overlay masks a
+// dirty line).
+function reread(): Config {
+	const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("QUEUE_")));
+	env.HOME = root;
+	return loadConfig({ home: root, env });
+}
+
+function editConfig(text: string): void {
+	writeFileSync(configFile(root), text);
+}
+
+// The owner's clean stamp: the chat command records the state it wrote.
+function ownerStamp(mode: "main" | "delegated" = "delegated"): void {
+	expect(chatPlanner(`planner ${mode}`, cfg, "interactive")).toEqual({ applied: true, planner: mode });
+}
+
+test("(d1) a hand-edited config value is reverted at the next seam; the mode stays what the baseline says", () => {
+	ownerStamp("delegated");
+	editConfig(UNLOCKED("delegated"));
+	const dirty = reread();
+	expect(dirty.autonomy.planner).toBe("delegated");
+	const v = verifyPlannerMode(plannerPin(dirty));
+	expect(v.reverted).toBe(true);
+	expect(v.hint).toContain("planner mode changes need your terminal");
+	expect(reread().autonomy.planner).toBe("main");
+	// The baseline's state file was never touched, so the mode in force is still delegated.
+	expect(currentPlanner(reread())).toBe("delegated");
+});
+
+test("(d2) a deleted baseline reverts the mode to main and the config value to the default", () => {
+	ownerStamp("delegated");
+	editConfig(UNLOCKED("delegated"));
+	rmSync(plannerBaselineFile(plannerPin(cfg)), { force: true });
+	expect(verifyPlannerMode(plannerPin(reread())).reverted).toBe(true);
+	expect(reread().autonomy.planner).toBe("main");
+	expect(currentPlanner(reread())).toBe("main");
+	expect(existsSync(plannerFile())).toBe(false);
+});
+
+test("(d3) a hand-edited state file is reverted to the baseline bytes", () => {
+	ownerStamp("delegated");
+	writeFileSync(plannerFile(), "main\n");
+	const v = verifyPlannerMode(plannerPin(cfg));
+	expect(v.reverted).toBe(true);
+	expect(readFileSync(plannerFile(), "utf8")).toBe("delegated\n");
+	expect(currentPlanner(cfg)).toBe("delegated");
+});
+
+test("(d4) a clean stamp is accepted: the baseline records it and the next seam does not revert", () => {
+	ownerStamp("delegated");
+	const base = JSON.parse(readFileSync(plannerBaselineFile(plannerPin(cfg)), "utf8")) as { planner: { exists: boolean; bytes: string }; config: { planner: string } };
+	expect(base.planner).toEqual({ exists: true, bytes: "delegated\n" });
+	expect(base.config.planner).toBe("main");
+	expect(verifyPlannerMode(plannerPin(reread())).reverted).toBe(false);
+	expect(readFileSync(plannerFile(), "utf8")).toBe("delegated\n");
+});
+
+test("(d5) the baseline path is in the built-in protected set", () => {
+	expect(PROTECTED).toContain(join(dirname(configFile()), "guard-baseline"));
+});
+
+test("(d6) a queue-side edit to the baseline is refused by protectedHit", () => {
+	const baseline = join(dirname(configFile()), "guard-baseline");
+	expect(protectedHit([baseline])).toBe(baseline);
+	expect(protectedHit([join(root, "docs/plans/20261102_1500_thing.md")])).toBeNull();
+});
+
+test("(d7) with no baseline, a planted state file is deleted and the mode stays main", () => {
+	writePlannerFile("delegated");
+	expect(currentPlanner(cfg)).toBe("delegated");
+	const v = verifyPlannerMode(plannerPin(cfg));
+	expect(v.reverted).toBe(true);
+	expect(existsSync(plannerFile())).toBe(false);
+	expect(currentPlanner(cfg)).toBe("main");
+});
+
+test("(d8) with no baseline, a planted config value is restored to main", () => {
+	editConfig(UNLOCKED("delegated"));
+	const dirty = reread();
+	expect(dirty.autonomy.planner).toBe("delegated");
+	expect(verifyPlannerMode(plannerPin(dirty)).reverted).toBe(true);
+	expect(reread().autonomy.planner).toBe("main");
+	expect(currentPlanner(reread())).toBe("main");
+});
+
+test("(d9) a non-TTY config set writes but does not stamp: the next seam reverts it with the hint", async () => {
+	expect((await capture(() => runConfigKeys(["set", "autonomy.planner", "delegated"], root, false))).code).toBe(0);
+	expect(existsSync(plannerBaselineFile(plannerPin(cfg)))).toBe(false);
+	expect(reread().autonomy.planner).toBe("delegated");
+	const v = verifyPlannerMode(plannerPin(reread()));
+	expect(v.reverted).toBe(true);
+	expect(v.hint).toContain("planner mode changes need your terminal");
+	expect(reread().autonomy.planner).toBe("main");
+});
+
+test("(d10) a TTY config set of a mode key stamps and survives the next seam; another key never stamps", async () => {
+	expect((await capture(() => runConfigKeys(["set", "autonomy.planner", "delegated"], root, true))).code).toBe(0);
+	expect(existsSync(plannerBaselineFile(plannerPin(cfg)))).toBe(true);
+	expect(verifyPlannerMode(plannerPin(reread())).reverted).toBe(false);
+	expect(reread().autonomy.planner).toBe("delegated");
+	rmSync(plannerBaselineFile(plannerPin(cfg)), { force: true });
+	expect((await capture(() => runConfigKeys(["set", "ui.port", "7788"], root, true))).code).toBe(0);
+	expect(existsSync(plannerBaselineFile(plannerPin(cfg)))).toBe(false);
 });

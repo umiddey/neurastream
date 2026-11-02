@@ -330,6 +330,8 @@ export interface Config {
 	adapter?: { name: string; sessions: string; pins: string; extensions: string };
 	/** Notices about legacy keys in the user's config file; empty when there are none. */
 	notices: string[];
+	/** The file these values were loaded from: the anchor the planner mode baseline sits beside. */
+	file?: string;
 }
 
 type EnvKind = "string" | "number" | "csv";
@@ -803,6 +805,7 @@ export function loadConfig(opts: LoadOptions = {}): Config {
 	applyEnv(merged, opts.env ?? process.env);
 	const expanded = expand(merged, home) as Config;
 	expanded.notices = notices;
+	expanded.file = file;
 	check(expanded);
 	return expanded;
 }

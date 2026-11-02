@@ -797,6 +797,10 @@ function protectedPaths(): string[] {
 		// The user's neurastream config file, even when agent_dir points elsewhere: an agent that
 		// could rewrite it could point notify at its own webhook.
 		`${HOME}/.config/neurastream/config.yml`,
+		// The planner mode guard baseline beside that file (plan 20261102_1515 P2 d): the
+		// owner-only anchor of the mode facts. A write that could plant or edit it would make the
+		// writer's own dirt the truth, so no tool may touch it.
+		`${HOME}/.config/neurastream/guard-baseline`,
 		`${agent}/notes/subagents.md`,
 		`${agent}/.guard-unlock`,
 		`${path.dirname(agent)}/git-no-verify-guard.mjs`,

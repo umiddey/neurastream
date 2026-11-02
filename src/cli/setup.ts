@@ -8,6 +8,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { getAdapter, harnessBins } from "../adapters/index.ts";
+import { isPlannerModeKey, stampPlannerMode, verifyPlannerMode } from "../core/autonomy.ts";
 import { TEMPLATE_PATH, configFile } from "../core/config.ts";
 import { checkEdited, leafKeys, setConfigKeys, valueAt, yamlValue } from "../core/config-edit.ts";
 import { pagesDoctor } from "../core/pages-doctor.ts";
@@ -15,6 +16,22 @@ import { detect, realSeams, type SetupFacts, type SetupSeams } from "../core/set
 import { invalidSlugs } from "../core/subagents.ts";
 import { TAILSCALE_MISSING, TAILSCALE_STOPPED } from "../core/ui-setup.ts";
 import { askLine, initHome } from "./init.ts";
+
+/**
+ * The planner mode side of a setup write (P2 d): a mode key is owner-only, so when the owner's
+ * terminal is about to write one, dirt is reverted first and the re-read text is what the write
+ * starts from — a dirty sibling line can never be adopted by this stamp.
+ */
+export function holdPlannerKeys(deps: SetupDeps, file: string, keys: string[], text: string): string {
+	if (!deps.terminal || !keys.some(isPlannerModeKey)) return text;
+	verifyPlannerMode({ file, home: deps.home });
+	return readFileSync(file, "utf8");
+}
+
+/** After the write: a mode key written at the owner's terminal is what stamps the mode facts. */
+export function stampPlannerKeys(deps: SetupDeps, file: string, keys: string[]): void {
+	if (deps.terminal && keys.some(isPlannerModeKey)) stampPlannerMode({ file, home: deps.home });
+}
 
 export interface SetupDeps {
 	home: string;
@@ -205,10 +222,12 @@ function runGroup(ctx: Ctx, name: string, keys: string[]): number {
 		ctx.changed.push({ key, old, next: picks[key] });
 	}
 	if (Object.keys(changes).length === 0) return 0;
-	const edited = setConfigKeys(ctx.text, changes);
+	const changed = Object.keys(changes);
+	const edited = setConfigKeys(holdPlannerKeys(ctx.deps, ctx.file, changed, ctx.text), changes);
 	if (!checkEdited(edited, ctx.deps.home, (line) => ctx.deps.say(line))) return 1;
 	writeFileSync(ctx.file, edited);
 	ctx.text = edited;
+	stampPlannerKeys(ctx.deps, ctx.file, changed);
 	return 0;
 }
 

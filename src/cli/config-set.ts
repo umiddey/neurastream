@@ -6,12 +6,13 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname } from "node:path";
+import { isPlannerModeKey, stampPlannerMode, verifyPlannerMode } from "../core/autonomy.ts";
 import { checkEdited, leafKeys, setConfigKeys, valueAt, yamlValue } from "../core/config-edit.ts";
 import { TEMPLATE_PATH, configFile, loadConfig } from "../core/config.ts";
 
 const VALID_KEYS = leafKeys(Bun.YAML.parse(readFileSync(TEMPLATE_PATH, "utf8")));
 
-export function runConfigKeys(args: string[], home: string = homedir()): number {
+export function runConfigKeys(args: string[], home: string = homedir(), tty: boolean = process.stdin.isTTY === true): number {
 	const [verb, key, raw] = args;
 	try {
 		if (verb === "list") {
@@ -43,11 +44,16 @@ export function runConfigKeys(args: string[], home: string = homedir()): number 
 		// Lists in flow style on one line ([a, b]); scalars as JSON, which is valid YAML.
 		const text = yamlValue(parsed);
 		const file = configFile(home);
+		const pin = { file, home };
+		// A mode key is a planner mode fact and owner-only: revert non-owner dirt first (the
+		// reverted file is what the write starts from), and only a TTY write stamps it (P2 d).
+		if (tty && isPlannerModeKey(key)) verifyPlannerMode(pin);
 		const original = existsSync(file) ? readFileSync(file, "utf8") : null;
 		const edited = setConfigKeys(original, { [key]: text });
 		if (!checkEdited(edited, home, (line) => console.error(line))) return 1;
 		mkdirSync(dirname(file), { recursive: true });
 		writeFileSync(file, edited);
+		if (tty && isPlannerModeKey(key)) stampPlannerMode(pin);
 		return 0;
 	} catch (err) {
 		console.error(err instanceof Error ? err.message : String(err));
