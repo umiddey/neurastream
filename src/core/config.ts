@@ -166,6 +166,8 @@ export interface Config {
 	autonomy: {
 		/** Tier in force when `<state dir>/autonomy-tier` does not name one (src/core/autonomy.ts). */
 		tier: "strict" | "opinionated" | "full";
+		/** Planner mode in force when the state file does not name one (plan 20261102_1515, src/core/autonomy.ts): "main" = Main writes the plans; "delegated" = the planner agent does and Main routes. */
+		planner: "main" | "delegated";
 		/** Main's project-file changes per guards.main_window_min window in tier strict. */
 		strict_edit_limit: number;
 		/** Minutes the approve phrase approves exactly one push/merge in tier strict. */
@@ -328,6 +330,8 @@ export interface Config {
 	adapter?: { name: string; sessions: string; pins: string; extensions: string };
 	/** Notices about legacy keys in the user's config file; empty when there are none. */
 	notices: string[];
+	/** The file these values were loaded from: the anchor the planner mode baseline sits beside. */
+	file?: string;
 }
 
 type EnvKind = "string" | "number" | "csv";
@@ -576,6 +580,8 @@ function check(cfg: Config): void {
 		throw new ConfigError('approval.since must be "" or a plan stamp YYYYMMDD_HHMM (plans stamped at or after it need a page and an approval record)');
 	if (cfg.autonomy.tier !== "strict" && cfg.autonomy.tier !== "opinionated" && cfg.autonomy.tier !== "full")
 		throw new ConfigError('autonomy.tier must be "strict", "opinionated" or "full"');
+	if (cfg.autonomy.planner !== "main" && cfg.autonomy.planner !== "delegated")
+		throw new ConfigError('autonomy.planner must be "main" or "delegated"');
 	if (!Number.isInteger(cfg.autonomy.strict_edit_limit) || cfg.autonomy.strict_edit_limit < 1)
 		throw new ConfigError("autonomy.strict_edit_limit must be an integer >= 1");
 	if (!Number.isInteger(cfg.autonomy.go_minutes) || cfg.autonomy.go_minutes < 1)
@@ -799,6 +805,7 @@ export function loadConfig(opts: LoadOptions = {}): Config {
 	applyEnv(merged, opts.env ?? process.env);
 	const expanded = expand(merged, home) as Config;
 	expanded.notices = notices;
+	expanded.file = file;
 	check(expanded);
 	return expanded;
 }

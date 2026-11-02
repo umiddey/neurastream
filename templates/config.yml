@@ -149,6 +149,7 @@ guards:
 
 autonomy:
   tier: opinionated        # strict | opinionated | full: how much Main does without asking; the owner moves it with `tier <name>` in chat or a button on the phone page
+  planner: main            # main = Main writes the plans; delegated = the planner agent plans and Main routes only (plan 20261102_1515); the owner flips it with `planner <mode>` in chat or here
   strict_edit_limit: 2     # Main's project-file changes per main_window_min in tier strict
   go_minutes: 10           # minutes the approve phrase approves exactly one push/merge in tier strict
   go_phrase: "go push"     # the whole chat message that approves one push/merge in tier strict (I-20261025-201); a bare `go` is an ordinary message

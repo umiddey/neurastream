@@ -3,6 +3,7 @@
 // and 2 when refused (same code a blocker uses).
 
 import type { Decision, InjectEvent, PlanEditEvent, SpawnEvent, StopEvent, ToolEvent } from "../core/adapter.ts";
+import { plannerPin, verifyPlannerMode } from "../core/autonomy.ts";
 import { ConfigError, loadConfig } from "../core/config.ts";
 import { checkPlanEdit, checkSpawn, checkStop, checkTool, checkInject } from "../core/guards.ts";
 import { applyQueueEnv } from "../core/queue/env.ts";
@@ -105,6 +106,14 @@ export async function runGuard(event: string): Promise<number> {
 	try {
 		cfg = loadConfig();
 		applyQueueEnv(cfg);
+		// P2 d: hold the mode facts to the owner's baseline before any decision reads them; a
+		// reverted config is re-read so this guard sees the restored values.
+		const held = verifyPlannerMode(plannerPin(cfg));
+		if (held.reverted) {
+			if (held.hint !== null) console.error(held.hint);
+			cfg = loadConfig();
+			applyQueueEnv(cfg);
+		}
 	} catch (err) {
 		console.error(err instanceof ConfigError ? err.message : String(err));
 		return 1;
