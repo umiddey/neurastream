@@ -6,7 +6,7 @@ import { printText } from "./help.ts";
 import { addIncident } from "./incidents.ts";
 import { cmd, gitRaw } from "./proc.ts";
 import { failureLine, gitOrFail, realpathOrFail, recordWipRun } from "./wip-fail.ts";
-import { backupVisibility, type Visibility } from "./wip-private.ts";
+import { backupVisibility, originMatches, type Visibility } from "./wip-private.ts";
 import { keyOf, wipRepos } from "./wip-roots.ts";
 
 function executable(path: string): boolean {
@@ -75,9 +75,10 @@ export function wipBackup(
 		const prePush = join(repo, hooks.stdout, "pre-push");
 		// No origin (exit 2) is normal: it only feeds the hook opt-in match; the push goes to wip.backup_url.
 		const origin = gitRaw(repo, ["remote", "get-url", "origin"]).stdout;
-		const noHooks = cfg.wip.backup_hook_off.some(n => origin.includes(n));
+		// Exact `host/owner` or `host/owner/repo` only: a substring would opt in every repo at once.
+		const noHooks = cfg.wip.backup_hook_off.some(entry => originMatches(entry, origin));
 		if (executable(prePush) && !noHooks) {
-			skipped.push(`${rkeyWhole}: whole repo (has a pre-push gate; not bypassed)`);
+			skipped.push(`${rkeyWhole}: whole repo (has a pre-push gate; not bypassed — add its origin to wip.backup_hook_off to back it up)`);
 			continue;
 		}
 		const shallow = gitOrFail(failed, repo, ["rev-parse", "--is-shallow-repository"]);
@@ -143,5 +144,5 @@ export function wipBackup(
 	lines.push("## Pushed", ...pushed.map(s => `- ${s}`));
 	if (!dry) writeFileSync(cfg.wip.backup_log, `${lines.join("\n")}\n`);
 	printText((quiet ? lines.slice(0, 6) : lines).join("\n"));
-	return recordWipRun(cfg, "backup", failed) ? 0 : 1;
+	return recordWipRun(cfg, "backup", failed, null, skipped.length) ? 0 : 1;
 }

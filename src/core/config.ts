@@ -617,6 +617,10 @@ function check(cfg: Config): void {
 	for (const [job, hours] of Object.entries(cfg.watch.expect)) {
 		if (typeof hours !== "number" || !(hours > 0)) throw new ConfigError(`watch.expect.${job} must be a positive number of hours`);
 	}
+	// P8 (plan 20261027_1130): an empty entry would match nothing under the exact match, but a
+	// whitespace one is a typo the owner cannot see — refuse both instead of silently ignoring them.
+	if (!Array.isArray(cfg.wip.backup_hook_off) || cfg.wip.backup_hook_off.some(h => typeof h !== "string" || h.trim() === ""))
+		throw new ConfigError("wip.backup_hook_off must list host/owner or host/owner/repo entries, none empty");
 	if (!Array.isArray(cfg.watch.units) || cfg.watch.units.some(u => typeof u !== "string" || u === "")) {
 		throw new ConfigError("watch.units must be a list of non-empty glob strings");
 	}

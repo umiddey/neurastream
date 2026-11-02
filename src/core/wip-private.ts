@@ -48,6 +48,16 @@ export function originId(url: string): { host: string; id: string; owner: string
 	};
 }
 
+/**
+ * Whether a `wip.backup_hook_off` entry names this origin: it must equal the origin's `host/owner`
+ * or `host/owner/repo` exactly. A substring test would let one entry opt in every repo on a host,
+ * or even an unrelated one (`git` matching every ssh URL).
+ */
+export function originMatches(entry: string, url: string): boolean {
+	const parsed = originId(url);
+	return parsed !== null && (entry === parsed.owner || entry === parsed.id);
+}
+
 function answer(text: string): Visibility {
 	const value = text.trim();
 	return value === "private" || value === "public" || value === "internal" ? value : "unknown";

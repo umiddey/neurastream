@@ -74,7 +74,7 @@ test("a corrupt repo is recorded and the run still saves a healthy worktree", ()
 	expect(log).toContain("Snapshot: 1 new, 0 unchanged since last, 1 failed.");
 
 	const last = wipLast(cfg);
-	expect(Object.keys(last).toSorted()).toEqual(["at", "failed", "kind", "ok", "refused"]);
+	expect(Object.keys(last).toSorted()).toEqual(["at", "failed", "kind", "ok", "refused", "skipped"]);
 	expect(last.kind).toBe("snapshot");
 	expect(last.ok).toBe(false);
 	expect(last.refused).toBeNull();

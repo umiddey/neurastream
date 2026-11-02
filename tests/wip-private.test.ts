@@ -288,3 +288,114 @@ test("wip-backup asks wip.private_check about an unknown host before pushing", (
 	expect(last.refused).toBe("git@git.example.com:owner/repo.git is unknown");
 	expect(git(["for-each-ref", "--format=%(refname)", "refs/heads/"], remote).trim()).toBe("");
 });
+
+// P8 (plan 20261027_1130): a repo with its own failing pre-push gate stays skipped - hooks are
+// never bypassed by default - unless its origin is listed exactly in wip.backup_hook_off, and the
+// skip line says so. The origin match is `host/owner` or `host/owner/repo`, never a substring.
+
+// A repo with a failing pre-push hook, a GitHub origin, and one hidden save; nothing uploaded yet.
+function hookSandbox(): { home: string; repo: string; remote: string; cfg: Config } {
+	const base = mkdtempSync(join(tmpdir(), "wip-backup-hook-"));
+	DIRS.push(base);
+	const home = join(base, "home");
+	const repo = join(home, "Work/demo");
+	const remote = join(base, "backup.git");
+	mkdirSync(repo, { recursive: true });
+	mkdirSync(join(home, ".local/bin"), { recursive: true });
+	writeFileSync(join(home, ".local/bin/git-secret-gate"), "#!/bin/sh\nexit 0\n");
+	chmodSync(join(home, ".local/bin/git-secret-gate"), 0o755);
+	const cfg = loadConfig({ home, file: join(home, "config.yml"), env: {} });
+	cfg.wip.roots = [join(home, "Work")];
+	cfg.wip.backup_url = remote;
+	cfg.wip.backup_log = join(home, "Work/WIP-BACKUP.md");
+	cfg.wip.secret_gate = join(home, ".local/bin/git-secret-gate");
+	cfg.wip.backup_hook_off = [];
+	git(["init", "-q", "--bare", remote], base);
+	git(["init", "-q", "-b", "main"], repo);
+	git(["config", "user.email", "t@example.com"], repo);
+	git(["config", "user.name", "t"], repo);
+	git(["remote", "add", "origin", "git@github.com:owner/repo.git"], repo);
+	writeFileSync(join(repo, "a.txt"), "one\n");
+	git(["add", "a.txt"], repo);
+	git(["commit", "-m", "init"], repo);
+	writeFileSync(join(repo, ".git/hooks/pre-push"), "#!/bin/sh\nexit 1\n");
+	chmodSync(join(repo, ".git/hooks/pre-push"), 0o755);
+	git(["update-ref", "refs/wip/Work_demo/20261102-1200", "HEAD"], repo);
+	return { home, repo, remote, cfg };
+}
+
+function withHome<T>(home: string, fn: () => T): T {
+	const orig = process.env.HOME;
+	process.env.HOME = home;
+	try {
+		return fn();
+	} finally {
+		process.env.HOME = orig;
+	}
+}
+
+const HOOK_LINE = "Work_demo: whole repo (has a pre-push gate; not bypassed — add its origin to wip.backup_hook_off to back it up)";
+
+test("a repo with its own pre-push gate is skipped and the line says how to opt in", () => {
+	const s = hookSandbox();
+	withHome(s.home, () => {
+		expect(wipBackup([], s.cfg, () => "private")).toBe(0);
+		expect(readFileSync(s.cfg.wip.backup_log, "utf8")).toContain(HOOK_LINE);
+		expect(git(["for-each-ref", "--format=%(refname)", "refs/heads"], s.remote).trim()).toBe("");
+		const last = JSON.parse(readFileSync(join(s.cfg.paths.alert_state, "wip-last.json"), "utf8")) as { backup: { skipped: number } };
+		expect(last.backup.skipped).toBeGreaterThan(0);
+	});
+});
+
+test("an origin listed in wip.backup_hook_off is backed up despite its gate", () => {
+	const s = hookSandbox();
+	s.cfg.wip.backup_hook_off = ["github.com/owner"];
+	withHome(s.home, () => {
+		expect(wipBackup([], s.cfg, () => "private")).toBe(0);
+		expect(git(["for-each-ref", "--format=%(refname)", "refs/heads/wip/"], s.remote).trim()).toBe("refs/heads/wip/Work_demo");
+		expect(readFileSync(s.cfg.wip.backup_log, "utf8")).not.toContain("has a pre-push gate");
+	});
+});
+
+test("the full host/owner/repo entry matches too", () => {
+	const s = hookSandbox();
+	s.cfg.wip.backup_hook_off = ["github.com/owner/repo"];
+	withHome(s.home, () => {
+		expect(wipBackup([], s.cfg, () => "private")).toBe(0);
+		expect(git(["for-each-ref", "--format=%(refname)", "refs/heads/wip/"], s.remote).trim()).toBe("refs/heads/wip/Work_demo");
+	});
+});
+
+test("a substring entry never opts a repo in", () => {
+	const s = hookSandbox();
+	s.cfg.wip.backup_hook_off = ["git", "owner", "github.com"];
+	withHome(s.home, () => {
+		expect(wipBackup([], s.cfg, () => "private")).toBe(0);
+		expect(readFileSync(s.cfg.wip.backup_log, "utf8")).toContain(HOOK_LINE);
+		expect(git(["for-each-ref", "--format=%(refname)", "refs/heads"], s.remote).trim()).toBe("");
+	});
+});
+
+test("an empty wip.backup_hook_off entry is a config error", () => {
+	const base = mkdtempSync(join(tmpdir(), "wip-backup-hookcfg-"));
+	DIRS.push(base);
+	const home = join(base, "home");
+	mkdirSync(home, { recursive: true });
+	const file = join(home, "config.yml");
+	writeFileSync(file, "wip:\n  backup_hook_off:\n    - \"\"\n");
+	expect(() => loadConfig({ home, file, env: {} })).toThrow(/backup_hook_off/);
+	writeFileSync(file, "wip:\n  backup_hook_off:\n    - \"   \"\n");
+	expect(() => loadConfig({ home, file, env: {} })).toThrow(/backup_hook_off/);
+});
+
+test("a ref with a secret pattern is still refused", () => {
+	const s = hookSandbox();
+	s.cfg.wip.backup_hook_off = ["github.com/owner"];
+	writeFileSync(s.cfg.wip.secret_gate, "#!/bin/sh\nexit 1\n");
+	chmodSync(s.cfg.wip.secret_gate, 0o755);
+	withHome(s.home, () => {
+		expect(wipBackup([], s.cfg, () => "private")).toBe(0);
+		expect(readFileSync(s.cfg.wip.backup_log, "utf8")).toContain("(secret pattern in unpushed commits)");
+		expect(git(["for-each-ref", "--format=%(refname)", "refs/heads"], s.remote).trim()).toBe("");
+	});
+});

@@ -11,6 +11,8 @@ export interface WipRunRec {
 	ok: boolean;
 	failed: string[];
 	refused: string | null;
+	/** Refs the run left behind on purpose (hook opt-in, secret, too big); the backup reports it. */
+	skipped?: number;
 	/** The failure state main-start already announced: one state posts once. */
 	notified?: string;
 }
@@ -69,11 +71,12 @@ export function recordWipRun(
 	kind: WipRunRec["kind"],
 	failed: string[],
 	refused: string | null = null,
+	skipped = 0,
 ): boolean {
 	const ok = failed.length === 0 && refused === null;
 	const last = readWipLast(cfg);
 	// The announced state survives a re-run: the same failure twice stays one state and one post.
-	last[kind] = { kind, at: nowSec(), ok, failed, refused, notified: last[kind]?.notified };
+	last[kind] = { kind, at: nowSec(), ok, failed, refused, skipped, notified: last[kind]?.notified };
 	writeWipLast(cfg, last);
 	return ok;
 }
