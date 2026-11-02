@@ -3,12 +3,13 @@ import { homedir } from "node:os";
 import { dirname } from "node:path";
 import { checkEdited, setConfigKeys, yamlValue } from "../core/config-edit.ts";
 import { configFile, loadConfig } from "../core/config.ts";
+import { wipRestore } from "../core/wip-restore.ts";
 import { wipOff, wipOn } from "../core/wip-setup.ts";
 
 export function runWip(args: string[], home: string = homedir()): number {
 	const verb = args[0];
 	if (!verb || verb === "--help" || verb === "-h") {
-		console.log("usage: neurastream wip add|remove|list|on|off [path]");
+		console.log("usage: neurastream wip add|remove|list|on|off|restore [path]");
 		return 0;
 	}
 
@@ -22,6 +23,15 @@ export function runWip(args: string[], home: string = homedir()): number {
 		return wipOn({ home, backupUrl: i >= 0 ? args[i + 1] : null });
 	}
 	if (verb === "off") return wipOff({ home });
+	// P7 (plan 20261027_1130): list a worktree's saves, or put one back.
+	if (verb === "restore") {
+		try {
+			return wipRestore(args.slice(1), loadConfig({ home }));
+		} catch (err) {
+			console.error(err instanceof Error ? err.message : String(err));
+			return 1;
+		}
+	}
 
 	if (verb === "list") {
 		const file = configFile(home);
@@ -40,13 +50,13 @@ export function runWip(args: string[], home: string = homedir()): number {
 	}
 
 	if (verb !== "add" && verb !== "remove") {
-		console.error("usage: neurastream wip add|remove|list [path]");
+		console.error("usage: neurastream wip add|remove|list|on|off|restore [path]");
 		return 2;
 	}
 
 	const target = args[1];
 	if (!target) {
-		console.error("usage: neurastream wip add|remove|list [path]");
+		console.error("usage: neurastream wip add|remove|list|on|off|restore [path]");
 		return 2;
 	}
 

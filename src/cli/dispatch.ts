@@ -93,6 +93,7 @@ export function helpText(): string {
 		"  neurastream config set|get|list <key> [value]   read or write one key (ui.port, paths.work_roots, ...)",
 		"  neurastream wip add|remove|list [path]          add or remove a root in wip.roots, or list them",
 		"  neurastream wip on [--backup-url <url>]|off     hourly snapshot (+ nightly private backup) on or off",
+		"  neurastream wip restore [<worktree>] [--pick N] list the hidden saves, or put one back",
 		"  neurastream guard <event> --json",
 		`                                (${GUARD_USAGE.slice(GUARD_USAGE.indexOf("(") + 1, -1)})`,
 		"  neurastream main [args]       run omp under the launcher (automatic session rollover)",
