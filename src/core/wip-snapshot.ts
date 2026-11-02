@@ -7,7 +7,66 @@ import { printText } from "./help.ts";
 import { pyFloatStr } from "./pyfmt.ts";
 import { cmd } from "./proc.ts";
 import { failureLine, gitOrFail, realpathOrFail, recordWipRun } from "./wip-fail.ts";
-import { wipRepos } from "./wip-roots.ts";
+import { keyOf, wipRepos } from "./wip-roots.ts";
+
+const DAY_MS = 86_400_000;
+
+/** Midnight of a `YYYYMMDD-HHMM` save stamp, in ms since the epoch. */
+function dayStart(stamp: string): number {
+	const parts = /^(\d{4})(\d{2})(\d{2})/.exec(stamp);
+	return parts ? Date.UTC(Number(parts[1]), Number(parts[2]) - 1, Number(parts[3])) : Number.NaN;
+}
+
+/** The saves to delete: everything but the newest `keepHourly` and the newest of each of the last `keepDays` days. */
+function staleOf(refs: string[], keepHourly: number, keepDays: number): string[] {
+	const keep = new Set<string>([refs[refs.length - 1]!]);
+	for (const ref of refs.slice(-Math.max(1, keepHourly))) keep.add(ref);
+	const days = new Set<string>();
+	for (let i = refs.length - 1; i >= 0 && days.size < Math.max(1, keepDays); i--) {
+		const ref = refs[i]!;
+		const day = ref.slice(ref.lastIndexOf("/") + 1, ref.lastIndexOf("/") + 9);
+		if (days.has(day)) continue;
+		days.add(day);
+		keep.add(ref);
+	}
+	return refs.filter(ref => !keep.has(ref));
+}
+
+/**
+ * Keeps refs/wip small: per worktree the newest `keep_hourly` saves plus one per day for
+ * `keep_days`, and a vanished worktree's saves until `keep_days` after its last save.
+ */
+export function pruneWip(cfg: Config, failed: string[] = [], repos: string[] = wipRepos(cfg)): void {
+	const today = dayStart(strftime(nowSec(), "%Y%m%d"));
+	for (const repo of repos) {
+		const list = gitOrFail(failed, repo, ["worktree", "list", "--porcelain"]);
+		if (!list) continue;
+		const live = new Set<string>();
+		for (const line of list.stdout.split("\n")) {
+			if (line.startsWith("worktree ")) live.add(keyOf(line.slice(9), cfg.paths.home));
+		}
+		const all = gitOrFail(failed, repo, ["for-each-ref", "--sort=refname", "--format=%(refname)", "refs/wip"]);
+		if (!all) continue;
+		const byKey = new Map<string, string[]>();
+		for (const ref of all.stdout.split("\n").filter(Boolean)) {
+			const rest = ref.slice("refs/wip/".length);
+			const slash = rest.indexOf("/");
+			if (slash < 1) continue;
+			const key = rest.slice(0, slash);
+			byKey.set(key, [...(byKey.get(key) ?? []), ref]);
+		}
+		for (const [key, refs] of byKey) {
+			const newest = refs[refs.length - 1]!;
+			const age = (today - dayStart(newest.slice(newest.lastIndexOf("/") + 1))) / DAY_MS;
+			const doomed = live.has(key)
+				? staleOf(refs, cfg.wip.keep_hourly, cfg.wip.keep_days)
+				: Number.isFinite(age) && age <= cfg.wip.keep_days
+					? []
+					: refs;
+			for (const ref of doomed) gitOrFail(failed, repo, ["update-ref", "-d", ref]);
+		}
+	}
+}
 
 
 function secretRx(pat: string): RegExp {
@@ -34,14 +93,14 @@ export function wipSnapshot(args: string[], cfg: Config): number {
 	const home = existsSync(cfg.paths.home) ? realpathSync(cfg.paths.home) : cfg.paths.home;
 	const homePrefix = home.endsWith("/") ? home : `${home}/`;
 	const failed: string[] = [];
-	const seen = new Set<string>();
+	const seen = new Map<string, string>();
 	const worktrees: string[] = [];
 	for (const repo of wipRepos(cfg)) {
 		const commonRaw = gitOrFail(failed, repo, ["rev-parse", "--git-common-dir"]);
 		if (!commonRaw) continue;
 		const common = realpathOrFail(failed, resolve(repo, commonRaw.stdout || "."));
 		if (common === null || seen.has(common)) continue;
-		seen.add(common);
+		seen.set(common, repo);
 		const list = gitOrFail(failed, repo, ["worktree", "list", "--porcelain"]);
 		if (!list) continue;
 		for (const line of list.stdout.split("\n")) {
@@ -129,6 +188,9 @@ export function wipSnapshot(args: string[], cfg: Config): number {
 			rmSync(tmp, { recursive: true, force: true });
 		}
 	}
+
+	// Only repos this run already resolved: a corrupt one was reported once and keeps that line.
+	pruneWip(cfg, failed, [...seen.values()]);
 
 	const wc = cmd(["wip-check"]).stdout;
 	const lines = [
