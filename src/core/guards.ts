@@ -1302,9 +1302,15 @@ function subRules(e: ToolEvent, input: Record<string, unknown>, paths: string[],
 	// (isOrchestrationPath + planAt both false), so the refusal fires here — never by accident of
 	// indexing — and covers shell redirects through writeTargets too.
 	const delegatedPlanner = currentPlanner(cfg) === "delegated" ? plannerSpawnPlan(e.agentId) : null;
+	// I-20261102-27: the seam above also refused the REVIEW spawn, and a review spawn's only write
+	// is its own PLAN REVIEW / CODE REVIEW line — so in delegated mode no plan could ever record a
+	// PASS and no implementer could spawn. The named review spawn of a plan may still write that
+	// plan; the REVIEW_LINE rule below then decides whether the line is its verdict.
+	const delegatedReview = currentPlanner(cfg) === "delegated" ? (matchReviewSpawn(readReviewSpawns(), e.agentId ?? "")?.spawn.plan ?? null) : null;
 	if (currentPlanner(cfg) === "delegated") {
 		for (const p of writes) {
 			if (!MAIN_PLAN_FILE.test(p) || p === delegatedPlanner) continue;
+			if (delegatedReview && path.resolve(e.cwd, p) === path.resolve(delegatedReview)) continue;
 			if (delegatedPlanner) return `planner is delegated — your Planner role names ${delegatedPlanner} only; ${p} is not yours to write.`;
 			return `planner is delegated — plan files are the planner agent's; your brief carries no "Planner role for <plan path>" line, so ${p} is refused.`;
 		}

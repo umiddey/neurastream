@@ -12,7 +12,7 @@ import { chatPlanner, currentPlanner, plannerBaselineFile, plannerFile, plannerP
 import { configFile, loadConfig, type Config } from "../src/core/config.ts";
 import { checkPlanEdit, checkTool, spawnProblem } from "../src/core/guards.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
-import { PROTECTED, protectedHit } from "../src/core/queue/lib.ts";
+import { PROTECTED, protectedHit, STATE_DIR } from "../src/core/queue/lib.ts";
 
 const roots: string[] = [];
 const queueEnvBefore = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("QUEUE_")));
@@ -227,6 +227,21 @@ test("delegated: the planner sub's brief-named NEW plan with its Planner header 
 	expect(pre.allow).toBe(true);
 	const d = checkPlanEdit({ path: plan, before: "", after: content, agent: "sub", agentId: "PlannerGlm" }, cfg);
 	expect(d.allow).toBe(true);
+});
+
+// I-20261102-27: the delegated seam refused the review spawn too, and a review spawn's only write
+// is its own verdict line — so no plan could record a PASS and no implementer could ever spawn.
+test("delegated: the named review spawn may write its own plan's verdict, anyone else may not", () => {
+	writePlannerFile("delegated");
+	const plan = planPath("immediate/20261102_1801_planner_work.md");
+	writeFileSync(join(STATE_DIR, "review-spawns.json"), JSON.stringify({ revPunch: { plan, text: "", hash: "x", verdicts: 0 } }));
+	const line = "- 2026-11-02 23:40 revPunch: PLAN REVIEW: PASS — redundant: none — inefficient: none — insecure: none\n";
+	const pre = checkTool({ tool: "edit", input: { path: plan, old_string: "## Progress\n", new_string: `## Progress\n${line}` }, cwd: root, agent: "sub", agentId: "revPunch", calls: 0, paths: [], writes: [], command: "" }, cfg);
+	expect(pre.allow).toBe(true);
+	// The exemption is that one spawn on that one plan: a different reviewer is still refused.
+	const other = checkTool({ tool: "write", input: { path: plan, content: "# Other\n" }, cwd: root, agent: "sub", agentId: "revOther", calls: 0, paths: [], writes: [], command: "" }, cfg);
+	expect(other.allow).toBe(false);
+	expect(other.reason).toContain("planner is delegated");
 });
 
 test("delegated: the planner sub writing a DIFFERENT plan path is refused", () => {
