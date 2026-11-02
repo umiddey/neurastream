@@ -4,10 +4,11 @@ import { ConfigError, loadConfig, type Config } from "../core/config.ts";
 import { nowSec } from "../core/clock.ts";
 import { buildEpisodes, type Episode } from "../core/episodes.ts";
 import { importWhytrailLabels } from "../core/label-import.ts";
+import { assignLabel } from "../core/labels.ts";
 import { defaultRunSource } from "../adapters/omp/sessions.ts";
 import { ompTraceRuns, spawnBriefsIn } from "../adapters/omp/traces.ts";
 
-const USAGE = "usage: neurastream labels episodes [--since 30d] [--json]\n       neurastream labels import --repo <dir> [--since 30d] [--json]";
+const USAGE = "usage: neurastream labels episodes [--since 30d] [--json]\n       neurastream labels import --repo <dir> [--since 30d] [--json]\n       neurastream labels assign <episode> --party plan|implementer|both --why <text>";
 const SINCE = /^(\d+)([dhm])$/;
 
 function gatherEpisodes(cfg: Config, cutoff: number): Episode[] {
@@ -19,12 +20,13 @@ function gatherEpisodes(cfg: Config, cutoff: number): Episode[] {
 }
 
 export function runLabels(args: string[], opts: { home?: string } = {}): number {
-	if (args[0] !== "episodes" && args[0] !== "import") {
+	if (args[0] !== "episodes" && args[0] !== "import" && args[0] !== "assign") {
 		console.error(USAGE);
 		return 2;
 	}
 	try {
 		const cfg = loadConfig(opts.home === undefined ? undefined : { home: opts.home });
+		if (args[0] === "assign") return runAssign(args.slice(1), cfg);
 		let windowSec = cfg.labels.episode_days * 86400;
 		let json = false;
 		let repo: string | undefined;
@@ -56,4 +58,21 @@ export function runLabels(args: string[], opts: { home?: string } = {}): number 
 		console.error(error instanceof ConfigError ? error.message : String(error));
 		return 1;
 	}
+}
+
+function runAssign(args: string[], cfg: Config): number {
+	const episode = args[0];
+	if (!episode || episode.startsWith("-")) { console.error(USAGE); return 2; }
+	let party: string | undefined;
+	let why: string | undefined;
+	for (let i = 1; i < args.length; i++) {
+		const arg = args[i]!;
+		if (arg === "--party") party = args[++i];
+		else if (arg === "--why") why = args[++i];
+		else { console.error(USAGE); return 2; }
+	}
+	if ((party !== "plan" && party !== "implementer" && party !== "both") || !why) { console.error(USAGE); return 2; }
+	const line = assignLabel(cfg.paths.score_state, episode, party, why, nowSec());
+	console.log(`${line.episode} ${line.label} ${line.party}`);
+	return 0;
 }

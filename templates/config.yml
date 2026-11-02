@@ -294,6 +294,7 @@ snapshot:
 
 labels:
   episode_days: 30
+  flip_weight: 1.0   # share of an episode's accept points a flip removes (1 = all)
 traces:
   provider:
     # Provider-honesty rules (src/core/trace-provider.ts). The maps below are open: an empty

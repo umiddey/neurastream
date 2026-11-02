@@ -98,6 +98,8 @@ export function helpText(): string {
 		"  neurastream incident <cmd>    incidents Main must act on: list, add, plan, dismiss (see README)",
 		"  neurastream labels episodes [--since 30d] [--json]",
 		"                                join scored work, agent runs and spawn briefs",
+		"  neurastream labels assign <episode> --party plan|implementer|both --why <text>",
+		"                                append a party override; the last ledger line wins",
 		"  neurastream traces claims <runId|--since 24h> [--json]",
 		"                                check a run's final-report claims (test counts, exit codes,",
 		"                                SHAs, heavy-run labels, changed paths) against the run's own",
