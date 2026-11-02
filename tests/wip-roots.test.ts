@@ -1,5 +1,6 @@
 import { afterAll, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { configFile, loadConfig } from "../src/core/config.ts";
@@ -191,4 +192,64 @@ test("keyOf resolves symlinks in home and path", () => {
 
 	const key = keyOf(join(symHome, "Work/demo-wt"), symHome);
 	expect(key).toBe("Work_demo-wt");
+});
+
+// The retired golden "wip-snapshot matches the original" protected this: a snapshot saves the
+// unsaved work as a hidden commit without touching the worktree or its index. P1 moved the repo
+// walk to wip.roots, so the oracle comparison is gone; the protection stays, import-driven.
+test("wip-snapshot over a wip.roots repo leaves the worktree and its index untouched and writes refs/wip/<key>/<stamp>", () => {
+	const base = mkdtempSync(join(tmpdir(), "wip-snap-guard-"));
+	DIRS.push(base);
+	const home = join(base, "home");
+	const repo = join(home, "Work/demo");
+	mkdirSync(repo, { recursive: true });
+	const g = (args: string[]): string => {
+		const r = spawnSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+		if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
+		return r.stdout;
+	};
+
+	mkdirSync(join(home, ".local/bin"), { recursive: true });
+	writeFileSync(join(home, ".local/bin/wip-check"), "#!/bin/sh\necho ok\n");
+	chmodSync(join(home, ".local/bin/wip-check"), 0o755);
+
+	const cfg = loadConfig({ home, file: join(home, "config.yml"), env: {} });
+	cfg.wip.roots = [join(home, "Work")];
+	cfg.wip.status_log = join(home, "Work/WIP-STATUS.md");
+
+	const origHome = process.env.HOME;
+	const origPath = process.env.PATH;
+	process.env.HOME = home;
+	process.env.PATH = `${join(home, ".local/bin")}:${origPath ?? ""}`;
+	try {
+		g(["init", "-b", "main"]);
+		g(["config", "user.email", "t@example.com"]);
+		g(["config", "user.name", "t"]);
+		writeFileSync(join(repo, "a.txt"), "one\n");
+		g(["add", "a.txt"]);
+		g(["commit", "-m", "init"]);
+		writeFileSync(join(repo, "a.txt"), "two\n"); // dirty tracked change
+		writeFileSync(join(repo, "note.txt"), "note\n"); // untracked, belongs in the save
+		writeFileSync(join(repo, ".env"), "SECRET=1\n"); // secret-named, must NOT be saved
+
+		const before = g(["status", "--porcelain"]);
+		expect(wipSnapshot(["--quiet"], cfg)).toBe(0);
+		expect(g(["status", "--porcelain"])).toBe(before);
+
+		const refs = g(["for-each-ref", "--format=%(refname)", "refs/wip/Work_demo/"]).split("\n").filter(Boolean);
+		expect(refs).toHaveLength(1);
+		const ref = refs[0]!;
+		expect(ref).toMatch(/^refs\/wip\/Work_demo\/\d{8}-\d{4}$/);
+		expect(g(["rev-parse", "--verify", `${ref}^{commit}`]).trim()).toMatch(/^[0-9a-f]{40,}$/);
+		// hidden: the save commit is reachable from no branch
+		expect(Number(g(["rev-list", "--count", `refs/heads/main..${ref}`]))).toBeGreaterThan(0);
+		// it saved the unsaved work: the tracked edit and the new file, never the secret-named file
+		const tree = g(["ls-tree", "-r", "--name-only", ref]);
+		expect(tree).toContain("note.txt");
+		expect(tree).not.toContain(".env");
+		expect(g(["show", `${ref}:a.txt`])).toBe("two\n");
+	} finally {
+		process.env.HOME = origHome;
+		process.env.PATH = origPath;
+	}
 });
