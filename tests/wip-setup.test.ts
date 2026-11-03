@@ -31,11 +31,24 @@ function cfgOf(home: string): Config {
 	return loadConfig({ home, env: {} });
 }
 
+/** The real gate's shape: `scan <repo> <rev>` — fewer than 2 args after scan prints usage and
+ * exits 2; a repo arg that is not a directory, or a rev that does not resolve, exits 2; a clean
+ * repo exits 0. */
+const REAL_GATE = `#!/bin/sh
+if [ "$#" -lt 3 ] || [ "$1" != "scan" ]; then
+	echo "usage: scan <repo> <rev>..." >&2
+	exit 2
+fi
+[ -d "$2" ] || exit 2
+git -C "$2" rev-parse --verify -q "$3" || exit 2
+exit 0
+`;
+
 /** A gate that answers like the real one on a clean repo: exit 0. */
 function fakeGate(home: string): string {
 	const cfg = cfgOf(home);
 	mkdirSync(join(cfg.wip.secret_gate, ".."), { recursive: true });
-	writeFileSync(cfg.wip.secret_gate, "#!/bin/sh\nexit 0\n");
+	writeFileSync(cfg.wip.secret_gate, REAL_GATE);
 	chmodSync(cfg.wip.secret_gate, 0o755);
 	return cfg.wip.secret_gate;
 }
@@ -87,6 +100,21 @@ test("linux: a public backup URL is refused and nothing is written", () => {
 	fakeGate(home);
 	const r = recorder();
 	const code = wipOn({ home, platform: "linux", runner: r.runner, visibility: () => "public", backupUrl: "git@github.com:owner/repo.git", print: () => {}, error: () => {} });
+	expect(code).toBe(1);
+	const paths = wipUnitPaths(home, "linux");
+	expect(existsSync(paths.snapshot[0]!)).toBe(false);
+	expect(existsSync(paths.backup[1]!)).toBe(false);
+	expect(r.calls.some(c => c.includes("enable"))).toBe(false);
+});
+
+test("linux: a secret gate that exits 2 on a clean repo is refused and nothing is written", () => {
+	const { home } = sandbox();
+	const cfg = cfgOf(home);
+	mkdirSync(join(cfg.wip.secret_gate, ".."), { recursive: true });
+	writeFileSync(cfg.wip.secret_gate, "#!/bin/sh\nexit 2\n");
+	chmodSync(cfg.wip.secret_gate, 0o755);
+	const r = recorder();
+	const code = wipOn({ home, platform: "linux", runner: r.runner, visibility: () => "private", backupUrl: "git@github.com:owner/repo.git", print: () => {}, error: () => {} });
 	expect(code).toBe(1);
 	const paths = wipUnitPaths(home, "linux");
 	expect(existsSync(paths.snapshot[0]!)).toBe(false);

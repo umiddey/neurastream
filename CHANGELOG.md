@@ -1,4 +1,8 @@
 # Changelog
+## 0.2.71
+### Fixed
+- `wip on --backup-url` works with the real secret gate: the setup check probes `git-secret-gate scan <repo> HEAD` on a throwaway one-commit repo, the way the backup calls it, instead of a bare `scan` that the real gate answers with usage and exit 2. The test gate now mirrors the real gate's argument handling.
+
 ## 0.2.70
 ### Added
 - `wip` roots (plan 20261027_1130 P1): `wip.roots` in the config, one shared repo list, and `wip add|remove|list` to choose which folders are snapshot; the old hand-made units and symlinks are no longer needed.
