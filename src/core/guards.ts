@@ -1355,12 +1355,16 @@ function subRules(e: ToolEvent, input: Record<string, unknown>, paths: string[],
 	for (const plan of plans) {
 		const hit = paths.filter(p => !q.isOrchestrationPath(p, plans) && q.planCovers(plan, p, plans));
 		if (!hit.length) continue;
-		if (plan.errors.length) return `plan ${plan.file} is invalid (${plan.errors.join("; ")}). Stop and report to Main.`;
+		// An invalid plan stops code writes, not reads and not the repair of plan files: refusing those
+		// too left a planner unable to fix the very errors the guard named (writes are checked before
+		// the file is valid, so no valid text could ever land).
+		const readOnly = cfg.guards.read_tools.includes(e.tool) || (cfg.guards.shell_tools.includes(e.tool) && !writes.length && !writesShellText(input, cfg));
+		const planRepair = writes.length > 0 && writes.every(w => q.planAt(w, plans));
+		if (plan.errors.length && !readOnly && !planRepair) return `plan ${plan.file} is invalid (${plan.errors.join("; ")}). Stop and report to Main.`;
 		// P5c (plan 20261031_1207): reads and read-only shell calls skip the phase-0 blockers — a
 		// failing blocker used to deny every read of a covered path and send the worker back blind.
 		// The shell filter is the review lock's (writesShellText), so landing text keeps its blocker.
-		const readOnly = cfg.guards.read_tools.includes(e.tool) || (cfg.guards.shell_tools.includes(e.tool) && !writes.length && !writesShellText(input, cfg));
-		if (!readOnly) {
+		if (!readOnly && !planRepair) {
 			const why = runBlockers(plan, hit, e, cfg);
 			if (why) return why;
 		}
