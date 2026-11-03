@@ -5,7 +5,7 @@ import type { Config } from "./config.ts";
 import { nowSec, strftime } from "./clock.ts";
 import { printText } from "./help.ts";
 import { pyFloatStr } from "./pyfmt.ts";
-import { cmd } from "./proc.ts";
+import { cmd, gitRaw } from "./proc.ts";
 import { failureLine, gitOrFail, realpathOrFail, recordWipRun } from "./wip-fail.ts";
 import { keyOf, wipRepos } from "./wip-roots.ts";
 
@@ -102,9 +102,14 @@ export function wipSnapshot(args: string[], cfg: Config): number {
 		seen.set(common, repo);
 		const list = gitOrFail(failed, repo, ["worktree", "list", "--porcelain"]);
 		if (!list) continue;
-		for (const line of list.stdout.split("\n")) {
-			if (line.startsWith("worktree ") && existsSync(line.slice(9)) && statSync(line.slice(9)).isDirectory()) {
-				worktrees.push(line.slice(9));
+		// Blocks (blank-line separated) match `worktree list --porcelain`; the bare entry of a
+		// bare main repo carries a `bare` line and is no worktree to snapshot.
+		for (const block of list.stdout.split("\n\n")) {
+			if (block.split("\n").some(line => line === "bare")) continue;
+			for (const line of block.split("\n")) {
+				if (line.startsWith("worktree ") && existsSync(line.slice(9)) && statSync(line.slice(9)).isDirectory()) {
+					worktrees.push(line.slice(9));
+				}
 			}
 		}
 	}
@@ -112,8 +117,12 @@ export function wipSnapshot(args: string[], cfg: Config): number {
 	const saved: { wt: string; br: string; n: number; sk: number; ref: string }[] = [];
 	let same = 0;
 	for (const wt of worktrees) {
-		const head = gitOrFail(failed, wt, ["rev-parse", "--verify", "HEAD"]);
-		if (!head) continue;
+		// Unborn HEAD (no commit yet): nothing to save, skipped quietly. Any other git failure is real.
+		const head = gitRaw(wt, ["rev-parse", "--verify", "-q", "HEAD"]);
+		if (head.code !== 0) {
+			if (!(head.code === 1 && head.stderr === "")) failed.push(failureLine(wt, "git rev-parse --verify HEAD", head.stderr));
+			continue;
+		}
 		const st = gitOrFail(failed, wt, ["status", "--porcelain"]);
 		if (!st || !st.stdout) continue;
 		const gitdir = gitOrFail(failed, wt, ["rev-parse", "--absolute-git-dir"]);

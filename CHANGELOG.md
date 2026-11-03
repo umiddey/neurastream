@@ -1,4 +1,8 @@
 # Changelog
+## 0.2.74
+### Fixed
+- Repos that cannot be saved no longer fail the wip snapshot and backup (I-20261103-21/-22): a dir whose `.git` file names a gitdir that is gone is skipped (no repo left to save), a repo with no commit yet is skipped instead of failing with "Needed a single revision", the `bare` block of `worktree list --porcelain` is skipped instead of failing with "this operation must be run in a work tree", and the backup reads branches by full refname with a trailing `--`, so a branch named like an existing file (`ops/x`) is counted and pushed instead of dropped as "ambiguous argument". A repo git still cannot read stays a FAILED entry and the exit stays 1.
+
 ## 0.2.73
 ### Fixed
 - A planner (or any agent) can repair an invalid plan. The invalid-plan refusal fired on any call that merely *mentioned* a covered path, including the plan's own rewrite whose text cites code files, so the errors the guard named could never be fixed by the one who had to fix them. Now an invalid plan refuses code writes only; reads and writes whose targets are plan files pass.

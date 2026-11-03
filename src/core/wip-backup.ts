@@ -92,12 +92,17 @@ export function wipBackup(
 		const mainWt = top.stdout ? top.stdout.split("\n")[0]!.slice(9) : repo;
 		const rkey = keyOf(mainWt, cfg.paths.home);
 		const specs: { src: string; dst: string }[] = [];
-		const heads = gitOrFail(failed, repo, ["for-each-ref", "--format=%(refname:short)", "refs/heads"]);
+		const heads = gitOrFail(failed, repo, ["for-each-ref", "--format=%(refname)", "refs/heads"]);
 		if (!heads) continue;
-		for (const b of heads.stdout.split("\n").filter(Boolean)) {
-			const n = gitOrFail(failed, repo, ["rev-list", "--count", b, "--not", "--remotes"]);
+		for (const ref of heads.stdout.split("\n").filter(Boolean)) {
+			// Full refname and a trailing `--`: a branch named like an existing file (ops/x) is not
+			// "ambiguous argument" — that failure must not drop the branch from the backup.
+			const n = gitOrFail(failed, repo, ["rev-list", "--count", ref, "--not", "--remotes", "--"]);
 			if (!n) continue;
-			if (/^\d+$/.test(n.stdout) && Number(n.stdout) > 0) specs.push({ src: `refs/heads/${b}`, dst: `refs/heads/${rkey}/${b}` });
+			if (/^\d+$/.test(n.stdout) && Number(n.stdout) > 0) {
+				const branch = ref.slice("refs/heads/".length);
+				specs.push({ src: ref, dst: `refs/heads/${rkey}/${branch}` });
+			}
 		}
 		const wips = gitOrFail(failed, repo, ["for-each-ref", "--sort=-refname", "--format=%(refname)", "refs/wip"]);
 		if (!wips) continue;
