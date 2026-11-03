@@ -632,10 +632,18 @@ export function deliverOwnerInbox(pi: ExtensionHost, cfg: Config): void {
 let activeAdapterReset: (() => void) | null = null;
 /** The limit tick: one check of the open episode every 30 s (plan 20261027_1500 P3). */
 const LIMIT_TICK_MS = 30_000;
+/** The probe's command line and env. Never process.execPath: inside the harness that is the omp
+ * binary, so the child was a full Main session (2026-11-03: stray Mains). bun comes from PATH, as
+ * every bin's `#!/usr/bin/env bun` shebang does; the child env drops MAIN_ENV. */
+export function limitProbeSpawn(env: NodeJS.ProcessEnv = process.env): { cmd: string; args: string[]; env: NodeJS.ProcessEnv } {
+	const { [MAIN_ENV]: _main, ...rest } = env;
+	return { cmd: "nice", args: ["-n", "19", "bun", join(import.meta.dir, "../../cli/limit-probe.ts")], env: rest };
+}
 /** One limit probe as a niced child (cli/limit-probe.ts). It writes the episode state itself;
  * a failed start is logged and the next tick tries again. */
 function spawnLimitProbeChild(cfg: Config): void {
-	const child = spawn("nice", ["-n", "19", process.execPath, join(import.meta.dir, "../../cli/limit-probe.ts")], { detached: true, stdio: "ignore", env: process.env });
+	const p = limitProbeSpawn();
+	const child = spawn(p.cmd, p.args, { detached: true, stdio: "ignore", env: p.env });
 	child.on("error", err => adapterLog(cfg, `RATE-LIMIT probe: could not start: ${err.message}`));
 	child.unref();
 }

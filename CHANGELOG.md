@@ -1,4 +1,8 @@
 # Changelog
+## 0.2.77
+### Fixed
+- The rate-limit probe no longer starts a full Main session. It was spawned with `process.execPath`, which inside omp is the omp binary, so every probe tick launched a stray Main (2026-11-03). It now runs `nice -n 19 bun cli/limit-probe.ts` with `NEURASTREAM_MAIN_LAUNCHER` removed from its env (`limitProbeSpawn`).
+
 ## 0.2.76
 ### Changed
 - The resource alerts (CPU overheating, memory pressure, IO pressure) are normal-urgency notifications with a 10 s timeout (`NOTIFY_TIMEOUT_MS`) instead of critical ones, so they disappear by themselves instead of staying until dismissed.
