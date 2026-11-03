@@ -1,4 +1,9 @@
 # Changelog
+## 0.2.72
+### Fixed
+- A `Planner role for <plan>` brief binds only the path (its first word). Text after the path on that line no longer becomes part of the path, which made the planner's real write refused after it had spent its budget. The spawn is now refused up front when the path is not an absolute `.md` under an existing `docs/plans` dir, with the exact line format in the message.
+- The release verdict has dates to judge by: the watcher ran from the installed copy, which has no `.git`, so it found no release tags and never judged a release (0 `release-verdict` records). With no checkout it now reads the publish dates from the npm registry, and judges only releases of the last 7 days so old versions are not all judged at once. A network failure lists no releases, as before.
+
 ## 0.2.71
 ### Fixed
 - `wip on --backup-url` works with the real secret gate: the setup check probes `git-secret-gate scan <repo> HEAD` on a throwaway one-commit repo, the way the backup calls it, instead of a bare `scan` that the real gate answers with usage and exit 2. The test gate now mirrors the real gate's argument handling.

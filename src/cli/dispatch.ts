@@ -6,7 +6,7 @@ import { beat, withHeartbeat } from "../core/heartbeat.ts";
 import { helpDoc } from "../core/help.ts";
 import { watchOnce, systemUnitLister, watchDoctorLine, watchHealth, timerStaffedPlans } from "../core/watch.ts";
 import { defaultGather } from "../core/main-start.ts";
-import { gatherTags } from "../core/results.ts";
+import { gatherReleaseTags } from "../core/results.ts";
 import { nowSec } from "../core/clock.ts";
 import { postReply } from "../core/notify.ts";
 import { log } from "../core/guards.ts";
@@ -213,7 +213,7 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 					gather: defaultGather(cfg, getAdapter(cfg)),
 					// P11: the self repo's tags and the session source feed the release verdict; no tags — no verdicts.
 					source: getAdapter(cfg).runSource(cfg),
-					tags: gatherTags(gitTop(import.meta.dir)?.repo ?? null),
+					tags: gatherReleaseTags(gitTop(import.meta.dir)?.repo ?? null).filter(t => t.ts > nowSec() - 7 * 86400),
 					notify: text => {
 						sends.push(
 							postReply(text, cfg).then(rs => {

@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { ompRunSource } from "../src/adapters/omp/sessions.ts";
 import type { Run, RunMessage } from "../src/core/adapter.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
-import { chains, closeTime, featuresReport, gatherTags, loadPlans, releasesReport } from "../src/core/results.ts";
+import { chains, closeTime, featuresReport, gatherTags, loadPlans, registryTags, releasesReport } from "../src/core/results.ts";
 import { appendMetric, type Ev } from "../src/core/metrics.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "ns-results-"));
@@ -411,6 +411,16 @@ test("gatherTags lists the v* tags of a repo with their tag dates; none outside 
 	expect(tags[0]!.ts).toBe(Date.UTC(2026, 9, 15) / 1000);
 	expect(tags[1]!.ts).toBe(Date.UTC(2026, 9, 20, 12) / 1000);
 	expect(gatherTags(join(TMP, "no-repo-here"))).toEqual([]);
+});
+
+test("registryTags turns the npm publish dates into v* release dates and skips created/modified and junk", () => {
+	const doc = { time: { created: "2026-10-01T00:00:00.000Z", modified: "2026-11-03T09:00:00.000Z", "0.2.70": "2026-11-02T10:00:00.000Z", "0.2.71": "2026-11-03T08:00:00.000Z", "0.2.72": "not a date" } };
+	expect(registryTags(doc)).toEqual([
+		{ name: "v0.2.70", ts: Date.UTC(2026, 10, 2, 10) / 1000 },
+		{ name: "v0.2.71", ts: Date.UTC(2026, 10, 3, 8) / 1000 },
+	]);
+	expect(registryTags({})).toEqual([]);
+	expect(registryTags(null)).toEqual([]);
 });
 
 test("releases: a 10-day-old tag shows both sides, a 2-day-old tag is measuring, product values are picked per repo", () => {

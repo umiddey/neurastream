@@ -364,10 +364,19 @@ function matchReviewSpawn(spawns: Record<string, ReviewSpawn>, agentId: string):
 
 // --- planner mode (plan 20261102_1515 P2): the named planner spawns ---
 
-/** The plan path a brief's `Planner role for <plan path>` line names, or null. */
-function plannerRolePlan(text: string): string | null {
-	const p = (/^[ \t]*Planner role for[ \t]+(.+?)[ \t]*$/im.exec(text)?.[1] ?? "").trim();
+/** The plan path a brief's `Planner role for <plan path>` line names (its first word, trailing `.,;:` dropped, so text after the path never joins it), or null. */
+export function plannerRolePlan(text: string): string | null {
+	const p = (/^[ \t]*Planner role for[ \t]+(\S+)/im.exec(text)?.[1] ?? "").replace(/[.,;:]+$/, "");
 	return p || null;
+}
+
+/** Spawn-time check of a bound planner plan path: absolute, `.md`, under a `docs/plans` dir that exists (the planner may create a subfolder). Returns the refusal text, or null when fine. */
+export function plannerPlanProblem(plan: string): string | null {
+	const cut = plan.indexOf("/docs/plans/");
+	const ok = path.isAbsolute(plan) && plan.endsWith(".md") && cut >= 0 && existsSync(plan.slice(0, cut + "/docs/plans".length));
+	return ok
+		? null
+		: `the \`Planner role for\` path "${plan}" must be an absolute .md path in an existing docs/plans dir, alone as the first word after "for" (e.g. \`Planner role for /path/to/repo/docs/plans/20261103_1015_x.md\`).`;
 }
 
 /** P2(b): the named planner spawns, spawn name → the one plan path its brief may create and edit (planner-spawns.json in the state dir). Recorded only on an approved spawn: in main mode the spawn gate refused the brief, so a binding exists only for a delegated planner. */
@@ -1036,6 +1045,11 @@ export function spawnProblem(
 		// ## Allowed deny still holds, and it needs a name to key its role.
 		if (plannerFor && currentPlanner(cfg) === "main") {
 			problems.push(`${label}: planner mode is main — a Planner-role spawn needs the owner's \`planner delegated\` switch.`);
+			continue;
+		}
+		const plannerBad = plannerFor ? plannerPlanProblem(plannerFor) : null;
+		if (plannerBad) {
+			problems.push(`${label}: ${plannerBad}`);
 			continue;
 		}
 		if (plannerFor && !t?.name) {
@@ -1848,6 +1862,7 @@ export function checkSpawn(e: SpawnEvent, cfg: Config, runner: CommandRunner = d
 	const delegatedPlanner = plannerFor !== null && currentPlanner(cfg) === "delegated";
 	if (plannerFor && !delegatedPlanner)
 		problems.push(`${e.agent}: planner mode is main — a Planner-role spawn needs the owner's \`planner delegated\` switch.`);
+	else if (delegatedPlanner && plannerPlanProblem(plannerFor)) problems.push(`${e.agent}: ${plannerPlanProblem(plannerFor)}`);
 	else if (delegatedPlanner && !e.name) problems.push(`${e.agent}: a planner spawn needs a name (the task name keys its planner role).`);
 	const [why, named] = delegatedPlanner ? [null, [] as string[]] : planGate(e.brief, e.agent, cfg);
 	if (why) problems.push(why);
