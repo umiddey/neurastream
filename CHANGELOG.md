@@ -1,4 +1,15 @@
 # Changelog
+## 0.2.70
+### Added
+- `wip` roots (plan 20261027_1130 P1): `wip.roots` in the config, one shared repo list, and `wip add|remove|list` to choose which folders are snapshot; the old hand-made units and symlinks are no longer needed.
+- Hooked repos (P8): a repo can opt in to a snapshot hook; wip tells you when a hook was rewritten outside `wip.backup_hook_off`.
+- Unsaved-work alerts (P5): a failed snapshot now says so, instead of failing silently as it had since 2026-10-25.
+- A README section "Saving unsaved work (wip)" covering roots, on/off, the private-only rule, restore and alerts.
+### Fixed
+- Private-only backup (P3): a backup target must be verifiably private; a github URL with no authenticated `gh` is refused instead of betting on it.
+- One repo, one snapshot (P2): a repo reachable through two paths is deduplicated, so it is not snapshotted twice.
+- macOS keys (P8b): snapshot keys are built from the real path of home and repo, so a symlinked HOME no longer forks `refs/wip` between `/var` and `/private/var`.
+- CI tests are machine-independent (P9b): the `gh` visibility probe is stubbed and temp bases are realpath'd, so the suite no longer depends on the machine's PATH or tmpdir.
 ## 0.2.69
 ### Fixed
 - The named review spawn records its own verdict while the planner is delegated (I-20261102-27): the delegated pre-tool seam refused every sub write to a plan path except the bound planner's, so a `PLAN REVIEW` line could never land and no plan could pass review — no implementer could spawn. The seam now allows exactly the plan the spawn was named on, using the same predicate the review lock already uses; any other reviewer is still refused.
