@@ -1,4 +1,8 @@
 # Changelog
+## Unreleased
+### Added
+- `main-start` prints a `terminal:` line (name, version, session type) read from the environment, so Main knows which terminal it runs in at every start.
+
 ## 0.2.74
 ### Fixed
 - Repos that cannot be saved no longer fail the wip snapshot and backup (I-20261103-21/-22): a dir whose `.git` file names a gitdir that is gone is skipped (no repo left to save), a repo with no commit yet is skipped instead of failing with "Needed a single revision", the `bare` block of `worktree list --porcelain` is skipped instead of failing with "this operation must be run in a work tree", and the backup reads branches by full refname with a trailing `--`, so a branch named like an existing file (`ops/x`) is counted and pushed instead of dropped as "ambiguous argument". A repo git still cannot read stays a FAILED entry and the exit stays 1.
