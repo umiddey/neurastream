@@ -6,8 +6,8 @@
 // what this replaces.
 
 import { spawnSync } from "node:child_process";
-import { accessSync, constants, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { checkEdited, setConfigKeys } from "./config-edit.ts";
@@ -117,9 +117,21 @@ export function wipOn(opts: WipSetupOptions & { backupUrl?: string | null } = {}
 			executable = false;
 		}
 		if (!executable) return fail(`${gate} is missing — the backup refuses to upload without the secret gate; nothing was written`);
-		const scan = cmd([gate, "scan"]);
-		if (scan.code !== 0 && scan.code !== 1) {
-			return fail(`${gate} scan exited ${scan.code}${scan.stderr.trim() ? `: ${scan.stderr.trim().split("\n")[0]}` : ""} — nothing was written`);
+		// Probe the gate exactly the way the backup calls it (scan <repo> <rev>): a bare `scan`
+		// makes the real gate print usage and exit 2, which would read as a broken scanner. Build a
+		// throwaway repo with one commit so the gate has a rev to answer on.
+		const dir = mkdtempSync(join(tmpdir(), "wip-gate-probe-"));
+		try {
+			const init = cmd(["git", "init", "-q"], { cwd: dir });
+			if (init.code !== 0) return fail(`git init exited ${init.code}: ${init.stderr.trim().split("\n")[0]} — nothing was written`);
+			const commit = cmd(["git", "-c", "user.name=probe", "-c", "user.email=probe", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "probe"], { cwd: dir });
+			if (commit.code !== 0) return fail(`git commit exited ${commit.code}: ${commit.stderr.trim().split("\n")[0]} — nothing was written`);
+			const scan = cmd([gate, "scan", dir, "HEAD"]);
+			if (scan.code !== 0 && scan.code !== 1) {
+				return fail(`${gate} scan exited ${scan.code}${scan.stderr.trim() ? `: ${scan.stderr.trim().split("\n")[0]}` : ""} — nothing was written`);
+			}
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
 		}
 	}
 	// Write the units, then enable them. Always a write: an old hand-made unit would otherwise stay.
