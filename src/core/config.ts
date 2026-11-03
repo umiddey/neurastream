@@ -85,12 +85,18 @@ export interface Config {
 	};
 	oc: { model_prefix: string; tail_lines: number; tail_chars: number };
 	wip: {
+		roots: string[];
+		depth: number;
 		limit: number;
 		days: number;
+		keep_hourly: number;
+		keep_days: number;
+		stale_hours: number;
 		backup_url: string;
 		backup_log: string;
 		backup_hook_off: string[];
 		backup_max_repo_mb: number;
+		private_check: string;
 		secret_gate: string;
 		snapshot_max_mb: number;
 		status_log: string;
@@ -166,6 +172,8 @@ export interface Config {
 	autonomy: {
 		/** Tier in force when `<state dir>/autonomy-tier` does not name one (src/core/autonomy.ts). */
 		tier: "strict" | "opinionated" | "full";
+		/** Planner mode in force when the state file does not name one (plan 20261102_1515, src/core/autonomy.ts): "main" = Main writes the plans; "delegated" = the planner agent does and Main routes. */
+		planner: "main" | "delegated";
 		/** Main's project-file changes per guards.main_window_min window in tier strict. */
 		strict_edit_limit: number;
 		/** Minutes the approve phrase approves exactly one push/merge in tier strict. */
@@ -329,6 +337,8 @@ export interface Config {
 	adapter?: { name: string; sessions: string; pins: string; extensions: string };
 	/** Notices about legacy keys in the user's config file; empty when there are none. */
 	notices: string[];
+	/** The file these values were loaded from: the anchor the planner mode baseline sits beside. */
+	file?: string;
 }
 
 type EnvKind = "string" | "number" | "csv";
@@ -348,6 +358,10 @@ const ENV_MAP: Record<string, { path: string[]; kind: EnvKind }> = {
 	PLAN_GUARD_LOG: { path: ["paths", "plan_guard_log"], kind: "string" },
 	WIP_LIMIT: { path: ["wip", "limit"], kind: "number" },
 	WIP_DAYS: { path: ["wip", "days"], kind: "number" },
+	WIP_DEPTH: { path: ["wip", "depth"], kind: "number" },
+	WIP_KEEP_HOURLY: { path: ["wip", "keep_hourly"], kind: "number" },
+	WIP_KEEP_DAYS: { path: ["wip", "keep_days"], kind: "number" },
+	WIP_STALE_HOURS: { path: ["wip", "stale_hours"], kind: "number" },
 	WIP_BACKUP_MAX_REPO_MB: { path: ["wip", "backup_max_repo_mb"], kind: "number" },
 	WIP_SNAPSHOT_MAX_MB: { path: ["wip", "snapshot_max_mb"], kind: "number" },
 	LOAD_MAX: { path: ["machine", "load_max"], kind: "number" },
@@ -577,6 +591,8 @@ function check(cfg: Config): void {
 		throw new ConfigError('approval.since must be "" or a plan stamp YYYYMMDD_HHMM (plans stamped at or after it need a page and an approval record)');
 	if (cfg.autonomy.tier !== "strict" && cfg.autonomy.tier !== "opinionated" && cfg.autonomy.tier !== "full")
 		throw new ConfigError('autonomy.tier must be "strict", "opinionated" or "full"');
+	if (cfg.autonomy.planner !== "main" && cfg.autonomy.planner !== "delegated")
+		throw new ConfigError('autonomy.planner must be "main" or "delegated"');
 	if (!Number.isInteger(cfg.autonomy.strict_edit_limit) || cfg.autonomy.strict_edit_limit < 1)
 		throw new ConfigError("autonomy.strict_edit_limit must be an integer >= 1");
 	if (!Number.isInteger(cfg.autonomy.go_minutes) || cfg.autonomy.go_minutes < 1)
@@ -610,6 +626,10 @@ function check(cfg: Config): void {
 	for (const [job, hours] of Object.entries(cfg.watch.expect)) {
 		if (typeof hours !== "number" || !(hours > 0)) throw new ConfigError(`watch.expect.${job} must be a positive number of hours`);
 	}
+	// P8 (plan 20261027_1130): an empty entry would match nothing under the exact match, but a
+	// whitespace one is a typo the owner cannot see — refuse both instead of silently ignoring them.
+	if (!Array.isArray(cfg.wip.backup_hook_off) || cfg.wip.backup_hook_off.some(h => typeof h !== "string" || h.trim() === ""))
+		throw new ConfigError("wip.backup_hook_off must list host/owner or host/owner/repo entries, none empty");
 	if (!Array.isArray(cfg.watch.units) || cfg.watch.units.some(u => typeof u !== "string" || u === "")) {
 		throw new ConfigError("watch.units must be a list of non-empty glob strings");
 	}
@@ -802,6 +822,7 @@ export function loadConfig(opts: LoadOptions = {}): Config {
 	applyEnv(merged, opts.env ?? process.env);
 	const expanded = expand(merged, home) as Config;
 	expanded.notices = notices;
+	expanded.file = file;
 	check(expanded);
 	return expanded;
 }

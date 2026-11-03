@@ -20,7 +20,7 @@ import { appendFileSync, existsSync, mkdirSync, openSync, readFileSync, renameSy
 import { basename, dirname, extname, join, resolve } from "node:path";
 import type { Decision, TraceEvent } from "../../core/adapter.ts";
 import { AGENTS_TEMPLATE, renderBlock } from "../../core/agents-md.ts";
-import { chatGo, chatTier, type Tier } from "../../core/autonomy.ts";
+import { chatGo, chatPlanner, chatTier, currentPlanner, plannerPin, stampPlannerMode, verifyPlannerMode, type Tier } from "../../core/autonomy.ts";
 import { chatApprove } from "../../core/plan-approval.ts";
 import { burdenRule, repoRules, rulesChanged } from "../../core/repo-rules.ts";
 import { configFile, loadConfig, reloadingConfig, type Config } from "../../core/config.ts";
@@ -29,7 +29,7 @@ import { nowSec, strftime } from "../../core/clock.ts";
 import { runDetectors, type DetectorInput } from "../../core/incident-detectors.ts";
 import { fileClaimStore } from "../../core/claims.ts";
 import { appendOwnerAnswer, readOwnerAnswers, readOwnerMessages } from "../../core/incidents.ts";
-import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, mainId, mainStateDir, newProgressEntries, planReadNote, recordMainResult, resetMainCalls, revertMainEdit, rekeySpawnFile, reviewSpawnEnd, STOP_PLAN_OFFER_REFUSAL } from "../../core/guards.ts";
+import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, mainId, mainStateDir, newProgressEntries, planReadNote, plannerSpawnPlan, recordMainResult, resetMainCalls, revertMainEdit, rekeySpawnFile, reviewSpawnEnd, STOP_PLAN_OFFER_REFUSAL } from "../../core/guards.ts";
 import { rateLimited } from "../../core/rate-limit.ts";
 import { backPost, clearLimitState, limitMetric, limitedPost, onLimited, readLimitState, timingOf, writeLimitState } from "../../core/limit-probe.ts";
 import { appendMetric } from "../../core/metrics.ts";
@@ -52,6 +52,25 @@ import { pinModel, providerOfModel, recordOut, resetEpochFromText } from "../../
 import { annotateResetTimes } from "../../core/reset-time.ts";
 // Registers the plugin-command matcher into core's writeTargets (side effect).
 import "./package-ops.ts";
+
+/**
+ * Re-reads the config, then holds the planner mode facts to the owner's baseline (P2 d): a
+ * non-owner write of the state file or of a mode key is reverted and the reverted config is
+ * re-read, so no handler ever acts on the dirt.
+ */
+export function freshPlannerConfig(freshConfig: () => Config): Config {
+	const next = freshConfig();
+	const held = verifyPlannerMode(plannerPin(next));
+	if (!held.reverted) return next;
+	adapterLog(next, `planner mode: reverted a non-owner change (${held.hint ?? "config dirt"})`);
+	return freshConfig();
+}
+
+/** A clean shutdown stamps the state the verify pass just confirmed (P2 d). */
+export function stampPlannerState(freshConfig: () => Config): void {
+	const cfg = freshPlannerConfig(freshConfig);
+	stampPlannerMode(plannerPin(cfg));
+}
 
 /** TraceEvents of the newest Main session file (D8's input); [] when there is none or it cannot be read. */
 function defaultMainEvents(cfg: Config): TraceEvent[] {
@@ -289,8 +308,9 @@ function writeCheckSnapshot(tool: string, input: Record<string, unknown>, cwd: s
 
 // Plan files a subagent write/edit may touch: snapshot before the call so tool_result can verify
 // and restore (the original snapshotted inside checkCall; core returns pure decisions now).
-function snapshotPlans(tool: string, input: Record<string, unknown>, cwd: string, snap: Map<string, string>, main: boolean): void {
+function snapshotPlans(tool: string, input: Record<string, unknown>, cwd: string, snap: Map<string, string>, main: boolean, plannerPlan: string | null, cfg: Config): void {
 	if (tool !== "write" && tool !== "edit") return;
+	const delegated = currentPlanner(cfg) === "delegated";
 	const plans = q.activePlans();
 	for (const p of q.writeTargets(tool, input, cwd)) {
 		if (snap.has(p)) continue;
@@ -304,7 +324,12 @@ function snapshotPlans(tool: string, input: Record<string, unknown>, cwd: string
 			}
 			continue;
 		}
-		if (!q.isOrchestrationPath(p, plans) || !q.planAt(p, plans)) continue;
+		if (!q.isOrchestrationPath(p, plans) || !q.planAt(p, plans)) {
+			// planner mode P2 (b): the brief's named plan snapshots before its create/edit so
+			// checkPlanEdit judges it (Planner header, Main-only lines) — a new plan file is not
+			// an indexed path yet, and every other plan write is refused pre-tool while delegated.
+			if (!(delegated && p === plannerPlan)) continue;
+		}
 		try {
 			snap.set(p, readFileSync(p, "utf8"));
 		} catch {}
@@ -620,6 +645,8 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 	let cfg = initial;
 	// The queue library resolves its paths from env snapshots; point them at this config first.
 	applyQueueEnv(cfg);
+	// P2 d: the first seam — a mode fact another writer left behind is reverted before any handler runs.
+	cfg = freshPlannerConfig(freshConfig);
 	// P5: seed the per-Main inbox floor once — a Main that has never delivered starts past rows
 	// that predate its registration; the pre-multi-main cursor file belongs to the default id's
 	// first start. Later reads/writes own the file, so the floor is only a creation-time default.
@@ -917,7 +944,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 	};
 
 	pi.on("before_agent_start", (event, ctx) => {
-		cfg = freshConfig();
+		cfg = freshPlannerConfig(freshConfig);
 		const c = asCtx(ctx);
 		const prompt = asString(asRecord(event).prompt);
 		if (c.kind !== "main") {
@@ -963,7 +990,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 	// The spawn event carries no brief, so the plan gate runs at the task tool call (original
 	// behaviour); here only the allow-list and the task-only rule apply, with the original texts.
 	pi.on("before_subagent_spawn", (event, _ctx) => {
-		cfg = freshConfig();
+		cfg = freshPlannerConfig(freshConfig);
 		const agent = asString(asRecord(event).agent);
 		const kind = asString(asRecord(event).invocationKind);
 		if (!q.allowedAgents().has(agent))
@@ -976,7 +1003,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 	let lastMainRc: RolloverCtx | null = null;
 
 	pi.on("tool_call", (event, ctx) => {
-		cfg = freshConfig();
+		cfg = freshPlannerConfig(freshConfig);
 		const c = asCtx(ctx);
 		const e = asRecord(event);
 		const tool = asString(e.toolName);
@@ -989,8 +1016,11 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		if (isSub) calls.set(id, n);
 		if (!isSub) callsSinceStop++;
 		const cwd = c.cwd ?? process.cwd();
+		// planner mode P2 (plan 20261102_1515): the plan a sub's approved spawn bound to it (the
+		// brief's `Planner role for <plan path>` line) — the gates check it against plan-path writes.
+		const plannerPlan = isSub ? plannerSpawnPlan(id) : null;
 		const snap = new Map<string, string>();
-		snapshotPlans(tool, input, cwd, snap, !isSub);
+		snapshotPlans(tool, input, cwd, snap, !isSub, plannerPlan, cfg);
 		// Drain (src/core/rollover.ts): while a rollover is pending no new subagent starts; the
 		// running ones finish first. Subagents' own tool calls are unaffected. Main's task calls
 		// also carry the running job labels for the priority gate (20261025_0215 P2).
@@ -1050,7 +1080,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 	};
 
 	pi.on("tool_result", (event, ctx) => {
-		cfg = freshConfig();
+		cfg = freshPlannerConfig(freshConfig);
 		// P9: an owner message past notify.answer_within_min with no hand-back steers once per
 		// message; sendUserMessage reaches Main mid-turn through the steer queue.
 		if (isMain(ctx)) {
@@ -1170,7 +1200,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 	});
 
 	pi.on("session_stop", (e, ctx) => {
-		cfg = freshConfig();
+		cfg = freshPlannerConfig(freshConfig);
 		const c = asCtx(ctx);
 		if (c.hasAgent && c.kind !== "main") return;
 		// A relaunch is requested: omp shuts down at the next idle, so the stop must not be continued.
@@ -1551,8 +1581,12 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		if (note) pendingReviewNotes.push(note);
 	});
 
-	// omp is really shutting down: the exit-grace fallback must not fire.
-	pi.on("session_shutdown", () => clearGrace?.());
+	// omp is really shutting down: the exit-grace fallback must not fire. A clean shutdown is also
+	// the owner's last stamp (P2 d): verify first, then record the state that pass confirmed.
+	pi.on("session_shutdown", () => {
+		clearGrace?.();
+		stampPlannerState(freshConfig);
+	});
 
 	// Compaction keeps the owner's holds true: a summary may state a hold only as a plans' WAITING on owner line says it.
 	pi.on("session.compacting", (_e, ctx) => {
@@ -1617,6 +1651,11 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		const t = chatTier(text, cfg, "interactive");
 		if (t.applied) {
 			notifyTier(ctx, t);
+			return { handled: true };
+		}
+		const p = chatPlanner(text, cfg, "interactive");
+		if (p.applied) {
+			asRolloverCtx(ctx)?.notify(`planner now ${p.planner}`);
 			return { handled: true };
 		}
 		const g = chatGo(text, cfg, "interactive");

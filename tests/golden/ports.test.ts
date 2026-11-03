@@ -88,6 +88,9 @@ function homeFor(name: string): string {
 function envFor(home: string, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
 	mkdirSync(join(home, ".config/neurastream"), { recursive: true });
 	writeFileSync(join(home, ".config/neurastream/config.yml"), LEGACY_CONFIG);
+	// CI has no authenticated gh: stub it so wip-backup's private-visibility probe (github.com
+	// backup_url) always answers "private" instead of asking a real, unauthenticated gh.
+	stub(home, "gh", "#!/bin/sh\necho private\n");
 	const env: NodeJS.ProcessEnv = {
 		...process.env,
 		HOME: home,
@@ -367,69 +370,6 @@ test("agent-score matches the original", () => {
 	);
 });
 
-test("wip-snapshot matches the original", () => {
-	const home = homeFor("snap");
-	const fixed = "1760000000";
-	const env = envFor(home, {
-		NEURASTREAM_NOW: fixed,
-		GIT_AUTHOR_NAME: "t",
-		GIT_AUTHOR_EMAIL: "t@example.com",
-		GIT_COMMITTER_NAME: "t",
-		GIT_COMMITTER_EMAIL: "t@example.com",
-		GIT_AUTHOR_DATE: "2026-10-18T00:00:00",
-		GIT_COMMITTER_DATE: "2026-10-18T00:00:00",
-	});
-	stub(home, "wip-check", "#!/bin/sh\nprintf '%s\\n' 'UNLANDED branches (commits on no remote): 0  limit 6' 'DIRTY worktrees (uncommitted tracked changes): 1'\n");
-	const repo = join(home, "Work/demo");
-	initRepo(repo, env);
-	writeFileSync(join(repo, "a.txt"), "b\n");
-	writeFileSync(join(repo, "note.txt"), "note\n");
-	writeFileSync(join(repo, ".env"), "SECRET=1\n");
-	const oracle = join(home, "wip-snapshot.py");
-	rewrite("wip-snapshot", oracle, home);
-	const status = join(home, "Work/WIP-STATUS.md");
-	const drop = () => rmSync(join(repo, ".git/refs/wip"), { recursive: true, force: true });
-	drop();
-	const py = runPy(oracle, [], env, home);
-	const pyStatus = readFileSync(status, "utf8");
-	const pyRefs = spawnSync("git", ["-C", repo, "for-each-ref", "refs/wip"], { encoding: "utf8" }).stdout;
-	drop();
-	const port = runPort("wip-snapshot", [], env, home);
-	match(py, port);
-	expect(readFileSync(status, "utf8")).toBe(pyStatus);
-	expect(spawnSync("git", ["-C", repo, "for-each-ref", "refs/wip"], { encoding: "utf8" }).stdout).toBe(pyRefs);
-	drop();
-	match(runPy(oracle, ["--quiet"], env, home), runPort("wip-snapshot", ["--quiet"], env, home));
-});
-
-test("wip-backup matches the original", () => {
-	const home = homeFor("backup");
-	const fixed = "1760000000";
-	const env = envFor(home, { NEURASTREAM_NOW: fixed, GATE_RC: "0" });
-	stub(home, "git-secret-gate", "#!/bin/sh\nexit \"${GATE_RC:-0}\"\n");
-	const repo = join(home, "Work/demo");
-	initRepo(repo, env);
-	const oracle = join(home, "wip-backup.py");
-	rewrite("wip-backup", oracle, home);
-	match(runPy(oracle, ["--dry-run"], env, home), runPort("wip-backup", ["--dry-run"], env, home));
-	match(runPy(oracle, ["--dry-run", "--quiet"], env, home), runPort("wip-backup", ["--dry-run", "--quiet"], env, home));
-	const hooks = spawnSync("git", ["-C", repo, "rev-parse", "--git-path", "hooks"], { encoding: "utf8" }).stdout.trim();
-	const pre = join(repo, hooks, "pre-push");
-	mkdirSync(dirname(pre), { recursive: true });
-	writeFileSync(pre, "#!/bin/sh\nexit 0\n");
-	chmodSync(pre, 0o755);
-	match(runPy(oracle, ["--dry-run"], env, home), runPort("wip-backup", ["--dry-run"], env, home));
-	rmSync(pre);
-	match(
-		runPy(oracle, ["--dry-run"], { ...env, WIP_BACKUP_MAX_REPO_MB: "0" }, home),
-		runPort("wip-backup", ["--dry-run"], { ...env, WIP_BACKUP_MAX_REPO_MB: "0" }, home),
-	);
-	match(
-		runPy(oracle, ["--dry-run"], { ...env, GATE_RC: "1" }, home),
-		runPort("wip-backup", ["--dry-run"], { ...env, GATE_RC: "1" }, home),
-	);
-});
-
 // A linked worktree directly inside a work root reports an ABSOLUTE --git-common-dir; joining
 // it onto the worktree path made a path that does not exist, and the whole run died with ENOENT
 // (live: every hourly wip-snapshot and nightly wip-backup failed from 2026-10-21).
@@ -443,6 +383,10 @@ test("wip-snapshot and wip-backup handle a linked worktree inside the work root"
 		GIT_COMMITTER_NAME: "t",
 		GIT_COMMITTER_EMAIL: "t@example.com",
 	});
+	// P1 replaced the work_roots walk with wip.roots: point this home's config at ~/Work so the
+	// run still reaches demo and its linked worktree demo-wt.
+	const cfgFile = join(home, ".config/neurastream/config.yml");
+	writeFileSync(cfgFile, readFileSync(cfgFile, "utf8").replace("wip:\n", 'wip:\n  roots: ["~/Work"]\n'));
 	stub(home, "wip-check", "#!/bin/sh\necho ok\n");
 	stub(home, "git-secret-gate", "#!/bin/sh\nexit 0\n");
 	const repo = join(home, "Work/demo");

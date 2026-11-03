@@ -1,0 +1,6 @@
+[Unit]
+Description=neurastream wip backup (the wip refs to the private backup repo)
+
+[Service]
+Type=oneshot
+ExecStart=%h/.bun/bin/neurastream wip-backup --quiet

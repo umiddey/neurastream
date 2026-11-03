@@ -9,3 +9,5 @@ Writes wip.status_log from config.yml (default ~/.local/state/neurastream/WIP-ST
 wip-check output + snapshot list.
 Restore: git -C <wt> restore --source=<ref> --worktree -- <paths or .>   |   list: git for-each-ref refs/wip
 Usage: wip-snapshot [--quiet]
+
+Roots: `neurastream wip add|remove|list`; a broken repo is recorded and skipped, never fatal.

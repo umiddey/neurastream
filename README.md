@@ -95,6 +95,27 @@ Every tool is one program, selected by the name it was called with: `agent-score
 
 The first skill is `architecture-drilldown`: a self-contained HTML atlas with drill-down boxes. Its data is the `T` tree between `/* === DATA === */` and `/* === END DATA === */` in `template.html`; replace that block and leave the engine below it alone. `SKILL.md` lists the schema and the checks.
 
+## Saving unsaved work (wip)
+
+`neurastream wip on` turns the hourly safety net on: every hour each worktree with uncommitted
+changes gets a hidden commit at `refs/wip/<key>/<stamp>` (working tree, index, HEAD and branches are
+never touched), and the nightly backup sends those saves to one repo.
+
+- Roots: `neurastream wip add <path>`, `wip remove <path>`, `wip list` - any number of folders, or a
+  single repo on its own; `.git` folders are found down to `wip.depth`. Every root is independent: a
+  corrupt or vanished repo is recorded in `WIP-STATUS.md` and `wip-last.json` and the run goes on.
+- Private only: the target URL is checked before anything is uploaded - GitHub through `gh`, GitLab
+  through `glab`, any other host through `wip.private_check`. Only an exact `private` answer uploads;
+  `public`, `internal`, `unknown`, an error or bad JSON uploads nothing, is listed as refused and
+  alerts you. Making the repo private again resumes the backup.
+- Hooks are never bypassed: a repo with a pre-push hook is skipped until `wip.backup_hook_off` names
+  it (a substring, or `owner` / `host/owner/repo` to name it exactly).
+- Restore: `neurastream wip restore [--repo <path>] [--pick N]` lists a worktree's saves and puts one
+  back - files and index by default, `--worktree` for files only.
+- Alerts: a failed run, a refused target or a run that never happened is posted once per state to
+  `cfg.wip.alert_url`, listed by `neurastream wip`, and reported by the heartbeat check.
+- Off: `neurastream wip off` removes the hourly timer and the nightly backup timer.
+
 ## Develop
 
 ```sh
@@ -127,6 +148,12 @@ Owner rule: never write a plan when another agent is doing the research or readi
 - Retention: entries older than 7 days are dropped on each write.
 - Spawn briefs: a brief must name an unticked phase id of the plan (for example `P4`). A brief that asks for research for a plan to be written is refused, quoting the owner rule.
 - Call budget: a `Call budget: <N>` line in a task brief (the task's own text, or the shared `context` of the same `task` call; the task's own line wins) gives that run a hard stop at N calls, with the warning N − (`guards.sub_max_calls` − `guards.sub_warn_calls`) calls in, floored at 1. At the stop only plan Progress reads and edits pass, as at the global limit. N must be between 10 and `guards.sub_max_calls_cap` (default 200) and the task must carry a `name` — the budget is keyed by it in `<queue_state>/spawn-budgets.json` — or the spawn is refused with the allowed range. A task without the line keeps the global warn 90 / stop 100, and the ledger flags a still-running sub `OVER-BUDGET` past its own N.
+
+## Planner mode
+
+One owner word decides who writes the plans: `autonomy.planner` (default `main`), moved any time by the owner's whole chat message `planner main|delegated` when `guards.chat_unlock` is on, or by a config write of the key at the owner's terminal (`neurastream config set autonomy.planner delegated`, `neurastream setup`). `main` is today's rule: Main researches the code, writes the plan and lists what it read in `## Code read by Main`. `delegated` hands the plan to a planner subagent: an approved spawn whose brief carries `Planner role for <plan path>` binds the agent to that one plan, the plan carries a `Planner: <agent>` header, and the research and the `## Code read by Main` list are the planner's; Main routes the owner's asks to it, dispatches implementers, checks the outcomes (verify commands, CI, the reviewer's PASS) and lands, and does not read repo code to plan. Two refusals hold the line: while delegated, Main's create of a new plan file or rewrite of a plan's body is refused ("planner is delegated — route the ask to the planner agent"); while main, a Planner-role brief is refused ("planner mode is main").
+
+The mode facts are owner-only and anchored: the guard baseline `<config dir>/guard-baseline` records the mode file's existence and bytes, the config file's own `autonomy.planner` and `paths.queue_state`, and its full bytes; every omp adapter event and the guard process's first load restore a non-owner edit (the value through the config editor, the bytes as the fallback), and only the owner's stampers write it — the chat command, a terminal write of a mode key, a clean shutdown. With no baseline the mode is `main`, and a `planner-mode` file in a state dir the baseline does not pin is deleted.
 
 ## Queue holds
 

@@ -26,7 +26,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSy
 import { homedir } from "node:os";
 import path from "node:path";
 import type { Decision, InjectEvent, PlanEditEvent, SpawnEvent, StopEvent, ToolEvent } from "./adapter.ts";
-import { currentTier, takeGo } from "./autonomy.ts";
+import { currentPlanner, currentTier, takeGo } from "./autonomy.ts";
 import { approvalProblem, MAIN_ONLY_LINE, reviewHash } from "./plan-approval.ts";
 export { reviewHash };
 import type { Config } from "./config.ts";
@@ -358,6 +358,45 @@ function matchReviewSpawn(spawns: Record<string, ReviewSpawn>, agentId: string):
 	for (const name of [agentId, agentId.replace(/-\d+$/, "")]) {
 		const spawn = Object.hasOwn(spawns, name) ? spawns[name] : undefined;
 		if (spawn && typeof spawn.plan === "string") return { name, spawn };
+	}
+	return null;
+}
+
+// --- planner mode (plan 20261102_1515 P2): the named planner spawns ---
+
+/** The plan path a brief's `Planner role for <plan path>` line names, or null. */
+function plannerRolePlan(text: string): string | null {
+	const p = (/^[ \t]*Planner role for[ \t]+(.+?)[ \t]*$/im.exec(text)?.[1] ?? "").trim();
+	return p || null;
+}
+
+/** P2(b): the named planner spawns, spawn name → the one plan path its brief may create and edit (planner-spawns.json in the state dir). Recorded only on an approved spawn: in main mode the spawn gate refused the brief, so a binding exists only for a delegated planner. */
+function plannerSpawnsFile(): string {
+	return path.join(q.STATE_DIR, "planner-spawns.json");
+}
+
+function readPlannerSpawns(): Record<string, string> {
+	try {
+		const parsed: unknown = JSON.parse(readFileSync(plannerSpawnsFile(), "utf8"));
+		return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, string>) : {};
+	} catch {
+		return {};
+	}
+}
+
+function recordPlannerSpawn(name: string, plan: string): void {
+	const spawns = readPlannerSpawns();
+	spawns[name] = plan;
+	mkdirSync(q.STATE_DIR, { recursive: true });
+	writeFileSync(plannerSpawnsFile(), `${JSON.stringify(spawns, null, 2)}\n`);
+}
+
+/** The plan path the agent's brief named in its `Planner role for` line: its spawn name, or the name without a -<digits> suffix (the P4f id rule); null when no planner role is bound. */
+export function plannerSpawnPlan(agentId: string): string | null {
+	const spawns = readPlannerSpawns();
+	for (const name of [agentId, agentId.replace(/-\d+$/, "")]) {
+		const plan = Object.hasOwn(spawns, name) ? spawns[name] : undefined;
+		if (typeof plan === "string" && plan) return plan;
 	}
 	return null;
 }
@@ -977,6 +1016,7 @@ export function spawnProblem(
 	spawner: Spawner = "main",
 ): string | null {
 	const roles: Record<string, string | null> = {};
+	const plannerRoles: Record<string, string> = {};
 	const tasks = Array.isArray(input?.tasks) ? input.tasks : [];
 	const context = String(input?.context ?? "");
 	const allowed = q.allowedAgents();
@@ -987,6 +1027,29 @@ export function spawnProblem(
 		const agent = String(t?.agent ?? "task");
 		const label = String(t?.name ?? agent);
 		const text = `${context}\n${String(t?.task ?? "")}`;
+		// The role line belongs to the task's own brief (the adapter keys the spawn's brief by it);
+		// a mention in the shared context names no one's role.
+		const plannerFor = plannerRolePlan(String(t?.task ?? ""));
+		// planner mode P2 (c): a Planner-role brief is refused while the mode is main — the switch
+		// is the owner's (`planner delegated`). While delegated the planner spawn skips the open-plan
+		// gates below (the plan it names does not exist yet — writing it is the spawn's job), but the
+		// ## Allowed deny still holds, and it needs a name to key its role.
+		if (plannerFor && currentPlanner(cfg) === "main") {
+			problems.push(`${label}: planner mode is main — a Planner-role spawn needs the owner's \`planner delegated\` switch.`);
+			continue;
+		}
+		if (plannerFor && !t?.name) {
+			problems.push(`${label}: a planner spawn needs a name (the task name keys its planner role).`);
+			continue;
+		}
+		if (plannerFor) {
+			if (!allowed.has(agent)) {
+				problems.push(`${label}: agent "${agent}" is not in "## Allowed" of ${q.SUBAGENTS_MD} (no expensive or unpinned models).`);
+				continue;
+			}
+			plannerRoles[label] = plannerFor;
+			continue;
+		}
 		if (!allowed.has(agent)) {
 			problems.push(`${label}: agent "${agent}" is not in "## Allowed" of ${q.SUBAGENTS_MD} (no expensive or unpinned models).`);
 			continue;
@@ -1056,6 +1119,7 @@ export function spawnProblem(
 	);
 	if (verdict) return verdict;
 	for (const [name, plan] of Object.entries(roles)) recordReviewSpawn(name, plan);
+	for (const [name, plan] of Object.entries(plannerRoles)) recordPlannerSpawn(name, plan);
 	return null;
 }
 
@@ -1232,6 +1296,25 @@ function subRules(e: ToolEvent, input: Record<string, unknown>, paths: string[],
 		if (!keeper)
 			return "this is the read tool's redaction placeholder, not the real value; re-read the file raw or keep the original line";
 	}
+	// planner mode P2 (b): while delegated, every sub write to a plan path is refused except the
+	// plan its brief named in the approved spawn's `Planner role for <plan path>` line (the
+	// planner-spawns binding). A NEW plan file is invisible to the indexed-plan gate below
+	// (isOrchestrationPath + planAt both false), so the refusal fires here — never by accident of
+	// indexing — and covers shell redirects through writeTargets too.
+	const delegatedPlanner = currentPlanner(cfg) === "delegated" ? plannerSpawnPlan(e.agentId) : null;
+	// I-20261102-27: the seam above also refused the REVIEW spawn, and a review spawn's only write
+	// is its own PLAN REVIEW / CODE REVIEW line — so in delegated mode no plan could ever record a
+	// PASS and no implementer could spawn. The named review spawn of a plan may still write that
+	// plan; the REVIEW_LINE rule below then decides whether the line is its verdict.
+	const delegatedReview = currentPlanner(cfg) === "delegated" ? (matchReviewSpawn(readReviewSpawns(), e.agentId ?? "")?.spawn.plan ?? null) : null;
+	if (currentPlanner(cfg) === "delegated") {
+		for (const p of writes) {
+			if (!MAIN_PLAN_FILE.test(p) || p === delegatedPlanner) continue;
+			if (delegatedReview && path.resolve(e.cwd, p) === path.resolve(delegatedReview)) continue;
+			if (delegatedPlanner) return `planner is delegated — your Planner role names ${delegatedPlanner} only; ${p} is not yours to write.`;
+			return `planner is delegated — plan files are the planner agent's; your brief carries no "Planner role for <plan path>" line, so ${p} is refused.`;
+		}
+	}
 	const plans = q.activePlans();
 	if (e.calls >= cap) {
 		// Plan edit targets come from writeTargets (write and structured/hashline edit)
@@ -1246,7 +1329,12 @@ function subRules(e: ToolEvent, input: Record<string, unknown>, paths: string[],
 	if (!plans.length || !paths.length) return null;
 	for (const p of writes) {
 		if (!q.isOrchestrationPath(p, plans)) continue;
-		if (!q.planAt(p, plans)) return `${p} belongs to Main (main index / blocker script); read it, never change it. Report instead.`;
+		if (!q.planAt(p, plans)) {
+			// planner mode P2 (b): the bound planner plan routes into checkPlanEdit (Planner header,
+			// Main-only lines), it is not Main's — but only that path, and only while delegated.
+			if (currentPlanner(cfg) === "delegated" && p === delegatedPlanner) continue;
+			return `${p} belongs to Main (main index / blocker script); read it, never change it. Report instead.`;
+		}
 		if (e.tool !== "write" && e.tool !== "edit")
 			return `${p} is a plan file: change its "## Progress" section only with the edit or write tool.`;
 	}
@@ -1752,7 +1840,16 @@ export function checkSpawn(e: SpawnEvent, cfg: Config, runner: CommandRunner = d
 	// P4 (plan 20261031_1207): every gate's refusal lands in one numbered verdict; nothing
 	// short-circuits, so Main sees all the problems in one round trip.
 	const problems: string[] = [];
-	const [why, named] = planGate(e.brief, e.agent, cfg);
+	// planner mode P2 (c): a Planner-role brief is refused while the mode is main — the switch is
+	// the owner's (`planner delegated`). While delegated the planner spawn skips the open-plan
+	// gates (the plan it names does not exist yet — writing it is the spawn's job) and its role
+	// binds to the spawn name at the tail; a planner spawn needs that name.
+	const plannerFor = plannerRolePlan(e.brief);
+	const delegatedPlanner = plannerFor !== null && currentPlanner(cfg) === "delegated";
+	if (plannerFor && !delegatedPlanner)
+		problems.push(`${e.agent}: planner mode is main — a Planner-role spawn needs the owner's \`planner delegated\` switch.`);
+	else if (delegatedPlanner && !e.name) problems.push(`${e.agent}: a planner spawn needs a name (the task name keys its planner role).`);
+	const [why, named] = delegatedPlanner ? [null, [] as string[]] : planGate(e.brief, e.agent, cfg);
 	if (why) problems.push(why);
 	const gate = priorityGate(named, e.runningJobs, e.brief, cfg, e.agent, e.agent, "main");
 	if (gate) problems.push(gate);
@@ -1786,6 +1883,8 @@ export function checkSpawn(e: SpawnEvent, cfg: Config, runner: CommandRunner = d
 	for (const f of named) staffing[f] = [e.agent];
 	recordSpawns(named, staffing);
 	if (e.name) recordReviewSpawn(e.name, role.plan);
+	// planner mode P2 (b): the approved planner spawn binds its name to the plan its brief named.
+	if (delegatedPlanner && e.name && plannerFor) recordPlannerSpawn(e.name, plannerFor);
 	return ALLOW;
 }
 
@@ -1864,7 +1963,33 @@ function mainOnlyLines(text: string): string {
  */
 export function checkPlanEdit(e: PlanEditEvent, cfg: Config): PlanEditDecision {
 	if (e.agent === "main") return checkMainPlan(e, cfg);
-	if (q.outsideProgress(e.after) !== q.outsideProgress(e.before) || mainOnlyLines(e.after) !== mainOnlyLines(e.before)) {
+	// planner mode P2 (b): the plan bound to this sub by its approved spawn (the `Planner role for`
+	// line) is the planner agent's to write — body freedom, but never the Main-only lines, and the
+	// header names its agent. Only while delegated: in main mode the spawn gate refused the
+	// Planner-role brief, and the plain Progress-only rule holds.
+	if (currentPlanner(cfg) === "delegated" && e.agentId !== undefined && plannerSpawnPlan(e.agentId) === e.path) {
+		if (mainOnlyLines(e.after) !== mainOnlyLines(e.before)) {
+			log(cfg.paths.plan_guard_log, `RESTORE ${e.path} (planner wrote a Main-only line)`);
+			return {
+				allow: false,
+				reason: `plan-guard: the Main-only lines ("Status:", "WAITING on owner:", "Waits on:", "Cancelled by owner:", "False positive:") of ${e.path} are never a planner agent's. The file was restored.`,
+				restore: { path: e.path, text: e.before || null },
+			};
+		}
+		const name = e.agentId ?? "";
+		// The header records the agent the owner picked, not the spawn instance: a `glm-3` spawn
+		// satisfies `Planner: glm`, and the spawn form still works for plans written before this.
+		const names = new Set([name, name.replace(/-\d+$/, "")]);
+		const head = e.after.split(/^## /m)[0] ?? "";
+		if (!head.split("\n").some((l) => l.trim().startsWith("Planner: ") && names.has(l.trim().slice("Planner: ".length).trim()))) {
+			log(cfg.paths.plan_guard_log, `RESTORE ${e.path} (no Planner header)`);
+			return {
+				allow: false,
+				reason: `plan-guard: ${e.path} carries no "Planner: ${name}" header — a planner agent's plan names its agent above the first section. The file was restored.`,
+				restore: { path: e.path, text: e.before || null },
+			};
+		}
+	} else if (q.outsideProgress(e.after) !== q.outsideProgress(e.before) || mainOnlyLines(e.after) !== mainOnlyLines(e.before)) {
 		log(cfg.paths.plan_guard_log, `RESTORE ${e.path}`);
 		return {
 			allow: false,
@@ -1948,9 +2073,35 @@ function codeReviewProblem(file: string, after: string, ids: string[]): string |
 	return null;
 }
 
+/** The plan text a planner agent owns: everything outside "## Progress" and the Main-only lines (planner mode P2a, plan 20261102_1515) — minus the two zones Main may still correct (punch list, plan 20261102_2315): a "## Done check" section's body, and the backticked `verify:` span on a "## Phases" checkbox line. */
+export function plannerBody(text: string): string {
+	const body = q.outsideProgress(text).split("\n");
+	let section = "";
+	return body
+		.map((l) => {
+			if (l.startsWith("## ")) section = l;
+			if (/^## +Done check\b/i.test(section)) return "";
+			if (/^## +Phases\b/i.test(section) && /^- \[[ x]\]/.test(l)) l = l.replace(/`verify:[^`]*`/g, "`verify:`");
+			return MAIN_ONLY_LINE.test(l) ? "" : l;
+		})
+		.join("\n");
+}
+
 // Main's plan text outside "## Progress" must rest on files Main read itself (planReadProblems).
 // An empty `before` means the plan file did not exist yet; a refusal then deletes it.
 function checkMainPlan(e: PlanEditEvent, cfg: Config): PlanEditDecision {
+	// planner mode P2 (a): while delegated, Main plans nothing — a new plan file or a rewrite of
+	// the text outside "## Progress" is the planner agent's work. Main keeps its Progress entries,
+	// the Main-only lines (Status / WAITING on owner / Waits on / Cancelled by owner / False
+	// positive) and the index; running the queue stays Main's.
+	if (currentPlanner(cfg) === "delegated" && e.path !== q.INDEX && plannerBody(e.after) !== plannerBody(e.before)) {
+		log(cfg.paths.plan_guard_log, `RESTORE ${e.path} (planner delegated)`);
+		return {
+			allow: false,
+			reason: `plan-guard: planner is delegated — route the ask to the planner agent. ${e.before ? "The file was restored." : "The new file was removed."}`,
+			restore: { path: e.path, text: e.before || null },
+		};
+	}
 	// P3 (plan 20261027_1300): another Main's live claim on this plan refuses the edit, restored
 	// like any refused plan edit. No claim — or this Main's own — edits freely.
 	const holder = claims(cfg).holder(e.path);

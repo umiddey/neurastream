@@ -1,6 +1,28 @@
 # Changelog
-## Unreleased
+## 0.2.70
+### Added
+- `wip` roots (plan 20261027_1130 P1): `wip.roots` in the config, one shared repo list, and `wip add|remove|list` to choose which folders are snapshot; the old hand-made units and symlinks are no longer needed.
+- Hooked repos (P8): a repo can opt in to a snapshot hook; wip tells you when a hook was rewritten outside `wip.backup_hook_off`.
+- Unsaved-work alerts (P5): a failed snapshot now says so, instead of failing silently as it had since 2026-10-25.
+- A README section "Saving unsaved work (wip)" covering roots, on/off, the private-only rule, restore and alerts.
 ### Fixed
+- Private-only backup (P3): a backup target must be verifiably private; a github URL with no authenticated `gh` is refused instead of betting on it.
+- One repo, one snapshot (P2): a repo reachable through two paths is deduplicated, so it is not snapshotted twice.
+- macOS keys (P8b): snapshot keys are built from the real path of home and repo, so a symlinked HOME no longer forks `refs/wip` between `/var` and `/private/var`.
+- CI tests are machine-independent (P9b): the `gh` visibility probe is stubbed and temp bases are realpath'd, so the suite no longer depends on the machine's PATH or tmpdir.
+## 0.2.69
+### Fixed
+- The named review spawn records its own verdict while the planner is delegated (I-20261102-27): the delegated pre-tool seam refused every sub write to a plan path except the bound planner's, so a `PLAN REVIEW` line could never land and no plan could pass review — no implementer could spawn. The seam now allows exactly the plan the spawn was named on, using the same predicate the review lock already uses; any other reviewer is still refused.
+### Added
+- Planner punch list (plan 20261102_2315): in delegated mode Main keeps two zones of a plan's text — a `## Done check` section's command and the backticked `verify:` command on a `## Phases` line — because those are the plan's executable commands, not its design; every other line stays the planner's. A plan's `Planner:` header may name the agent (`Planner: glm`) instead of the spawn instance (`Planner: glm-3`), so the record says which planner model wrote the plan; both forms pass.
+- The orchestrator rules carry the routing: small mechanical plans go to the fast planner (with its fallback), design-heavy plans to the deep planner, and the plan's `Planner:` header is the record — no tier code, no classifier.
+
+## 0.2.68
+### Added
+- Planner mode (plan 20261102_1515): one owner word decides who writes the plans — `autonomy.planner` (default `main`), moved any time by the owner's whole chat message `planner main|delegated` when `guards.chat_unlock` is on, or by a config write of the key at the owner's terminal. In `delegated` mode a planner subagent writes the plan (a `Planner: <agent>` header, its brief names the plan path) and Main becomes a pure orchestrator: it routes the owner's asks, dispatches implementers, checks the outcomes (verify commands, CI, the reviewer's PASS) and lands, and its own plan create or body rewrite is refused; a Planner-role brief while the mode is `main` is refused too. The facts are owner-only: the guard baseline `<config dir>/guard-baseline` records them, every omp adapter event and the guard's first load restore a non-owner edit, only the chat command, a terminal mode write and a clean shutdown stamp it, and the baseline path is in the protected set. With no baseline the mode is `main`.
+
+### Fixed
+- Wip hardening (plan 20261027_1130 P1-P9): roots are managed with `neurastream wip add|remove|list` (any number of folders or single repos), one broken repo no longer stops a run, the backup target must be verified private before anything is uploaded, failures are recorded and alerted once per state, `neurastream wip` sets everything up or restores a save, hooked repos are opt-in, and snapshot, backup and restore share one key built from the realpath of home and worktree.
 - Rollover across a version change (I-20261101-47): a relaunch request written by an older version to the legacy `<queue_state>/rollover/relaunch.json` is still picked up — the launcher falls back to it when the new-path file is missing or stale (main id only), and a consumed request now clears both paths, so a leftover copy cannot re-inject at the next fresh start.
 
 ## 0.2.67
