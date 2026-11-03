@@ -1,6 +1,20 @@
-import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { join, relative, resolve } from "node:path";
 import type { Config } from "./config.ts";
+
+/** True when `dir/.git` is a file naming a gitdir that no longer exists: no repo is left to save. */
+export function deadGitfile(dir: string): boolean {
+	const gitPath = join(dir, ".git");
+	let first: string | undefined;
+	try {
+		if (!statSync(gitPath).isFile()) return false;
+		first = readFileSync(gitPath, "utf8").split("\n")[0];
+	} catch {
+		return false; // an unreadable .git file is not our call: the repo stays and its failure is real
+	}
+	if (!first?.startsWith("gitdir: ")) return false;
+	return !existsSync(resolve(dir, first.slice("gitdir: ".length).trim()));
+}
 
 export function keyOf(path: string, home: string): string {
 	const realHome = existsSync(home) ? realpathSync(home) : home;
@@ -27,6 +41,8 @@ function walkFolder(dir: string, currentDepth: number, maxDepth: number, out: st
 		}
 		if (!st.isDirectory()) continue;
 
+		// A dead worktree dir has no repo left to save: not pushed as a repo, not recursed into.
+		if (deadGitfile(fullPath)) continue;
 		if (existsSync(join(fullPath, ".git"))) {
 			out.push(fullPath);
 		} else {
@@ -48,6 +64,7 @@ export function wipRepos(cfg: Config): string[] {
 		}
 		if (!st.isDirectory()) continue;
 
+		if (deadGitfile(root)) continue;
 		if (existsSync(join(root, ".git"))) {
 			out.push(root);
 		} else {
