@@ -2,6 +2,7 @@
 ## Unreleased
 ### Added
 - `main-start` prints a `terminal:` line (name, version, session type) read from the environment, so Main knows which terminal it runs in at every start.
+- The managed rules block gains a "Call formats" table: the exact form of the calls the guards refuse when written any other way (planner spawn line, spawn with an open incident, `queue-cancel --not-a-cancel`, a done claim's result mark, implementer spawn prerequisites, plan edits in delegated mode, `edit` anchors), so Main stops learning them by failing.
 
 ## 0.2.74
 ### Fixed
