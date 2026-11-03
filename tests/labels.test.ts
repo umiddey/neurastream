@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Run } from "../src/core/adapter.ts";
 import type { Episode } from "../src/core/episodes.ts";
-import { appendLabel, labelEpisodes, readLabels } from "../src/core/labels.ts";
+import { appendCursor, appendLabel, labelEpisodes, readCursor, readLabelHistory, readLabels } from "../src/core/labels.ts";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -61,6 +61,25 @@ test("a later revert of an episode commit is bad", () => {
 	git("commit", "-qam", `Revert \"episode work\"\n\nThis reverts commit ${commit}.`);
 	const [label] = labelEpisodes([episode({ repo, commits: [commit] })], [], [], 42);
 	expect(label).toMatchObject({ label: "bad", reason: "episode commit later reverted", found_by: expect.any(String) });
+});
+
+test("a cursor line is ledger history but never a label", () => {
+	const state = sandbox();
+	appendLabel(state, { ts: 1, episode: "e", label: "good", reason: "accepted", party: "none", evidence: "accept" });
+	appendCursor(state, 50);
+	expect(readCursor(state)).toBe(50);
+	expect(readLabelHistory(state)).toEqual([{ ts: 1, episode: "e", label: "good", reason: "accepted", party: "none", evidence: "accept" }]);
+	expect(readLabels(state)).toEqual([expect.objectContaining({ episode: "e" })]);
+	appendCursor(state, 60);
+	expect(readCursor(state)).toBe(60);
+	expect(readLabels(state)).toHaveLength(1);
+});
+
+test("readCursor is null on a ledger without a cursor", () => {
+	const state = sandbox();
+	appendLabel(state, { ts: 1, episode: "e", label: "good", reason: "accepted", party: "none", evidence: "accept" });
+	expect(readCursor(state)).toBeNull();
+	expect(readCursor(sandbox())).toBeNull();
 });
 
 test("ledger writes preserve all previous bytes as an unchanged prefix and last line is effective", () => {

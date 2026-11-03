@@ -72,9 +72,30 @@ export function readLabelHistory(scoreState: string): EpisodeLabel[] {
 	const out: EpisodeLabel[] = [];
 	for (const line of readFileSync(path, "utf8").split("\n")) {
 		if (!line.trim()) continue;
-		out.push(JSON.parse(line) as EpisodeLabel);
+		const rec = JSON.parse(line) as EpisodeLabel;
+		if ("kind" in rec) continue; // a cursor line (P5) marks progress, it is not a label
+		out.push(rec);
 	}
 	return out;
+}
+
+/** The ledger's update cursor (P5): how far `labels update` has processed, or null before the first run. */
+export function readCursor(scoreState: string): number | null {
+	const path = labelLedgerPath(scoreState);
+	if (!existsSync(path)) return null;
+	let until: number | null = null;
+	for (const line of readFileSync(path, "utf8").split("\n")) {
+		if (!line.trim()) continue;
+		const rec = JSON.parse(line) as { kind?: string; until?: unknown };
+		if (rec.kind === "cursor" && typeof rec.until === "number") until = rec.until;
+	}
+	return until;
+}
+
+/** Appends the cursor line; the caller writes it only when the run appended something, so a quiet run appends nothing at all. */
+export function appendCursor(scoreState: string, until: number): void {
+	mkdirSync(scoreState, { recursive: true });
+	appendFileSync(labelLedgerPath(scoreState), `${JSON.stringify({ kind: "cursor", until })}\n`);
 }
 
 export function readLabels(scoreState: string): EpisodeLabel[] {
@@ -83,25 +104,32 @@ export function readLabels(scoreState: string): EpisodeLabel[] {
 	return [...latest.values()];
 }
 
-/** A flip is a good line followed by a later bad line, unless a newer good line cleared it. Party is the latest non-test line of that flip: the automatic test-party line is extra history, not the attribution. */
-export function flippedEpisodes(scoreState: string): { episode: string; party: LabelParty }[] {
-	const state = new Map<string, { seenGood: boolean; flipped: boolean; party: LabelParty }>();
+/** A flip is a good line followed by a later bad line, unless a newer good line cleared it. Party is the latest non-test line of that flip: the automatic test-party line is extra history, not the attribution. `ts` is the flipping bad line's time — the week a flip counts in. */
+export function flipRecords(scoreState: string): { episode: string; party: LabelParty; ts: number }[] {
+	const state = new Map<string, { seenGood: boolean; flipped: boolean; party: LabelParty; ts: number }>();
 	for (const line of readLabelHistory(scoreState)) {
-		const st = state.get(line.episode) ?? { seenGood: false, flipped: false, party: "none" as const };
+		const st = state.get(line.episode) ?? { seenGood: false, flipped: false, party: "none" as const, ts: 0 };
 		if (line.label === "good") {
 			st.seenGood = true;
 			st.flipped = false;
 			st.party = "none";
 		} else if (line.label === "bad" && st.seenGood) {
+			if (!st.flipped) st.ts = line.ts;
 			st.flipped = true;
 			if (line.party !== "test") st.party = line.party;
 		}
 		state.set(line.episode, st);
 	}
-	return [...state.entries()].filter(([, st]) => st.flipped).map(([episode, st]) => ({ episode, party: st.party }));
+	return [...state.entries()].filter(([, st]) => st.flipped).map(([episode, st]) => ({ episode, party: st.party, ts: st.ts }));
 }
 
-function gitOut(repo: string, args: string[]): string | null {
+/** Flipped episodes as the score board reads them: episode and party only. */
+export function flippedEpisodes(scoreState: string): { episode: string; party: LabelParty }[] {
+	return flipRecords(scoreState).map(({ episode, party }) => ({ episode, party }));
+}
+
+/** `git -C <repo> <args>` stdout, null when git fails (missing repo, bad sha); the labels/reports helpers treat null as "no evidence". */
+export function gitOut(repo: string, args: string[]): string | null {
 	try {
 		return execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
 	} catch {

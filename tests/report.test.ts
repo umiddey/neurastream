@@ -1,8 +1,13 @@
 // Weekly report self-grading (src/core/report.ts, plan 20261027_1430 P6): silent failures, suspected
 // false blocks, per-kind dismiss rates and the noisy-detector rule. All counts are per window.
 
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { IncidentView } from "../src/core/incidents.ts";
+import { flipRows, topFlipFiles, type EpisodeKey } from "../src/core/report.ts";
 import { kindStats, m7, noisyDetectors, silentFailures } from "../src/core/report.ts";
 
 const W = { from: 1000, to: 2000 };
@@ -76,4 +81,68 @@ test("noisy detector evidence carries the 3 latest dismiss reasons", () => {
 	expect(f!.evidence).toContain("reason 2");
 	expect(f!.evidence).toContain("reason 1");
 	expect(f!.evidence).not.toContain("reason 0");
+});
+
+// P5b: per agent and per plan "bad flips this week / episodes", and the files bad work touched.
+
+const dirs: string[] = [];
+afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+
+function flip(episode: string, ts: number): { episode: string; ts: number } {
+	return { episode, ts };
+}
+
+function key(id: string, agent: string, plan: string): EpisodeKey {
+	return { id, agent, plan };
+}
+
+test("flip rows count flips in the window over episodes, per agent and per plan", () => {
+	const flips = [flip("a:p:P1", 1100), flip("a:q:P2", 900), flip("b:p:P1", 1200)];
+	const episodes = [key("a:p:P1", "a", "p"), key("a:q:P2", "a", "q"), key("b:p:P1", "b", "p"), key("b:p:P2", "b", "p")];
+	const r = flipRows(flips, episodes, W);
+	expect(r.agents).toEqual([
+		{ key: "a", flips: 1, episodes: 2 },
+		{ key: "b", flips: 1, episodes: 2 },
+	]);
+	expect(r.plans).toEqual([
+		{ key: "p", flips: 2, episodes: 3 },
+		{ key: "q", flips: 0, episodes: 1 },
+	]);
+});
+
+test("flip rows sort by flips then episodes then key, outside-window flips do not count", () => {
+	const flips = [flip("b:p:P1", 1500), flip("a:p:P1", 900), flip("a:p:P1", 800)];
+	const episodes = [key("a:p:P1", "a", "p"), key("b:p:P1", "b", "p")];
+	const r = flipRows(flips, episodes, W);
+	expect(r.agents).toEqual([
+		{ key: "b", flips: 1, episodes: 1 },
+		{ key: "a", flips: 0, episodes: 1 },
+	]);
+	expect(r.plans).toEqual([{ key: "p", flips: 1, episodes: 2 }]);
+});
+
+test("top files lists at most three most-touched files of flipped work", () => {
+	const repo = join(mkdtempSync(join(tmpdir(), "ns-report-flip-")), "repo");
+	dirs.push(repo);
+	mkdirSync(join(repo, "src"), { recursive: true });
+	const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+	git("init", "-q");
+	git("config", "user.name", "Test");
+	git("config", "user.email", "test@example.com");
+	writeFileSync(join(repo, "src/one.ts"), "one\n");
+	writeFileSync(join(repo, "src/two.ts"), "two\n");
+	git("add", "-A");
+	git("commit", "-qm", "first");
+	const sha1 = git("rev-parse", "HEAD").trim();
+	writeFileSync(join(repo, "src/three.ts"), "three\n");
+	git("add", "-A");
+	git("commit", "-qm", "second");
+	const sha2 = git("rev-parse", "HEAD").trim();
+	const events = [
+		{ type: "accept", agent: "a", plan: "p", phase: "P1", repo, commits: [sha1] },
+		{ type: "accept", agent: "b", plan: "p", phase: "P1", repo, commits: [sha2, sha1] },
+	];
+	const files = topFlipFiles([flip("a:p:P1", 1100), flip("b:p:P1", 1200)], events);
+	// src/one.ts twice; src/two.ts and src/three.ts once each, then by name
+	expect(files).toEqual(["src/one.ts", "src/two.ts", "src/three.ts"]);
 });

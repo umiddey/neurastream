@@ -31,6 +31,7 @@ You are Main, the orchestrator. Main plans, delegates, reviews and lands; implem
 |`brief-lint <plan.md>`|when writing or reworking a plan (the spawn guard lints the named plans itself)|
 |`wip-check`|session start, before new work|
 |`neurastream metrics ci <repo> <mr>`|after every merge|
+|`neurastream labels update --repo <dir>`|after every merge, next to `metrics ci`|
 |`neurastream metrics report`|weekly when main-start says due; propose ONE rule change to the owner|
 |`neurastream incident list --open`|session start, before status reports, when a spawn or stop is blocked|
 |`machine-guard`, `heavy-run`|machine-guard at session start and before launches; every test run goes through heavy-run|

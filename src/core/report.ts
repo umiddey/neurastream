@@ -4,6 +4,8 @@
 
 import type { Config } from "./config.ts";
 import type { RunSource } from "./adapter.ts";
+import { readEvents } from "./agent-score.ts";
+import { flipRecords, gitOut, readLabels } from "./labels.ts";
 import { readIncidents, type IncidentView } from "./incidents.ts";
 import {
 	m1,
@@ -129,6 +131,78 @@ export function kindStats(incidents: IncidentView[], w: Window): KindStat[] {
 			};
 		})
 		.toSorted((a, b) => b.opened - a.opened || (a.kind < b.kind ? -1 : a.kind > b.kind ? 1 : 0));
+}
+
+// P5b: the label ledger in the report — bad flips this week / episodes per agent and per plan,
+// and the files bad work touched.
+
+export interface EpisodeKey {
+	id: string;
+	agent: string;
+	plan: string;
+}
+
+export interface FlipRow {
+	key: string;
+	/** Flips whose flipping bad line falls in the window. */
+	flips: number;
+	/** Episodes of this agent/plan in the ledger — the ratio's denominator. */
+	episodes: number;
+}
+
+/** Episode id -> {id, agent, plan}: the id is `${runId}:${plan}:${phase}` (episodes.ts), so the agent is the first segment, the phase the last segment (dropped here), and the plan everything between. */
+function episodeKey(id: string): EpisodeKey {
+	const parts = id.split(":");
+	const agent = parts.shift() ?? id;
+	parts.pop();
+	return { id, agent, plan: parts.join(":") };
+}
+
+/** Bad flips this week over episodes, per agent and per plan. Rows sort by flips, then episodes, then key. */
+export function flipRows(flips: { episode: string; ts: number }[], episodes: EpisodeKey[], w: Window): { agents: FlipRow[]; plans: FlipRow[] } {
+	const rows = (keyOf: (e: EpisodeKey) => string): FlipRow[] => {
+		const byKey = new Map<string, FlipRow>();
+		const add = (key: string): FlipRow => {
+			const r = byKey.get(key) ?? { key, flips: 0, episodes: 0 };
+			byKey.set(key, r);
+			return r;
+		};
+		for (const e of episodes) add(keyOf(e)).episodes += 1;
+		for (const f of flips) {
+			if (!inWindow(f.ts, w)) continue;
+			const e = episodes.find(x => x.id === f.episode);
+			if (e) add(keyOf(e)).flips += 1;
+		}
+		return [...byKey.values()].toSorted((a, b) => b.flips - a.flips || b.episodes - a.episodes || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+	};
+	return { agents: rows(e => e.agent), plans: rows(e => e.plan) };
+}
+
+/** The files flipped (bad) work touched: `git show --name-only` over each flip episode's accept commits, most-touched first, at most `limit`. */
+export function topFlipFiles(flips: { episode: string }[], events: Record<string, unknown>[], limit = 3): string[] {
+	const byEpisode = new Map<string, { repo: string; commits: string[] }>();
+	for (const e of events) {
+		if (e.type !== "accept" && e.type !== "validate") continue;
+		byEpisode.set(`${String(e.agent)}:${String(e.plan ?? "")}:${String(e.phase ?? "")}`, {
+			repo: String(e.repo ?? ""),
+			commits: Array.isArray(e.commits) ? e.commits.map(String) : [],
+		});
+	}
+	const counts = new Map<string, number>();
+	for (const f of flips) {
+		const src = byEpisode.get(f.episode);
+		if (!src || src.repo === "") continue;
+		for (const sha of src.commits) {
+			for (const file of (gitOut(src.repo, ["show", "--format=", "--name-only", sha]) ?? "").split("\n")) {
+				if (file.trim() === "") continue;
+				counts.set(file, (counts.get(file) ?? 0) + 1);
+			}
+		}
+	}
+	return [...counts.entries()]
+		.toSorted((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+		.slice(0, limit)
+		.map(([file]) => file);
 }
 
 /** A noisy detector (P6): the finding the weekly check turns into one "noisy-detector" incident. */
@@ -307,6 +381,17 @@ export function buildReport(cfg: Config, source: RunSource, days: number, now: n
 		"Dismiss rate by kind (opened, planned, dismissed):",
 		...kindStats(incidents, cur).map((k) => `- ${k.kind}: ${k.opened}, ${k.planned}, ${k.dismissed} (${Math.round(k.dismissRate * 100)}% dismissed)`),
 	];
+	// P5b: the label ledger's flips in the report. An empty ledger adds no lines at all, so
+	// byte-identical output on a machine that never ran labels.
+	const ledgerEpisodes = readLabels(cfg.paths.score_state);
+	if (ledgerEpisodes.length > 0) {
+		const flips = flipRecords(cfg.paths.score_state);
+		const fr = flipRows(flips, ledgerEpisodes.map(l => episodeKey(l.episode)), cur);
+		if (fr.agents.length > 0) quality.push(`Bad flips this week / episodes (agent): ${fr.agents.map(r => `${r.key} ${r.flips}/${r.episodes}`).join(", ")}`);
+		if (fr.plans.length > 0) quality.push(`Bad flips this week / episodes (plan): ${fr.plans.map(r => `${r.key} ${r.flips}/${r.episodes}`).join(", ")}`);
+		const files = topFlipFiles(flips.filter(f => inWindow(f.ts, cur)), readEvents(cfg));
+		if (files.length > 0) quality.push(`Files bad work touched: ${files.join(", ")}`);
+	}
 	const body = [
 		`Self-metrics: last ${days} days [${day(cur.from)} to ${day(cur.to)}) vs previous ${days} days.`,
 		"",

@@ -275,7 +275,7 @@ export interface Config {
 	priority: { sleep_sec: number };
 	alerts: { temp_c: number; mem_psi: number; io_psi: number; cooldown_sec: number };
 	snapshot: { tmp_dest: string; git_repo: string; git_backup: string; excludes: string[] };
-	labels: { episode_days: number; flip_weight: number };
+	labels: { episode_days: number; flip_weight: number; repos: string[] };
 	/** Trace rules: provider honesty (src/core/trace-provider.ts) and what a scanned run may read, dial and write (src/core/trace-actions.ts). */
 	traces: {
 		/** What an honest provider answer looks like. */
@@ -612,6 +612,7 @@ function check(cfg: Config): void {
 	if (!(cfg.rollover.exit_grace_s > 0)) throw new ConfigError("rollover.exit_grace_s must be > 0");
 	if (!(cfg.metrics.report_days >= 1)) throw new ConfigError("metrics.report_days must be >= 1");
 	if (!(cfg.labels.episode_days >= 1)) throw new ConfigError("labels.episode_days must be >= 1");
+	if (!Array.isArray(cfg.labels.repos) || cfg.labels.repos.some(r => typeof r !== "string" || r === "")) throw new ConfigError("labels.repos must be a list of repo directories");
 	if (!(cfg.labels.flip_weight >= 0 && cfg.labels.flip_weight <= 1)) throw new ConfigError("labels.flip_weight must be >= 0 and <= 1");
 	if (!(cfg.queue.claim_ttl_min >= 1)) throw new ConfigError("queue.claim_ttl_min must be >= 1");
 	if (!(cfg.ui.port >= 1 && cfg.ui.port <= 65535)) throw new ConfigError("ui.port must be between 1 and 65535");
