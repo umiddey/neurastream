@@ -1,4 +1,8 @@
 # Changelog
+## 0.2.78
+### Fixed
+- A second Main session with the same id is refused at `session_start`: it takes `<mainStateDir>/session.lock` (`tryLock`), logs `second Main <id> refused`, prints `Main <id> is already running` and exits 1 before arming any timer. A stray launch can no longer become a duplicate Main. The rollover's in-process `session_start` is exempt (the lock is held at module scope), and `reset()` releases it.
+
 ## 0.2.77
 ### Fixed
 - The rate-limit probe no longer starts a full Main session. It was spawned with `process.execPath`, which inside omp is the omp binary, so every probe tick launched a stray Main (2026-11-03). It now runs `nice -n 19 bun cli/limit-probe.ts` with `NEURASTREAM_MAIN_LAUNCHER` removed from its env (`limitProbeSpawn`).
