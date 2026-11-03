@@ -214,6 +214,18 @@ test("denied path: a write under a deny-path glob is refused; other writes allow
 	expect(guardCli("pre-tool", toolEvent("write", { path: join(TOY, "src/ok.ts"), content: "x" }, "sub")).code).toBe(0);
 });
 
+test("invalid plan: code writes are refused, but the plan's own repair and reads pass even when the new text names covered files", () => {
+	fresh();
+	writeFileSync(PLAN, `${TOY_PLAN}\n## Bogus section\nx\n`);
+	const code = join(TOY, "src/ok.ts");
+	const refused = guardCli("pre-tool", toolEvent("write", { path: code, content: "x" }, "sub"));
+	expect(refused.d.allow).toBe(false);
+	expect(refused.d.reason).toContain("is invalid");
+	// The repair names a covered code path in its text: that must not make it a code write.
+	expect(guardCli("pre-tool", toolEvent("write", { path: PLAN, content: `${TOY_PLAN}\n- see ${code}\n` }, "sub")).code).toBe(0);
+	expect(guardCli("pre-tool", toolEvent("read", { path: code }, "sub")).code).toBe(0);
+});
+
 test("non-Progress plan edit: refused with the original restore text, Progress-only edit and Main allowed", () => {
 	fresh();
 	const before = TOY_PLAN;

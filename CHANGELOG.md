@@ -1,4 +1,8 @@
 # Changelog
+## 0.2.73
+### Fixed
+- A planner (or any agent) can repair an invalid plan. The invalid-plan refusal fired on any call that merely *mentioned* a covered path, including the plan's own rewrite whose text cites code files, so the errors the guard named could never be fixed by the one who had to fix them. Now an invalid plan refuses code writes only; reads and writes whose targets are plan files pass.
+
 ## 0.2.72
 ### Fixed
 - A `Planner role for <plan>` brief binds only the path (its first word). Text after the path on that line no longer becomes part of the path, which made the planner's real write refused after it had spent its budget. The spawn is now refused up front when the path is not an absolute `.md` under an existing `docs/plans` dir, with the exact line format in the message.
