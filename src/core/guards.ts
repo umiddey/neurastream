@@ -376,7 +376,7 @@ export function plannerPlanProblem(plan: string): string | null {
 	const ok = path.isAbsolute(plan) && plan.endsWith(".md") && cut >= 0 && existsSync(plan.slice(0, cut + "/docs/plans".length));
 	return ok
 		? null
-		: `the \`Planner role for\` path "${plan}" must be an absolute .md path in an existing docs/plans dir, alone as the first word after "for" (e.g. \`Planner role for /home/ukd/projects/neurastream/docs/plans/20261103_1015_x.md\`).`;
+		: `the \`Planner role for\` path "${plan}" must be an absolute .md path in an existing docs/plans dir, alone as the first word after "for" (e.g. \`Planner role for /path/to/repo/docs/plans/20261103_1015_x.md\`).`;
 }
 
 /** P2(b): the named planner spawns, spawn name → the one plan path its brief may create and edit (planner-spawns.json in the state dir). Recorded only on an approved spawn: in main mode the spawn gate refused the brief, so a binding exists only for a delegated planner. */
