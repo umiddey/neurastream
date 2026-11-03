@@ -10,7 +10,7 @@ import { dirname, join } from "node:path";
 import { runConfigKeys } from "../src/cli/config-set.ts";
 import { chatPlanner, currentPlanner, plannerBaselineFile, plannerFile, plannerPin, verifyPlannerMode } from "../src/core/autonomy.ts";
 import { configFile, loadConfig, type Config } from "../src/core/config.ts";
-import { checkPlanEdit, checkTool, plannerBody, spawnProblem } from "../src/core/guards.ts";
+import { checkPlanEdit, checkTool, plannerBody, plannerSpawnPlan, spawnProblem } from "../src/core/guards.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { PROTECTED, protectedHit, STATE_DIR } from "../src/core/queue/lib.ts";
 
@@ -185,6 +185,7 @@ function planPath(name: string): string {
 // The real spawn path binds a delegated planner spawn's name to the plan its brief named in the
 // `Planner role for` line; the `## Allowed` fixture lists the plain task agent.
 function bindPlanner(name: string, plan: string): string | null {
+	mkdirSync(join(root, "docs/plans"), { recursive: true });
 	mkdirSync(dirname(cfg.paths.subagents), { recursive: true });
 	writeFileSync(cfg.paths.subagents, "## Allowed\n\n- `task`\n");
 	return spawnProblem({ context: "# Goal\nRoute the planning.\n", tasks: [{ name, agent: "task", task: `Planner role for ${plan}\n\nDraft the plan for the thing.` }] }, cfg);
@@ -320,6 +321,20 @@ test("mode main: a task brief with a Planner-role line is refused at spawn", () 
 	const plan = planPath("immediate/20261102_1804_future_plan.md");
 	const why = spawnProblem({ context: "# Goal\nRoute the planning.\n", tasks: [{ name: "PlanThing", agent: "task", task: `Planner role for ${plan}\n\nDraft the plan for the thing.` }] }, cfg);
 	expect(why).toContain("planner mode is main");
+});
+
+test("delegated: text after the plan path on the Planner-role line never joins the bound path", () => {
+	writePlannerFile("delegated");
+	const plan = planPath("20261103_1100_binding.md");
+	expect(bindPlanner("PlanBound", `${plan}. Read the brief at local://x.md. MR: none open.`)).toBeNull();
+	expect(plannerSpawnPlan("PlanBound")).toBe(plan);
+});
+
+test("delegated: a relative, outside-docs/plans, non-.md or missing-docs/plans path is refused at spawn", () => {
+	writePlannerFile("delegated");
+	for (const bad of ["docs/plans/x.md", join(root, "elsewhere/x.md"), join(root, "docs/plans/x.txt"), "/nonexistent-root/docs/plans/x.md"]) {
+		expect(bindPlanner("PlanBad", bad)).toContain("must be an absolute .md path");
+	}
 });
 
 test("a bad planner value is refused by config set and the file is untouched", async () => {

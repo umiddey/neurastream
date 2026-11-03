@@ -1,4 +1,8 @@
 # Changelog
+## 0.2.72
+### Fixed
+- A `Planner role for <plan>` brief binds only the path (its first word). Text after the path on that line no longer becomes part of the path, which made the planner's real write refused after it had spent its budget. The spawn is now refused up front when the path is not an absolute `.md` under an existing `docs/plans` dir, with the exact line format in the message.
+
 ## 0.2.71
 ### Fixed
 - `wip on --backup-url` works with the real secret gate: the setup check probes `git-secret-gate scan <repo> HEAD` on a throwaway one-commit repo, the way the backup calls it, instead of a bare `scan` that the real gate answers with usage and exit 2. The test gate now mirrors the real gate's argument handling.
