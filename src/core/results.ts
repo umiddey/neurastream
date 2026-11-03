@@ -298,6 +298,31 @@ export function gatherTags(repo: string | null): ReleaseTag[] {
 	return out;
 }
 
+/** The v* release dates out of an npm registry document's `time` map ("0.2.71": ISO date); the created/modified keys and bad dates are skipped. */
+export function registryTags(doc: unknown): ReleaseTag[] {
+	const time = (doc as { time?: Record<string, unknown> } | null)?.time;
+	if (!time || typeof time !== "object") return [];
+	const out: ReleaseTag[] = [];
+	for (const [version, at] of Object.entries(time)) {
+		const ms = typeof at === "string" ? Date.parse(at) : Number.NaN;
+		if (/^\d+\.\d+\.\d+$/.test(version) && Number.isFinite(ms)) out.push({ name: `v${version}`, ts: Math.floor(ms / 1000) });
+	}
+	return out;
+}
+
+/** The release dates this install is judged by: the git tags of the self repo when the code runs from a checkout, else the package's publish dates from the npm registry (an installed copy has no .git, so the release verdict never had a date to judge from). A network or parse failure lists none. */
+export function gatherReleaseTags(repo: string | null): ReleaseTag[] {
+	if (repo) return gatherTags(repo);
+	try {
+		const pkg = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as { name?: string };
+		if (!pkg.name) return [];
+		const proc = Bun.spawnSync(["curl", "-fsS", "--max-time", "10", `https://registry.npmjs.org/${pkg.name}`], { stdout: "pipe", stderr: "pipe" });
+		return proc.exitCode === 0 ? registryTags(JSON.parse(proc.stdout.toString())) : [];
+	} catch {
+		return [];
+	}
+}
+
 export interface ProductValue {
 	repo: string;
 	name: string;
