@@ -1,4 +1,10 @@
 # Changelog
+## 0.2.76
+### Changed
+- The resource alerts (CPU overheating, memory pressure, IO pressure) are normal-urgency notifications with a 10 s timeout (`NOTIFY_TIMEOUT_MS`) instead of critical ones, so they disappear by themselves instead of staying until dismissed.
+### Fixed
+- The auto-close test (f) waits for the index trim as well as the archive; it flaked in the v0.2.75 publish run.
+
 ## 0.2.75
 ### Added
 - `main-start` prints a `terminal:` line (name, version, session type) read from the environment, so Main knows which terminal it runs in at every start.
