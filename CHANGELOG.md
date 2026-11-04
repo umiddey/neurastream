@@ -1,5 +1,5 @@
 # Changelog
-## Unreleased
+## 0.2.81
 ### Added
 - main-start prints which providers the harness can use now, which are blocked and until when, which are gone, and what changed since the last start. The same read feeds `provider-out.jsonl` (source `harness`), so `agent-ledger --cap` and the guards stop calling a blocked provider free. The omp reader opens `agent.db` read-only and never selects the secret column; a store it cannot read prints `harness providers: unreadable — run neurastream doctor`.
 ### Changed
