@@ -1,4 +1,8 @@
 # Changelog
+## 0.2.80
+### Fixed
+- A factory re-run (`createOmpAdapter`) no longer releases the Main's `session.lock`. `activeAdapterReset` cleared rollover state and also dropped the lock, so a Main that re-entered the factory held no lock and a second Main with the same id was not refused. Only the test-only `reset()` releases it.
+
 ## 0.2.79
 ### Fixed
 - A subagent session last written before the machine's boot time is `DIED: killed before the last boot`, not `RUNNING`. A reboot kills agents without a `session_exit`, and the stop guard counted those rows as live for 60 minutes (I-20261103-81). `bootSec()` reads `NEURASTREAM_BOOT` or `/proc/stat` btime; Main rows keep the idle bound.
