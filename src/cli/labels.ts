@@ -5,7 +5,6 @@ import { nowSec } from "../core/clock.ts";
 import { goodSet, updateLabels } from "../core/label-update.ts";
 import { importWhytrailLabels } from "../core/label-import.ts";
 import { assignLabel } from "../core/labels.ts";
-import { defaultRunSource } from "../adapters/omp/sessions.ts";
 
 const USAGE = "usage: neurastream labels episodes [--since 30d] [--json]\n       neurastream labels import --repo <dir> [--since 30d] [--json]\n       neurastream labels update --repo <dir>\n       neurastream labels export --good [--min-age-days 14] [--json]\n       neurastream labels assign <episode> --party plan|implementer|both --why <text>";
 const SINCE = /^(\d+)([dhm])$/;
@@ -64,7 +63,7 @@ function runUpdate(args: string[], cfg: Config): number {
 	const result = updateLabels(cfg, repo, {
 		episodesFor: cutoff => a.episodes(cfg, cutoff),
 		events: readEvents(cfg),
-		runs: defaultRunSource(cfg).listRuns(nowSec() - cfg.labels.episode_days * 86400),
+		runs: a.runSource(cfg).listRuns(nowSec() - cfg.labels.episode_days * 86400),
 	}, nowSec());
 	console.log(`labels update ${repo}: ${result.labels.length} label(s), ${result.imported.length} imported, ${result.flips.length} flip(s)`);
 	if (result.importError) console.error(`labels update: whytrail import skipped: ${result.importError}`);

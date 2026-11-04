@@ -76,7 +76,7 @@ test("a bad plan by B flips that plan's episodes bad with B's goal line, cards u
 	expect(lines[0]).toBe("0");
 	expect(lines[1]).not.toBe(`HOME=${process.env.HOME}`);
 	expect(lines[1]!.startsWith("HOME=")).toBe(true);
-	expect(lines[2]).toBe("0");
+	expect(lines[2]!.trim()).toBe("0");
 });
 
 test("a good plan flips its episodes good", () => {

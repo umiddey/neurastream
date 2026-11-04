@@ -300,15 +300,15 @@ snapshot:
 
 
 labels:
-  episode_days: 30
+  episode_days: 30   # how far back episodes are built for labels
   flip_weight: 1.0   # share of an episode's accept points a flip removes (1 = all)
   repos: []   # repo dirs the main-start daily `labels update` runs over; empty = only the after-merge moment
   # Removal check (src/core/diff-check.ts, plan 20261024_1915): `neurastream diff-check` and the
   # plan-guard commit gate flag added comment lines matching removal_comment_patterns; a commit
   # subject matching removal_subjects flags every added non-blank line. Pure deletions pass. A
   # regex that does not compile is skipped (fail-open), never refused.
-  removal_comment_patterns: ['\bremoved\b', '\bno longer\b', '\bpreviously\b', '\bused to\b', '\bwas deleted\b']
-  removal_subjects: ['^(remove|drop|delete)\b', '^chore: remove']
+  removal_comment_patterns: ['\bremoved\b', '\bno longer\b', '\bpreviously\b', '\bused to\b', '\bwas deleted\b']   # added comment lines a removal must not add
+  removal_subjects: ['^(remove|drop|delete)\b', '^chore: remove']   # commit subjects that flag every added non-blank line
 traces:
   provider:
     # Provider-honesty rules (src/core/trace-provider.ts). The maps below are open: an empty
