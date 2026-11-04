@@ -1,4 +1,8 @@
 # Changelog
+## Unreleased
+### Changed
+- The release verdict no longer opens a `watch/release-regression` incident for an old, crowded or thin release. A WORSE verdict needs two floor-passing metrics (or a downgrade); a window that holds another release is skipped; a tag older than 24 h is not judged; a pass judges at most the newest two judgable tags. A lone worse metric reads MIXED and is posted without an incident.
+
 ## 0.2.80
 ### Fixed
 - A factory re-run (`createOmpAdapter`) no longer releases the Main's `session.lock`. `activeAdapterReset` cleared rollover state and also dropped the lock, so a Main that re-entered the factory held no lock and a second Main with the same id was not refused. Only the test-only `reset()` releases it.
