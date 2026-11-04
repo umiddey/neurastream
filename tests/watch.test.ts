@@ -12,11 +12,11 @@ import { loadConfig, type Config } from "../src/core/config.ts";
 import type { Run, RunSource } from "../src/core/adapter.ts";
 import { beat, type Heartbeat } from "../src/core/heartbeat.ts";
 import type { GatedInputs } from "../src/core/incident-detectors.ts";
-import { addIncident, openIncidents } from "../src/core/incidents.ts";
+import { addIncident, dismissIncident, openIncidents } from "../src/core/incidents.ts";
 import { nowSec, strftime } from "../src/core/clock.ts";
 import { releaseVerdicts, watchDoctorLine, watchHealth, watchOnce, watchUnitPaths, type FailedUnit, type WatchDeps } from "../src/core/watch.ts";
 import type { CommandRunner } from "../src/core/mr-sweep.ts";
-import type { ReleaseTag } from "../src/core/results.ts";
+import { registryTags, type ReleaseTag } from "../src/core/results.ts";
 import { appendMetric, readMetricEvents } from "../src/core/metrics.ts";
 
 const DIRS: string[] = [];
@@ -627,4 +627,104 @@ test("verdict: blocks double and corrections from zero are two votes → WORSE, 
 	expect(posts[0]).toContain("corrections +100%");
 	expect(openIncidents(cfg)).toHaveLength(1);
 	expect(openIncidents(cfg)[0]!.kind).toBe("release-regression");
+});
+
+test("replay: the 2026-11-03 12-tag first run — none of the 12 is judged again", () => {
+	const now = 1793697331;
+	const registryTime = {
+		"0.2.33": "2026-10-27T05:14:12.725Z",
+		"0.2.34": "2026-10-27T07:40:46.833Z",
+		"0.2.35": "2026-10-27T09:48:08.265Z",
+		"0.2.36": "2026-10-27T14:24:25.363Z",
+		"0.2.37": "2026-10-27T16:54:15.505Z",
+		"0.2.39": "2026-10-27T22:57:05.407Z",
+		"0.2.40": "2026-10-28T07:45:21.629Z",
+		"0.2.41": "2026-10-28T09:17:37.568Z",
+		"0.2.42": "2026-10-28T10:25:10.881Z",
+		"0.2.43": "2026-10-28T11:36:41.460Z",
+		"0.2.44": "2026-10-28T12:47:07.482Z",
+		"0.2.45": "2026-10-28T13:05:44.152Z",
+		"0.2.46": "2026-10-28T14:01:42.053Z",
+		"0.2.47": "2026-10-28T14:20:06.777Z",
+		"0.2.48": "2026-10-28T18:02:10.652Z",
+		"0.2.49": "2026-10-29T14:32:55.132Z",
+		"0.2.50": "2026-10-29T14:38:47.228Z",
+		"0.2.51": "2026-10-29T19:23:52.828Z",
+		"0.2.52": "2026-10-29T19:39:10.503Z",
+		"0.2.53": "2026-10-30T22:24:09.800Z",
+		"0.2.54": "2026-10-30T22:45:07.501Z",
+		"0.2.55": "2026-10-31T01:08:37.641Z",
+		"0.2.56": "2026-10-31T04:18:57.759Z",
+		"0.2.57": "2026-10-31T07:17:14.357Z",
+		"0.2.58": "2026-10-31T13:35:32.294Z",
+		"0.2.59": "2026-10-31T16:41:24.434Z",
+		"0.2.60": "2026-10-31T21:20:18.528Z",
+		"0.2.61": "2026-10-31T23:04:14.346Z",
+		"0.2.62": "2026-11-01T04:24:15.882Z",
+		"0.2.63": "2026-11-01T06:00:10.177Z",
+		"0.2.64": "2026-11-01T08:49:02.771Z",
+		"0.2.65": "2026-11-01T13:55:19.423Z",
+		"0.2.66": "2026-11-01T18:48:15.200Z",
+		"0.2.67": "2026-11-01T21:11:17.576Z",
+		"0.2.68": "2026-11-02T21:18:44.656Z",
+		"0.2.69": "2026-11-02T23:05:29.006Z",
+		"0.2.70": "2026-11-03T04:05:43.456Z",
+		"0.2.71": "2026-11-03T07:43:29.473Z",
+		"0.2.72": "2026-11-03T08:58:00.414Z",
+	};
+	const tags = registryTags({ time: registryTime }).filter(t => t.ts > now - 7 * 86400);
+	const byName = new Map(tags.map(t => [t.name, t.ts]));
+	const published: [string, string][] = [
+		["v0.2.35", "2026-10-27T09:48:08Z"],
+		["v0.2.37", "2026-10-27T16:54:15Z"],
+		["v0.2.39", "2026-10-27T22:57:05Z"],
+		["v0.2.48", "2026-10-28T18:02:10Z"],
+		["v0.2.52", "2026-10-29T19:39:10Z"],
+		["v0.2.57", "2026-10-31T07:17:14Z"],
+		["v0.2.59", "2026-10-31T16:41:24Z"],
+		["v0.2.64", "2026-11-01T08:49:02Z"],
+		["v0.2.65", "2026-11-01T13:55:19Z"],
+		["v0.2.66", "2026-11-01T18:48:15Z"],
+		["v0.2.67", "2026-11-01T21:11:17Z"],
+		["v0.2.69", "2026-11-02T23:05:29Z"],
+	];
+	for (const [name, iso] of published) expect(byName.get(name)).toBe(Math.floor(Date.parse(iso) / 1000));
+	const seeded: [string, string][] = [
+		["v0.2.35", "WORSE"], ["v0.2.37", "WORSE"], ["v0.2.39", "WORSE"], ["v0.2.48", "WORSE"],
+		["v0.2.52", "WORSE"], ["v0.2.57", "WORSE"], ["v0.2.59", "WORSE"], ["v0.2.64", "WORSE"],
+		["v0.2.65", "watcher-off"], ["v0.2.66", "watcher-off"], ["v0.2.67", "watcher-off"], ["v0.2.69", "WORSE"],
+	];
+	const cfg = tempCfg("verdict-replay");
+	for (const [tag, verdict] of seeded) appendMetric(cfg, { type: "release-verdict", tag, verdict, ts: 1793697331.974 });
+	const gapStart = Math.floor(Date.parse("2026-11-01T13:00:00Z") / 1000);
+	const gapEnd = Math.floor(Date.parse("2026-11-01T21:30:00Z") / 1000);
+	watchIncident(cfg, "watch:not-running", gapStart, "not-running");
+	watchIncident(cfg, "watch:not-running", gapEnd, "not-running");
+	expect(dismissIncident(cfg, openIncidents(cfg).find(i => i.fingerprint === "watch:not-running")!.id, "watcher back")).toBeNull();
+	const tag35 = byName.get("v0.2.35")!;
+	const beforeStart = tag35 - ((byName.get("v0.2.36") ?? tag35) - tag35);
+	mkdirSync(cfg.paths.score_state, { recursive: true });
+	writeFileSync(join(cfg.paths.score_state, "events.jsonl"), [
+		JSON.stringify({ type: "accept", plan: "oldest", phase: "P1", ts: beforeStart - 200 }),
+		JSON.stringify({ type: "accept", plan: "oldest", phase: "P2", ts: beforeStart - 100 }),
+	].join("\n") + "\n");
+	guardBlocks(cfg, tag35 - 3600, 10);
+	guardBlocks(cfg, tag35 + 3600, 20);
+	const runs: Run[] = [];
+	for (let at = Math.floor(Date.parse("2026-10-31T18:00:00Z") / 1000); at <= now; at += 3600) runs.push(mainRun(200, at));
+	runs.push(mainRun(200, beforeStart - 60, [["assistant", "shall I proceed?"]]));
+	runs.push(mainRun(200, tag35 + 3600, Array.from({ length: 3 }, () => ["assistant", "shall I proceed?"] as [string, string])));
+	const out = releaseVerdicts(cfg, { now, tags, source: vsrc(runs), notify: () => {} });
+	const ledger = readMetricEvents(cfg).filter(e => e.type === "release-verdict");
+	for (const [tag, verdict] of seeded) {
+		const recs = ledger.filter(e => e.tag === tag);
+		expect(recs).toHaveLength(1);
+		expect(recs[0]!.verdict).toBe(verdict);
+		expect(recs[0]!.ts).toBe(1793697331.974);
+	}
+	const fresh = ledger.filter(e => !seeded.some(([tag]) => tag === e.tag)).map(e => String(e.tag));
+	expect(fresh.every(t => t === "v0.2.70" || t === "v0.2.71")).toBe(true);
+	expect(out.map(v => v.tag).every(t => t === "v0.2.70" || t === "v0.2.71")).toBe(true);
+	expect(out.some(v => seeded.some(([tag]) => tag === v.tag))).toBe(false);
+	expect(openIncidents(cfg).filter(i => i.kind === "release-regression")).toHaveLength(0);
 });
