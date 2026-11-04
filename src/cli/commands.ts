@@ -85,7 +85,7 @@ export async function runPorted(cmd: string, args: string[]): Promise<number> {
 			return claimCli(args, rt.cfg);
 		case "main-start": {
 			const a = getAdapter(rt.cfg);
-			return mainStart(args, rt.cfg, { source: a.runSource(rt.cfg), results: a.completedResults(rt.cfg) });
+			return mainStart(args, rt.cfg, { source: a.runSource(rt.cfg), results: a.completedResults(rt.cfg), episodesFor: cutoff => a.episodes(rt.cfg, cutoff) });
 		}
 		case "machine-guard":
 			return machineGuard(args, rt.cfg);

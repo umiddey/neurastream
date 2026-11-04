@@ -133,6 +133,10 @@ Green is both exiting 0.
 
 `neurastream traces briefs --since 30d` lists each spawn brief Main sent (shared context first, then the task's own text) with its features — length, a `file:line`, a verify command, a phase id, a plan path, a `Call budget` line, the number of acceptance lines — next to the spawned agent's waste and whether its work was accepted. `--json` gives the rows, `--report` compares the rows with and without each feature (a side with fewer than `traces.briefs.min_n` rows prints "n too small"). Brief text never prints. Read the report with care: a spawn without a plan is never accepted, and accept records exist only since scoring began, so all-time accept rates mostly measure when and for what an agent was spawned, not how good the brief was. Compare plan briefs from the same period before turning a gap into a rule; on 30 days of real briefs that comparison showed no feature strong enough for a brief-lint warning.
 
+`neurastream labels episodes [--since 30d] [--json]` joins score events, subagent runs and the successful spawn brief that named each agent. Died or over-budget runs without an accept are included with no commits. The default window is `labels.episode_days` (30); `--since` overrides it. `neurastream labels assign <episode> --party plan|implementer|both --why <text>` appends a party override. A flipped episode loses `labels.flip_weight` (default 1) of its accept points on the board and the gate; a plan-party flip also counts against MAIN.
+
+`neurastream diff-check [--staged | <rev>]` is the removal check: an added comment line matching `labels.removal_comment_patterns` is flagged, and a commit whose subject matches `labels.removal_subjects` flags every added non-blank line. It prints `file:line: text` and exits 1 on hits; pure deletions pass, and a config regex that does not compile is skipped (fail-open, never refused). The plan-guard runs the same scan when a subagent's shell calls `git commit` on its staged diff and refuses the commit listing the flagged lines; Main is not gated.
+
 `agent-score accept` records accepted work by commit; `agent-score validate <Agent> --plan <plan.md> --phase <P> --evidence <report.md> --section "<heading prefix>"` records a validation phase (checks/tests ran, report section written, no commits) with proof Main cannot fake by typing: the plan line must be ticked `- [x]`, the cited section body must name a heavy-run label run by that agent (from `paths.heavy_log`), and the phase must not be scored already. The ranking board counts it in `Accepted (diag/val)` as `N (d/v)`.
 
 ## Main reads the code for its plans
@@ -417,6 +421,9 @@ A rejected call never wrote usage, so a run can carry a 1.17M-token prompt with 
 Config (defaults):
 
 ```yaml
+labels:
+  episode_days: 30
+  flip_weight: 1.0
 traces:
   bloat:
     first_call_max: 150000
@@ -424,6 +431,7 @@ traces:
     context_limits: {}   # e.g. claude-opus-5-5: 1000000
     tool_group: '^_?mcp__([A-Za-z0-9]+)_'
 ```
+
 
 ## Self-metrics
 

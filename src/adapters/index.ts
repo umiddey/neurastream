@@ -5,6 +5,7 @@
 
 import type { DumpRef, LaunchOptions, RelatedTrace, RunSource, TaskResult, TraceRun, TraceSource } from "../core/adapter.ts";
 import type { Config } from "../core/config.ts";
+import type { Episode } from "../core/episodes.ts";
 import type { DumpParts, DumpTokens } from "../core/trace-bloat.ts";
 import type { SpawnBrief } from "../core/trace-briefs.ts";
 import { ompAdapter } from "./omp/adapter.ts";
@@ -22,6 +23,8 @@ export interface HarnessAdapter {
 	/** Every run id with a trace under the root, each mapped to its newest file. */
 	traceRuns(root: string): TraceRun[];
 	traceSource(root: string): TraceSource;
+	/** Episodes (P1) since the cutoff, for `labels` commands and the main-start daily labels update. */
+	episodes(cfg: Config, cutoff: number): Episode[];
 	/** Read only the session banner at the start of a trace; null means it is unreadable. */
 	traceStart(file: string): number | null;
 	/** Every failed-request dump under the harness log dir, oldest first. */

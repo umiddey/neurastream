@@ -7,6 +7,7 @@ import { exitText, helpDoc, printText } from "./help.ts";
 import { formatG, pyFixed, pyPercent0 } from "./pyfmt.ts";
 import { PyFloat, pyDumps } from "./pyjson.ts";
 import { gitRaw } from "./proc.ts";
+import { flippedEpisodes } from "./labels.ts";
 import { efficiencyRules, runEfficiency } from "./trace-efficiency.ts";
 
 function opt(args: string[], name: string): string | undefined {
@@ -193,6 +194,12 @@ interface Row {
 	fp: number | null;
 }
 
+function blankRow(model: string): Row {
+	return {
+		model, runs: 0, done: 0, running: 0, cost: 0, steer: 0, hours: 0, pts: 0, acc: 0, first: 0, pen: 0, diag: 0, val: 0, calls: 0, wasted: 0,
+		net: 0, total: 0, ppd: null, pph: null, surv: null, fp: null,
+	};
+}
 function ocRuns(cfg: Config, cut: number): { agent: string; model: string; cost: number; hours: number; survived: boolean; running: boolean; end: string }[] {
 	const path = join(cfg.paths.score_state, "oc-runs.jsonl");
 	if (!existsSync(path)) return [];
@@ -222,7 +229,7 @@ function namedRunModel(cfg: Config, source: RunSource, agent: string): string | 
 	const cut = nowSec() - cfg.score.board_days * 86400;
 	const sub = source.listRuns(cut).find(r => r.kind === "sub" && r.id === agent);
 	if (sub) return sub.scoreModel;
-	const oc = ocRuns(cfg, cut).filter(r => r.agent === agent).at(-1);
+	const oc = ocRuns(cfg, cut).findLast(r => r.agent === agent);
 	return oc ? oc.model : null;
 }
 
@@ -231,7 +238,7 @@ function unnamedRefusal(agent: string): number {
 }
 
 function steering(runs: Run[], names: string[]): Record<string, number> {
-	const ordered = names.slice().sort((a, b) => b.length - a.length);
+	const ordered = names.toSorted((a, b) => b.length - a.length);
 	const out: Record<string, number> = {};
 	for (const n of names) out[n] = 0;
 	for (const run of runs) {
@@ -270,12 +277,8 @@ function table(days: number, cfg: Config, source: RunSource): { rows: Row[]; byA
 	const agentModel = new Map<string, string>();
 	for (const [n, r] of byAgent) agentModel.set(n, r.model);
 	const rows = new Map<string, Row>();
-	const blank = (model: string): Row => ({
-		model, runs: 0, done: 0, running: 0, cost: 0, steer: 0, hours: 0, pts: 0, acc: 0, first: 0, pen: 0, diag: 0, val: 0, calls: 0, wasted: 0,
-		net: 0, total: 0, ppd: null, pph: null, surv: null, fp: null,
-	});
 	for (const r of byAgent.values()) {
-		const m = rows.get(r.model) ?? blank(r.model);
+		const m = rows.get(r.model) ?? blankRow(r.model);
 		m.runs += 1;
 		m.running += r.running ? 1 : 0;
 		m.done += r.survived ? 1 : 0;
@@ -287,12 +290,26 @@ function table(days: number, cfg: Config, source: RunSource): { rows: Row[]; byA
 		const m = rows.get(r.model)!;
 		m.steer += steer[n] ?? 0;
 	}
+	const flips = new Map(flippedEpisodes(cfg.paths.score_state).map(f => [f.episode, f.party]));
 	for (const e of evs) {
 		const agent = String(e.agent ?? "");
 		const model = (typeof e.model === "string" && e.model) || agentModel.get(agent) || "?";
-		const m = rows.get(model) ?? blank(model);
+		const m = rows.get(model) ?? blankRow(model);
 		if (e.type === "accept" || e.type === "diagnose" || e.type === "validate") {
 			m.pts += Number(e.weight);
+			if (e.type === "accept") {
+				const flipParty = flips.get(`${agent}:${String(e.plan ?? "")}:${String(e.phase ?? "")}`);
+				const loss = flipParty === undefined ? 0 : cfg.labels.flip_weight * Number(e.weight);
+				if (Number.isFinite(loss) && loss !== 0) {
+					// The episode loses its accept points. plan and both also count against MAIN.
+					m.pts -= loss;
+					if (flipParty === "plan" || flipParty === "both") {
+						const main = rows.get("MAIN") ?? blankRow("MAIN");
+						main.pts -= loss;
+						rows.set("MAIN", main);
+					}
+				}
+			}
 			m.acc += 1;
 			m.first += e.rework ? 0 : 1;
 			m.diag += e.type === "diagnose" ? 1 : 0;
@@ -548,8 +565,7 @@ export function agentScore(args: string[], cfg: Config, source: RunSource, trace
 				// provider — known from its pin, accepted work or not — is named instead of the
 				// target; a later paid agent is never recommended while an earlier one is free.
 				const prefer = cfg.ledger.prefer;
-				const lower = (s: string): string => s.toLowerCase();
-				const rankOf = (model: string): number => prefer.findIndex(p => lower(model).includes(lower(p)));
+				const rankOf = (model: string): number => prefer.findIndex(p => model.toLowerCase().includes(p.toLowerCase()));
 				const targetRank = rankOf(target);
 				let blocked: string | null = null;
 				for (let j = 0; j < (targetRank === -1 ? prefer.length : targetRank); j++) {

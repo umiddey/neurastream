@@ -32,6 +32,8 @@ import { queueMigrate } from "../core/queue-migrate.ts";
 import { activePlans, allowedAgents, enforceReadOnlyIndex, gitTop, indexPath, readIndex, subagentsPath, writeIndex } from "../core/queue/lib.ts";
 import { defaultRunner } from "../core/mr-sweep.ts";
 import { allowAgents, denyAgents, invalidSlugs } from "../core/subagents.ts";
+import { runLabels } from "./labels.ts";
+import { runDiffCheck } from "./diff-check.ts";
 
 const BINS = [
 	"agent-score",
@@ -99,6 +101,19 @@ export function helpText(): string {
 		"  neurastream main [args]       run omp under the launcher (automatic session rollover)",
 		"  neurastream metrics <cmd>     self-metrics: report, features, releases, ci, false-alarm, rule (see README)",
 		"  neurastream incident <cmd>    incidents Main must act on: list, add, plan, dismiss (see README)",
+		"  neurastream labels episodes [--since 30d] [--json]",
+		"                                join scored work, agent runs and spawn briefs",
+		"  neurastream labels update --repo <dir>",
+		"                                label the episodes since the ledger's watermark (P2+P3),",
+		"                                flip good work a later commit turned bad; idempotent",
+		"  neurastream labels export --good [--min-age-days 14] [--json]",
+		"                                good, old enough, never-flipped episodes with wasted",
+		"                                trace step indexes",
+		"  neurastream labels assign <episode> --party plan|implementer|both --why <text>",
+		"                                append a party override; the last ledger line wins",
+		"  neurastream diff-check [--staged | <rev>]",
+		"                                the removal check (labels.removal_*): prints flagged",
+		"                                file:line: text, exit 1 on hits",
 		"  neurastream traces claims <runId|--since 24h> [--json]",
 		"                                check a run's final-report claims (test counts, exit codes,",
 		"                                SHAs, heavy-run labels, changed paths) against the run's own",
@@ -142,6 +157,8 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 	if (cmd === "metrics") return runMetrics(args);
 	if (cmd === "incident") return runIncident(args);
 	if (cmd === "traces") return runTraces(args);
+	if (cmd === "labels") return runLabels(args);
+	if (cmd === "diff-check") return runDiffCheck(args);
 	if (cmd === "ui") return runUi(args);
 	if (cmd === "pages") return runPages(args);
 	if (cmd === "notes") return runNotes(args);
