@@ -14,6 +14,7 @@ import { queueTrim } from "../core/queue-trim.ts";
 import { queueClose } from "../core/queue-close.ts";
 import { queueFinished } from "../core/queue-finished.ts";
 import { resourceAlerts } from "../core/resource-alerts.ts";
+import { syncHarnessOut } from "../core/provider-state.ts";
 import { tmpSnapshot } from "../core/tmp-snapshot.ts";
 import { wipBackup } from "../core/wip-backup.ts";
 import { wipCheck } from "../core/wip-check.ts";
@@ -58,6 +59,7 @@ export async function runPorted(cmd: string, args: string[]): Promise<number> {
 		case "agent-score":
 			return agentScore(args, rt.cfg, rt.source, getAdapter(rt.cfg).scoreTraces(rt.cfg));
 		case "agent-ledger":
+			if (args.includes("--cap")) syncHarnessOut(rt.cfg, getAdapter(rt.cfg).providers(rt.cfg));
 			return agentLedger(args, rt.cfg, rt.source);
 		case "brief-lint":
 			return briefLint(args, rt.cfg);
@@ -85,7 +87,7 @@ export async function runPorted(cmd: string, args: string[]): Promise<number> {
 			return claimCli(args, rt.cfg);
 		case "main-start": {
 			const a = getAdapter(rt.cfg);
-			return mainStart(args, rt.cfg, { source: a.runSource(rt.cfg), results: a.completedResults(rt.cfg), episodesFor: cutoff => a.episodes(rt.cfg, cutoff) });
+			return mainStart(args, rt.cfg, { source: a.runSource(rt.cfg), results: a.completedResults(rt.cfg), providers: a.providers(rt.cfg), episodesFor: cutoff => a.episodes(rt.cfg, cutoff) });
 		}
 		case "machine-guard":
 			return machineGuard(args, rt.cfg);

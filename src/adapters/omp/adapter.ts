@@ -3,6 +3,7 @@
 
 import type { HarnessAdapter } from "../index.ts";
 import { runDoctor } from "./doctor.ts";
+import { ompProviders } from "./providers.ts";
 import { runAdapterInstall } from "./install.ts";
 import { runMainLauncher } from "./launch.ts";
 import { defaultCompletedResults, defaultRunSource } from "./sessions.ts";
@@ -27,4 +28,5 @@ export const ompAdapter: HarnessAdapter = {
 	launchMain: runMainLauncher,
 	install: runAdapterInstall,
 	doctor: runDoctor,
+	providers: ompProviders,
 };

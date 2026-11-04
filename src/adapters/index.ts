@@ -5,6 +5,7 @@
 
 import type { DumpRef, LaunchOptions, RelatedTrace, RunSource, TaskResult, TraceRun, TraceSource } from "../core/adapter.ts";
 import type { Config } from "../core/config.ts";
+import type { ProviderStatus } from "../core/provider-state.ts";
 import type { Episode } from "../core/episodes.ts";
 import type { DumpParts, DumpTokens } from "../core/trace-bloat.ts";
 import type { SpawnBrief } from "../core/trace-briefs.ts";
@@ -44,6 +45,8 @@ export interface HarnessAdapter {
 	install(args: string[]): number;
 	/** `neurastream doctor`. */
 	doctor(): number;
+	/** Providers the harness knows and their state now; null = its store could not be read (doctor names why); [] = the harness has no such data. */
+	providers(cfg: Config): ProviderStatus[] | null;
 }
 
 const ADAPTERS: Record<string, HarnessAdapter> = {

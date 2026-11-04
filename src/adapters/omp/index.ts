@@ -44,6 +44,7 @@ import { mainDetectors, mainStartText } from "../../core/main-start.ts";
 
 import { buildHandoff, holdsBlock, notePath, noteRequest, OWNER_AWAY, ownerText, relaunchPath, rolloverState, spawnRefusal, unansweredOwnerMessages, type RolloverState } from "../../core/rollover.ts";
 import { defaultCompletedResults, defaultRunSource, runIdOf } from "./sessions.ts";
+import { ompProviders } from "./providers.ts";
 import { adapterLog, MAIN_ENV } from "./launch.ts";
 import { parseTraceFile } from "./traces.ts";
 import { packageJsonPath, packageVersion } from "./package-root.ts";
@@ -1381,7 +1382,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		try {
 			c.notify(notice);
 			const generated = [
-				await mainStartText([], cfg, { inheritStdin: false }, { source: defaultRunSource(cfg), results: defaultCompletedResults(cfg) }),
+					await mainStartText([], cfg, { inheritStdin: false }, { source: defaultRunSource(cfg), results: defaultCompletedResults(cfg), providers: ompProviders(cfg) }),
 				holdsBlock(q.ownerHolds()),
 			].join("\n");
 			const note = readFileSync(path, "utf8");

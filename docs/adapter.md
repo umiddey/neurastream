@@ -185,7 +185,7 @@ Core logic and its types live in `src/core` and name no harness — `tests/host-
 
 One folder under `src/adapters/`, one registry entry, zero core changes:
 
-1. `src/adapters/<name>/` implements `HarnessAdapter` (the readers, `launchMain`, `install`, `doctor`). Only this folder may name the harness.
+1. `src/adapters/<name>/` implements `HarnessAdapter` (the readers, `launchMain`, `install`, `doctor`, `providers`). Only this folder may name the harness.
 2. One entry in `ADAPTERS` in `src/adapters/index.ts`.
 3. Nothing under `src/core` or `src/cli` changes: the CLI reaches the harness only through the registry, and `tests/host-neutral.test.ts` holds both rules.
 
@@ -203,5 +203,6 @@ The user picks it with `harness: <name>` in the config (default `omp`; an unknow
 | spawn check | call `checkSpawn` or the CLI | |
 | plan-edit restriction | call `checkPlanEdit` or the CLI, and apply `restore` if the harness will not | |
 | stop | call `checkStop` or the CLI | |
+| provider status | `providers(cfg)` returns its list | return `[]` |
 
 Nothing else. Queue files, blockers, score events, and config are core.

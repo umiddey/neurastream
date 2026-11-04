@@ -93,3 +93,30 @@ test("a failed snapshot run prints its first failure", async () => {
 	const lines = (await mainStartText([], cfg, { inheritStdin: false })).split("\n");
 	expect(lines).toContain(`wip: snapshot failed at ${strftime(at, "%Y-%m-%d %H:%M")}: FAILED: /x: git add -u: boom`);
 });
+
+// P3 (plan 20261103_0955): a supplied provider list is recorded and printed; a missing key is not.
+test("a blocked harness provider is fed into the providers line and the harness lines", async () => {
+	const { cfg } = sandbox("fed", false);
+	const until = Math.floor(Date.UTC(2099, 0, 1, 12, 0, 0) / 1000);
+	const text = await mainStartText([], cfg, { inheritStdin: false }, {
+		providers: [{ provider: "alpha", unusable: null, blockedUntil: until, partial: [] }],
+	});
+	expect(text).toContain(`providers: alpha out until ${strftime(until, "%H:%M")}`);
+	expect(text).toContain("harness providers:");
+	expect(text).toContain("blocked: alpha until");
+});
+
+test("a null provider list prints unreadable and leaves the recorded state alone", async () => {
+	const { cfg } = sandbox("unread", false);
+	const text = await mainStartText([], cfg, { inheritStdin: false }, { providers: null });
+	expect(text).toContain('harness providers: unreadable — run neurastream doctor');
+	expect(text).not.toContain("provider changes");
+	expect(text).not.toMatch(/^providers: /m);
+});
+
+test("no providers key prints neither harness line", async () => {
+	const { cfg } = sandbox("nokey", false);
+	const text = await mainStartText([], cfg, { inheritStdin: false });
+	expect(text).not.toContain("harness providers:");
+	expect(text).not.toContain("provider changes");
+});

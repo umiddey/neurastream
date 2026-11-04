@@ -1,5 +1,7 @@
 # Changelog
 ## Unreleased
+### Added
+- main-start prints which providers the harness can use now, which are blocked and until when, which are gone, and what changed since the last start. The same read feeds `provider-out.jsonl` (source `harness`), so `agent-ledger --cap` and the guards stop calling a blocked provider free. The omp reader opens `agent.db` read-only and never selects the secret column; a store it cannot read prints `harness providers: unreadable — run neurastream doctor`.
 ### Changed
 - The release verdict no longer opens a `watch/release-regression` incident for an old, crowded or thin release. A WORSE verdict needs two floor-passing metrics (or a downgrade); a window that holds another release is skipped; a tag older than 24 h is not judged; a pass judges at most the newest two judgable tags. A lone worse metric reads MIXED and is posted without an incident.
 
