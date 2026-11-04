@@ -104,7 +104,7 @@ export function helpText(): string {
 		"  neurastream labels episodes [--since 30d] [--json]",
 		"                                join scored work, agent runs and spawn briefs",
 		"  neurastream labels update --repo <dir>",
-		"                                label the episodes since the ledger's cursor (P2+P3),",
+		"                                label the episodes since the ledger's watermark (P2+P3),",
 		"                                flip good work a later commit turned bad; idempotent",
 		"  neurastream labels export --good [--min-age-days 14] [--json]",
 		"                                good, old enough, never-flipped episodes with wasted",

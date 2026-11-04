@@ -1,5 +1,5 @@
-// `labels update` (plan 20261024_1915 P5 + P5b): P2+P3 over the episodes since the cursor
-// (a cursor line in the same ledger), idempotent on a quiet second run; a flip to bad opens
+// `labels update` (plan 20261024_1915 P5 + P5b): P2+P3 over the episodes since the watermark
+// (a watermark line in the same ledger), idempotent on a quiet second run; a flip to bad opens
 // one `work-turned-bad` incident and a second update adds none.
 
 import { afterEach, expect, test } from "bun:test";
@@ -76,9 +76,9 @@ test("update appends once and not twice", () => {
 	expect(first.imported).toHaveLength(0);
 	// no whytrail on PATH: the import step is skipped with a note, not a crash
 	expect(first.importError).toBeDefined();
-	// one cursor line marks what the run processed
-	expect(linesOf(cfg.paths.score_state).filter(l => l.kind === "cursor")).toEqual([
-		expect.objectContaining({ kind: "cursor", until: 100 }),
+	// one watermark line marks what the run processed
+	expect(linesOf(cfg.paths.score_state).filter(l => l.kind === "watermark")).toEqual([
+		expect.objectContaining({ kind: "watermark", until: 100 }),
 	]);
 	const afterFirst = bytesOf(cfg.paths.score_state);
 	const second = updateLabels(cfg, "", d, 200);
@@ -101,8 +101,8 @@ test("a second run with a new episode appends only that episode", () => {
 	const d1 = deps([late], [acceptEvent()], [run("done", 50), lateRun]);
 	const second = updateLabels(cfg, "", d1, 200);
 	expect(second.labels.map(l => l.episode)).toEqual([late.id]);
-	expect(linesOf(cfg.paths.score_state).filter(l => l.kind === "cursor")).toEqual([
-		expect.objectContaining({ kind: "cursor", until: 200 }),
+	expect(linesOf(cfg.paths.score_state).filter(l => l.kind === "watermark")).toEqual([
+		expect.objectContaining({ kind: "watermark", until: 200 }),
 	]);
 });
 

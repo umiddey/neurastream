@@ -1,7 +1,7 @@
 // `labels update` and `labels export --good` (plan 20261024_1915 P5 + P5b). update runs the P2
-// labeller and the P3 whytrail import over the episodes since the ledger's cursor line, rescans
+// labeller and the P3 whytrail import over the episodes since the ledger's watermark line, rescans
 // good episodes for flips (a later revert, a penalty) and opens one `work-turned-bad` incident
-// per flip; export lists the good set. The cursor, the idempotency and the incident dedup all
+// per flip; export lists the good set. The watermark, the idempotency and the incident dedup all
 // live in the ledger, so a quiet second run appends nothing.
 
 import type { Run, TraceSource } from "./adapter.ts";
@@ -10,7 +10,7 @@ import type { Episode, EpisodeScoreEvent } from "./episodes.ts";
 import { addIncident } from "./incidents.ts";
 import { importWhytrailLabels } from "./label-import.ts";
 import type { EpisodeLabel, LabelParty } from "./labels.ts";
-import { appendCursor, appendLabel, flipAccepted, flippedEpisodes, labelAndAppend, labelEpisodes, readCursor, readLabels } from "./labels.ts";
+import { appendWatermark, appendLabel, flipAccepted, flippedEpisodes, labelAndAppend, labelEpisodes, readWatermark, readLabels } from "./labels.ts";
 import { efficiencyRules, runEfficiency } from "./trace-efficiency.ts";
 
 export interface LabelUpdateDeps {
@@ -28,7 +28,7 @@ export interface LabelFlip {
 }
 
 export interface UpdateResult {
-	/** P2 label lines appended for episodes new since the cursor. */
+	/** P2 label lines appended for episodes new since the watermark. */
 	labels: EpisodeLabel[];
 	/** P3 whytrail lines appended for those episodes. */
 	imported: EpisodeLabel[];
@@ -39,14 +39,14 @@ export interface UpdateResult {
 }
 
 /**
- * One update pass. New episodes (runs after the cursor) get their first P2/P3 lines; every
+ * One update pass. New episodes (runs after the watermark) get their first P2/P3 lines; every
  * rebuildable good episode is recomputed and flipped when the labeller now calls it bad. The
- * cursor advances only when something was appended, so a run with nothing new appends nothing.
+ * watermark advances only when something was appended, so a run with nothing new appends nothing.
  */
 export function updateLabels(cfg: Config, repo: string, deps: LabelUpdateDeps, now: number): UpdateResult {
 	const state = cfg.paths.score_state;
 	const windowStart = now - cfg.labels.episode_days * 86400;
-	const cutoff = readCursor(state) ?? windowStart;
+	const cutoff = readWatermark(state) ?? windowStart;
 	const fresh = deps.episodesFor(cutoff);
 	const labels = labelAndAppend(state, fresh, deps.events, deps.runs, now);
 	let imported: EpisodeLabel[] = [];
@@ -84,7 +84,7 @@ export function updateLabels(cfg: Config, repo: string, deps: LabelUpdateDeps, n
 		}, now);
 		flips.push({ episode: episode.id, party, fixSha });
 	});
-	if (labels.length + imported.length + flips.length > 0) appendCursor(state, now);
+	if (labels.length + imported.length + flips.length > 0) appendWatermark(state, now);
 	return { labels, imported, flips, importError };
 }
 

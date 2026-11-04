@@ -73,29 +73,29 @@ export function readLabelHistory(scoreState: string): EpisodeLabel[] {
 	for (const line of readFileSync(path, "utf8").split("\n")) {
 		if (!line.trim()) continue;
 		const rec = JSON.parse(line) as EpisodeLabel;
-		if ("kind" in rec) continue; // a cursor line (P5) marks progress, it is not a label
+		if ("kind" in rec) continue; // a watermark line (P5) marks progress, it is not a label
 		out.push(rec);
 	}
 	return out;
 }
 
-/** The ledger's update cursor (P5): how far `labels update` has processed, or null before the first run. */
-export function readCursor(scoreState: string): number | null {
+/** The ledger's update watermark (P5): how far `labels update` has processed, or null before the first run. */
+export function readWatermark(scoreState: string): number | null {
 	const path = labelLedgerPath(scoreState);
 	if (!existsSync(path)) return null;
 	let until: number | null = null;
 	for (const line of readFileSync(path, "utf8").split("\n")) {
 		if (!line.trim()) continue;
 		const rec = JSON.parse(line) as { kind?: string; until?: unknown };
-		if (rec.kind === "cursor" && typeof rec.until === "number") until = rec.until;
+		if (rec.kind === "watermark" && typeof rec.until === "number") until = rec.until;
 	}
 	return until;
 }
 
-/** Appends the cursor line; the caller writes it only when the run appended something, so a quiet run appends nothing at all. */
-export function appendCursor(scoreState: string, until: number): void {
+/** Appends the watermark line; the caller writes it only when the run appended something, so a quiet run appends nothing at all. */
+export function appendWatermark(scoreState: string, until: number): void {
 	mkdirSync(scoreState, { recursive: true });
-	appendFileSync(labelLedgerPath(scoreState), `${JSON.stringify({ kind: "cursor", until })}\n`);
+	appendFileSync(labelLedgerPath(scoreState), `${JSON.stringify({ kind: "watermark", until })}\n`);
 }
 
 export function readLabels(scoreState: string): EpisodeLabel[] {
