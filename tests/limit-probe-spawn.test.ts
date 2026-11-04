@@ -202,11 +202,17 @@ async function emit(handlers: Map<string, Handler[]>, event: string, payload: un
 	await Promise.all((handlers.get(event) ?? []).map(cb => cb(payload, ctx)));
 }
 
-/** A separate process's non-blocking flock. Exit 1 means this process still holds the lock. */
-function separateFlock(lock: string): number {
-	const r = spawnSync("flock", ["-n", lock, "-c", "true"]);
+/** Another process's tryLock on this path. 0 = free, 1 = busy. The util-linux `flock` binary is
+ * not on macOS; same-process tryLock is not a portable busy check (Darwin flocks are per process).
+ * The child is the test runner (bun) loading the repo's own tryLock. */
+function otherProcessLock(lock: string): number {
+	const mod = join(import.meta.dir, "../src/core/file-lock.ts");
+	const code = `import { tryLock } from ${JSON.stringify(mod)};\nconst held = tryLock(${JSON.stringify(lock)});\nif (held) { held.release(); process.exit(0); }\nprocess.exit(1);\n`;
+	const r = spawnSync(process.execPath, ["-e", code], { encoding: "utf8" });
 	if (r.error) throw r.error;
-	return r.status ?? -1;
+	const err = r.stderr.trim();
+	if (err !== "" || (r.status !== 0 && r.status !== 1)) throw new Error(`lock probe exited ${r.status}: ${err || r.stdout}`);
+	return r.status;
 }
 
 /** Point queue reads at the sandbox for this test, and put the caller's env back after. autoClose
@@ -241,8 +247,8 @@ test("factory re-run keeps the session lock", async () => {
 		// The factory re-run: createOmpAdapter calls activeAdapterReset before installing the new one.
 		const second = recordingHost();
 		createOmpAdapter(second.host, cfg);
-		// Before the fix this exits 0: activeAdapterReset released the flock. After, it stays busy.
-		expect(separateFlock(join(cfg.paths.queue_state, "mains", mainId(), "session.lock"))).toBe(1);
+		// Before the fix this exits 0: activeAdapterReset released the lock. After, the other process stays busy.
+		expect(otherProcessLock(join(cfg.paths.queue_state, "mains", mainId(), "session.lock"))).toBe(1);
 		await emit(second.handlers, "session_start", {}, ctx);
 		const log = existsSync(GUARD_LOG) ? readFileSync(GUARD_LOG, "utf8") : "";
 		expect(log.includes("second Main main refused")).toBe(false);
@@ -295,7 +301,7 @@ test("rollover re-entry keeps the session lock", async () => {
 		utimesSync(note, later, later);
 		await emit(handlers, "agent_end", {}, ctx);
 		await opened;
-		expect(separateFlock(join(cfg.paths.queue_state, "mains", mainId(), "session.lock"))).toBe(1);
+		expect(otherProcessLock(join(cfg.paths.queue_state, "mains", mainId(), "session.lock"))).toBe(1);
 		const log = existsSync(GUARD_LOG) ? readFileSync(GUARD_LOG, "utf8") : "";
 		expect(log.includes("second Main main refused")).toBe(false);
 	} finally {
