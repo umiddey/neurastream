@@ -633,7 +633,9 @@ export function deliverOwnerInbox(pi: ExtensionHost, cfg: Config): void {
 let activeAdapterReset: (() => void) | null = null;
 /** This process's held Main session lock (plan 20261103_1146 P2): the first main session_start
  * locks `<queue_state>/mains/<id>/session.lock` for the process lifetime — the kernel frees it
- * when the process dies, so no release bookkeeping on any shutdown path. */
+ * when the process dies. A factory re-run must not release it (P4): dropping it lets another
+ * process take the id, and a new flock of the same file in this process is busy. reset() is the
+ * only release, so tests do not leak the flock into the next file. */
 let heldSessionLock: HeldLock | null = null;
 /** The limit tick: one check of the open episode every 30 s (plan 20261027_1500 P3). */
 const LIMIT_TICK_MS = 30_000;
@@ -1418,12 +1420,12 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		flight = null;
 	};
 	// Clear the previous adapter's armed grace timer before this one overwrites the pointer (P3c).
+	// Do not release heldSessionLock: this runs on every factory re-entry, and the lock is
+	// process-lifetime (plan 20261103_1146 P4). reset() still releases it.
 	activeAdapterReset?.();
 	activeAdapterReset = (): void => {
 		clearRolloverState();
 		stopLimitTick();
-		heldSessionLock?.release();
-		heldSessionLock = null;
 	};
 	// The launcher restarts omp: the request file carries the note and the editor draft, and omp
 	// shuts down only after the file is written. A failed write keeps the session running.
@@ -1810,13 +1812,16 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 	});
 }
 
-/** Clear the active adapter's rollover state. Tests call this in afterAll so a stale
- * grace-period timer does not fire into a later test file's sandbox paths (P3c). */
+/** Clear the active adapter's rollover state and release the session lock. Tests call this in
+ * afterAll so a stale grace-period timer does not fire into a later test file's sandbox paths
+ * (P3c), and so the process-lifetime flock does not leak into the next file (P4). */
 export function reset(): void {
 	if (activeAdapterReset) {
 		activeAdapterReset();
 		activeAdapterReset = null;
 	}
+	heldSessionLock?.release();
+	heldSessionLock = null;
 }
 
 /** package.json omp.extensions entry. */
