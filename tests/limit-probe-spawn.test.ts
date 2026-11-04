@@ -2,15 +2,20 @@
 // P2 — a second live Main session with the same id is refused before any model call, while a
 // rollover's second in-process session_start is exempt. Both P2 tests start real processes
 // (a bun-compiled stand-in host, real flocks) under a sandbox HOME — no stubbed spawns.
+// P4 — a factory re-run must not drop the session lock; the rollover re-entry must keep it.
 
 import { afterAll, expect, test } from "bun:test";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createOmpAdapter, limitProbeSpawn, reset as resetAdapter, type ExtensionHost } from "../src/adapters/omp/index.ts";
 import { MAIN_ENV } from "../src/adapters/omp/launch.ts";
-import { loadConfig } from "../src/core/config.ts";
+import { loadConfig, type Config } from "../src/core/config.ts";
+import { mainId } from "../src/core/guards.ts";
+import { applyQueueEnv } from "../src/core/queue/env.ts";
+import { refreshQueuePaths } from "../src/core/queue/lib.ts";
+import { notePath } from "../src/core/rollover.ts";
 
 test("limit probe never starts a harness session", () => {
 	const p = limitProbeSpawn({ [MAIN_ENV]: "1", PATH: "/usr/bin" });
@@ -176,3 +181,127 @@ test("rollover in-process session_start is never refused", async () => {
 	const log = existsSync(GUARD_LOG) ? readFileSync(GUARD_LOG, "utf8") : "";
 	expect(log.includes("second Main main refused")).toBe(false);
 });
+
+// --- P4: the factory re-run must not drop the process-lifetime session lock ---
+
+/** A host that records handlers so the test can emit the events omp would. */
+function recordingHost(): { host: ExtensionHost; handlers: Map<string, Handler[]> } {
+	const handlers = new Map<string, Handler[]>();
+	const host: ExtensionHost = {
+		on(event, cb) {
+			handlers.set(event, [...(handlers.get(event) ?? []), cb]);
+		},
+		registerCommand() {},
+		sendUserMessage() {},
+		sendMessage() {},
+	};
+	return { host, handlers };
+}
+
+async function emit(handlers: Map<string, Handler[]>, event: string, payload: unknown, ctx: unknown): Promise<void> {
+	await Promise.all((handlers.get(event) ?? []).map(cb => cb(payload, ctx)));
+}
+
+/** A separate process's non-blocking flock. Exit 1 means this process still holds the lock. */
+function separateFlock(lock: string): number {
+	const r = spawnSync("flock", ["-n", lock, "-c", "true"]);
+	if (r.error) throw r.error;
+	return r.status ?? -1;
+}
+
+/** Point queue reads at the sandbox for this test, and put the caller's env back after. autoClose
+ * must not spawn a real queue-close child against whatever index the shell inherited. */
+function pinSandbox(cfg: Config): () => void {
+	const queueBefore = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("QUEUE_")));
+	const closeBin = process.env.QUEUE_CLOSE_BIN;
+	applyQueueEnv(cfg);
+	process.env.QUEUE_CLOSE_BIN = "true";
+	return () => {
+		for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
+		Object.assign(process.env, queueBefore);
+		if (closeBin === undefined) delete process.env.QUEUE_CLOSE_BIN;
+		else process.env.QUEUE_CLOSE_BIN = closeBin;
+		refreshQueuePaths();
+	};
+}
+
+test("factory re-run keeps the session lock", async () => {
+	// The P2 in-process test above holds this process's lock until afterAll; release it first so
+	// this test's flock sees only what the factory re-run does.
+	resetAdapter();
+	const cfg = loadConfig({ home: HOME, env: {} });
+	expect(cfg.paths.guard_log).toBe(GUARD_LOG);
+	const unpin = pinSandbox(cfg);
+	try {
+		rmSync(GUARD_LOG, { force: true });
+		const ctx = { agent: { kind: "main", id: "main" } };
+		const first = recordingHost();
+		createOmpAdapter(first.host, cfg);
+		await emit(first.handlers, "session_start", {}, ctx);
+		// The factory re-run: createOmpAdapter calls activeAdapterReset before installing the new one.
+		const second = recordingHost();
+		createOmpAdapter(second.host, cfg);
+		// Before the fix this exits 0: activeAdapterReset released the flock. After, it stays busy.
+		expect(separateFlock(join(cfg.paths.queue_state, "mains", mainId(), "session.lock"))).toBe(1);
+		await emit(second.handlers, "session_start", {}, ctx);
+		const log = existsSync(GUARD_LOG) ? readFileSync(GUARD_LOG, "utf8") : "";
+		expect(log.includes("second Main main refused")).toBe(false);
+	} finally {
+		resetAdapter();
+		unpin();
+	}
+});
+
+test("rollover re-entry keeps the session lock", async () => {
+	resetAdapter();
+	const cfg: Config = {
+		...loadConfig({ home: HOME, env: {} }),
+		rollover: { enabled: true, max_session_mb: 0.000001, exit_grace_s: 0.05 },
+	};
+	expect(cfg.paths.guard_log).toBe(GUARD_LOG);
+	const unpin = pinSandbox(cfg);
+	const sessionFile = join(TMP, "p4-session.jsonl");
+	const sessionId = `limit-probe-p4-${process.pid}`;
+	const note = notePath(sessionId);
+	try {
+		rmSync(GUARD_LOG, { force: true });
+		const { host, handlers } = recordingHost();
+		const { promise: opened, resolve: markOpened } = Promise.withResolvers<void>();
+		const ctx = {
+			agent: { kind: "main", id: "main" },
+			cwd: TMP,
+			sessionManager: {
+				getSessionId: () => sessionId,
+				getSessionFile: () => sessionFile,
+			},
+			getAsyncJobSnapshot: () => ({ running: [], recent: [], delivery: {} }),
+			waitForIdle: async () => {},
+			// omp re-enters session_start on the new session, in this same process.
+			newSession: async () => {
+				await emit(handlers, "session_start", {}, ctx);
+				markOpened();
+				return { cancelled: false };
+			},
+			shutdown: () => {},
+			ui: { notify: () => {}, getEditorText: () => "" },
+		};
+		createOmpAdapter(host, cfg);
+		await emit(handlers, "session_start", {}, ctx);
+		writeFileSync(sessionFile, "x".repeat(4096));
+		await emit(handlers, "agent_end", {}, ctx);
+		mkdirSync(dirname(note), { recursive: true });
+		writeFileSync(note, "## In progress\nstep");
+		const later = (Date.now() + 5_000) / 1000;
+		utimesSync(note, later, later);
+		await emit(handlers, "agent_end", {}, ctx);
+		await opened;
+		expect(separateFlock(join(cfg.paths.queue_state, "mains", mainId(), "session.lock"))).toBe(1);
+		const log = existsSync(GUARD_LOG) ? readFileSync(GUARD_LOG, "utf8") : "";
+		expect(log.includes("second Main main refused")).toBe(false);
+	} finally {
+		resetAdapter();
+		unpin();
+		rmSync(sessionFile, { force: true });
+		rmSync(note, { force: true });
+	}
+}, 60_000);
