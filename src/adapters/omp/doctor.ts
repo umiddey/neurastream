@@ -18,6 +18,7 @@ import { systemRunner, type Runner } from "../../core/pages-setup.ts";
 import { packageJsonPath } from "./package-root.ts";
 import { realTailscale, type Tailscale } from "../../core/tailscale.ts";
 import { wipHealth } from "../../core/wip-setup.ts";
+import { readOmpProviders } from "./providers.ts";
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
@@ -210,6 +211,20 @@ export function doctorReport(home: string, env: NodeJS.ProcessEnv = process.env,
 	const agents = liveAgentsMd(home);
 	const text = existsSync(agents) ? readFileSync(agents, "utf8") : "";
 	const cfg = loadConfig({ home, env });
+	const agentDb = join(home, ".omp/agent/agent.db");
+	// A home with no omp login store is not a broken store: doctor stays ok (a fresh install has
+	// none). A present file that cannot be read is the schema-drift failure the line exists for.
+	if (!existsSync(agentDb)) {
+		ok.push("providers: 0 read from ~/.omp/agent/agent.db");
+	} else {
+		try {
+			const n = readOmpProviders(home, Date.now()).length;
+			ok.push(`providers: ${n} read from ~/.omp/agent/agent.db`);
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			problems.push(`providers: cannot read ${agentDb}: ${message} — main-start prints "harness providers: unreadable"`);
+		}
+	}
 	// P6 (plan 20261031_0917): a pages server started before the installed package changed keeps old
 	// code — the owner's tap hit the pre-0.2.57 handler and the approval was lost (2026-10-31 09:34).
 	if (cfg.pages.enabled) {
