@@ -1,4 +1,49 @@
 # Changelog
+## 0.2.80
+### Fixed
+- A factory re-run (`createOmpAdapter`) no longer releases the Main's `session.lock`. `activeAdapterReset` cleared rollover state and also dropped the lock, so a Main that re-entered the factory held no lock and a second Main with the same id was not refused. Only the test-only `reset()` releases it.
+
+## 0.2.79
+### Fixed
+- A subagent session last written before the machine's boot time is `DIED: killed before the last boot`, not `RUNNING`. A reboot kills agents without a `session_exit`, and the stop guard counted those rows as live for 60 minutes (I-20261103-81). `bootSec()` reads `NEURASTREAM_BOOT` or `/proc/stat` btime; Main rows keep the idle bound.
+- The stop log line names the live subagents that released the stop: `ALLOW stop: live subagents: <ids>`.
+
+## 0.2.78
+### Fixed
+- A second Main session with the same id is refused at `session_start`: it takes `<mainStateDir>/session.lock` (`tryLock`), logs `second Main <id> refused`, prints `Main <id> is already running` and exits 1 before arming any timer. A stray launch can no longer become a duplicate Main. The rollover's in-process `session_start` is exempt (the lock is held at module scope), and `reset()` releases it.
+
+## 0.2.77
+### Fixed
+- The rate-limit probe no longer starts a full Main session. It was spawned with `process.execPath`, which inside omp is the omp binary, so every probe tick launched a stray Main (2026-11-03). It now runs `nice -n 19 bun cli/limit-probe.ts` with `NEURASTREAM_MAIN_LAUNCHER` removed from its env (`limitProbeSpawn`).
+
+## 0.2.76
+### Changed
+- The resource alerts (CPU overheating, memory pressure, IO pressure) are normal-urgency notifications with a 10 s timeout (`NOTIFY_TIMEOUT_MS`) instead of critical ones, so they disappear by themselves instead of staying until dismissed.
+### Fixed
+- The auto-close test (f) waits for the index trim as well as the archive; it flaked in the v0.2.75 publish run.
+
+## 0.2.75
+### Added
+- `main-start` prints a `terminal:` line (name, version, session type) read from the environment, so Main knows which terminal it runs in at every start.
+- The managed rules block gains a "Call formats" table: the exact form of the calls the guards refuse when written any other way (planner spawn line, spawn with an open incident, `queue-cancel --not-a-cancel`, a done claim's result mark, implementer spawn prerequisites, plan edits in delegated mode, `edit` anchors), so Main stops learning them by failing.
+
+## 0.2.74
+### Fixed
+- Repos that cannot be saved no longer fail the wip snapshot and backup (I-20261103-21/-22): a dir whose `.git` file names a gitdir that is gone is skipped (no repo left to save), a repo with no commit yet is skipped instead of failing with "Needed a single revision", the `bare` block of `worktree list --porcelain` is skipped instead of failing with "this operation must be run in a work tree", and the backup reads branches by full refname with a trailing `--`, so a branch named like an existing file (`ops/x`) is counted and pushed instead of dropped as "ambiguous argument". A repo git still cannot read stays a FAILED entry and the exit stays 1.
+
+## 0.2.73
+### Fixed
+- A planner (or any agent) can repair an invalid plan. The invalid-plan refusal fired on any call that merely *mentioned* a covered path, including the plan's own rewrite whose text cites code files, so the errors the guard named could never be fixed by the one who had to fix them. Now an invalid plan refuses code writes only; reads and writes whose targets are plan files pass.
+
+## 0.2.72
+### Fixed
+- A `Planner role for <plan>` brief binds only the path (its first word). Text after the path on that line no longer becomes part of the path, which made the planner's real write refused after it had spent its budget. The spawn is now refused up front when the path is not an absolute `.md` under an existing `docs/plans` dir, with the exact line format in the message.
+- The release verdict has dates to judge by: the watcher ran from the installed copy, which has no `.git`, so it found no release tags and never judged a release (0 `release-verdict` records). With no checkout it now reads the publish dates from the npm registry, and judges only releases of the last 7 days so old versions are not all judged at once. A network failure lists no releases, as before.
+
+## 0.2.71
+### Fixed
+- `wip on --backup-url` works with the real secret gate: the setup check probes `git-secret-gate scan <repo> HEAD` on a throwaway one-commit repo, the way the backup calls it, instead of a bare `scan` that the real gate answers with usage and exit 2. The test gate now mirrors the real gate's argument handling.
+
 ## 0.2.70
 ### Added
 - `wip` roots (plan 20261027_1130 P1): `wip.roots` in the config, one shared repo list, and `wip add|remove|list` to choose which folders are snapshot; the old hand-made units and symlinks are no longer needed.

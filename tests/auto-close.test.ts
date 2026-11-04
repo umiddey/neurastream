@@ -182,8 +182,8 @@ test("(f) autoClose closes an open plan whose branch is squash-merged and whose 
 	autoClose(s.cfg);
 	const month = new Date().toISOString().slice(0, 7).replace("-", "");
 	const archived = join(repo, "docs/plans/archive", month, "20261020_1200_land-now.md");
-	expect(waitFor(() => existsSync(archived), 20_000)).toBe(true);
-	expect(readIndex(s.index).includes(plan)).toBe(false);
+	// the archive lands before the index is trimmed: wait for both, not just the first
+	expect(waitFor(() => existsSync(archived) && !readIndex(s.index).includes(plan), 20_000)).toBe(true);
 	expect(readFileSync(archived, "utf8")).toContain("Status: complete");
 }, 30_000);
 

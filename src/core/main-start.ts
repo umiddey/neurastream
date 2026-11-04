@@ -161,6 +161,7 @@ export async function mainStartText(args: string[], cfg: Config, opts: { inherit
 	const mgLines = mg.stdout.trim().split("\n");
 	say(mgLines.at(-1) ?? "");
 	say(loadavgLine());
+	say(terminalLine(process.env));
 	say("");
 	say(`=== agents (last ${h}h; DIED = check its worktree, relaunch FRESH with its progress file)`);
 	const ledger = await run(bin("agent-ledger", cfg), ["--hours", h], { stderr: "ignore" });
@@ -216,6 +217,17 @@ export async function mainStartText(args: string[], cfg: Config, opts: { inherit
 export async function mainStart(args: string[], cfg: Config, deps: MainStartDeps = {}): Promise<number> {
 	process.stdout.write(await mainStartText(args, cfg, { inheritStdin: true }, deps));
 	return 0;
+}
+
+// The terminal the session runs in, from the environment alone (TERM is "dumb" under a harness, so it is not used).
+// What the terminal can do (images, links) is not claimed: only its name is.
+export function terminalLine(env: NodeJS.ProcessEnv): string {
+	const prog = env.TERM_PROGRAM
+		? `${env.TERM_PROGRAM}${env.TERM_PROGRAM_VERSION ? ` ${env.TERM_PROGRAM_VERSION}` : ""}`
+		: env.KITTY_WINDOW_ID ? "kitty"
+		: env.ALACRITTY_WINDOW_ID || env.ALACRITTY_SOCKET ? "alacritty"
+		: env.WT_SESSION ? "windows-terminal" : "unknown";
+	return `terminal: ${prog}${env.XDG_SESSION_TYPE ? `, ${env.XDG_SESSION_TYPE}` : ""}`;
 }
 
 // Due line for the weekly self-metrics report; null when notes/metrics.md is fresh.

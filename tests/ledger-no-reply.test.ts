@@ -12,8 +12,13 @@ import { loadConfig } from "../src/core/config.ts";
 const TMP = mkdtempSync(join(tmpdir(), "ledger-no-reply-"));
 const queueEnvBefore = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("QUEUE_")));
 for (const k of Object.keys(queueEnvBefore)) delete process.env[k];
+// Boot time pinned before every session mtime: a fresh CI runner boots minutes before these rows.
+const bootBefore = process.env.NEURASTREAM_BOOT;
+process.env.NEURASTREAM_BOOT = "0";
 afterAll(() => {
 	for (const k of Object.keys(queueEnvBefore)) delete process.env[k];
+	if (bootBefore === undefined) delete process.env.NEURASTREAM_BOOT;
+	else process.env.NEURASTREAM_BOOT = bootBefore;
 	Object.assign(process.env, queueEnvBefore);
 	rmSync(TMP, { recursive: true, force: true });
 });

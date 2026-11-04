@@ -6,6 +6,7 @@ THRESH_IO=${THRESH_IO:-40}
 COOLDOWN=${COOLDOWN:-600}
 STATE_DIR=${ALERT_STATE:?}
 mkdir -p "$STATE_DIR"
+NOTIFY_TIMEOUT_MS=${NOTIFY_TIMEOUT_MS:-10000}
 
 alert() {
     local last now
@@ -13,7 +14,7 @@ alert() {
     now=$(date +%s)
     if (( now - last >= COOLDOWN )); then
         echo "$now" > "$STATE_DIR/$1"
-        notify-send -u critical -a "resource-alerts" "$2" "$3" || true
+        notify-send -u normal -t "$NOTIFY_TIMEOUT_MS" -a "resource-alerts" "$2" "$3" || true
     fi
 }
 

@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { Config } from "../../core/config.ts";
 import type { MainSession, Run, RunMessage, RunSource, RunStatus, TaskResult } from "../../core/adapter.ts";
-import { nowSec } from "../../core/clock.ts";
+import { bootSec, nowSec } from "../../core/clock.ts";
 import { readBudgets } from "../../core/guards.ts";
 import { pyDumps } from "../../core/pyjson.ts";
 
@@ -249,6 +249,15 @@ function build(file: string, cfg: Config, mtime: number, agentsDir: string): Run
 		state = "DIED: never replied";
 		neverReplied = true;
 	}
+	// A session last written before the machine's boot time cannot be alive: the reboot killed it
+	// (INCIDENT I-20261103-81). Main's own rows keep the idle bound; a crash without a reboot
+	// (no boot-time evidence) is out of scope.
+	let bootDead = false;
+	const boot = bootSec();
+	if (!id.startsWith("MAIN") && !exited && !err && !done && boot !== null && mtime < boot) {
+		state = "DIED: killed before the last boot";
+		bootDead = true;
+	}
 	if ((state.startsWith("RUNNING") || state.startsWith("WAITING")) && !id.startsWith("MAIN")) {
 		const cap = readBudgets(cfg.paths.queue_state)[id] ?? cfg.guards.sub_max_calls;
 		if (calls > cap) state += ` OVER-BUDGET(${calls}>${cap} calls)`;
@@ -278,7 +287,7 @@ function build(file: string, cfg: Config, mtime: number, agentsDir: string): Run
 		scoreModel,
 		scoreCost,
 		scoreHours: ((last ?? 0) - (first ?? 0)) / 3600,
-		scoreRunning: neverReplied ? false : !exited && !scoreErr && !done,
+		scoreRunning: neverReplied || bootDead ? false : !exited && !scoreErr && !done,
 		scoreSurvived: neverReplied ? false : done && !scoreErr,
 		scoreEnd: scoreErr || (done ? "done" : "no final message"),
 	};

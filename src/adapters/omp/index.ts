@@ -50,6 +50,7 @@ import { packageJsonPath, packageVersion } from "./package-root.ts";
 import * as q from "../../core/queue/lib.ts";
 import { pinModel, providerOfModel, recordOut, resetEpochFromText } from "../../core/provider-state.ts";
 import { annotateResetTimes } from "../../core/reset-time.ts";
+import { tryLock, type HeldLock } from "../../core/file-lock.ts";
 // Registers the plugin-command matcher into core's writeTargets (side effect).
 import "./package-ops.ts";
 
@@ -630,12 +631,26 @@ export function deliverOwnerInbox(pi: ExtensionHost, cfg: Config): void {
 
 /** The most recently registered createOmpAdapter cleanup, for the exported reset(). */
 let activeAdapterReset: (() => void) | null = null;
+/** This process's held Main session lock (plan 20261103_1146 P2): the first main session_start
+ * locks `<queue_state>/mains/<id>/session.lock` for the process lifetime — the kernel frees it
+ * when the process dies. A factory re-run must not release it (P4): dropping it lets another
+ * process take the id, and a new flock of the same file in this process is busy. reset() is the
+ * only release, so tests do not leak the flock into the next file. */
+let heldSessionLock: HeldLock | null = null;
 /** The limit tick: one check of the open episode every 30 s (plan 20261027_1500 P3). */
 const LIMIT_TICK_MS = 30_000;
+/** The probe's command line and env. Never process.execPath: inside the harness that is the omp
+ * binary, so the child was a full Main session (2026-11-03: stray Mains). bun comes from PATH, as
+ * every bin's `#!/usr/bin/env bun` shebang does; the child env drops MAIN_ENV. */
+export function limitProbeSpawn(env: NodeJS.ProcessEnv = process.env): { cmd: string; args: string[]; env: NodeJS.ProcessEnv } {
+	const { [MAIN_ENV]: _main, ...rest } = env;
+	return { cmd: "nice", args: ["-n", "19", "bun", join(import.meta.dir, "../../cli/limit-probe.ts")], env: rest };
+}
 /** One limit probe as a niced child (cli/limit-probe.ts). It writes the episode state itself;
  * a failed start is logged and the next tick tries again. */
 function spawnLimitProbeChild(cfg: Config): void {
-	const child = spawn("nice", ["-n", "19", process.execPath, join(import.meta.dir, "../../cli/limit-probe.ts")], { detached: true, stdio: "ignore", env: process.env });
+	const p = limitProbeSpawn();
+	const child = spawn(p.cmd, p.args, { detached: true, stdio: "ignore", env: p.env });
 	child.on("error", err => adapterLog(cfg, `RATE-LIMIT probe: could not start: ${err.message}`));
 	child.unref();
 }
@@ -883,6 +898,22 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		const c = asCtx(ctx);
 		// Original: proceed only when no agent is set or it is the main session.
 		if (c.hasAgent && c.kind !== "main") return;
+		// One live Main session per id (plan 20261103_1146 P2): the first session_start in this
+		// process locks mains/<id>/session.lock for the process lifetime. A second session_start
+		// in the SAME process is the rollover fallback re-entering (newSession) — its own lock
+		// reads as fine. Busy means a DIFFERENT process holds it: another live Main with this id.
+		if (heldSessionLock === null) {
+			const held = tryLock(join(mainStateDir(cfg), "session.lock"));
+			if (!held) {
+				const id = mainId();
+				adapterLog(cfg, `second Main ${id} refused: a Main session with this id is live`);
+				console.error(`Main ${id} is already running`);
+				// omp defers shutdown (:1328-1332), so a clean exit would end 0 and the refusal
+				// would look like success: end directly, before anything arms.
+				process.exit(1);
+			}
+			heldSessionLock = held;
+		}
 		autoClose(cfg);
 		if (timer) return;
 		const every = cfg.queue.auto_close_min * 60_000;
@@ -1389,6 +1420,8 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		flight = null;
 	};
 	// Clear the previous adapter's armed grace timer before this one overwrites the pointer (P3c).
+	// Do not release heldSessionLock: this runs on every factory re-entry, and the lock is
+	// process-lifetime (plan 20261103_1146 P4). reset() still releases it.
 	activeAdapterReset?.();
 	activeAdapterReset = (): void => {
 		clearRolloverState();
@@ -1779,13 +1812,16 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 	});
 }
 
-/** Clear the active adapter's rollover state. Tests call this in afterAll so a stale
- * grace-period timer does not fire into a later test file's sandbox paths (P3c). */
+/** Clear the active adapter's rollover state and release the session lock. Tests call this in
+ * afterAll so a stale grace-period timer does not fire into a later test file's sandbox paths
+ * (P3c), and so the process-lifetime flock does not leak into the next file (P4). */
 export function reset(): void {
 	if (activeAdapterReset) {
 		activeAdapterReset();
 		activeAdapterReset = null;
 	}
+	heldSessionLock?.release();
+	heldSessionLock = null;
 }
 
 /** package.json omp.extensions entry. */
