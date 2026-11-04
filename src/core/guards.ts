@@ -2425,8 +2425,9 @@ export function checkStop(e: StopEvent, cfg: Config): Decision {
 		}
 	}
 	if (open.length === 0) return { ...ALLOW, state };
-	if (liveSubagents(e.ledgerText).length > 0) {
-		log(cfg.paths.guard_log, "ALLOW stop: live subagents");
+	const live = liveSubagents(e.ledgerText);
+	if (live.length > 0) {
+		log(cfg.paths.guard_log, `ALLOW stop: live subagents: ${live.join(", ")}`);
 		return { ...ALLOW, state };
 	}
 	if (state.callsSinceStop === 0) state.idleStops++;

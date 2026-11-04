@@ -1,4 +1,9 @@
 # Changelog
+## 0.2.79
+### Fixed
+- A subagent session last written before the machine's boot time is `DIED: killed before the last boot`, not `RUNNING`. A reboot kills agents without a `session_exit`, and the stop guard counted those rows as live for 60 minutes (I-20261103-81). `bootSec()` reads `NEURASTREAM_BOOT` or `/proc/stat` btime; Main rows keep the idle bound.
+- The stop log line names the live subagents that released the stop: `ALLOW stop: live subagents: <ids>`.
+
 ## 0.2.78
 ### Fixed
 - A second Main session with the same id is refused at `session_start`: it takes `<mainStateDir>/session.lock` (`tryLock`), logs `second Main <id> refused`, prints `Main <id> is already running` and exits 1 before arming any timer. A stray launch can no longer become a duplicate Main. The rollover's in-process `session_start` is exempt (the lock is held at module scope), and `reset()` releases it.

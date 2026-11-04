@@ -198,7 +198,10 @@ function pinBoard(home: string): void {
 test("agent-ledger matches the original", () => {
 	const home = homeFor("ledger");
 	const fixed = "1760000000";
-	const env = envFor(home, { NEURASTREAM_NOW: fixed });
+	// NEURASTREAM_BOOT (2023) sorts before every session mtime below, so the boot-death rule
+	// (INCIDENT I-20261103-81) is inert in the golden: the frozen-oracle compare stays
+	// byte-identical and the Python oracle ignores the extra var.
+	const env = envFor(home, { NEURASTREAM_NOW: fixed, NEURASTREAM_BOOT: "1700000000" });
 	const oracle = join(LIVE, "agent-ledger");
 	stub(home, "queue-check", "#!/bin/sh\nprintf '%s\\n' PR01\n");
 	const usage = (provider: string, model: string, tokens: number, cache: number, cost: number, extra: Record<string, unknown> = {}) =>
