@@ -275,7 +275,14 @@ export interface Config {
 	priority: { sleep_sec: number };
 	alerts: { temp_c: number; mem_psi: number; io_psi: number; cooldown_sec: number };
 	snapshot: { tmp_dest: string; git_repo: string; git_backup: string; excludes: string[] };
-	labels: { episode_days: number; flip_weight: number; repos: string[] };
+	labels: {
+		episode_days: number;
+		flip_weight: number;
+		repos: string[];
+		/** Removal check (src/core/diff-check.ts, plan 20261024_1915): added comment lines matching one of these regexes are flagged by `neurastream diff-check` and the plan-guard commit gate; a commit subject matching removal_subjects flags every added non-blank line. A regex that does not compile is skipped, never blocks. */
+		removal_comment_patterns: string[];
+		removal_subjects: string[];
+	};
 	/** Trace rules: provider honesty (src/core/trace-provider.ts) and what a scanned run may read, dial and write (src/core/trace-actions.ts). */
 	traces: {
 		/** What an honest provider answer looks like. */
@@ -614,6 +621,12 @@ function check(cfg: Config): void {
 	if (!(cfg.labels.episode_days >= 1)) throw new ConfigError("labels.episode_days must be >= 1");
 	if (!Array.isArray(cfg.labels.repos) || cfg.labels.repos.some(r => typeof r !== "string" || r === "")) throw new ConfigError("labels.repos must be a list of repo directories");
 	if (!(cfg.labels.flip_weight >= 0 && cfg.labels.flip_weight <= 1)) throw new ConfigError("labels.flip_weight must be >= 0 and <= 1");
+	// Structure only: a non-compiling pattern is skipped at scan time (diff-check.ts fail-open), never thrown here.
+	for (const key of ["removal_comment_patterns", "removal_subjects"] as const) {
+		const list = cfg.labels[key];
+		if (!Array.isArray(list) || list.some(p => typeof p !== "string" || p === ""))
+			throw new ConfigError(`labels.${key} must be a list of non-empty regex strings`);
+	}
 	if (!(cfg.queue.claim_ttl_min >= 1)) throw new ConfigError("queue.claim_ttl_min must be >= 1");
 	if (!(cfg.ui.port >= 1 && cfg.ui.port <= 65535)) throw new ConfigError("ui.port must be between 1 and 65535");
 	if (!Number.isInteger(cfg.pages.port) || cfg.pages.port < 1 || cfg.pages.port > 65535) throw new ConfigError("pages.port must be an integer between 1 and 65535");

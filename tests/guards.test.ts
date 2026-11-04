@@ -748,3 +748,57 @@ describe("plan approval hard gate (planGate, 20261029_1455 P3)", () => {
 	});
 });
 
+// --- P6 (plan 20261024_1915): the removal check — a sub's git commit is refused while its staged
+// diff adds removal comments; a pure deletion passes and Main is not gated. ---
+
+function toyGit(args: string[]): void {
+	const r = spawnSync("git", args, { cwd: TOY, encoding: "utf8" });
+	if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr}`);
+}
+
+// Base commit the staged scans diff against (fresh() already ran git init; src/a.ts exists).
+function toyBase(): void {
+	toyGit(["config", "user.email", "t@example.invalid"]);
+	toyGit(["config", "user.name", "t"]);
+	toyGit(["add", "-A"]);
+	toyGit(["commit", "-q", "-m", "base"]);
+}
+
+test("P6 removal check: a sub's git commit whose staged diff adds a removal comment is refused with the flagged lines", () => {
+	fresh();
+	toyBase();
+	writeFileSync(join(TOY, "src/a.ts"), "export const a = 1;\nexport const b = 2;\n# removed old helper\n");
+	toyGit(["add", "src/a.ts"]);
+	const refused = guardCli("pre-tool", toolEvent("bash", { command: 'git commit -m "cleanup"' }, "sub"));
+	expect(refused.code).toBe(2);
+	expect(refused.d.allow).toBe(false);
+	expect(refused.d.reason).toContain("plan-guard: git commit refused");
+	expect(refused.d.reason).toContain("src/a.ts:3: # removed old helper");
+	// git add only stages; the check judges at commit time, so staging the same lines is allowed.
+	expect(guardCli("pre-tool", toolEvent("bash", { command: "git add src/a.ts" }, "sub")).code).toBe(0);
+});
+
+test("P6 removal check: a pure deletion commit passes", () => {
+	fresh();
+	toyBase();
+	// The comment exists in the base commit; staging its deletion adds no line, so the commit goes through.
+	writeFileSync(join(TOY, "src/a.ts"), "export const a = 1;\n# removed old helper\n");
+	toyGit(["add", "-A"]);
+	toyGit(["commit", "-q", "-m", "base"]);
+	writeFileSync(join(TOY, "src/a.ts"), "export const a = 1;\n");
+	toyGit(["add", "src/a.ts"]);
+	const ok = guardCli("pre-tool", toolEvent("bash", { command: 'git commit -m "cleanup"' }, "sub"));
+	expect(ok.code).toBe(0);
+	expect(ok.d.allow).toBe(true);
+});
+
+test("P6 removal check: Main's commit is not gated", () => {
+	fresh();
+	toyBase();
+	writeFileSync(join(TOY, "src/a.ts"), "export const a = 1;\nexport const b = 2;\n# removed old helper\n");
+	toyGit(["add", "src/a.ts"]);
+	const main = guardCli("pre-tool", toolEvent("bash", { command: 'git commit -m "cleanup"' }, "main"));
+	expect(main.code).toBe(0);
+	expect(main.d.allow).toBe(true);
+});
+

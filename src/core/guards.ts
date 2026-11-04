@@ -42,6 +42,7 @@ import { fileClaimStore, type Claim, type ClaimStore } from "./claims.ts";
 import { nowSec, strftime } from "./clock.ts";
 import { outUntil, pinModel, providerOfModel, readOut } from "./provider-state.ts";
 import { lint } from "./brief-lint.ts";
+import { removalFlags, stagedDiff, type RemovalFlag } from "./diff-check.ts";
 const ALLOW: Decision = { allow: true, reason: "" };
 
 /**
@@ -1250,10 +1251,12 @@ function landingCommand(input: Record<string, unknown>): boolean {
 // write. Landing and commit commands produce no write targets, so this text filter — not
 // writeTargets — is what keeps them out of the review lock's shell allow and the blocker skip.
 // One predicate for both callers; reviewLockProblem denies it, subRules keeps the blockers on it.
+// The removal check uses the commit alternative only: `git add` stages; the check judges at commit.
+const GIT_ADD_OR_COMMIT = /\bgit\s+(add|commit)\b/;
 function writesShellText(input: Record<string, unknown>, cfg: Config): boolean {
 	if (landingCommand(input)) return true;
 	const text = q.withoutQuotedRedirects(Object.values(input).filter((v): v is string => typeof v === "string").join("\n"));
-	if (/\bgit\s+(add|commit)\b/.test(text) || /\bnpm\s+publish\b/.test(text)) return true;
+	if (GIT_ADD_OR_COMMIT.test(text) || /\bnpm\s+publish\b/.test(text)) return true;
 	if (cfg.guards.bypass_spawn.some(entry => bypassRegExp(entry).test(text))) return true;
 	return q.MUTATING.test(text);
 }
@@ -1285,6 +1288,25 @@ function pathArgs(input: Record<string, unknown>): Record<string, unknown> {
 // Subagent half of a tool call (the original plan-guard checkCall without the main return).
 // `cap` is the sub's hard call cap: its recorded per-spawn budget, else the global sub_max_calls.
 function subRules(e: ToolEvent, input: Record<string, unknown>, paths: string[], writes: string[], cfg: Config, cap: number): string | null {
+	// P6 (plan 20261024_1915): a sub's `git commit` is scanned first — its staged diff must not add
+	// the removal comments diff-check flags. Detected through GIT_ADD_OR_COMMIT (the predicate
+	// writesShellText carries); the refusal goes back through checkTool's deny(). Git that cannot
+	// be read fails open (write-check.ts: a broken scan never blocks). Main is not gated: only
+	// subRules sees this. A staged diff has no subject yet, so the subject rule is the CLI's <rev>.
+	if (cfg.guards.shell_tools.includes(e.tool)) {
+		const git = GIT_ADD_OR_COMMIT.exec(q.withoutQuotedRedirects(Object.values(input).filter((v): v is string => typeof v === "string").join("\n")));
+		if (git?.[1] === "commit") {
+			let flags: RemovalFlag[] = [];
+			try {
+				flags = removalFlags(stagedDiff(e.cwd), "", cfg);
+			} catch { /* no readable repo in this cwd: nothing to flag */ }
+			if (flags.length)
+				return (
+					"git commit refused: the staged diff adds removal comments (reword or drop them, then re-stage):\n" +
+					flags.map(f => `${f.file}:${f.line}: ${f.text}`).join("\n")
+				);
+		}
+	}
 	// Closing and cancelling are Main's decisions: a shell that runs the tool is refused; one that only names its path is not.
 	if (cfg.guards.shell_tools.includes(e.tool) && runsCloser(input))
 		return 'queue-close and queue-cancel are Main\'s; report in your plan\'s "## Progress" instead.';
