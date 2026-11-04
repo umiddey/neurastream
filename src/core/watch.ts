@@ -311,6 +311,10 @@ export interface ReleaseVerdict {
 /** An after-window runs from the tag to the next tag or 24 h, whichever is first (the heartbeat
  * is one overwritten file, so longer outages are not provable). */
 const VERDICT_CAP_SEC = 86400;
+/** At most the newest two judgable tags per pass — a first run after an outage or install must not dump a week of back catalogue (2026-11-03). */
+const VERDICT_MAX_PER_RUN = 2;
+/** Raw events per side a metric needs before its change is read at all — one question or one phase tick is noise (2026-11-03). */
+const VERDICT_MIN_SIGNAL = 3;
 
 /** The value per 100 Main tool calls in the window, so a busy night is not read as a worse version. */
 const rate = (v: number | null, calls: number): number | null => (v === null ? null : (v * 100) / calls);
@@ -355,7 +359,7 @@ const fmtNum = (v: number): string => String(Number(v.toFixed(1)));
 /** One judged number: the same value in both windows. Rates are per 100 Main tool calls. */
 interface VerdictNum {
 	name: string;
-	/** 1 = owner pain (any of it worse reads WORSE outright), 2-4 = worse when higher, 5 = output (worse when lower). */
+	/** 1 = owner pain (a floor-passing rise is one vote; WORSE needs two), 2-4 = worse when higher, 5 = output (worse when lower). */
 	group: 1 | 2 | 3 | 4 | 5;
 	before: number | null;
 	after: number | null;
@@ -371,15 +375,23 @@ interface VerdictNum {
 export function releaseVerdicts(cfg: Config, deps: ReleaseVerdictDeps): ReleaseVerdict[] {
 	const done = new Set(readMetricEvents(cfg).filter(e => e.type === "release-verdict").map(e => String(e.tag)));
 	const tags = deps.tags.toSorted((a, b) => a.ts - b.ts);
-	const out: ReleaseVerdict[] = [];
+	const eligible: { name: string; before: Window; after: Window }[] = [];
 	for (let i = 0; i < tags.length; i++) {
 		const tag = tags[i]!;
 		if (done.has(tag.name)) continue;
 		const end = Math.min(tag.ts + VERDICT_CAP_SEC, tags[i + 1]?.ts ?? tag.ts + VERDICT_CAP_SEC);
 		if (deps.now < end) continue;
-		const verdict = judgeRelease(cfg, tag.name, { from: tag.ts - (end - tag.ts), to: tag.ts }, { from: tag.ts, to: end }, deps);
+		// Never judge a tag older than the cap; the last tag in a >24 h gap is then never judged.
+		if (deps.now > tag.ts + VERDICT_CAP_SEC) continue;
+		// Before window [tag.ts-(end-tag.ts), tag.ts) must hold no other release (inWindow is half-open).
+		if (i > 0 && tags[i - 1]!.ts >= tag.ts - (end - tag.ts)) continue;
+		eligible.push({ name: tag.name, before: { from: tag.ts - (end - tag.ts), to: tag.ts }, after: { from: tag.ts, to: end } });
+	}
+	const out: ReleaseVerdict[] = [];
+	for (const item of eligible.slice(-VERDICT_MAX_PER_RUN)) {
+		const verdict = judgeRelease(cfg, item.name, item.before, item.after, deps);
 		if (verdict === null) continue; // not enough data yet: no verdict, nothing recorded, nothing posted
-		appendMetric(cfg, { type: "release-verdict", tag: tag.name, verdict: verdict.verdict, ts: deps.now });
+		appendMetric(cfg, { type: "release-verdict", tag: item.name, verdict: verdict.verdict, ts: deps.now });
 		if (verdict.post !== null) deps.notify(verdict.post);
 		out.push(verdict);
 	}
@@ -411,7 +423,7 @@ function judgeRelease(cfg: Config, tag: string, before: Window, after: Window, d
 	const kindIn = (kind: string, w: Window) => incidents.filter(i => i.kind === kind && inWindow(i.ts, w)).length;
 	const merges = (w: Window) => inCount("ci", w);
 	const nums: VerdictNum[] = [
-		// 1 owner pain (veto — any of these worse reads WORSE outright)
+		// 1 owner pain (a floor-passing rise is one vote; WORSE needs two, or a downgrade)
 		{ name: "corrections", group: 1, before: rate(row("m4_corrections").prev, bc), after: rate(row("m4_corrections").cur, ac), beforeCount: row("m4_corrections").prev ?? 0, afterCount: row("m4_corrections").cur ?? 0, dailyKey: "m4_corrections" },
 		{ name: "questions", group: 1, before: rate(row("m4_questions").prev, bc), after: rate(row("m4_questions").cur, ac), beforeCount: row("m4_questions").prev ?? 0, afterCount: row("m4_questions").cur ?? 0, dailyKey: "m4_questions" },
 		{ name: "m8 waits", group: 1, before: rate(inCount("m8", before), bc), after: rate(inCount("m8", after), ac), beforeCount: inCount("m8", before), afterCount: inCount("m8", after) },
@@ -452,12 +464,20 @@ function judgeRelease(cfg: Config, tag: string, before: Window, after: Window, d
 		.filter(e => e.type === "version-change" && inWindow(Number(e.ts), after))
 		.map(e => ({ from: String(e.from ?? ""), to: String(e.to ?? "") }))
 		.find(v => verCompare(v.to, v.from) < 0) ?? null;
-	const judged = nums.map(n => ({ n, pct: pctOf(n) })).filter((jd): jd is { n: VerdictNum; pct: number } => jd.pct !== null);
+	const comparable = nums.map(n => ({ n, pct: pctOf(n) })).filter((jd): jd is { n: VerdictNum; pct: number } => jd.pct !== null);
+	const judged: { n: VerdictNum; pct: number }[] = [];
+	const thin: string[] = [];
+	for (const jd of comparable) {
+		const n = jd.n;
+		const passes = (n.beforeCount >= VERDICT_MIN_SIGNAL && n.afterCount >= VERDICT_MIN_SIGNAL) || (n.group === 1 && n.beforeCount === 0 && n.afterCount >= VERDICT_MIN_SIGNAL);
+		if (passes) judged.push(jd);
+		else thin.push(n.name);
+	}
 	const worseOnes = judged.filter(jd => isWorse(jd.n, jd.pct));
 	const improved24 = judged.some(jd => jd.n.group >= 2 && jd.n.group <= 4 && isBetter(jd.n, jd.pct));
 	let verdict: "BETTER" | "WORSE" | "MIXED";
-	if (downgrade !== null || worseOnes.length > 0) verdict = "WORSE";
-	else if (judged.filter(jd => jd.n.group >= 2).every(jd => !isWorse(jd.n, jd.pct)) && improved24) verdict = "BETTER";
+	if (downgrade !== null || worseOnes.length >= 2) verdict = "WORSE";
+	else if (worseOnes.length === 0 && judged.filter(jd => jd.n.group >= 2).every(jd => !isWorse(jd.n, jd.pct)) && improved24) verdict = "BETTER";
 	else verdict = "MIXED";
 
 	const parts: string[] = [];
@@ -469,7 +489,8 @@ function judgeRelease(cfg: Config, tag: string, before: Window, after: Window, d
 	}
 	const fresh = nums.filter(n => n.beforeCount === 0 && pctOf(n) === null).map(n => n.name);
 	const freshLine = fresh.length === 0 ? "" : `${(fresh.length > 4 ? [...fresh.slice(0, 4), `+${fresh.length - 4} more`] : fresh).join(", ")} new, not compared`;
-	const post = `${tag}: ${verdict} — ${[...parts, freshLine].filter(p => p !== "").join(", ")}`;
+	const thinLine = thin.length === 0 ? "" : `${thin.join(", ")} thin, not compared`;
+	const post = `${tag}: ${verdict} — ${[...parts, freshLine, thinLine].filter(p => p !== "").join(", ")}`;
 
 	if (verdict === "WORSE") {
 		const top = worseOnes.toSorted((p, q) => Math.abs(q.pct) - Math.abs(p.pct))[0];

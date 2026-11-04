@@ -365,19 +365,16 @@ function watchIncident(cfg: Config, fingerprint: string, at: number, kind = "uni
 	addIncident(cfg, { source: "watch", kind, summary: `test ${fingerprint}`, fingerprint }, at);
 }
 
-test("verdict: blocks double after a tag → WORSE and one incident", () => {
+test("verdict: blocks double after a tag → MIXED, no incident", () => {
 	const cfg = tempCfg("verdict-blocks");
 	guardBlocks(cfg, VT - 3600, 10);
 	guardBlocks(cfg, VT + 3600, 20);
 	const posts: string[] = [];
 	const out = releaseVerdicts(cfg, { now: VNOW, tags: VTAGS, source: vsrc([mainRun(400, VT - 3600), mainRun(400, VT + 3600)]), notify: t => posts.push(t) });
-	expect(out.map(v => v.verdict)).toEqual(["WORSE"]);
+	expect(out.map(v => v.verdict)).toEqual(["MIXED"]);
 	expect(posts).toHaveLength(1);
-	expect(posts[0]).toContain("v1.0.0: WORSE");
-	const open = openIncidents(cfg);
-	expect(open).toHaveLength(1);
-	expect(open[0]!.summary).toContain("release v1.0.0 worse:");
-	expect(open[0]!.summary).toContain("2.5→5");
+	expect(posts[0]).toContain("v1.0.0: MIXED");
+	expect(openIncidents(cfg)).toHaveLength(0);
 });
 
 test("verdict: a downgrade version-change event alone → WORSE", () => {
@@ -390,7 +387,7 @@ test("verdict: a downgrade version-change event alone → WORSE", () => {
 	expect(openIncidents(cfg)).toHaveLength(1);
 });
 
-test("verdict: Main's owner questions triple, corrections flat → WORSE", () => {
+test("verdict: Main's owner questions triple but the before side is thin → MIXED", () => {
 	const cfg = tempCfg("verdict-questions");
 	const posts: string[] = [];
 	const out = releaseVerdicts(cfg, {
@@ -401,24 +398,34 @@ test("verdict: Main's owner questions triple, corrections flat → WORSE", () =>
 		]),
 		notify: t => posts.push(t),
 	});
-	expect(out.map(v => v.verdict)).toEqual(["WORSE"]);
+	expect(out.map(v => v.verdict)).toEqual(["MIXED"]);
+	expect(posts[0]).toContain("questions thin, not compared");
+	expect(openIncidents(cfg)).toHaveLength(0);
 });
 
 test("verdict: a WORSE verdict folds into today's open daily incident", () => {
 	const cfg = tempCfg("verdict-daily");
 	guardBlocks(cfg, VT - 3600, 10);
 	guardBlocks(cfg, VT + 3600, 20);
+	// Questions 3→4 is a second floor-passing vote, smaller than blocks' +100%, so the fold stays on m5.
 	// The daily check (main-start.ts) fingerprints with dashed dates: daily:m5:1970-01-24.
 	addIncident(cfg, { source: "daily", kind: "daily-regression", summary: "M5 guard blocks regressed: daily check", evidence: "daily", fingerprint: `daily:m5:${strftime(VNOW, "%Y-%m-%d")}` }, VT + 60);
 	const posts: string[] = [];
-	const out = releaseVerdicts(cfg, { now: VNOW, tags: VTAGS, source: vsrc([mainRun(400, VT - 3600), mainRun(400, VT + 3600)]), notify: t => posts.push(t) });
+	const out = releaseVerdicts(cfg, {
+		now: VNOW, tags: VTAGS,
+		source: vsrc([
+			mainRun(400, VT - 3600, Array.from({ length: 3 }, () => ["assistant", "shall I proceed?"] as [string, string])),
+			mainRun(400, VT + 3600, Array.from({ length: 4 }, () => ["assistant", "shall I proceed?"] as [string, string])),
+		]),
+		notify: t => posts.push(t),
+	});
 	expect(out.map(v => v.verdict)).toEqual(["WORSE"]);
 	const open = openIncidents(cfg);
 	expect(open).toHaveLength(1); // folded into the daily incident, no second one
 	expect(open[0]!.fingerprint).toBe(`daily:m5:${strftime(VNOW, "%Y-%m-%d")}`);
 });
 
-test("verdict: owner corrections appearing from zero are WORSE, not new", () => {
+test("verdict: owner corrections appearing from zero below the floor are thin, not WORSE", () => {
 	const cfg = tempCfg("verdict-zero-pain");
 	const posts: string[] = [];
 	const out = releaseVerdicts(cfg, {
@@ -429,12 +436,9 @@ test("verdict: owner corrections appearing from zero are WORSE, not new", () => 
 		]),
 		notify: t => posts.push(t),
 	});
-	expect(out.map(v => v.verdict)).toEqual(["WORSE"]);
-	expect(posts[0]).toContain("corrections +100%");
-	const open = openIncidents(cfg);
-	expect(open).toHaveLength(1);
-	// The summary reports the per-100-call rates: 2 corrections in a 400-call window = 0.5/100.
-	expect(open[0]!.summary).toContain("corrections 0→0.5");
+	expect(out.map(v => v.verdict)).toEqual(["MIXED"]);
+	expect(posts[0]).toContain("corrections thin, not compared");
+	expect(openIncidents(cfg)).toHaveLength(0);
 });
 
 test("verdict: a busy night at the same rate per 100 calls is not WORSE", () => {
@@ -468,24 +472,26 @@ test("verdict: a metric with no before-events is new, not compared — not WORSE
 	expect(openIncidents(cfg)).toHaveLength(0);
 });
 
-test("verdict: watch incidents double with nothing else changing → WORSE", () => {
+test("verdict: watch incidents double with nothing else changing → MIXED", () => {
 	const cfg = tempCfg("verdict-m6");
 	for (let i = 0; i < 2; i++) watchIncident(cfg, `watch:unit-failed:before${i}`, VT - 3600);
 	for (let i = 0; i < 4; i++) watchIncident(cfg, `watch:unit-failed:after${i}`, VT + 3600);
 	const posts: string[] = [];
 	const out = releaseVerdicts(cfg, { now: VNOW, tags: VTAGS, source: vsrc([mainRun(400, VT - 3600), mainRun(400, VT + 3600)]), notify: t => posts.push(t) });
-	expect(out.map(v => v.verdict)).toEqual(["WORSE"]);
-	expect(posts[0]).toContain("silent");
+	expect(out.map(v => v.verdict)).toEqual(["MIXED"]);
+	expect(posts[0]).toContain("thin, not compared");
+	expect(openIncidents(cfg)).toHaveLength(6);
 });
 
-test("verdict: merges per 100 calls halved, all else flat → WORSE", () => {
+test("verdict: merges per 100 calls halved, all else flat → MIXED", () => {
 	const cfg = tempCfg("verdict-merges");
 	for (let i = 0; i < 10; i++) appendMetric(cfg, { type: "ci", mr: `b${i}`, repo: "r", tries: 1, ts: VT - 3600 });
 	for (let i = 0; i < 5; i++) appendMetric(cfg, { type: "ci", mr: `a${i}`, repo: "r", tries: 1, ts: VT + 3600 });
 	const posts: string[] = [];
 	const out = releaseVerdicts(cfg, { now: VNOW, tags: VTAGS, source: vsrc([mainRun(400, VT - 3600), mainRun(400, VT + 3600)]), notify: t => posts.push(t) });
-	expect(out.map(v => v.verdict)).toEqual(["WORSE"]);
+	expect(out.map(v => v.verdict)).toEqual(["MIXED"]);
 	expect(posts[0]).toContain("merges");
+	expect(openIncidents(cfg)).toHaveLength(0);
 });
 
 test("verdict: a watch:not-running incident open in a window → watcher off, no verdict", () => {
@@ -512,4 +518,113 @@ test("verdict: a second watch run posts nothing", () => {
 	watchOnce(cfg, { ...d, now: () => VNOW + 60 });
 	expect(posts).toHaveLength(1);
 	expect(readMetricEvents(cfg).filter(e => e.type === "release-verdict")).toHaveLength(1);
+});
+
+test("verdict: an isolated closed tag 25 h old is not judged", () => {
+	const cfg = tempCfg("verdict-cap");
+	const now = VNOW;
+	const tagTs = now - 25 * 3600;
+	guardBlocks(cfg, tagTs - 3600, 10);
+	guardBlocks(cfg, tagTs + 3600, 20);
+	const posts: string[] = [];
+	const out = releaseVerdicts(cfg, {
+		now, tags: [{ name: "v9.0.0", ts: tagTs }],
+		source: vsrc([mainRun(400, tagTs - 3600), mainRun(400, tagTs + 3600)]),
+		notify: t => posts.push(t),
+	});
+	expect(out).toHaveLength(0);
+	expect(posts).toHaveLength(0);
+	expect(readMetricEvents(cfg).filter(e => e.type === "release-verdict")).toHaveLength(0);
+});
+
+test("verdict: a tag whose before window holds another release is skipped", () => {
+	const cfg = tempCfg("verdict-isolated");
+	const t = 3_000_000;
+	const now = t + 2 * 3600 + 60;
+	const iso = t - 20 * 3600;
+	guardBlocks(cfg, iso - 3600, 10);
+	guardBlocks(cfg, iso + 3600, 20);
+	guardBlocks(cfg, t - 1800, 10);
+	guardBlocks(cfg, t + 3600, 20);
+	const posts: string[] = [];
+	const out = releaseVerdicts(cfg, {
+		now,
+		tags: [
+			{ name: "vIso", ts: iso },
+			{ name: "vIsoNext", ts: iso + 2 * 3600 },
+			{ name: "vA", ts: t - 3600 },
+			{ name: "vMid", ts: t },
+			{ name: "vC", ts: t + 2 * 3600 },
+		],
+		source: vsrc([
+			mainRun(400, iso - 3600), mainRun(400, iso + 3600),
+			mainRun(400, t - 1800), mainRun(400, t + 3600),
+		]),
+		notify: text => posts.push(text),
+	});
+	expect(out.map(v => v.tag)).toEqual(["vIso"]);
+	expect(readMetricEvents(cfg).filter(e => e.type === "release-verdict").map(e => e.tag)).toEqual(["vIso"]);
+	expect(posts[0]).toContain("vIso");
+});
+
+test("verdict: a pass judges only the newest two judgable tags", () => {
+	const cfg = tempCfg("verdict-burst");
+	const n = 5_000_000;
+	const h = 3600;
+	const at = (hours: number) => n - hours * h;
+	for (const hours of [25, 23, 21.25, 20.75]) guardBlocks(cfg, at(hours), 10);
+	const posts: string[] = [];
+	const out = releaseVerdicts(cfg, {
+		now: n,
+		tags: [
+			{ name: "vA", ts: at(27) },
+			{ name: "vB", ts: at(24) },
+			{ name: "vC", ts: at(22) },
+			{ name: "vD", ts: at(21) },
+			{ name: "vE", ts: at(20.5) },
+		],
+		source: vsrc([mainRun(400, at(25)), mainRun(400, at(23)), mainRun(400, at(21.25)), mainRun(400, at(20.75))]),
+		notify: text => posts.push(text),
+	});
+	expect(out.map(v => v.tag)).toEqual(["vC", "vD"]);
+	expect(readMetricEvents(cfg).filter(e => e.type === "release-verdict").map(e => e.tag)).toEqual(["vC", "vD"]);
+});
+
+test("verdict: questions raw 1→9 are thin, not compared", () => {
+	const cfg = tempCfg("verdict-thin");
+	const posts: string[] = [];
+	const out = releaseVerdicts(cfg, {
+		now: VNOW, tags: VTAGS,
+		source: vsrc([
+			mainRun(400, VT - 3600, [["assistant", "shall I proceed?"]]),
+			mainRun(400, VT + 3600, Array.from({ length: 9 }, () => ["assistant", "shall I proceed?"] as [string, string])),
+		]),
+		notify: t => posts.push(t),
+	});
+	expect(out.map(v => v.verdict)).toEqual(["MIXED"]);
+	expect(posts[0]).toContain("questions thin, not compared");
+	expect(openIncidents(cfg)).toHaveLength(0);
+});
+
+test("verdict: blocks double and corrections from zero are two votes → WORSE, one incident", () => {
+	const cfg = tempCfg("verdict-two-votes");
+	guardBlocks(cfg, VT - 3600, 10);
+	guardBlocks(cfg, VT + 3600, 20);
+	const posts: string[] = [];
+	const out = releaseVerdicts(cfg, {
+		now: VNOW, tags: VTAGS,
+		source: vsrc([
+			mainRun(400, VT - 3600),
+			mainRun(400, VT + 3600, [
+				["user", "that is wrong, fix it"],
+				["user", "still wrong, redo it"],
+				["user", "wrong again"],
+			]),
+		]),
+		notify: t => posts.push(t),
+	});
+	expect(out.map(v => v.verdict)).toEqual(["WORSE"]);
+	expect(posts[0]).toContain("corrections +100%");
+	expect(openIncidents(cfg)).toHaveLength(1);
+	expect(openIncidents(cfg)[0]!.kind).toBe("release-regression");
 });
