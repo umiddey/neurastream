@@ -11,7 +11,9 @@ import type { Config } from "../../core/config.ts";
 import type { DumpRef, RelatedTrace, TraceEvent, TraceRun, TraceSource, TraceUsage } from "../../core/adapter.ts";
 import type { DumpParts, DumpTokens } from "../../core/trace-bloat.ts";
 import type { SpawnBrief } from "../../core/trace-briefs.ts";
-import { asObj, jsonlAt, parseTs, runIdOf } from "./sessions.ts";
+import { asObj, jsonlAt, parseTs, runIdOf, defaultRunSource } from "./sessions.ts";
+import { readEvents } from "../../core/agent-score.ts";
+import { buildEpisodes, type Episode } from "../../core/episodes.ts";
 
 function str(v: unknown): string | undefined {
 	return typeof v === "string" && v !== "" ? v : undefined;
@@ -371,4 +373,13 @@ export function spawnBriefsIn(file: string, runId: string): SpawnBrief[] {
 		}
 	}
 	return out;
+}
+
+/** Episodes (P1) over the config's sessions root: the runs, their score events and spawn briefs since the cutoff — the builder `labels episodes/import/update/export` and the main-start daily update share. */
+export function ompEpisodes(cfg: Config, cutoff: number): Episode[] {
+	const root = cfg.adapter?.sessions || join(cfg.paths.home, ".omp", "agent", "sessions");
+	const briefs = ompTraceRuns(root)
+		.filter(run => run.mtimeSec >= cutoff)
+		.flatMap(run => spawnBriefsIn(run.file, run.runId));
+	return buildEpisodes(defaultRunSource(cfg), readEvents(cfg), briefs, cutoff);
 }

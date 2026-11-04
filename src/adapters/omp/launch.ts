@@ -20,6 +20,7 @@ import { PROXY_BIN, proxyOnPath } from "../../core/secret-redact.ts";
 import { PACKAGE_ROOT, packageJsonPath, packageVersion } from "./package-root.ts";
 import { defaultCompletedResults, defaultRunSource } from "./sessions.ts";
 import { ompProviders } from "./providers.ts";
+import { ompEpisodes } from "./traces.ts";
 
 /** One line in the guard log: the adapter's own trace of what it did (relaunches, detectors). */
 export function adapterLog(cfg: Config, line: string): void {
@@ -347,7 +348,7 @@ async function nextMessage(req: RelaunchRequest, cfg: Config, mainStart: typeof 
 	let generated: string;
 	try {
 		generated = [
-			await mainStart([], cfg, { inheritStdin: false }, { source: defaultRunSource(cfg), results: defaultCompletedResults(cfg), providers: ompProviders(cfg) }),
+			await mainStart([], cfg, { inheritStdin: false }, { source: defaultRunSource(cfg), results: defaultCompletedResults(cfg), providers: ompProviders(cfg), episodesFor: cutoff => ompEpisodes(cfg, cutoff) }),
 			holdsBlock(q.ownerHolds()),
 		].join("\n");
 	} catch (err) {

@@ -6,6 +6,8 @@ import type { RunSource, TraceEvent } from "./adapter.ts";
 import { readEvents } from "./agent-score.ts";
 import type { Config } from "./config.ts";
 import { nowSec, strftime } from "./clock.ts";
+import type { Episode } from "./episodes.ts";
+import { updateLabels } from "./label-update.ts";
 import { runDetectors, runDetectorsGated, type GatedInputs, type TaskResult } from "./incident-detectors.ts";
 import { addIncident, type IncidentView } from "./incidents.ts";
 import { log as logGuard } from "./guards.ts";
@@ -72,6 +74,8 @@ export interface MainStartDeps {
 	source?: RunSource | null;
 	/** The harness's provider report; undefined skips the harness lines and the feed. */
 	providers?: ProviderStatus[] | null;
+	/** Episode builder (P1) for the daily labels update over labels.repos; absent skips that update. */
+	episodesFor?: (cutoff: number) => Episode[];
 	/** Finished task results parsed from Main's session file (the adapter's format knowledge). */
 	results?: TaskResult[];
 }
@@ -102,6 +106,11 @@ export async function mainStartText(args: string[], cfg: Config, opts: { inherit
 			for (const i of runDailyCheck(cfg, deps.source, nowSec())) say(`incident ${i.id} [daily/${i.kind}]: ${i.summary}`);
 		} catch (err) {
 			logGuard(cfg.paths.guard_log, `daily check failed: ${err instanceof Error ? err.message : String(err)}`);
+		}
+		try {
+			for (const line of runDailyLabelsUpdate(cfg, deps, nowSec())) say(line);
+		} catch (err) {
+			logGuard(cfg.paths.guard_log, `daily labels update failed: ${err instanceof Error ? err.message : String(err)}`);
 		}
 		try {
 			const weekly = runWeeklyCheck(cfg, deps.source, nowSec());
@@ -327,6 +336,48 @@ export function runDailyCheck(cfg: Config, source: RunSource, now: number): Inci
 	}
 	mkdirSync(dirname(file), { recursive: true });
 	writeFileSync(file, `${JSON.stringify({ date: today })}\n`);
+	return out;
+}
+
+function labelsUpdateStateFile(cfg: Config): string {
+	return join(cfg.paths.queue_state, "labels-update-daily.json");
+}
+
+/**
+ * Once per calendar day, the P5 labels update for each repo in labels.repos (default []): new
+ * episodes labelled, flips found and their work-turned-bad incidents opened. A repo is marked
+ * done only after its update ran without throwing, so a failed repo retries at the next
+ * main-start. Returns the report lines for the main-start text; [] with no repos configured.
+ */
+export function runDailyLabelsUpdate(cfg: Config, deps: MainStartDeps, now: number): string[] {
+	if (cfg.labels.repos.length === 0 || !deps.episodesFor || !deps.source) return [];
+	const today = strftime(now, "%Y-%m-%d");
+	const file = labelsUpdateStateFile(cfg);
+	let done = new Set<string>();
+	try {
+		const st = JSON.parse(readFileSync(file, "utf8")) as { date?: string; repos?: string[] };
+		if (st.date === today && Array.isArray(st.repos)) done = new Set(st.repos);
+	} catch {}
+	const out: string[] = [];
+	for (const repo of cfg.labels.repos) {
+		if (done.has(repo)) continue;
+		try {
+			const r = updateLabels(cfg, repo, {
+				episodesFor: deps.episodesFor,
+				events: readEvents(cfg),
+				runs: deps.source.listRuns(now - cfg.labels.episode_days * DAY),
+			}, now);
+			const n = r.labels.length + r.imported.length + r.flips.length;
+			out.push(n > 0
+				? `labels update ${repo}: ${n} new line(s), ${r.flips.length} flip(s)`
+				: `labels update ${repo}: up to date`);
+			done.add(repo);
+		} catch (err) {
+			out.push(`labels update ${repo} failed: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+	mkdirSync(dirname(file), { recursive: true });
+	writeFileSync(file, `${JSON.stringify({ date: today, repos: [...done] })}\n`);
 	return out;
 }
 
