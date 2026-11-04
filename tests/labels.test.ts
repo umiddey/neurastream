@@ -58,7 +58,7 @@ test("a later revert of an episode commit is bad", () => {
 	git("commit", "-qm", "episode work");
 	const commit = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
 	writeFileSync(join(repo, "source.txt"), "reverted\n");
-	git("commit", "-qam", `Revert \"episode work\"\n\nThis reverts commit ${commit}.`);
+	git("commit", "-qam", `Revert "episode work"\n\nThis reverts commit ${commit}.`);
 	const [label] = labelEpisodes([episode({ repo, commits: [commit] })], [], [], 42);
 	expect(label).toMatchObject({ label: "bad", reason: "episode commit later reverted", found_by: expect.any(String) });
 });
