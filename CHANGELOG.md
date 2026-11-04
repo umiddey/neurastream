@@ -1,4 +1,8 @@
 # Changelog
+## Unreleased
+### Added
+- main-start prints which providers the harness can use now, which are blocked and until when, which are gone, and what changed since the last start. The same read feeds `provider-out.jsonl` (source `harness`), so `agent-ledger --cap` and the guards stop calling a blocked provider free. The omp reader opens `agent.db` read-only and never selects the secret column; a store it cannot read prints `harness providers: unreadable — run neurastream doctor`.
+
 ## 0.2.80
 ### Fixed
 - A factory re-run (`createOmpAdapter`) no longer releases the Main's `session.lock`. `activeAdapterReset` cleared rollover state and also dropped the lock, so a Main that re-entered the factory held no lock and a second Main with the same id was not refused. Only the test-only `reset()` releases it.

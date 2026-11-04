@@ -12,7 +12,7 @@ import { log as logGuard } from "./guards.ts";
 import { dailyChecks, readBlocks, readMetricEvents, worseThanMean } from "./metrics.ts";
 import { buildReport } from "./report.ts";
 import { loadavgLine } from "./host.ts";
-import { providersLine } from "./provider-state.ts";
+import { harnessProviderLines, providersLine, syncHarnessOut, type ProviderStatus } from "./provider-state.ts";
 import { mrSweep } from "./mr-sweep.ts";
 import { watchHealth } from "./watch.ts";
 import { wipAlerts } from "./wip-alerts.ts";
@@ -70,6 +70,8 @@ function run(file: string, args: string[], opts: RunOpts = {}): Promise<RunResul
 export interface MainStartDeps {
 	/** Runs for the ledger-contradiction detector; null/absent skips what needs one. */
 	source?: RunSource | null;
+	/** The harness's provider report; undefined skips the harness lines and the feed. */
+	providers?: ProviderStatus[] | null;
 	/** Finished task results parsed from Main's session file (the adapter's format knowledge). */
 	results?: TaskResult[];
 }
@@ -167,9 +169,15 @@ export async function mainStartText(args: string[], cfg: Config, opts: { inherit
 		if (/^(PRIORITY IDLE|FULL)/.test(line)) say(line);
 	}
 	// Who is rate-limited comes from live data (plan 20261025_1700 P2): printed from the running
-	// code, not the installed agent-ledger bin, so a stale install cannot hide the state.
+	// code, not the installed agent-ledger bin, so a stale install cannot hide the state. The
+	// harness feed (plan 20261103_0955 P3) lands first, so a block this start found is already
+	// in that line. No `providers` key means a caller that has not opted in: nothing is recorded.
+	if (deps.providers !== undefined) syncHarnessOut(cfg, deps.providers);
 	const providers = providersLine(cfg);
 	if (providers) say(providers);
+	if (deps.providers !== undefined) {
+		for (const line of harnessProviderLines(cfg, deps.providers)) say(line);
+	}
 	say("");
 	say("=== main thread");
 	const health = await run(bin("main-health", cfg), [], { stdin: childStdin, stderr: childStderr });
