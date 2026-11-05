@@ -289,6 +289,14 @@ test("a dated PASS line from a reviewer records a PASS", () => {
 	expect(gspawn(`Work ${LOCKED} on P1`)).toMatchObject({ allow: true });
 });
 
+test("a dated PASS line whose time carries a zone word (23:35 CET) records a PASS", () => {
+	rmSync(REVIEWS, { force: true });
+	rmSync(join(GSTATE, "incidents.jsonl"), { force: true });
+	expect(reviewerEdit(DATED_PASS.replace("09:55 RevX", "09:55 CET RevX")).allow).toBe(true);
+	freshProgress();
+	expect(gspawn(`Work ${LOCKED} on P1`)).toMatchObject({ allow: true });
+});
+
 test("a dated FAIL line denies with its finding", () => {
 	rmSync(REVIEWS, { force: true });
 	rmSync(join(GSTATE, "incidents.jsonl"), { force: true });

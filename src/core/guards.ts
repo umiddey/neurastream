@@ -217,10 +217,10 @@ function writePlanReviews(reviews: Record<string, PlanReview>, code: Record<stri
 	}
 }
 
-/** The progress entry that records a review — PLAN for the spawn gate, CODE for the phase tick gate (P6); only a subagent's edit can carry one. The verdict is the match, never a substring. */
-const REVIEW_LINE = /^- (?:\d{4}-\d{2}-\d{2} \d{2}:\d{2} [^\s:]+: )?(PLAN|CODE) REVIEW: (PASS|FAIL)\b/;
+/** The progress entry that records a review — PLAN for the spawn gate, CODE for the phase tick gate (P6); only a subagent's edit can carry one. The verdict is the match, never a substring. The time may carry a zone word (`23:35 CET`). */
+const REVIEW_LINE = /^- (?:\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?: [A-Z]{2,5})? [^\s:]+: )?(PLAN|CODE) REVIEW: (PASS|FAIL)\b/;
 /** Any entry that opens like a review line; one that REVIEW_LINE does not match is restored, not recorded. */
-const REVIEW_LOOKALIKE = /^- (?:\d{4}-\d{2}-\d{2} \d{2}:\d{2} [^\s:]+: )?(PLAN|CODE) REVIEW\b/;
+const REVIEW_LOOKALIKE = /^- (?:\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?: [A-Z]{2,5})? [^\s:]+: )?(PLAN|CODE) REVIEW\b/;
 
 /** Who launches an agent: Main's launch may use a plan review's exemption, a sub's never may (plan 20261028_1600 P4i). */
 export type Spawner = "main" | "sub";
