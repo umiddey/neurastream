@@ -1,4 +1,8 @@
 # Changelog
+## Unreleased
+### Fixed
+- A reviewer's `PLAN REVIEW: PASS` line whose time carries a zone word (`- 2026-11-05 23:35 CET RevX: PLAN REVIEW: PASS …`) is now recorded. Before, the zone word made the guard skip the line silently: no record, no restore, and the spawn gate kept saying "no current reviewer PASS".
+
 ## 0.2.82
 ### Added
 - Living labels: `neurastream labels episodes` joins scored work, runs and spawn briefs over `labels.episode_days` (`--since` overrides that window for episodes only). `neurastream labels update --repo <dir>` takes no `--since`; it labels new episodes from results and flips good work a later fix turned bad. `diff-check` flags removal comments. Daily updates run over `labels.repos`.
