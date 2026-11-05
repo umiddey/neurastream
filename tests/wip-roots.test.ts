@@ -194,6 +194,22 @@ test("keyOf resolves symlinks in home and path", () => {
 	expect(key).toBe("Work_demo-wt");
 });
 
+test("keyOf gives a valid ref component for a worktree outside home, under a dot dir, or named .lock", () => {
+	const base = mkdtempSync(join(tmpdir(), "wip-keyref-"));
+	DIRS.push(base);
+	const home = join(base, "home");
+	const outside = join(base, "elsewhere/neighbor-wt");
+	const dotDir = join(home, ".omp/agent-wt");
+	const lockName = join(home, "Work/x.lock");
+	for (const d of [outside, dotDir, lockName]) mkdirSync(d, { recursive: true });
+
+	expect(keyOf(outside, home)).toBe("elsewhere_neighbor-wt");
+	for (const wt of [outside, dotDir, lockName]) {
+		const ref = `refs/wip/${keyOf(wt, home)}/20261105-2302`;
+		expect(spawnSync("git", ["check-ref-format", ref]).status, ref).toBe(0);
+	}
+});
+
 // The retired golden "wip-snapshot matches the original" protected this: a snapshot saves the
 // unsaved work as a hidden commit without touching the worktree or its index. P1 moved the repo
 // walk to wip.roots, so the oracle comparison is gone; the protection stays, import-driven.

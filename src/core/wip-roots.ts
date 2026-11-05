@@ -16,10 +16,15 @@ export function deadGitfile(dir: string): boolean {
 	return !existsSync(resolve(dir, first.slice("gitdir: ".length).trim()));
 }
 
+/** The worktree's ref key: one valid git ref component, also for paths outside home (`../`) or dot dirs. */
 export function keyOf(path: string, home: string): string {
 	const realHome = existsSync(home) ? realpathSync(home) : home;
 	const realPath = existsSync(path) ? realpathSync(path) : path;
-	return relative(realHome, realPath).replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^_+|_+$/g, "");
+	return relative(realHome, realPath)
+		.replace(/[^A-Za-z0-9._-]+/g, "_")
+		.replace(/\.{2,}/g, "_")
+		.replace(/^[._]+|_+$/g, "")
+		.replace(/\.lock$/, "_lock");
 }
 
 function walkFolder(dir: string, currentDepth: number, maxDepth: number, out: string[]): void {
