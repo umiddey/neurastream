@@ -2,6 +2,8 @@
 ## Unreleased
 ### Added
 - Living labels: `neurastream labels episodes` joins scored work, runs and spawn briefs over `labels.episode_days` (`--since` overrides that window for episodes only). `neurastream labels update --repo <dir>` takes no `--since`; it labels new episodes from results and flips good work a later fix turned bad. `diff-check` flags removal comments. Daily updates run over `labels.repos`.
+### Fixed
+- wip-snapshot no longer fails on a worktree outside home or under a dot dir (e.g. a `/tmp` worktree listed by a repo under a wip root). Its ref key kept `..` and a leading `.`, which git refuses (`refs/wip/.._.._tmp_…`); the key now drops them (`refs/wip/tmp_…`).
 
 
 ## 0.2.81
