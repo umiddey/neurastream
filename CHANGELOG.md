@@ -1,5 +1,5 @@
 # Changelog
-## Unreleased
+## 0.2.82
 ### Added
 - Living labels: `neurastream labels episodes` joins scored work, runs and spawn briefs over `labels.episode_days` (`--since` overrides that window for episodes only). `neurastream labels update --repo <dir>` takes no `--since`; it labels new episodes from results and flips good work a later fix turned bad. `diff-check` flags removal comments. Daily updates run over `labels.repos`.
 ### Fixed
