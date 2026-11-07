@@ -1,5 +1,5 @@
 # Changelog
-## Unreleased
+## 0.2.84
 ### Fixed
 - `neurastream ui` and `neurastream pages serve` follow a changed tailnet address: they exit when `tailscale ip -4` answers a new one and systemd restarts them on it (they used to keep listening on the vanished address until a manual restart).
 
