@@ -18,6 +18,7 @@ import { runInit } from "./init.ts";
 import { realSetupDeps, runSetup } from "./setup.ts";
 import { PORTED, runMain, runPorted } from "./commands.ts";
 import { runMetrics } from "./metrics.ts";
+import { runPressure } from "./pressure.ts";
 import { runIncident } from "./incident.ts";
 import { runTraces } from "./traces.ts";
 import { runUi } from "./ui.ts";
@@ -100,6 +101,7 @@ export function helpText(): string {
 		`                                (${GUARD_USAGE.slice(GUARD_USAGE.indexOf("(") + 1, -1)})`,
 		"  neurastream main [args]       run omp under the launcher (automatic session rollover)",
 		"  neurastream metrics <cmd>     self-metrics: report, features, releases, ci, false-alarm, rule (see README)",
+		"  neurastream pressure          machine pressure now: level, the sample, the line Main would read",
 		"  neurastream incident <cmd>    incidents Main must act on: list, add, plan, dismiss (see README)",
 		"  neurastream labels episodes [--since 30d] [--json]",
 		"                                join scored work, agent runs and spawn briefs",
@@ -155,6 +157,7 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 	if (cmd === "main") return runMain(args);
 	if (cmd === "init") return runInit(args);
 	if (cmd === "metrics") return runMetrics(args);
+	if (cmd === "pressure") return runPressure(args);
 	if (cmd === "incident") return runIncident(args);
 	if (cmd === "traces") return runTraces(args);
 	if (cmd === "labels") return runLabels(args);

@@ -253,6 +253,16 @@ export interface Config {
 		idle_min_ticks: number;
 		watch_sec: number;
 		watch_streak: number;
+		/** Pressure alerts (src/core/pressure.ts): tell Main when the machine chokes, and when it has room again. Never acts. */
+		pressure: {
+			sample_sec: number;
+			mem_some_red: number;
+			mem_full_red: number;
+			cpu_some_red: number;
+			red_after_sec: number;
+			green_after_sec: number;
+			repeat_sec: number;
+		};
 	};
 	quota: { reset_tz: string; reset_pattern: string; label: string };
 	/** Chat notify (src/core/notify.ts): Main's final reply goes to these webhooks at session_stop.

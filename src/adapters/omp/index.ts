@@ -52,6 +52,7 @@ import * as q from "../../core/queue/lib.ts";
 import { pinModel, providerOfModel, recordOut, resetEpochFromText } from "../../core/provider-state.ts";
 import { annotateResetTimes } from "../../core/reset-time.ts";
 import { tryLock, type HeldLock } from "../../core/file-lock.ts";
+import { currentHolder, pressureLevel, pressureMessage, pressureTransition, readPressure, type PressureSample, type PressureState } from "../../core/pressure.ts";
 // Registers the plugin-command matcher into core's writeTargets (side effect).
 import "./package-ops.ts";
 
@@ -632,6 +633,27 @@ export function deliverOwnerInbox(pi: ExtensionHost, cfg: Config): void {
 
 /** The most recently registered createOmpAdapter cleanup, for the exported reset(). */
 let activeAdapterReset: (() => void) | null = null;
+/** Pressure alert tick (plan 20261026_0100 P2): classifies one sample, runs the transition, and tells Main on a RED or GREEN fire. The state lives in <queue_state>/pressure.json and is rewritten only when it changes, so a reloaded session does not re-fire. */
+export function pressureTick(pi: ExtensionHost, cfg: Config, sample: PressureSample, now: number): void {
+	const file = join(cfg.paths.queue_state, "pressure.json");
+	let prev: PressureState | null = null;
+	try {
+		prev = JSON.parse(readFileSync(file, "utf8")) as PressureState;
+	} catch {}
+	const level = pressureLevel(sample, cfg);
+	const r = pressureTransition(prev, level, now, cfg);
+	const next = JSON.stringify(r.state);
+	if (next !== JSON.stringify(prev)) {
+		try {
+			mkdirSync(cfg.paths.queue_state, { recursive: true });
+			writeFileSync(file, next);
+		} catch {}
+	}
+	if (r.fire === "red") {
+		pi.sendUserMessage(pressureMessage("red", sample, currentHolder(cfg, now)));
+	} else if (r.fire === "green") pi.sendUserMessage(pressureMessage("green", sample, null));
+}
+
 /** This process's held Main session lock (plan 20261103_1146 P2): the first main session_start
  * locks `<queue_state>/mains/<id>/session.lock` for the process lifetime — the kernel frees it
  * when the process dies. A factory re-run must not release it (P4): dropping it lets another
@@ -928,6 +950,11 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 			? c.setInterval(() => deliverOwnerInbox(pi, cfg), OWNER_INBOX_POLL_MS)
 			: setInterval(() => deliverOwnerInbox(pi, cfg), OWNER_INBOX_POLL_MS);
 		if (it && typeof it === "object" && "unref" in it && typeof it.unref === "function") it.unref();
+		// Pressure alerts (P2): sample the machine every sample_sec; tell Main only on a RED or GREEN fire.
+		const sample = (): void => pressureTick(pi, cfg, readPressure(), nowSec());
+		const sampleMs = cfg.machine.pressure.sample_sec * 1000;
+		const pt: unknown = c.setInterval ? c.setInterval(sample, sampleMs) : setInterval(sample, sampleMs);
+		if (pt && typeof pt === "object" && "unref" in pt && typeof pt.unref === "function") pt.unref();
 		// Multi-main P3: every held claim heartbeats once a minute while this Main session lives,
 		// so a live Main never loses a plan to queue.claim_ttl_min. session_shutdown releases
 		// nothing: the TTL frees a crashed or restarted Main's claims the same way.

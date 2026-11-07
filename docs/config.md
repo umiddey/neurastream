@@ -235,6 +235,14 @@ machine:
   idle_min_ticks: 300
   watch_sec: 60
   watch_streak: 3
+  pressure:                 # pressure alerts (src/core/pressure.ts): RED/GREEN messages into Main's chat; neurastream never pauses, kills or renices
+    sample_sec: 10          # seconds between samples
+    mem_some_red: 20        # memory stall avg10 (%) that is red
+    mem_full_red: 5         # memory full-stall avg10 (%) that is red
+    cpu_some_red: 60        # cpu stall avg10 (%) that is red
+    red_after_sec: 30       # seconds red before the RED message
+    green_after_sec: 120    # seconds green after a RED before the GREEN message
+    repeat_sec: 600         # minimum seconds between two RED messages
 
 quota:
   reset_tz: "Asia/Shanghai"
