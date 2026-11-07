@@ -19,6 +19,19 @@ const PEER = "100.64.0.9";
 const OLD = "127.0.0.2";
 const NEW = "127.0.0.3";
 
+// The real restart cycles bind 127.0.0.2 and 127.0.0.3. Linux routes all of 127/8 to lo; macOS only
+// has 127.0.0.1, so those cases are skipped where either address cannot be bound.
+const LOOPBACK = [127, 0, 0, 1].join(".");
+function bindable(host: string): boolean {
+	try {
+		Bun.serve({ hostname: host, port: 0, fetch: () => new Response("") }).stop(true);
+		return true;
+	} catch {
+		return false;
+	}
+}
+const realBind = test.skipIf(!(bindable(OLD) && bindable(NEW)));
+
 let ip: string | null = OLD;
 const TS: Tailscale = {
 	ip4: () => ip,
@@ -101,7 +114,7 @@ test("untilIp4Changes keeps serving through the bound address and every non-IPv4
 	expect(cap.lines[0]).toContain(`tailnet address changed ${OLD} → ${NEW}`);
 });
 
-test("the owner page restarts on the new address and keeps its Host allowlist", async () => {
+realBind("the owner page restarts on the new address and keeps its Host allowlist", async () => {
 	const cfg = sandboxCfg("owner");
 	ip = OLD;
 	const source = { listRuns: () => [], mainSession: () => null };
@@ -123,7 +136,7 @@ test("the owner page restarts on the new address and keeps its Host allowlist", 
 	expect(await get(NEW, second.port, `${OLD}:${second.port}`)).toBe(403);
 });
 
-test("the pages server restarts on the new address and the old one stops answering", async () => {
+realBind("the pages server restarts on the new address and the old one stops answering", async () => {
 	const root = join(TMP, "pages-site");
 	mkdirSync(root, { recursive: true });
 	writeFileSync(join(root, "index.html"), "<h1>ok</h1>");
@@ -182,12 +195,12 @@ test("neurastream pages serve exits 1 once the tailnet address changes, so syste
 		join(home, ".config", "neurastream", "config.yml"),
 		`pages:\n  enabled: true\n  port: ${freePort()}\n  dir: ${site}\n`,
 	);
-	ip = OLD;
+	// LOOPBACK exists on every host; NEW is only an answer the poll reads, never bound.
+	let calls = 0;
+	const scripted: Tailscale = { ...TS, ip4: () => (calls++ === 0 ? LOOPBACK : NEW) };
 	const cap = captureStderr();
-	const serving = runPages(["serve"], { home, tailscale: TS, ipPollMs: 20 });
-	ip = NEW;
-	const code = await serving;
+	const code = await runPages(["serve"], { home, tailscale: scripted, ipPollMs: 20 });
 	cap.restore();
 	expect(code).toBe(1);
-	expect(cap.lines.join("\n")).toContain(`tailnet address changed ${OLD} → ${NEW}`);
+	expect(cap.lines.join("\n")).toContain(`tailnet address changed ${LOOPBACK} → ${NEW}`);
 });
