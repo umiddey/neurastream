@@ -5,6 +5,9 @@ import { dirname, join } from "node:path";
 import { createOmpAdapter, type ExtensionHost, pressureTick, reset as resetAdapter } from "../src/adapters/omp/index.ts";
 import { type Config, loadConfig } from "../src/core/config.ts";
 import { heavyHolder, parsePsi, type PressureLevel, type PressureSample, type PressureState, pressureLevel, pressureMessage, pressureTransition, readPressure } from "../src/core/pressure.ts";
+import { currentHolder } from "../src/core/pressure.ts";
+import { pressureReport, runPressure } from "../src/cli/pressure.ts";
+import { run as runCli } from "../src/cli/dispatch.ts";
 
 const home = "/tmp/neurastream-home-pressure";
 const cfg: Config = loadConfig({ file: `${home}/missing.yml`, home, env: {} });
@@ -226,5 +229,43 @@ describe("pressure tick in the omp adapter", () => {
 		};
 		for (const cb of handlers.get("session_start") ?? []) cb(undefined, ctx);
 		expect(armed).toContain(10_000);
+	});
+});
+
+// --- P3: `neurastream pressure` (the same core text as the tick, for Main and hook-only harnesses) ---
+
+describe("neurastream pressure", () => {
+	test("prints the level, the sample and the line Main would read for that level", () => {
+		rmSync(OMP_CFG.paths.heavy_owner, { force: true });
+		const [level, sampleLine, last] = pressureReport(OMP_CFG, hot, 0).split("\n");
+		expect(level).toBe("level: red");
+		expect(sampleLine?.startsWith("sample: ")).toBe(true);
+		expect(last).toBe("last message: machine: RED — memory stall 34%, cpu 71%, 1.2 GB free");
+	});
+
+	test("amber has nothing to say; calm reads green", () => {
+		expect(pressureReport(OMP_CFG, amber, 0).split("\n")[2]).toBe("last message: none (amber: nothing to say)");
+		expect(pressureReport(OMP_CFG, calm, 0).split("\n")[0]).toBe("level: green");
+	});
+
+	test("the RED line names the heavy-run holder from the owner file", () => {
+		mkdirSync(dirname(OMP_CFG.paths.heavy_owner), { recursive: true });
+		writeFileSync(OMP_CFG.paths.heavy_owner, "NsX | p1 | since 2026-11-07 17:48:00 | pid 42\n");
+		const now = Date.parse("2026-11-07T18:00:00") / 1000;
+		expect(pressureReport(OMP_CFG, hot, now).split("\n")[2]).toContain("heavy-run lock held by NsX (p1) for 12 min");
+		rmSync(OMP_CFG.paths.heavy_owner, { force: true });
+	});
+
+	test("currentHolder is null when no owner file exists", () => {
+		rmSync(OMP_CFG.paths.heavy_owner, { force: true });
+		expect(currentHolder(OMP_CFG, 0)).toBeNull();
+	});
+
+	test("the dispatcher routes `pressure`: extra arguments are a usage error (exit 2), never a /proc read", async () => {
+		expect(await runCli("pressure", ["extra"])).toBe(2);
+	});
+
+	test("runPressure refuses extra arguments with exit 2", () => {
+		expect(runPressure(["extra"])).toBe(2);
 	});
 });

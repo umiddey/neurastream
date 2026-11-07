@@ -94,6 +94,12 @@ export function pressureTransition(prev: PressureState | null, level: PressureLe
 	return { state, fire: null };
 }
 
+/** The heavy-run holder right now, read from cfg.paths.heavy_owner; null when the file is missing or no lock is held. Shared by the tick and `neurastream pressure`. */
+export function currentHolder(cfg: Config, nowSec: number): string | null {
+	const text = readText(cfg.paths.heavy_owner);
+	return text === null ? null : heavyHolder(text, nowSec);
+}
+
 /** The line Main reads. holder is the heavy-run lock holder from heavyHolder, or null. */
 export function pressureMessage(level: "red" | "green", s: PressureSample, holder: string | null): string {
 	const mem = s.memSome === null ? "n/a" : `${Math.round(s.memSome)}%`;

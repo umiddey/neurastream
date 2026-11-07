@@ -52,7 +52,7 @@ import * as q from "../../core/queue/lib.ts";
 import { pinModel, providerOfModel, recordOut, resetEpochFromText } from "../../core/provider-state.ts";
 import { annotateResetTimes } from "../../core/reset-time.ts";
 import { tryLock, type HeldLock } from "../../core/file-lock.ts";
-import { heavyHolder, pressureLevel, pressureMessage, pressureTransition, readPressure, type PressureSample, type PressureState } from "../../core/pressure.ts";
+import { currentHolder, pressureLevel, pressureMessage, pressureTransition, readPressure, type PressureSample, type PressureState } from "../../core/pressure.ts";
 // Registers the plugin-command matcher into core's writeTargets (side effect).
 import "./package-ops.ts";
 
@@ -650,8 +650,7 @@ export function pressureTick(pi: ExtensionHost, cfg: Config, sample: PressureSam
 		} catch {}
 	}
 	if (r.fire === "red") {
-		const owner = existsSync(cfg.paths.heavy_owner) ? readFileSync(cfg.paths.heavy_owner, "utf8") : "";
-		pi.sendUserMessage(pressureMessage("red", sample, heavyHolder(owner, now)));
+		pi.sendUserMessage(pressureMessage("red", sample, currentHolder(cfg, now)));
 	} else if (r.fire === "green") pi.sendUserMessage(pressureMessage("green", sample, null));
 }
 
