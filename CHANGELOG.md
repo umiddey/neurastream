@@ -1,5 +1,5 @@
 # Changelog
-## Unreleased
+## 0.2.85
 ### Added
 - Machine pressure alerts: the omp adapter samples PSI and meminfo every 10 s and sends one RED line into Main's chat after 30 s of red (memory stall, CPU stall or low free memory), repeated every 10 min while red, and one GREEN line after 2 min of calm. The RED line names the heavy-run lock holder. Tell-only: nothing is paused, killed or reniced. Configured under `machine.pressure`; `neurastream pressure` prints the current level and the line Main would read.
 
