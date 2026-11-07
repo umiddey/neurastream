@@ -17,6 +17,7 @@ import { loadConfig, type Config } from "../src/core/config.ts";
 import { nowSec, strftime } from "../src/core/clock.ts";
 import { checkPlanEdit, checkSpawn, checkTool, mainId } from "../src/core/guards.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
+import { refreshQueuePaths } from "../src/core/queue/lib.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "nsar-guard-claims-"));
 const HOME = join(TMP, "home");
@@ -40,6 +41,9 @@ afterAll(() => {
 	else process.env.NEURASTREAM_MAIN_ID = savedId;
 	if (savedNow === undefined) delete process.env.NEURASTREAM_NOW;
 	else process.env.NEURASTREAM_NOW = savedNow;
+	// applyQueueEnv exports QUEUE_* into process.env above; clear them so later files see none.
+	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
+	refreshQueuePaths();
 	// A full `bun test` must leave nothing under os.tmpdir() (merged b3ffd37).
 	rmSync(TMP, { recursive: true, force: true });
 });
