@@ -4,12 +4,12 @@ import { getAdapter } from "../adapters/index.ts";
 import { loadConfig } from "../core/config.ts";
 import { beat, errorLine } from "../core/heartbeat.ts";
 import { readExpiry, sweepPages } from "../core/pages-expiry.ts";
-import { startPagesServer } from "../core/pages.ts";
+import { startPagesServer, type PagesServer } from "../core/pages.ts";
 import { pageNotesGate } from "../core/page-notes.ts";
 import { pagesOff, pagesOn, publishPage, repoForPublish, type Runner } from "../core/pages-setup.ts";
-import { realTailscale, type Tailscale } from "../core/tailscale.ts";
+import { realTailscale, type Tailscale, untilIp4Changes } from "../core/tailscale.ts";
 
-export interface PagesDeps { home?: string; runner?: Runner; tailscale?: Tailscale; clock?: () => Date }
+export interface PagesDeps { home?: string; runner?: Runner; tailscale?: Tailscale; clock?: () => Date; ipPollMs?: number }
 const HOUR_MS = 60 * 60 * 1000;
 export async function runPages(args: string[] = [], deps: PagesDeps = {}): Promise<number> {
  const home = deps.home ?? homedir();
@@ -19,17 +19,19 @@ export async function runPages(args: string[] = [], deps: PagesDeps = {}): Promi
   if (args[0] === "off" && args.length === 1) return pagesOff({ home, runner: deps.runner });
   const cfg = loadConfig({ home });
   if (args[0] === "serve" && args.length === 1) {
+   const tailscale = deps.tailscale ?? realTailscale;
+   let server: PagesServer;
    try {
     if (!cfg.pages.enabled) throw new Error("pages.enabled is false");
     sweepPages(cfg.pages.dir, cfg.pages.keep_days, clock());
-    startPagesServer({ cfg, tailscale: deps.tailscale ?? realTailscale, source: getAdapter(cfg).runSource(cfg) });
+    server = startPagesServer({ cfg, tailscale, source: getAdapter(cfg).runSource(cfg) });
    } catch (e) {
     beat(cfg, "pages-serve", { ok: false, detail: errorLine(e) });
     throw e;
    }
    beat(cfg, "pages-serve", { ok: true });
    setInterval(() => { try { sweepPages(cfg.pages.dir, cfg.pages.keep_days, clock()); } catch (e) { console.error(e instanceof Error ? e.message : String(e)); } }, HOUR_MS);
-   return new Promise<number>(() => {});
+   return untilIp4Changes(tailscale, server.hostname, deps.ipPollMs);
   }
   if (args[0] === "publish" && args[1]) {
    let force = false, keep = false, plan: string | undefined, repo: string | undefined;

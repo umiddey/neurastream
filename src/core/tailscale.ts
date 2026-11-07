@@ -26,6 +26,31 @@ function firstStdoutLine(args: string[]): string | null {
 	return line || null;
 }
 
+/** How often the servers check whether `tailscale ip -4` moved to another address. */
+export const IP4_POLL_MS = 30_000;
+
+function isIpv4(answer: string | null): answer is string {
+	const octets = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(answer ?? "");
+	return octets !== null && octets.slice(1).every(o => Number(o) <= 255);
+}
+
+/**
+ * Resolves 1 once `tailscale ip -4` answers a different IPv4 address than `bound`, after printing why
+ * to stderr; the caller exits so the service manager restarts it on the new address. Any other answer
+ * (the same address, null, or a status-0 line such as "Logged out.") keeps it serving.
+ */
+export function untilIp4Changes(tailscale: Tailscale, bound: string, everyMs = IP4_POLL_MS): Promise<number> {
+	const { promise, resolve } = Promise.withResolvers<number>();
+	const timer = setInterval(() => {
+		const now = tailscale.ip4();
+		if (!isIpv4(now) || now === bound) return;
+		clearInterval(timer);
+		console.error(`tailnet address changed ${bound} → ${now}; exiting so the service manager restarts on the new address`);
+		resolve(1);
+	}, everyMs);
+	return promise;
+}
+
 /** The login in `tailscale whois --json` output: multi-line JSON with the login at `UserProfile.LoginName`. Null when absent or unparseable. */
 export function parseWhoisLogin(stdout: string): string | null {
 	try {

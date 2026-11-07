@@ -166,6 +166,13 @@ test("neurastream ui exits 1 once the tailnet address changes, so systemd restar
 	expect(cap.lines.join("\n")).toContain(`tailnet address changed ${OLD} → ${NEW}`);
 });
 
+function freePort(): number {
+	const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("") });
+	const port = Number(probe.port);
+	probe.stop(true);
+	return port;
+}
+
 test("neurastream pages serve exits 1 once the tailnet address changes, so systemd restarts it", async () => {
 	const home = join(TMP, "pages-cli");
 	const site = join(home, "site");
@@ -173,7 +180,7 @@ test("neurastream pages serve exits 1 once the tailnet address changes, so syste
 	mkdirSync(join(home, ".config", "neurastream"), { recursive: true });
 	writeFileSync(
 		join(home, ".config", "neurastream", "config.yml"),
-		`pages:\n  enabled: true\n  port: 0\n  dir: ${site}\n`,
+		`pages:\n  enabled: true\n  port: ${freePort()}\n  dir: ${site}\n`,
 	);
 	ip = OLD;
 	const cap = captureStderr();
