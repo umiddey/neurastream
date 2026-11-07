@@ -1,7 +1,8 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { createOmpAdapter, type ExtensionHost, pressureTick, reset as resetAdapter } from "../src/adapters/omp/index.ts";
 import { type Config, loadConfig } from "../src/core/config.ts";
 import { heavyHolder, parsePsi, type PressureLevel, type PressureSample, type PressureState, pressureLevel, pressureMessage, pressureTransition, readPressure } from "../src/core/pressure.ts";
 
@@ -10,6 +11,7 @@ const cfg: Config = loadConfig({ file: `${home}/missing.yml`, home, env: {} });
 
 const cleanup: string[] = [];
 afterAll(() => {
+	resetAdapter();
 	for (const dir of cleanup) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -19,6 +21,8 @@ const PSI_CPU = "some avg10=71.02 avg60=50.00 avg300=30.00 total=987654\n";
 const PSI_IO = "some avg10=1.00 avg60=0.50 avg300=0.20 total=1000\nfull avg10=0.40 avg60=0.10 avg300=0.05 total=500\n";
 
 const calm: PressureSample = { memSome: 1, memFull: 0.2, cpuSome: 8, ioFull: 0, availMb: 10035, swapFreeMb: 2048 };
+const hot: PressureSample = { ...calm, memSome: 34.12, cpuSome: 71.02, availMb: 1228.8 };
+const amber: PressureSample = { ...calm, memSome: 12 };
 const NOTHING: PressureSample = { memSome: null, memFull: null, cpuSome: null, ioFull: null, availMb: null, swapFreeMb: null };
 
 // Feeds a timeline of [nowSec, level] through pressureTransition and returns the [nowSec, fire] pairs that fired.
@@ -83,7 +87,7 @@ describe("pressureLevel", () => {
 	});
 
 	test("between green and red is amber", () => {
-		expect(pressureLevel({ ...calm, memSome: 12 }, cfg)).toBe("amber"); // above half of 20
+		expect(pressureLevel(amber, cfg)).toBe("amber"); // above half of 20
 		expect(pressureLevel({ ...calm, availMb: 4000 }, cfg)).toBe("amber"); // below 1.5 x 3072
 	});
 
@@ -124,16 +128,13 @@ describe("pressureTransition", () => {
 
 describe("pressureMessage and heavyHolder", () => {
 	test("RED names memory stall, cpu, free memory and the heavy-run holder", () => {
-		const hot = { ...calm, memSome: 34.12, cpuSome: 71.02, availMb: 1228.8 };
 		expect(pressureMessage("red", hot, "NsX (p1) for 12 min")).toBe(
 			"machine: RED — memory stall 34%, cpu 71%, 1.2 GB free; heavy-run lock held by NsX (p1) for 12 min",
 		);
 	});
 
 	test("RED without a holder leaves the lock clause out", () => {
-		expect(pressureMessage("red", { ...calm, memSome: 34.12, cpuSome: 71.02, availMb: 1228.8 }, null)).toBe(
-			"machine: RED — memory stall 34%, cpu 71%, 1.2 GB free",
-		);
+		expect(pressureMessage("red", hot, null)).toBe("machine: RED — memory stall 34%, cpu 71%, 1.2 GB free");
 	});
 
 	test("GREEN says room again, and a missing reading reads n/a", () => {
@@ -159,5 +160,71 @@ describe("machine.pressure config", () => {
 			green_after_sec: 120,
 			repeat_sec: 600,
 		});
+	});
+});
+
+// --- P2: the omp adapter's pressure tick (injected samples, sandbox HOME, a fake host) ---
+
+const TMP = mkdtempSync(join(tmpdir(), "pressure-omp-"));
+cleanup.push(TMP);
+const OMP_CFG = loadConfig({ home: join(TMP, "home"), env: {} });
+const STATE = join(OMP_CFG.paths.queue_state, "pressure.json");
+
+// Feeds [nowSec, sample] points through the tick; returns every message the host was sent.
+function ticks(points: [number, PressureSample][]): string[] {
+	const sent: string[] = [];
+	const pi = { sendUserMessage: (c: unknown) => void sent.push(String(c)) } as unknown as ExtensionHost;
+	for (const [t, s] of points) pressureTick(pi, OMP_CFG, s, t);
+	return sent;
+}
+
+describe("pressure tick in the omp adapter", () => {
+	test("red for 30 s sends one RED message and records the sent RED in pressure.json", () => {
+		rmSync(STATE, { force: true });
+		const sent = ticks([[0, hot], [10, hot], [20, hot], [30, hot], [40, hot]]);
+		expect(sent).toHaveLength(1);
+		expect(sent[0]).toMatch(/^machine: RED — /);
+		expect(JSON.parse(readFileSync(STATE, "utf8"))).toMatchObject({ level: "red", redSent: true });
+	});
+
+	test("green for 120 s after a RED sends one GREEN", () => {
+		rmSync(STATE, { force: true });
+		const sent = ticks([[0, hot], [10, hot], [20, hot], [30, hot], [40, calm], [100, calm], [159, calm], [160, calm], [200, calm]]);
+		expect(sent.map(s => s.split(" — ")[0])).toEqual(["machine: RED", "machine: GREEN"]);
+	});
+
+	test("amber sends nothing", () => {
+		rmSync(STATE, { force: true });
+		expect(ticks([[0, amber], [300, amber], [600, amber], [900, amber]])).toEqual([]);
+	});
+
+	test("a reloaded session with a sent RED in pressure.json does not send a second RED", () => {
+		mkdirSync(dirname(STATE), { recursive: true });
+		writeFileSync(STATE, JSON.stringify({ level: "red", since: 0, lastRed: 30, redSent: true }));
+		expect(ticks([[40, hot], [60, hot], [100, hot]])).toEqual([]);
+	});
+
+	test("the main session_start arms a 10 s unref'd pressure timer", () => {
+		const handlers = new Map<string, ((e: unknown, c: unknown) => unknown)[]>();
+		const pi = {
+			on: (ev: string, cb: (e: unknown, c: unknown) => unknown) => {
+				handlers.set(ev, [...(handlers.get(ev) ?? []), cb]);
+			},
+			registerCommand() {},
+			sendUserMessage() {},
+			sendMessage() {},
+		} as unknown as ExtensionHost;
+		createOmpAdapter(pi, OMP_CFG);
+		const armed: number[] = [];
+		const ctx = {
+			agent: { kind: "main", id: "main" },
+			cwd: TMP,
+			setInterval: (_cb: () => void, ms: number) => {
+				armed.push(ms);
+				return { unref() {} };
+			},
+		};
+		for (const cb of handlers.get("session_start") ?? []) cb(undefined, ctx);
+		expect(armed).toContain(10_000);
 	});
 });
