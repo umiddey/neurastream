@@ -9,7 +9,7 @@ import { ConfigError, loadConfig, type Config } from "../core/config.ts";
 import { beat, errorLine } from "../core/heartbeat.ts";
 import { startOwnerUi, type OwnerUiOptions, type OwnerUiServer } from "../core/owner-ui.ts";
 import { applyQueueEnv } from "../core/queue/env.ts";
-import { realTailscale, type Tailscale } from "../core/tailscale.ts";
+import { realTailscale, type Tailscale, untilIp4Changes } from "../core/tailscale.ts";
 import { systemTerminal, uiOff, uiOn, type Runner } from "../core/ui-setup.ts";
 
 export interface UiDeps {
@@ -19,10 +19,12 @@ export interface UiDeps {
 	start?: (opts: OwnerUiOptions) => OwnerUiServer;
 	/** Command runner for `ui on`/`ui off` (default: spawnSync of systemctl --user). */
 	runner?: Runner;
-	/** Tailscale seam for `ui on` (default: realTailscale). */
+	/** Tailscale seam for `ui on` and the serve path (default: realTailscale). */
 	tailscale?: Tailscale;
 	/** HOME the `ui on`/`ui off` config and unit paths resolve against (default: homedir()). */
 	home?: string;
+	/** How often the serve path checks for a new tailnet address (default: IP4_POLL_MS). */
+	ipPollMs?: number;
 }
 
 const UI_USAGE = "usage: neurastream ui [on --login <tailscale login> [--port N] | off]";
@@ -87,14 +89,16 @@ export async function runUi(args: string[] = [], deps: UiDeps = {}): Promise<num
 		console.error("neurastream ui: ui.owner_login is empty — set the tailscale login that may open the page");
 		return 1;
 	}
+	const tailscale = deps.tailscale ?? realTailscale;
+	let server: OwnerUiServer;
 	try {
-		(deps.start ?? startOwnerUi)({ cfg, tailscale: realTailscale, source: getAdapter(cfg).runSource(cfg) });
+		server = (deps.start ?? startOwnerUi)({ cfg, tailscale, source: getAdapter(cfg).runSource(cfg) });
 	} catch (e) {
 		beat(cfg, "ui", { ok: false, detail: errorLine(e) });
 		throw e;
 	}
 	beat(cfg, "ui", { ok: true });
-	// src/cli/main.ts exits with the code this returns, which would kill the server: serving
-	// never resolves, and the process runs until systemd or a signal stops it.
-	return new Promise<number>(() => {});
+	// Resolves 1 when the tailnet address moves: src/cli/main.ts exits with it, which would end the
+	// server, and systemd restarts it on the new address. Otherwise serving runs until systemd or a signal stops it.
+	return untilIp4Changes(tailscale, server.hostname, deps.ipPollMs);
 }

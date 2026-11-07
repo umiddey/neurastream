@@ -1,4 +1,8 @@
 # Changelog
+## Unreleased
+### Fixed
+- `neurastream ui` and `neurastream pages serve` follow a changed tailnet address: they exit when `tailscale ip -4` answers a new one and systemd restarts them on it (they used to keep listening on the vanished address until a manual restart).
+
 ## 0.2.83
 ### Fixed
 - A reviewer's `PLAN REVIEW: PASS` line whose time carries a zone word (`- 2026-11-05 23:35 CET RevX: PLAN REVIEW: PASS …`) is now recorded. Before, the zone word made the guard skip the line silently: no record, no restore, and the spawn gate kept saying "no current reviewer PASS".
