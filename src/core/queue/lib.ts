@@ -1159,8 +1159,11 @@ export function openWaits(p: Plan, plans: Plan[], rank: Map<string, number>): nu
 // result, or queue-check fails the plan; entries without a date or dated before it are grandfathered.
 export const DONE_CLAIM_SINCE = "2026-11-01";
 
-const DONE_WORD = /\b(?:done|completed?|nothing left|finished)\b/i;
+// "Done check" is a plan section name, not a claim.
+const DONE_WORD_SRC = String.raw`(?:done(?!\s+check)|completed?|nothing left|finished)`;
 const NOT_DONE = /\b(?:not|never)\s+(?:done|completed?|finished)\b/i;
+// A reviewer's PLAN/CODE REVIEW entry critiques a plan; it claims no phase done.
+const REVIEW_ENTRY = /\b(?:PLAN|CODE) REVIEW:/;
 const RESULT_MARK = /\bexit(?: code|ed)?\s*\d|\b\d+ pass|\b\d+ fail|\bpass(?:ed|ing)?\b|\bfail(?:ed|ing)?\b|\bresult\b/i;
 
 /** Progress entries: the "- " line plus the lines up to the next entry start (trimProgressBody's rule). */
@@ -1177,6 +1180,12 @@ function progressEntryBlocks(text: string): string[] {
 	return blocks;
 }
 
+/** Phase ids the entry says are done: a done word within 40 characters of the id, in the same sentence. */
+function claimedPhases(entry: string): string[] {
+	const ids = new Set([...entry.matchAll(/\b(P\d+[a-z]?)\b/g)].map(m => m[1]!));
+	return [...ids].filter(id => new RegExp(String.raw`\b${id}\b[^.;\n]{0,40}\b${DONE_WORD_SRC}\b|\b${DONE_WORD_SRC}\b[^.;\n]{0,40}\b${id}\b`, "i").test(entry)).map(id => id.toUpperCase());
+}
+
 /** A dated done claim about phase Pn must quote Pn's verify (or the Done check) with its result; else one problem per entry. */
 function doneClaimProblems(p: Plan): QueueProblem[] {
 	const probs: QueueProblem[] = [];
@@ -1188,8 +1197,8 @@ function doneClaimProblems(p: Plan): QueueProblem[] {
 	}
 	for (const entry of progressEntryBlocks(p.text)) {
 		const date = /^- (\d{4}-\d{2}-\d{2})/.exec(entry)?.[1];
-		if (!date || date < DONE_CLAIM_SINCE || !DONE_WORD.test(entry) || NOT_DONE.test(entry)) continue;
-		const ids = [...entry.matchAll(/\b(P\d+[a-z]?)\b/g)].map(m => m[1]!.toUpperCase());
+		if (!date || date < DONE_CLAIM_SINCE || REVIEW_ENTRY.test(entry.split("\n")[0]!) || NOT_DONE.test(entry)) continue;
+		const ids = claimedPhases(entry);
 		if (!ids.length) continue;
 		const backings = [...new Set(ids.flatMap(id => verifies.get(id) ?? []))];
 		if (p.doneCheck) backings.push(p.doneCheck);

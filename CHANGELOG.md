@@ -1,4 +1,8 @@
 # Changelog
+## Unreleased
+### Fixed
+- `queue-check`'s "unbacked done claim" no longer fires on entries that claim nothing: a reviewer's `PLAN REVIEW:`/`CODE REVIEW:` line, the plan section name "Done check", or a done word in another sentence than the phase id. A phase now counts as claimed only when a done word sits within 40 characters of its id in the same sentence. On the live queue this drops the problem list from about 70 false lines to 17 real claims that quote no verify command.
+
 ## 0.2.85
 ### Added
 - Machine pressure alerts: the omp adapter samples PSI and meminfo every 10 s and sends one RED line into Main's chat after 30 s of red (memory stall, CPU stall or low free memory), repeated every 10 min while red, and one GREEN line after 2 min of calm. The RED line names the heavy-run lock holder. Tell-only: nothing is paused, killed or reniced. Configured under `machine.pressure`; `neurastream pressure` prints the current level and the line Main would read.
