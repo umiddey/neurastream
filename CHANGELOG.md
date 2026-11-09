@@ -1,5 +1,5 @@
 # Changelog
-## Unreleased
+## 0.2.86
 ### Fixed
 - `queue-check`'s "unbacked done claim" no longer fires on entries that claim nothing: a reviewer's `PLAN REVIEW:`/`CODE REVIEW:` line, the plan section name "Done check", or a done word in another sentence than the phase id. A phase now counts as claimed only when a done word sits within 40 characters of its id in the same sentence. On the live queue this drops the problem list from about 70 false lines to 17 real claims that quote no verify command.
 
