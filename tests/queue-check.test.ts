@@ -131,6 +131,18 @@ test("a dated done claim must quote its phase verify (or the done check) with it
 	expect(doneProblems(`- ${DONE_CLAIM_SINCE} Main: P1 done\n  verify: \`${VERIFY_P1}\`\n  Findings: none`).length).toBe(1);
 });
 
+test("only an entry that says a phase is done is judged: reviews, section names and unrelated done words are not claims", () => {
+	boot();
+	// reviewer critique that names P1 and the "Done check" section.
+	expect(doneProblems(`- ${DONE_CLAIM_SINCE} 10:02 RevX: PLAN REVIEW: FAIL — P1 lacks a Done check\n  Findings: none`)).toEqual([]);
+	// "Done check" alone is a section name, even beside a phase id.
+	expect(doneProblems(`- ${DONE_CLAIM_SINCE} Planner: P1 verify fixed; Done check unchanged\n  Findings: none`)).toEqual([]);
+	// a done word in another sentence than the phase id is not a claim about it.
+	expect(doneProblems(`- ${DONE_CLAIM_SINCE} Main: owner repin done. Next P1 starts\n  Findings: none`)).toEqual([]);
+	// a real claim stays judged, also with a second phase named first.
+	expect(doneProblems(`- ${DONE_CLAIM_SINCE} Main: P2 and P1 done on branch x\n  Findings: none`).length).toBe(1);
+});
+
 test("done-claim problems ignore old and undated entries", () => {
 	boot();
 	expect(doneProblems(`- 2026-10-31 Main: P1 done, nothing left\n  Findings: none`)).toEqual([]);
