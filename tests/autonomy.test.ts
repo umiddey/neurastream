@@ -356,9 +356,9 @@ test("full never loosens the owner-only moves: protected write and ui start stay
 	const d = checkTool(mainEvent("write", { path: join(agentDir, ".guard-unlock"), content: "" }), cfg);
 	expect(d.allow).toBe(false);
 	expect(d.reason).toContain("protected guard file");
-	const ui = checkTool(mainEvent("bash", { command: "systemctl --user restart neurastream-ui" }), cfg);
-	expect(ui.allow).toBe(false);
-	expect(ui.reason).toContain("starting the owner page");
+	const ws = checkTool(mainEvent("bash", { command: "systemctl --user restart neurastream-workspace" }), cfg);
+	expect(ws.allow).toBe(false);
+	expect(ws.reason).toContain("starting the owner page");
 });
 
 // --- P2: the priority gate in full ---

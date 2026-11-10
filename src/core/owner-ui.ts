@@ -58,7 +58,7 @@ export interface OwnerUiOptions {
 	source: RunSource;
 	/** Bind address. Default: the tailnet address from `tailscale ip -4`. Tests bind 127.0.0.1. */
 	hostname?: string;
-	/** Bind port. Default: ui.port; 0 picks a free port (tests). */
+	/** Bind port. Default: workspace.port; 0 picks a free port (tests). */
 	port?: number;
 	/** The peer address of a request. Default: the socket address. Tests inject fixture peers. */
 	peerOf?: (req: Request, server: UiHttpServer) => string;
@@ -83,16 +83,16 @@ export function isTailnet(peer: string): boolean {
 	return TAILNET6.test(peer);
 }
 
-/** Serve only the owner's phone: a tailnet peer that is not this machine and not loopback, whose tailscale whois login equals ui.owner_login. Everything else is a 403. With `ui.allow_this_machine`, this machine itself (loopback and its own tailnet IP) is served as the owner too — any local process can then press the buttons. */
+/** Serve only the owner's phone: a tailnet peer that is not this machine and not loopback, whose tailscale whois login equals workspace.owner_login. Everything else is a 403. With `workspace.allow_this_machine`, this machine itself (loopback and its own tailnet IP) is served as the owner too — any local process can then press the buttons. */
 export function authenticate(cfg: Config, tailscale: Tailscale, peer: string): Auth {
-	if (!cfg.ui.owner_login) return { ok: false, why: "ui.owner_login is empty" };
-	if (cfg.ui.allow_this_machine && (isLoopback(peer) || peer === tailscale.ip4())) return { ok: true, login: cfg.ui.owner_login };
+	if (!cfg.workspace.owner_login) return { ok: false, why: "workspace.owner_login is empty" };
+	if (cfg.workspace.allow_this_machine && (isLoopback(peer) || peer === tailscale.ip4())) return { ok: true, login: cfg.workspace.owner_login };
 	if (isLoopback(peer)) return { ok: false, why: "loopback peer" };
 	if (!isTailnet(peer)) return { ok: false, why: "peer is not a tailnet address" };
 	if (peer === tailscale.ip4()) return { ok: false, why: "this machine's own tailnet address" };
 	const login = tailscale.whois(peer);
 	if (!login) return { ok: false, why: "tailscale whois failed" };
-	if (login !== cfg.ui.owner_login) return { ok: false, why: "not the owner's login" };
+	if (login !== cfg.workspace.owner_login) return { ok: false, why: "not the owner's login" };
 	return { ok: true, login };
 }
 
@@ -1782,7 +1782,7 @@ function handleReorder(cfg: Config, fields: Record<string, string>, login: strin
 	return redirect(sentTo(fields.tab ?? "", `sent=reorder&to=${to + 1}`));
 }
 
-/** Starts the page. Refuses to start when ui.enabled is false or ui.owner_login is empty, and on the default hostname when tailscale does not answer. */
+/** Starts the page. Refuses to start when workspace.enabled is false or workspace.owner_login is empty, and on the default hostname when tailscale does not answer. */
 export function startOwnerUi(opts: OwnerUiOptions): OwnerUiServer {
 	const { cfg, tailscale, source } = opts;
 	const resultsBuild = opts.resultsBuild ?? spawnResultsBuild;
@@ -1791,8 +1791,8 @@ export function startOwnerUi(opts: OwnerUiOptions): OwnerUiServer {
 	// The double-press guard (P8c) is per-server memory: a fresh server starts empty, which also
 	// keeps the tests (one server per test) hermetic.
 	lastAnswerByPlan.clear();
-	if (!cfg.ui.enabled) throw new Error("owner ui: ui.enabled is false — set it in the config first");
-	if (!cfg.ui.owner_login) throw new Error("owner ui: ui.owner_login is empty — set the tailscale login that may open the page");
+	if (!cfg.workspace.enabled) throw new Error("owner ui: workspace.enabled is false — set it in the config first");
+	if (!cfg.workspace.owner_login) throw new Error("owner ui: workspace.owner_login is empty — set the tailscale login that may open the page");
 	const hostname = opts.hostname ?? tailscale.ip4();
 	if (!hostname) throw new Error("owner ui: tailscale ip -4 did not answer — is tailscale up?");
 	const peerOf = opts.peerOf ?? ((req: Request, server: UiHttpServer) => server.requestIP(req)?.address ?? "");
@@ -1813,7 +1813,7 @@ export function startOwnerUi(opts: OwnerUiOptions): OwnerUiServer {
 	};
 	const server = Bun.serve({
 		hostname,
-		port: opts.port ?? cfg.ui.port,
+		port: opts.port ?? cfg.workspace.port,
 		fetch: async (req, srv) => {
 			const url = new URL(req.url);
 			let code = 500;

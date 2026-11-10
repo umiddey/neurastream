@@ -181,8 +181,8 @@ export interface Config {
 		/** The whole chat message that approves one push/merge in tier strict (default "go push"; matched case-insensitively with inner spaces collapsed). */
 		go_phrase: string;
 	};
-	/** The owner's phone page (`neurastream ui`): binds the tailnet address only. */
-	ui: { enabled: boolean; port: number; owner_login: string; allow_this_machine: boolean };
+	/** The owner's phone page (`neurastream workspace`): binds the tailnet address only. */
+	workspace: { enabled: boolean; port: number; owner_login: string; allow_this_machine: boolean };
 	/** Plan review gate (plan 20261028_1600): reuse lines and, from P2 on, the reviewer PASS lock. */
 	review: {
 		/** Agents a review spawn may run under: the PASS exemption needs one of these plus the brief's `Plan review: <plan>` line. An empty list turns only the `## Reuse` requirement off; the PASS gate follows `plan` (P6). */
@@ -638,7 +638,7 @@ function check(cfg: Config): void {
 			throw new ConfigError(`labels.${key} must be a list of non-empty regex strings`);
 	}
 	if (!(cfg.queue.claim_ttl_min >= 1)) throw new ConfigError("queue.claim_ttl_min must be >= 1");
-	if (!(cfg.ui.port >= 1 && cfg.ui.port <= 65535)) throw new ConfigError("ui.port must be between 1 and 65535");
+	if (!(cfg.workspace.port >= 1 && cfg.workspace.port <= 65535)) throw new ConfigError("workspace.port must be between 1 and 65535");
 	if (!Number.isInteger(cfg.pages.port) || cfg.pages.port < 1 || cfg.pages.port > 65535) throw new ConfigError("pages.port must be an integer between 1 and 65535");
 	if (typeof cfg.pages.dir !== "string" || cfg.pages.dir.length === 0) throw new ConfigError("pages.dir must be a non-empty path");
 	if (!Number.isInteger(cfg.pages.keep_days) || cfg.pages.keep_days < 1) throw new ConfigError("pages.keep_days must be an integer >= 1");
@@ -815,14 +815,20 @@ export interface LoadOptions {
 	template?: string;
 }
 
-// Old keys that still load, each with a notice to rename or delete it. "glm:" moves to "quota:" only
-// when "quota:" is absent; with both present, "glm:" stays and fails as an unknown key.
+// Old keys that still load, each with a notice to rename or delete it. "glm:" moves to "quota:" and
+// "ui:" to "workspace:" only when the new key is absent; with both present, the old key stays and
+// fails as an unknown key.
 function migrateLegacy(user: Record<string, unknown>, file: string, notices: string[]): Record<string, unknown> {
 	const out = { ...user };
 	if ("glm" in out && !("quota" in out)) {
 		out.quota = out.glm;
 		delete out.glm;
 		notices.push(`config "glm:" is now "quota:"; rename it in ${file}`);
+	}
+	if ("ui" in out && !("workspace" in out)) {
+		out.workspace = out.ui;
+		delete out.ui;
+		notices.push(`config "ui:" is now "workspace:"; rename it in ${file}`);
 	}
 	if ("pm" in out) {
 		delete out.pm;

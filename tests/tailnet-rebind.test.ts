@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runPages } from "../src/cli/pages.ts";
-import { runUi } from "../src/cli/ui.ts";
+import { runWorkspace } from "../src/cli/workspace.ts";
 import { loadConfig } from "../src/core/config.ts";
 import { startOwnerUi } from "../src/core/owner-ui.ts";
 import { startPagesServer } from "../src/core/pages.ts";
@@ -83,8 +83,8 @@ function sandboxCfg(name: string) {
 	const home = join(TMP, name);
 	mkdirSync(home, { recursive: true });
 	const cfg = loadConfig({ home });
-	cfg.ui.enabled = true;
-	cfg.ui.owner_login = OWNER;
+	cfg.workspace.enabled = true;
+	cfg.workspace.owner_login = OWNER;
 	applyQueueEnv(cfg);
 	return cfg;
 }
@@ -162,11 +162,11 @@ realBind("the pages server restarts on the new address and the old one stops ans
 	await expect(get(OLD, first.port)).rejects.toThrow();
 });
 
-test("neurastream ui exits 1 once the tailnet address changes, so systemd restarts it", async () => {
-	const cfg = sandboxCfg("ui-cli");
+test("neurastream workspace exits 1 once the tailnet address changes, so systemd restarts it", async () => {
+	const cfg = sandboxCfg("workspace-cli");
 	ip = OLD;
 	const cap = captureStderr();
-	const serving = runUi([], {
+	const serving = runWorkspace([], {
 		cfg,
 		tailscale: TS,
 		ipPollMs: 20,

@@ -1205,11 +1205,12 @@ function shellText(input: Record<string, unknown>): string {
 	return out.join("\n");
 }
 
-// True when a command segment starts the owner page (plan 20261024_2230 P3c): `neurastream ui`
-// serves it and `systemctl --user start/restart/enable` of neurastream-ui relaunches it — the
-// owner's systemd moves, never an agent's, unlocked or not. P5g: the text is shellText's — only
-// real shell commands, never prose. Segment splitting and launcher skipping match runsCloser, so
-// `sh -c "neurastream ui"` and `sudo systemctl --user ...` are seen.
+// True when a command segment starts the owner page (plan 20261024_2230 P3c): `neurastream
+// workspace` serves it and `systemctl --user start/restart/enable` of neurastream-workspace
+// relaunches it — the owner's systemd moves, never an agent's, unlocked or not. P5g: the text is
+// shellText's — only real shell commands, never prose. Segment splitting and launcher skipping
+// match runsCloser, so `sh -c "neurastream workspace"` and `sudo systemctl --user ...` are seen.
+// (The command and unit were `ui` before the workspace rename; that name is gone, no alias.)
 function startsOwnerUi(input: Record<string, unknown>): boolean {
 	const text = shellText(input);
 	return text.split(/&&|\|\||;|\||\n|\$\(|`/).some(seg => {
@@ -1217,12 +1218,12 @@ function startsOwnerUi(input: Record<string, unknown>): boolean {
 		let i = 0;
 		while (i < words.length && (LAUNCHERS[words[i] ?? ""] === true || /^\w+=/.test(words[i] ?? "") || /(^|\/)main\.ts$/.test(words[i] ?? ""))) i++;
 		const cmd = bin(words[i]);
-		if ((cmd === "ui" && bin(words[i - 1]) === "neurastream") || (cmd === "neurastream" && bin(words[i + 1]) === "ui")) return true;
+		if ((cmd === "workspace" && bin(words[i - 1]) === "neurastream") || (cmd === "neurastream" && bin(words[i + 1]) === "workspace")) return true;
 		return (
 			cmd === "systemctl" &&
 			words.some(w => w === "--user") &&
 			words.some(w => w === "start" || w === "restart" || w === "enable") &&
-			words.some(w => bin(w) === "neurastream-ui" || w.startsWith("neurastream-ui."))
+			words.some(w => bin(w) === "neurastream-workspace" || w.startsWith("neurastream-workspace."))
 		);
 	});
 }
@@ -1641,7 +1642,7 @@ export function checkTool(e: ToolEvent, cfg: Config): Decision {
 	if (cfg.guards.shell_tools.includes(e.tool) && startsOwnerUi(input)) {
 		log(cfg.paths.plan_guard_log, `BLOCK ${e.agent}:${e.agentId} tool=${e.tool} ui-start: ${String(input.command ?? "")}`);
 		return deny(
-			"plan-guard: starting the owner page (neurastream ui, or systemctl --user start/restart/enable of neurastream-ui) is the owner's move, not an agent's.",
+			"plan-guard: starting the owner page (neurastream workspace, or systemctl --user start/restart/enable of neurastream-workspace) is the owner's move, not an agent's.",
 		);
 	}
 	// claim release --force frees another Main's claim (plan 20261027_1300 P4): the owner's

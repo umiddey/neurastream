@@ -1,4 +1,8 @@
 # Changelog
+## Unreleased
+### Changed
+- `neurastream ui` is renamed `neurastream workspace` (clean cutover, no alias): the command (`workspace`, `workspace on --login <tailscale login> [--port N]`, `workspace off`), the `ui:` config block (`workspace:`; an existing `ui:` block still loads as `workspace:` with a rename notice naming the file — rename it by hand), and the user unit (`neurastream-ui.service` → `neurastream-workspace.service`; `workspace on` first disables the old `neurastream-ui` unit and removes its file when one is installed). The old command name is an unknown command. The page itself — auth, Host/Origin checks, owner inbox, guard refusals — is unchanged.
+
 ## 0.2.86
 ### Fixed
 - `queue-check`'s "unbacked done claim" no longer fires on entries that claim nothing: a reviewer's `PLAN REVIEW:`/`CODE REVIEW:` line, the plan section name "Done check", or a done word in another sentence than the phase id. A phase now counts as claimed only when a done word sits within 40 characters of its id in the same sentence. On the live queue this drops the problem list from about 70 false lines to 17 real claims that quote no verify command.

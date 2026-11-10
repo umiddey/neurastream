@@ -62,6 +62,20 @@ describe("loadConfig", () => {
 		expect(() => loadConfig({ file: withFile("wip:\n  limit: lots\n"), home, env: {} })).toThrow(/must be a number/);
 	});
 
+	// The pre-rename `ui:` block (plan team-queue P0): it loads as `workspace:` with a rename
+	// notice — moved only when `workspace:` is absent, the `glm:` → `quota:` precedent.
+	test("a legacy ui: block loads as workspace: with a rename notice", () => {
+		const file = withFile('ui:\n  enabled: true\n  port: 7787\n  owner_login: "a@b.c"\n  allow_this_machine: false\n');
+		const cfg = loadConfig({ file, home, env: {} });
+		expect(cfg.workspace).toEqual({ enabled: true, port: 7787, owner_login: "a@b.c", allow_this_machine: false });
+		expect(cfg.notices).toEqual([`config "ui:" is now "workspace:"; rename it in ${file}`]);
+	});
+
+	test("ui: next to workspace: is not a legacy key: it fails as unknown", () => {
+		const file = withFile('workspace:\n  enabled: false\nui:\n  enabled: true\n');
+		expect(() => loadConfig({ file, home, env: {} })).toThrow("unknown key ui");
+	});
+
 	test("warn above max is rejected", () => {
 		const file = withFile("guards:\n  sub_warn_calls: 200\n  sub_max_calls: 100\n");
 		expect(() => loadConfig({ file, home, env: {} })).toThrow(/sub_warn_calls/);

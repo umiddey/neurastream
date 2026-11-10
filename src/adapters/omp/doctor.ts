@@ -235,12 +235,12 @@ export function doctorReport(home: string, env: NodeJS.ProcessEnv = process.env,
 	}
 	// The owner page (plan 20261024_2230): when it is switched on, the login must be set and
 	// tailscale must answer, or the unit will start and refuse, or serve nobody.
-	if (cfg.ui.enabled) {
+	if (cfg.workspace.enabled) {
 		const state = tailscale.state();
 		if (state === "running") ok.push("tailscale: ok");
 		else problems.push(`tailscale: ${state === "missing" ? "missing" : "logged out"}`);
-		if (!cfg.ui.owner_login) problems.push("ui.enabled but ui.owner_login is empty");
-		else if (state === "running") ok.push(`ui owner page: login ${cfg.ui.owner_login}`);
+		if (!cfg.workspace.owner_login) problems.push("workspace.enabled but workspace.owner_login is empty");
+		else if (state === "running") ok.push(`workspace owner page: login ${cfg.workspace.owner_login}`);
 	}
 	// WIP timers (plan 20261027_1130 P6): roots set with nothing scheduled is a silent stop, and so
 	// is a run that failed — the state that went unnoticed for a week before this plan.

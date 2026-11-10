@@ -23,7 +23,7 @@ import { tryLock } from "../src/core/file-lock.ts";
 import { recordPublish } from "../src/core/pages-expiry.ts";
 import { inboxPath, agentRows, buildPageData, ciRows, dropSlot, edgeScrollStep, incidentRows, machineRow, nowStats, questionRows, queueRows, renderPage, resultsCachePath, scoresData, startOwnerUi, type OwnerUiOptions, type OwnerUiServer, type PageData, type ResultsData } from "../src/core/owner-ui.ts";
 import type { ChainRow, FeaturesReport, ReleaseRow, ReleaseSideStats } from "../src/core/results.ts";
-import { runUi } from "../src/cli/ui.ts";
+import { runWorkspace } from "../src/cli/workspace.ts";
 import { parsePlan, stateDirPath, unlockPath } from "../src/core/queue/lib.ts";
 import { parseWhoisLogin, type Tailscale } from "../src/core/tailscale.ts";
 
@@ -81,7 +81,7 @@ const CFG: Config = {
 		ranking_board: join(TMP, "board.md"),
 	},
 	guards: { ...baseCfg.guards, chat_unlock: true },
-	ui: { enabled: true, port: 7787, owner_login: OWNER, allow_this_machine: false },
+	workspace: { enabled: true, port: 7787, owner_login: OWNER, allow_this_machine: false },
 };
 applyQueueEnv(CFG);
 
@@ -403,12 +403,12 @@ test("a different tailnet login gets 403", async () => {
 	expect((await get(svc)).status).toBe(403);
 });
 
-test("an empty ui.owner_login refuses to start and would serve nobody", () => {
-	expect(() => ui({ cfg: { ...CFG, ui: { ...CFG.ui, owner_login: "" } } })).toThrow();
+test("an empty workspace.owner_login refuses to start and would serve nobody", () => {
+	expect(() => ui({ cfg: { ...CFG, workspace: { ...CFG.workspace, owner_login: "" } } })).toThrow();
 });
 
-test("ui.enabled false refuses to start", () => {
-	expect(() => ui({ cfg: { ...CFG, ui: { ...CFG.ui, enabled: false } } })).toThrow();
+test("workspace.enabled false refuses to start", () => {
+	expect(() => ui({ cfg: { ...CFG, workspace: { ...CFG.workspace, enabled: false } } })).toThrow();
 });
 
 test("a silent tailscale refuses to start on the default hostname", () => {
@@ -420,16 +420,16 @@ test("a real loopback request (no peer injection) gets 403", async () => {
 	expect((await get(svc)).status).toBe(403);
 });
 
-// --- ui.allow_this_machine: this machine (loopback and its own tailnet IP) may press the buttons ---
+// --- workspace.allow_this_machine: this machine (loopback and its own tailnet IP) may press the buttons ---
 
-test("ui.allow_this_machine on: this machine's own tailnet address and loopback are served as the owner", async () => {
-	const on = { ...CFG, ui: { ...CFG.ui, allow_this_machine: true } };
+test("workspace.allow_this_machine on: this machine's own tailnet address and loopback are served as the owner", async () => {
+	const on = { ...CFG, workspace: { ...CFG.workspace, allow_this_machine: true } };
 	expect((await get(ui({ cfg: on, peerOf: () => OWN_IP }))).status).toBe(200);
 	expect((await get(ui({ cfg: on, peerOf: undefined }))).status).toBe(200); // real loopback
 });
 
-test("ui.allow_this_machine on: this machine can POST an answer; other peers keep today's treatment", async () => {
-	const on = { ...CFG, ui: { ...CFG.ui, allow_this_machine: true } };
+test("workspace.allow_this_machine on: this machine can POST an answer; other peers keep today's treatment", async () => {
+	const on = { ...CFG, workspace: { ...CFG.workspace, allow_this_machine: true } };
 	const svc = ui({ cfg: on, peerOf: () => OWN_IP });
 	const res = await post(svc, "/answer", { plan: PLAN_W, answer: "yes" });
 	expect(res.status).toBe(303);
@@ -998,21 +998,21 @@ test("guards refuse agent shell commands that start the owner page", () => {
 	const cfg: Config = { ...CFG, guards: { ...CFG.guards, shell_tools: ["bash"] } };
 	const denies = (command: string, agent: "main" | "sub" = "sub"): boolean =>
 		!checkTool({ tool: "bash", input: { command }, cwd: TMP, agent, agentId: "uistart", calls: 0, paths: [], writes: [], command: "" }, cfg).allow;
-	expect(denies("neurastream ui")).toBe(true);
-	expect(denies("neurastream ui --port 1234")).toBe(true);
-	// ui on/off are the one-command setup of the page itself (plan 20261025_0300): refused like
-	// every other `neurastream ui` command, with any arguments.
-	expect(denies("neurastream ui on --login x@y.z")).toBe(true);
-	expect(denies("neurastream ui off")).toBe(true);
-	expect(denies('sh -c "neurastream ui"', "main")).toBe(true);
-	expect(denies("bun ~/.bun/bin/neurastream ui")).toBe(true);
-	expect(denies("systemctl --user start neurastream-ui")).toBe(true);
-	expect(denies("systemctl --user restart neurastream-ui.service")).toBe(true);
-	expect(denies("sudo systemctl --user enable neurastream-ui.timer")).toBe(true);
+	expect(denies("neurastream workspace")).toBe(true);
+	expect(denies("neurastream workspace --port 1234")).toBe(true);
+	// workspace on/off are the one-command setup of the page itself (plan 20261025_0300): refused
+	// like every other `neurastream workspace` command, with any arguments.
+	expect(denies("neurastream workspace on --login x@y.z")).toBe(true);
+	expect(denies("neurastream workspace off")).toBe(true);
+	expect(denies('sh -c "neurastream workspace"', "main")).toBe(true);
+	expect(denies("bun ~/.bun/bin/neurastream workspace")).toBe(true);
+	expect(denies("systemctl --user start neurastream-workspace")).toBe(true);
+	expect(denies("systemctl --user restart neurastream-workspace.service")).toBe(true);
+	expect(denies("sudo systemctl --user enable neurastream-workspace.timer")).toBe(true);
 	// Reads and unrelated commands stay allowed.
 	expect(denies("neurastream doctor")).toBe(false);
-	expect(denies("systemctl --user status neurastream-ui")).toBe(false);
-	expect(denies("grep neurastream ui notes.md")).toBe(false);
+	expect(denies("systemctl --user status neurastream-workspace")).toBe(false);
+	expect(denies("grep neurastream workspace notes.md")).toBe(false);
 	// The refusal is logged plan-guard style.
 	expect(planGuardLogLines().some(l => l.includes("ui-start"))).toBe(true);
 });
@@ -1024,32 +1024,32 @@ test("P5g: eval prose that only carries the page's words is not a page start; th
 	const ev = (code: string): ToolEvent => ({ tool: "eval", input: { code }, cwd: TMP, agent: "sub", agentId: "p5g-eval", calls: 0, paths: [], writes: [], command: "" });
 	// An eval cell whose string data only mentions the page command runs nothing: a backticked
 	// mention in a plan-file edit and a plan-quote template literal are prose, not shell.
-	expect(checkTool(ev('edit(plan, { old: "x", new: "the card runs `neurastream ui` to serve the page" })'), cfg).allow).toBe(true);
-	expect(checkTool(ev("const forbidden = `\nneurastream ui stays the owner's move\n`;"), cfg).allow).toBe(true);
+	expect(checkTool(ev('edit(plan, { old: "x", new: "the card runs `neurastream workspace` to serve the page" })'), cfg).allow).toBe(true);
+	expect(checkTool(ev("const forbidden = `\nneurastream workspace stays the owner's move\n`;"), cfg).allow).toBe(true);
 	// Real shell exits stay the owner's move: a !cmd line, Bun.$ and spawn arguments.
-	expect(checkTool(ev("!neurastream ui"), cfg).allow).toBe(false);
-	expect(checkTool(ev("await Bun.$`neurastream ui`.nothrow()"), cfg).allow).toBe(false);
-	expect(checkTool(ev('Bun.spawn(["neurastream", "ui"])'), cfg).allow).toBe(false);
-	expect(checkTool(ev("Bun.spawnSync(['neurastream', 'ui'])"), cfg).allow).toBe(false);
+	expect(checkTool(ev("!neurastream workspace"), cfg).allow).toBe(false);
+	expect(checkTool(ev("await Bun.$`neurastream workspace`.nothrow()"), cfg).allow).toBe(false);
+	expect(checkTool(ev('Bun.spawn(["neurastream", "workspace"])'), cfg).allow).toBe(false);
+	expect(checkTool(ev("Bun.spawnSync(['neurastream', 'workspace'])"), cfg).allow).toBe(false);
 	// bash keeps its whole command line.
-	expect(checkTool({ tool: "bash", input: { command: "systemctl --user start neurastream-ui" }, cwd: TMP, agent: "sub", agentId: "p5g-bash", calls: 0, paths: [], writes: [], command: "" }, cfg).allow).toBe(false);
+	expect(checkTool({ tool: "bash", input: { command: "systemctl --user start neurastream-workspace" }, cwd: TMP, agent: "sub", agentId: "p5g-bash", calls: 0, paths: [], writes: [], command: "" }, cfg).allow).toBe(false);
 });
 
-// --- CLI: `neurastream ui` keeps serving (the 0.2.8 unit exited 0 after 90 ms) ---
+// --- CLI: `neurastream workspace` keeps serving (the 0.2.8 unit exited 0 after 90 ms) ---
 
-test("runUi never resolves once the page is started, so the CLI does not exit and kill the server", async () => {
+test("runWorkspace never resolves once the page is started, so the CLI does not exit and kill the server", async () => {
 	let started = 0;
-	const served = runUi([], { cfg: CFG, start: () => (started++, { stop() {}, hostname: "127.0.0.1", port: 0 }) });
-	// An async runUi that returns a code is already settled here, so its .then is queued ahead of
+	const served = runWorkspace([], { cfg: CFG, start: () => (started++, { stop() {}, hostname: "127.0.0.1", port: 0 }) });
+	// An async runWorkspace that returns a code is already settled here, so its .then is queued ahead of
 	// the second racer; one that never resolves loses to it. No clock involved.
 	const winner = await Promise.race([served.then(code => `exited ${code}`), Promise.resolve().then(() => "still serving")]);
 	expect(started).toBe(1);
 	expect(winner).toBe("still serving");
 });
 
-test("runUi refuses with exit 1 and starts nothing when the page is off", async () => {
+test("runWorkspace refuses with exit 1 and starts nothing when the page is off", async () => {
 	let started = 0;
-	const code = await runUi([], { cfg: { ...CFG, ui: { ...CFG.ui, enabled: false } }, start: () => (started++, { stop() {}, hostname: "", port: 0 }) });
+	const code = await runWorkspace([], { cfg: { ...CFG, workspace: { ...CFG.workspace, enabled: false } }, start: () => (started++, { stop() {}, hostname: "", port: 0 }) });
 	expect(code).toBe(1);
 	expect(started).toBe(0);
 });

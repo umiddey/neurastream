@@ -249,7 +249,7 @@ export function fixtureData(): PageData {
 
 /** A throwaway-home config so neither script touches the real one; chat_unlock on for the demo lock pill. */
 export function fixtureConfig() {
-	const base = loadConfig({ home: join(tmpdir(), "neurastream-ui-preview") });
+	const base = loadConfig({ home: join(tmpdir(), "neurastream-workspace-preview") });
 	return { ...base, guards: { ...base.guards, chat_unlock: true } };
 }
 

@@ -857,10 +857,10 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 	// computed at most once per process (tailscale status is a subprocess call).
 	let phonePageSuffix: string | null = null;
 	const phonePage = (): string => {
-		if (!cfg.ui.enabled) return "";
+		if (!cfg.workspace.enabled) return "";
 		if (phonePageSuffix === null) {
 			const dns = realTailscale.dnsName();
-			phonePageSuffix = dns ? ` Answer on the phone page: http://${dns}:${cfg.ui.port}` : "";
+			phonePageSuffix = dns ? ` Answer on the phone page: http://${dns}:${cfg.workspace.port}` : "";
 		}
 		return phonePageSuffix;
 	};

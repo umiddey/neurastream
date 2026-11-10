@@ -114,7 +114,7 @@ test("pages server: POST /_notes stores quote, note and url; empty submit and a 
 	cfg.pages.enabled = true;
 	cfg.pages.dir = root;
 	cfg.pages.port = 0;
-	cfg.ui.owner_login = "owner@example.test";
+	cfg.workspace.owner_login = "owner@example.test";
 	const tailscale = { ip4: () => "", dnsName: () => null, whois: () => "owner@example.test", logins: () => [], state: () => "running" as const };
 	const server = startPagesServer({ cfg, tailscale, source: { listRuns: () => [], mainSession: () => null }, hostname: LOOPBACK, port: 0, root, peerOf: () => LOOPBACK });
 	servers.push(server);

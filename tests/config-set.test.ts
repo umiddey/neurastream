@@ -13,7 +13,7 @@ const HOME = join(TMP, "home");
 const CONFIG_FILE = configFile(HOME);
 
 // The caller's shell may export live QUEUE_* overrides; loadConfig would see them. Save and
-// delete them, put them back at the end (same pattern as tests/ui-on-off.test.ts).
+// delete them, put them back at the end (same pattern as tests/workspace-on-off.test.ts).
 const queueEnvBefore = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("QUEUE_")));
 for (const k of Object.keys(queueEnvBefore)) delete process.env[k];
 
@@ -54,15 +54,15 @@ async function capture(fn: () => number | Promise<number>): Promise<{ code: numb
 }
 
 test("set then get round-trips a typed number", async () => {
-	expect((await capture(() => runConfigKeys(["set", "ui.port", "7788"], HOME))).code).toBe(0);
-	expect(readFileSync(CONFIG_FILE, "utf8")).toBe("ui:\n  port: 7788\n");
-	const got = await capture(() => runConfigKeys(["get", "ui.port"], HOME));
+	expect((await capture(() => runConfigKeys(["set", "workspace.port", "7788"], HOME))).code).toBe(0);
+	expect(readFileSync(CONFIG_FILE, "utf8")).toBe("workspace:\n  port: 7788\n");
+	const got = await capture(() => runConfigKeys(["get", "workspace.port"], HOME));
 	expect(got.code).toBe(0);
 	expect(got.out).toBe("7788");
 });
 
 test("set writes booleans, numbers and lists typed; lists as one flow-style line", async () => {
-	expect((await capture(() => runConfigKeys(["set", "ui.enabled", "true"], HOME))).code).toBe(0);
+	expect((await capture(() => runConfigKeys(["set", "workspace.enabled", "true"], HOME))).code).toBe(0);
 	expect((await capture(() => runConfigKeys(["set", "rules.max_bytes", "7788"], HOME))).code).toBe(0);
 	expect((await capture(() => runConfigKeys(["set", "paths.work_roots", '["a","b"]'], HOME))).code).toBe(0);
 	const text = readFileSync(CONFIG_FILE, "utf8");
@@ -70,20 +70,20 @@ test("set writes booleans, numbers and lists typed; lists as one flow-style line
 	expect(text).toContain("  max_bytes: 7788\n");
 	expect(text).toContain('  work_roots: ["a", "b"]\n');
 	expect((await capture(() => runConfigKeys(["get", "paths.work_roots"], HOME))).out).toBe('["a","b"]');
-	expect((await capture(() => runConfigKeys(["get", "ui.enabled"], HOME))).out).toBe("true");
+	expect((await capture(() => runConfigKeys(["get", "workspace.enabled"], HOME))).out).toBe("true");
 });
 
 test("a comment line and key order elsewhere in the file survive a set", async () => {
-	writeConfig("# keep this\nharness: omp\nui:\n  port: 7788  # the port\n");
-	expect((await capture(() => runConfigKeys(["set", "ui.port", "9000"], HOME))).code).toBe(0);
-	expect(readFileSync(CONFIG_FILE, "utf8")).toBe("# keep this\nharness: omp\nui:\n  port: 9000  # the port\n");
+	writeConfig("# keep this\nharness: omp\nworkspace:\n  port: 7788  # the port\n");
+	expect((await capture(() => runConfigKeys(["set", "workspace.port", "9000"], HOME))).code).toBe(0);
+	expect(readFileSync(CONFIG_FILE, "utf8")).toBe("# keep this\nharness: omp\nworkspace:\n  port: 9000  # the port\n");
 });
 
 test("an unknown key is refused non-zero, lists the valid keys, and writes nothing", async () => {
 	const set = await capture(() => runConfigKeys(["set", "nope.key", "1"], HOME));
 	expect(set.code).toBe(1);
 	expect(set.err).toContain("unknown key");
-	expect(set.err).toContain("ui.port");
+	expect(set.err).toContain("workspace.port");
 	expect((await capture(() => runConfigKeys(["get", "nope.key"], HOME))).code).toBe(1);
 	expect(existsSync(CONFIG_FILE)).toBe(false);
 });

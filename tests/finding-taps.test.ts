@@ -132,7 +132,7 @@ test("the agents page shows Main's why and two tap buttons for a finding, and sa
 	const unproposed = addIncident(cfg, { source: "findings", kind: "main-finding", summary: "no reason yet" }).incident;
 	expect(await runIncident(["propose", proposed.id, "--why", WHY])).toBe(0);
 	const svc = startOwnerUi({
-		cfg: { ...cfg, ui: { ...cfg.ui, enabled: true, port: 7787, owner_login: OWNER } },
+		cfg: { ...cfg, workspace: { ...cfg.workspace, enabled: true, port: 7787, owner_login: OWNER } },
 		tailscale: TS,
 		source: { listRuns: () => [], mainSession: () => null },
 		hostname: "127.0.0.1",
@@ -156,7 +156,7 @@ test("the agents page shows Main's why and two tap buttons for a finding, and sa
 // P3: the owner's two tap buttons. POST /incident is the only write path; red until the handler exists.
 function startPage() {
 	return startOwnerUi({
-		cfg: { ...cfg, ui: { ...cfg.ui, enabled: true, port: 7787, owner_login: OWNER } },
+		cfg: { ...cfg, workspace: { ...cfg.workspace, enabled: true, port: 7787, owner_login: OWNER } },
 		tailscale: TS,
 		source: { listRuns: () => [], mainSession: () => null },
 		hostname: "127.0.0.1",

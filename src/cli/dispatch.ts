@@ -21,7 +21,7 @@ import { runMetrics } from "./metrics.ts";
 import { runPressure } from "./pressure.ts";
 import { runIncident } from "./incident.ts";
 import { runTraces } from "./traces.ts";
-import { runUi } from "./ui.ts";
+import { runWorkspace } from "./workspace.ts";
 import { runConfigKeys } from "./config-set.ts";
 import { runDiagram } from "./diagram.ts";
 import { runNotes } from "./notes.ts";
@@ -93,7 +93,7 @@ export function helpText(): string {
 		"                                move a listed plan to rank N; the index file itself is 0444,",
 		"                                these two commands are the only agent writes to it",
 		"  neurastream config [--json]   print the merged config (defaults + file + env)",
-		"  neurastream config set|get|list <key> [value]   read or write one key (ui.port, paths.work_roots, ...)",
+		"  neurastream config set|get|list <key> [value]   read or write one key (workspace.port, paths.work_roots, ...)",
 		"  neurastream wip add|remove|list [path]          add or remove a root in wip.roots, or list them",
 		"  neurastream wip on [--backup-url <url>]|off     hourly snapshot (+ nightly private backup) on or off",
 		"  neurastream wip restore [<worktree>] [--pick N] list the hidden saves, or put one back",
@@ -129,11 +129,12 @@ export function helpText(): string {
 		"                                count the run's wasted tool calls (same file re-read, failed",
 		"                                command rerun, failed edit, repeated guard block, idle poll):",
 		"                                calls, wasted, waste % and the count per waste rule",
-		"  neurastream ui                serve the owner's phone page on the tailnet address (ui.enabled, ui.owner_login)",
-		"  neurastream ui on --login <tailscale login> [--port N]",
-		"                                one go: writes ui.enabled/owner_login (and port) into the config,",
-		"                                installs and restarts the neurastream-ui user unit, prints the phone",
-		"                                link; `neurastream ui off` stops and disables it, sets enabled: false",
+		"  neurastream workspace         serve the owner's phone page on the tailnet address (workspace.enabled, workspace.owner_login)",
+		"  neurastream workspace on --login <tailscale login> [--port N]",
+		"                                one go: writes workspace.enabled/owner_login (and port) into the config,",
+		"                                installs and restarts the neurastream-workspace user unit (disabling",
+		"                                the old neurastream-ui unit), prints the phone link;",
+		"                                `neurastream workspace off` stops and disables it, sets enabled: false",
 		"  neurastream pages on|off|serve|publish|list  host static files over the tailnet",
 		"                                publish --plan <plan.md> adds the Approve bar that records the plan's approval",
 		"  neurastream notes check <page>               list the notes without an answer, exit 1 while any is open",
@@ -162,7 +163,7 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 	if (cmd === "traces") return runTraces(args);
 	if (cmd === "labels") return runLabels(args);
 	if (cmd === "diff-check") return runDiffCheck(args);
-	if (cmd === "ui") return runUi(args);
+	if (cmd === "workspace") return runWorkspace(args);
 	if (cmd === "pages") return runPages(args);
 	if (cmd === "notes") return runNotes(args);
 	if (cmd === "diagram") return runDiagram(args);

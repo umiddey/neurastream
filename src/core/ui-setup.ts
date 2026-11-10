@@ -1,11 +1,13 @@
-// `neurastream ui on|off` core (plan 20261025_0300_ui_on_off): one command sets ui.enabled /
-// ui.owner_login (and ui.port) in the user's config.yml, installs the systemd user unit,
-// starts it and prints the phone link; `off` stops the unit and sets ui.enabled back to false.
-// Pure over an injected command runner and the Tailscale seam (src/cli/ui.ts wires the real
-// ones), so tests record argv and never run systemctl or the tailscale binary.
+// `neurastream workspace on|off` core: one command sets workspace.enabled / workspace.owner_login
+// (and workspace.port) in the user's config.yml, installs the systemd user unit, starts it and
+// prints the phone link; `off` stops the unit and sets workspace.enabled back to false. Pure over
+// an injected command runner and the Tailscale seam (src/cli/workspace.ts wires the real ones), so
+// tests record argv and never run systemctl or the tailscale binary.
+// (The command and keys were `ui` before the workspace rename; an existing `ui:` block moves to
+// `workspace:` in loadConfig's migrateLegacy, and `on` retires the old neurastream-ui unit.)
 
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,7 +16,7 @@ import { realTailscale, type Tailscale } from "./tailscale.ts";
 import { checkEdited, setConfigKeys } from "./config-edit.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-export const UI_UNIT_TEMPLATE = join(HERE, "../../templates/systemd/neurastream-ui.service");
+export const UI_UNIT_TEMPLATE = join(HERE, "../../templates/systemd/neurastream-workspace.service");
 
 export interface RunnerResult {
 	status: number | null;
@@ -48,7 +50,7 @@ export const systemTerminal: Terminal = {
 };
 
 const TAILSCALE_DOWNLOAD = "https://tailscale.com/download";
-const TAILSCALE_MISSING = "The phone page needs Tailscale (free, private network for your devices). Install it: Linux `curl -fsSL https://tailscale.com/install.sh | sh` (asks for your password), macOS: the App Store app, others: https://tailscale.com/download. Then run `neurastream ui on` again.";
+const TAILSCALE_MISSING = "The phone page needs Tailscale (free, private network for your devices). Install it: Linux `curl -fsSL https://tailscale.com/install.sh | sh` (asks for your password), macOS: the App Store app, others: https://tailscale.com/download. Then run `neurastream workspace on` again.";
 const TAILSCALE_STOPPED = "Tailscale is installed but not connected. Run `sudo tailscale up` (Linux) or open the Tailscale app (macOS), then run this again.";
 export { TAILSCALE_MISSING, TAILSCALE_STOPPED };
 
@@ -65,9 +67,9 @@ export interface UiSetupOptions {
 
 export interface UiOnOptions extends UiSetupOptions {
 	login: string;
-	/** The --port N of the command line; null leaves the config's ui.port in place. */
+	/** The --port N of the command line; null leaves the config's workspace.port in place. */
 	port?: number | null;
-	/** Terminal seam for the missing-tailscale question. Absent: no question, only the message. src/cli/ui.ts passes the real one on a TTY. */
+	/** Terminal seam for the missing-tailscale question. Absent: no question, only the message. src/cli/workspace.ts passes the real one on a TTY. */
 	terminal?: Terminal;
 }
 
@@ -80,13 +82,13 @@ export function uiOn(opts: UiOnOptions): number {
 	// Tailscale comes first (plan 20261028_2356 P2): nothing is read, written or run unless it is up.
 	const state = tailscale.state();
 	if (state === "missing") {
-		error(`neurastream ui: ${TAILSCALE_MISSING}`);
+		error(`neurastream workspace: ${TAILSCALE_MISSING}`);
 		const terminal = opts.terminal;
 		if (terminal && terminal.ask("Open the Tailscale download page now? [y/N] ").trim().toLowerCase() === "y") terminal.open(TAILSCALE_DOWNLOAD);
 		return 1;
 	}
 	if (state === "stopped") {
-		error(`neurastream ui: ${TAILSCALE_STOPPED}`);
+		error(`neurastream workspace: ${TAILSCALE_STOPPED}`);
 		return 1;
 	}
 	const file = configFile(home);
@@ -99,14 +101,14 @@ export function uiOn(opts: UiOnOptions): number {
 	}
 	const logins = tailscale.logins();
 	if (logins === null) {
-		error("neurastream ui: cannot read the tailnet logins (`tailscale status --json` failed) — skipping the login check");
+		error("neurastream workspace: cannot read the tailnet logins (`tailscale status --json` failed) — skipping the login check");
 	} else if (!logins.includes(opts.login)) {
-		error(`neurastream ui: ${opts.login} is not a login on this tailnet. Logins seen: ${logins.join(", ")}`);
+		error(`neurastream workspace: ${opts.login} is not a login on this tailnet. Logins seen: ${logins.join(", ")}`);
 		return 1;
 	}
 	const original = existsSync(file) ? readFileSync(file, "utf8") : null;
-	const values: Record<string, string> = { "ui.enabled": "true", "ui.owner_login": opts.login };
-	if (typeof opts.port === "number") values["ui.port"] = String(opts.port);
+	const values: Record<string, string> = { "workspace.enabled": "true", "workspace.owner_login": opts.login };
+	if (typeof opts.port === "number") values["workspace.port"] = String(opts.port);
 	let edited: string;
 	try {
 		edited = setConfigKeys(original, values);
@@ -115,18 +117,23 @@ export function uiOn(opts: UiOnOptions): number {
 		return 1;
 	}
 	if (!checkEdited(edited, home, error)) return 1;
-	const unitPath = join(home, ".config", "systemd", "user", "neurastream-ui.service");
+	// The page's unit was neurastream-ui before the workspace rename: retire it first (best effort —
+	// a machine that never had it still succeeds) and remove its file when one is installed.
+	runner(["systemctl", "--user", "disable", "--now", "neurastream-ui"]);
+	const oldUnit = join(home, ".config", "systemd", "user", "neurastream-ui.service");
+	if (existsSync(oldUnit)) unlinkSync(oldUnit);
+	const unitPath = join(home, ".config", "systemd", "user", "neurastream-workspace.service");
 	mkdirSync(dirname(unitPath), { recursive: true });
 	copyFileSync(UI_UNIT_TEMPLATE, unitPath);
 	for (const args of [
 		["systemctl", "--user", "daemon-reload"],
-		["systemctl", "--user", "enable", "neurastream-ui"],
-		["systemctl", "--user", "restart", "neurastream-ui"],
+		["systemctl", "--user", "enable", "neurastream-workspace"],
+		["systemctl", "--user", "restart", "neurastream-workspace"],
 	]) {
 		const r = runner(args);
 		if (r.status !== 0) {
 			if (r.stderr.trim()) error(r.stderr.trimEnd());
-			error("neurastream ui: systemctl failed — the config was not changed; fix the unit and run `neurastream ui` (or this command again).");
+			error("neurastream workspace: systemctl failed — the config was not changed; fix the unit and run `neurastream workspace` (or this command again).");
 			return 1;
 		}
 	}
@@ -135,9 +142,9 @@ export function uiOn(opts: UiOnOptions): number {
 	mkdirSync(dirname(file), { recursive: true });
 	writeFileSync(file, edited);
 	const name = tailscale.dnsName() ?? tailscale.ip4();
-	const port = opts.port ?? cfg.ui.port;
+	const port = opts.port ?? cfg.workspace.port;
 	if (name) print(`http://${name}:${port}`);
-	else error("neurastream ui: could not read this machine's MagicDNS name or tailnet address (is tailscale up?) — the page is running, open it at http://<MagicDNS name>:" + port);
+	else error("neurastream workspace: could not read this machine's MagicDNS name or tailnet address (is tailscale up?) — the page is running, open it at http://<MagicDNS name>:" + port);
 	return 0;
 }
 
@@ -145,15 +152,15 @@ export function uiOff(opts: UiSetupOptions): number {
 	const home = opts.home ?? homedir();
 	const runner = opts.runner ?? systemRunner;
 	const error = opts.error ?? console.error;
-	const r = runner(["systemctl", "--user", "disable", "--now", "neurastream-ui"]);
+	const r = runner(["systemctl", "--user", "disable", "--now", "neurastream-workspace"]);
 	if (r.status !== 0) {
 		if (r.stderr.trim()) error(r.stderr.trimEnd());
-		error("neurastream ui: systemctl failed — the config was not touched.");
+		error("neurastream workspace: systemctl failed — the config was not touched.");
 		return 1;
 	}
 	const file = configFile(home);
 	if (existsSync(file)) {
-		const edited = setConfigKeys(readFileSync(file, "utf8"), { "ui.enabled": "false" });
+		const edited = setConfigKeys(readFileSync(file, "utf8"), { "workspace.enabled": "false" });
 		if (!checkEdited(edited, home, error)) return 1;
 		writeFileSync(file, edited);
 	}
