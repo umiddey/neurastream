@@ -346,7 +346,7 @@ function executable(p: string): boolean {
 	}
 }
 
-function headerField(text: string, name: string): string | null {
+export function headerField(text: string, name: string): string | null {
 	const m = text.split(/^## /m)[0]?.match(new RegExp(`^${name}:\\s*(.+?)\\s*$`, "m"));
 	const v = m?.[1];
 	return v ? v.replace(/`/g, "").trim() || null : null;
@@ -407,6 +407,9 @@ export function parsePlan(repo: string, file: string, text: string | null, block
 	if (secs.has("done check") && !doneCheck) errors.push('"## Done check" needs one command in backticks (exit 0 = done)');
 	const bg = (secs.get("background") ?? "").split("\n").filter(l => l.trim()).length;
 	if (bg > BACKGROUND_MAX_LINES) errors.push(`"## Background" has ${bg} lines (max ${BACKGROUND_MAX_LINES}); link a separate file for long context`);
+	const queue = headerField(text, "Queue");
+	if (queue !== null && queue !== "team" && queue !== "personal")
+		errors.push(`Queue: header must be "team" or "personal" (got "${queue}"; absent means personal)`);
 	const wt = headerField(text, "Worktree");
 	const waitingLine = text.match(/^WAITING on owner:[ \t]*(.*)$/m)?.[1] ?? null;
 	const waitingParts = waitingLine === null ? { ask: null, blocked: null, why: null, check: null } : splitWaiting(waitingLine);

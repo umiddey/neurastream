@@ -213,6 +213,12 @@ workspace:
   allow_this_machine: false   # admit this machine (loopback and its own tailnet IP) as the owner,
                         # GET and POST; any local process can then press the buttons
 
+teams: []                  # a repo whose origin (ssh, scp or https, normalised to host/path without .git)
+                           # matches a repos glob may share plans that carry `Queue: team`.
+                           # Empty = every repo is personal. Two teams must not match the same remote.
+  # - name: acme
+  #   server: http://team.example:7787
+  #   repos: ["gitlab.com/acme/*"]
 
 pages:
   enabled: false

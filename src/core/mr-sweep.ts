@@ -80,6 +80,32 @@ export function remoteHost(url: string): string | null {
 	return null;
 }
 
+/** `host/path` of an origin URL (`git@host:path`, `ssh://`, `https://`), host lowercased, no `.git`. Null when it does not parse. */
+export function remotePath(url: string): string | null {
+	const u = url.trim();
+	if (!u) return null;
+	let host: string | null = null;
+	let raw = "";
+	if (!u.includes("://")) {
+		const scp = /^[^@\s]+@([^:\s]+):(.+)$/.exec(u);
+		if (!scp?.[1] || !scp[2]) return null;
+		host = scp[1].toLowerCase();
+		raw = scp[2];
+	} else {
+		try {
+			const parsed = new URL(u);
+			host = parsed.hostname.toLowerCase() || null;
+			raw = parsed.pathname;
+		} catch {
+			return null;
+		}
+	}
+	if (!host) return null;
+	let p = raw.trim().replace(/^\/+/, "").replace(/\/+$/, "");
+	if (p.toLowerCase().endsWith(".git")) p = p.slice(0, -4).replace(/\/+$/, "");
+	return p ? `${host}/${p}` : null;
+}
+
 /** `gitlab` in the host → gitlab; `github` in the host → github; anything else is unknown. */
 export function forgeOf(host: string): Forge | null {
 	const h = host.toLowerCase();

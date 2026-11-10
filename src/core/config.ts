@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { WriteCheckConfig } from "./write-check.ts";
+import { teamConfigError } from "./team-labels.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const TEMPLATE_PATH = join(HERE, "../../templates/config.yml");
@@ -183,6 +184,8 @@ export interface Config {
 	};
 	/** The owner's phone page (`neurastream workspace`): binds the tailnet address only. */
 	workspace: { enabled: boolean; port: number; owner_login: string; allow_this_machine: boolean };
+	/** Repo labels: an origin matching `repos` may share plans that carry `Queue: team`. Empty = every repo is personal. */
+	teams: { name: string; server: string; repos: string[] }[];
 	/** Plan review gate (plan 20261028_1600): reuse lines and, from P2 on, the reviewer PASS lock. */
 	review: {
 		/** Agents a review spawn may run under: the PASS exemption needs one of these plus the brief's `Plan review: <plan>` line. An empty list turns only the `## Reuse` requirement off; the PASS gate follows `plan` (P6). */
@@ -639,6 +642,8 @@ function check(cfg: Config): void {
 	}
 	if (!(cfg.queue.claim_ttl_min >= 1)) throw new ConfigError("queue.claim_ttl_min must be >= 1");
 	if (!(cfg.workspace.port >= 1 && cfg.workspace.port <= 65535)) throw new ConfigError("workspace.port must be between 1 and 65535");
+	const teamErr = teamConfigError(cfg.teams);
+	if (teamErr) throw new ConfigError(teamErr);
 	if (!Number.isInteger(cfg.pages.port) || cfg.pages.port < 1 || cfg.pages.port > 65535) throw new ConfigError("pages.port must be an integer between 1 and 65535");
 	if (typeof cfg.pages.dir !== "string" || cfg.pages.dir.length === 0) throw new ConfigError("pages.dir must be a non-empty path");
 	if (!Number.isInteger(cfg.pages.keep_days) || cfg.pages.keep_days < 1) throw new ConfigError("pages.keep_days must be an integer >= 1");

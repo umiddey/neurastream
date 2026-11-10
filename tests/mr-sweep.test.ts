@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { forgeOf, mentioned, mrSweep, remoteHost, type CommandRunner } from "../src/core/mr-sweep.ts";
+import { forgeOf, mentioned, mrSweep, remoteHost, remotePath, type CommandRunner } from "../src/core/mr-sweep.ts";
 
 const TMP = mkdtempSync(path.join(tmpdir(), "mr-sweep-"));
 afterAll(() => rmSync(TMP, { recursive: true, force: true }));
@@ -45,6 +45,15 @@ test("remote host and forge come from the origin URL", () => {
 	expect(forgeOf("gitlab.example")).toBe("gitlab");
 	expect(forgeOf("github.com")).toBe("github");
 	expect(forgeOf("git.example.com")).toBeNull();
+});
+
+test("ssh, scp and https of one repo are the same host/path, without .git or a port", () => {
+	expect(remotePath("git@gitlab.com:group/pm.git")).toBe("gitlab.com/group/pm");
+	expect(remotePath("https://gitlab.com/group/pm.git")).toBe("gitlab.com/group/pm");
+	expect(remotePath("ssh://git@gitlab.com/group/pm.git")).toBe("gitlab.com/group/pm");
+	expect(remotePath("https://gitlab.example:8443/group/pm.git")).toBe("gitlab.example/group/pm");
+	expect(remotePath("git@gitlab.example:group/pm.git")).toBe("gitlab.example/group/pm");
+	expect(remotePath("not a remote")).toBeNull();
 });
 
 test("an open MR whose token and branch are absent is untracked", () => {

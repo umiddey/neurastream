@@ -4,6 +4,8 @@ Worktree: <work root>/<repo>-<topic> (configure paths.work_roots, e.g. {{HOME}}/
      bare `Planner: <agent>` line above the first `##` (no trailing comment). Omit it while Main plans. -->
 Branch: <type>/<topic>
 Summary: <one or two plain sentences: what this plan gives the owner>
+Queue: personal
+<!-- `team` opts this plan into the team queue for the team its repo's origin matches (config `teams:`). Absent or `personal` never leaves this machine. `neurastream team share <plan>` writes `team`; `team unshare <plan>` removes the line (only while you hold the claim, or the plan is unclaimed). -->
 PRIORITY-ID: <optional, e.g. PR01>
 <!-- One plan = one worktree: this file lives in the main checkout (<main checkout>/docs/plans/), never
      inside its worktree, and the main index (paths.queue_index) lists its absolute path, one line per plan. -->

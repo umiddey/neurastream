@@ -22,6 +22,7 @@ import { runPressure } from "./pressure.ts";
 import { runIncident } from "./incident.ts";
 import { runTraces } from "./traces.ts";
 import { runWorkspace } from "./workspace.ts";
+import { runTeam } from "./team.ts";
 import { runConfigKeys } from "./config-set.ts";
 import { runDiagram } from "./diagram.ts";
 import { runNotes } from "./notes.ts";
@@ -135,6 +136,9 @@ export function helpText(): string {
 		"                                installs and restarts the neurastream-workspace user unit (disabling",
 		"                                the old neurastream-ui unit), prints the phone link;",
 		"                                `neurastream workspace off` stops and disables it, sets enabled: false",
+		"  neurastream team share <plan> add Queue: team when the repo's origin matches a teams: glob",
+		"  neurastream team unshare <plan>",
+		"                                remove Queue: team (only while you hold the claim, or it is free)",
 		"  neurastream pages on|off|serve|publish|list  host static files over the tailnet",
 		"                                publish --plan <plan.md> adds the Approve bar that records the plan's approval",
 		"  neurastream notes check <page>               list the notes without an answer, exit 1 while any is open",
@@ -164,6 +168,7 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 	if (cmd === "labels") return runLabels(args);
 	if (cmd === "diff-check") return runDiffCheck(args);
 	if (cmd === "workspace") return runWorkspace(args);
+	if (cmd === "team") return runTeam(args);
 	if (cmd === "pages") return runPages(args);
 	if (cmd === "notes") return runNotes(args);
 	if (cmd === "diagram") return runDiagram(args);

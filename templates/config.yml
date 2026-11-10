@@ -175,6 +175,8 @@ workspace:
   owner_login: ""       # the tailscale login that may open the page; empty = the page refuses to start
   allow_this_machine: false   # admit this machine (loopback and its own tailnet IP) as the owner; any local process can then press the buttons
 
+teams: []                # [{name, server, repos: ["host/group/*"]}] origin globs (host/path, no .git; * does not cross /) that may share plans carrying Queue: team. Empty = every repo is personal. Two teams must not match the same remote.
+
 
 pages:
   enabled: false   # the pages server (neurastream pages on|off)
