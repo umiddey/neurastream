@@ -116,6 +116,20 @@ interface ClaimRow {
 	login: string;
 }
 
+interface AuditRow {
+	id: number;
+	login: string;
+	time: number;
+	route: string;
+	plan_id: string | null;
+}
+
+interface ApprovalRow {
+	plan: string;
+	login: string;
+	time: number;
+}
+
 type ClaimOutcome = { status: 200; claim: ClaimRow } | { status: 404 } | { status: 409; held: ClaimRow };
 type BeatOutcome = { status: 200; claim: ClaimRow } | { status: 404 } | { status: 403 };
 type ReleaseOutcome = { status: 200 } | { status: 404 } | { status: 403 };
@@ -149,6 +163,61 @@ function jsonObject(body: Uint8Array): Record<string, unknown> | null {
 	}
 	if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
 	return parsed as Record<string, unknown>;
+}
+
+/** A path segment decoded, or null when its percent-encoding is bad. */
+function decodeSegment(raw: string): string | null {
+	try {
+		return decodeURIComponent(raw);
+	} catch {
+		return null;
+	}
+}
+
+const LOGIN_RE = /^[^\s\p{Cc}]{1,256}$/u;
+const LOGIN_ERROR = "login must be 1 to 256 characters with no whitespace or control character";
+const ADMIN_REMOVE = "the admin login cannot be removed";
+const NO_MEMBER = "no such member";
+
+function validLogin(login: unknown): login is string {
+	return typeof login === "string" && LOGIN_RE.test(login);
+}
+
+/** True once the first start has seeded the members table. Before that the team is not initialised. */
+function initialised(db: Database): boolean {
+	return db.query("SELECT 1 FROM meta WHERE key = 'members_seeded'").get() !== null;
+}
+
+function writeAudit(db: Database, login: string, now: number, route: string, planId: string | null): void {
+	db.query("INSERT INTO audit (login, time, route, plan_id) VALUES (?, ?, ?, ?)").run(login, now, route, planId);
+}
+
+/** Adds a member and audits it. POST /members and addTeamMember both run this. */
+function addMemberTx(db: Database, login: string, actor: string, now: number): { added: boolean } {
+	return db.transaction((): { added: boolean } => {
+		const added = db.query("INSERT OR IGNORE INTO members (login) VALUES (?)").run(login).changes > 0;
+		writeAudit(db, actor, now, `POST /members/${login}`, null);
+		return { added };
+	}).immediate();
+}
+
+type RemoveOutcome = { status: 200; claimsFreed: number } | { status: 404 } | { status: 409 };
+
+/** Removes a member with the claims, votes and pause that the login holds for this team. Approvals stay. The admin login is never removed. DELETE /members/:login and removeTeamMember both run this. */
+function removeMemberTx(db: Database, config: TeamServerConfig, login: string, actor: string, now: number): RemoveOutcome {
+	return db.transaction((): RemoveOutcome => {
+		if (login === config.admin) {
+			writeAudit(db, actor, now, `refused DELETE /members/${login}`, null);
+			return { status: 409 };
+		}
+		if (!db.query("SELECT 1 FROM members WHERE login = ?").get(login)) return { status: 404 };
+		const claimsFreed = db.query("DELETE FROM claims WHERE login = ? AND team = ?").run(login, config.team).changes;
+		db.query("DELETE FROM votes WHERE login = ?").run(login);
+		db.query("DELETE FROM paused WHERE login = ?").run(login);
+		db.query("DELETE FROM members WHERE login = ?").run(login);
+		writeAudit(db, actor, now, `DELETE /members/${login}`, null);
+		return { status: 200, claimsFreed };
+	}).immediate();
 }
 
 /** Opens the team database and creates its tables. busy_timeout makes a second writer wait for the lock instead of failing with SQLITE_BUSY. */
@@ -187,6 +256,25 @@ export function openTeamDb(dbPath: string): Database {
 			beat INTEGER NOT NULL,
 			login TEXT NOT NULL
 		);
+		CREATE TABLE IF NOT EXISTS meta (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS approvals (
+			plan_id TEXT NOT NULL,
+			login TEXT NOT NULL,
+			time INTEGER NOT NULL,
+			PRIMARY KEY (plan_id, login)
+		);
+		CREATE TABLE IF NOT EXISTS votes (
+			login TEXT PRIMARY KEY,
+			plan_ids TEXT NOT NULL,
+			time INTEGER NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS paused (
+			login TEXT PRIMARY KEY,
+			time INTEGER NOT NULL
+		);
 	`);
 	return db;
 }
@@ -201,8 +289,16 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 	const clock = opts.clock ?? nowSec;
 	const hostAllowed = hostAllowlist(tailscale);
 	const db = openTeamDb(opts.dbPath);
-	const addMember = db.prepare("INSERT OR IGNORE INTO members (login) VALUES (?)");
-	for (const login of config.members) addMember.run(login);
+	// Step A seeds config.members once, on the first start only (marked by the members_seeded row). Step B upserts config.admin on every start.
+	const seed = db.transaction(() => {
+		if (!initialised(db)) {
+			const addMember = db.prepare("INSERT OR IGNORE INTO members (login) VALUES (?)");
+			for (const login of config.members) addMember.run(login);
+			db.run("INSERT INTO meta (key, value) VALUES ('members_seeded', '1')");
+		}
+		db.query("INSERT OR IGNORE INTO members (login) VALUES (?)").run(config.admin);
+	});
+	seed.immediate();
 	const isMember = db.query<{ ok: number }, [string]>("SELECT 1 AS ok FROM members WHERE login = ?");
 	const selectPlan = db.query<PlanRow, [string, string]>("SELECT sha, text, remote, rel_path, updated_by, updated_at FROM plans WHERE id = ? AND team = ?");
 	const listPlans = db.query<Omit<PlanRow, "text"> & { id: string }, [string]>(
@@ -283,6 +379,123 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 		return true;
 	}
 
+	const listAudit = db.query<AuditRow, []>("SELECT id, login, time, route, plan_id FROM audit ORDER BY id DESC LIMIT 200");
+	const insertApproval = db.prepare("INSERT OR IGNORE INTO approvals (plan_id, login, time) VALUES (?, ?, ?)");
+	const selectApproval = db.query<ApprovalRow, [string, string]>("SELECT plan_id AS plan, login, time FROM approvals WHERE plan_id = ? AND login = ?");
+	const replaceVote = db.prepare("INSERT OR REPLACE INTO votes (login, plan_ids, time) VALUES (?, ?, ?)");
+	const setOverride = db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('order_override', ?)");
+	const replacePause = db.prepare("INSERT OR REPLACE INTO paused (login, time) VALUES (?, ?)");
+	const deletePause = db.prepare("DELETE FROM paused WHERE login = ?");
+	// P2c writes run with .immediate, as the claim writes do: each reads, decides, writes and audits in one step.
+	const approveOf = db.transaction((id: string, login: string, now: number): ApprovalRow | null => {
+		if (!planExists.get(id, config.team)) return null;
+		insertApproval.run(id, login, now);
+		insertAudit.run(login, now, `POST /approve/${id}`, id);
+		return selectApproval.get(id, login);
+	});
+	const voteOf = db.transaction((planIds: string[], login: string, now: number) => {
+		replaceVote.run(login, JSON.stringify(planIds), now);
+		insertAudit.run(login, now, "POST /order", null);
+		return { login, plan_ids: planIds, time: now };
+	});
+	const overrideOf = db.transaction((planIds: string[], login: string, now: number) => {
+		const override = { plan_ids: planIds, login, time: now };
+		setOverride.run(JSON.stringify(override));
+		insertAudit.run(login, now, "POST /order/override", null);
+		return override;
+	});
+	const pauseOf = db.transaction((login: string, paused: boolean, now: number) => {
+		if (paused) replacePause.run(login, now);
+		else deletePause.run(login);
+		insertAudit.run(login, now, paused ? "POST /pause" : "POST /resume", null);
+	});
+
+	/** plan_ids as a checked list: 1 to 500 distinct ids, each a stored plan of this team. The first bad entry is named. */
+	function planIdList(raw: unknown): { ids: string[] } | { error: string } {
+		if (!Array.isArray(raw) || raw.length < 1 || raw.length > 500) return { error: "plan_ids must be an array of 1 to 500 plan ids" };
+		const seen = new Set<string>();
+		for (const [i, id] of raw.entries()) {
+			if (typeof id !== "string") return { error: `plan_ids[${i}] must be a string` };
+			if (seen.has(id)) return { error: `plan_ids[${i}] repeats ${id}` };
+			if (!planExists.get(id, config.team)) return { error: `plan_ids[${i}] is not a stored plan: ${id}` };
+			seen.add(id);
+		}
+		return { ids: raw as string[] };
+	}
+
+	/** Head of every POST and DELETE in P2c, in the claim routes' order: body size, write slot, role check (a refusal is audited, body not parsed). The caller parses the body when its route takes one. */
+	async function writeGate(req: Request, login: string, need: "admin" | "leader" | "member", refused: string): Promise<{ body: Uint8Array; now: number } | { res: Response }> {
+		const body = await readBody(req);
+		if (body === "too-big") return { res: json({ error: "body too large" }, 413) };
+		const now = clock();
+		if (!takeWriteSlot(login, now)) return { res: json({ error: "too many writes" }, 429) };
+		const allowed = need === "admin" ? login === config.admin : need === "leader" ? login === config.leader : true;
+		if (!allowed) {
+			insertAudit.run(login, now, `refused ${refused}`, null);
+			return { res: json({ error: `forbidden: ${need} only` }, 403) };
+		}
+		return { body, now };
+	}
+
+	/** P2c routes: audit read, members, approvals, plan order, pause. Null when the request matches none of them. */
+	async function memberRoute(req: Request, path: string, login: string): Promise<Response | null> {
+		if (req.method === "GET" && path === "/audit") {
+			if (login !== config.admin) return json({ error: "forbidden: admin only" }, 403);
+			return json({ audit: listAudit.all() }, 200);
+		}
+		if (req.method === "POST" && path === "/members") {
+			const gate = await writeGate(req, login, "admin", "POST /members");
+			if ("res" in gate) return gate.res;
+			const fields = jsonObject(gate.body);
+			if (!fields) return json({ error: "body must be a JSON object" }, 400);
+			const member = fields.login;
+			if (!validLogin(member)) return json({ error: LOGIN_ERROR }, 400);
+			return json({ login: member, added: addMemberTx(db, member, login, gate.now).added }, 200);
+		}
+		const memberPath = /^\/members\/([^/]+)$/.exec(path);
+		if (req.method === "DELETE" && memberPath?.[1]) {
+			const target = decodeSegment(memberPath[1]);
+			if (target === null) return json({ error: "bad login" }, 400);
+			const gate = await writeGate(req, login, "admin", `DELETE /members/${target}`);
+			if ("res" in gate) return gate.res;
+			const out = removeMemberTx(db, config, target, login, gate.now);
+			if (out.status === 409) return json({ error: ADMIN_REMOVE }, 409);
+			if (out.status === 404) return json({ error: NO_MEMBER }, 404);
+			return json({ removed: target, claimsFreed: out.claimsFreed }, 200);
+		}
+		const approvePath = /^\/approve\/([^/]+)$/.exec(path);
+		if (req.method === "POST" && approvePath?.[1]) {
+			const id = decodeSegment(approvePath[1]);
+			if (id === null) return json({ error: "bad plan id" }, 400);
+			const gate = await writeGate(req, login, "member", `POST /approve/${id}`);
+			if ("res" in gate) return gate.res;
+			if (!jsonObject(gate.body)) return json({ error: "body must be a JSON object" }, 400);
+			const approval = approveOf.immediate(id, login, gate.now);
+			if (!approval) return json({ error: "no such plan" }, 404);
+			return json({ approval }, 200);
+		}
+		if (req.method === "POST" && (path === "/order" || path === "/order/override")) {
+			const override = path === "/order/override";
+			const gate = await writeGate(req, login, override ? "leader" : "member", `POST ${path}`);
+			if ("res" in gate) return gate.res;
+			const fields = jsonObject(gate.body);
+			if (!fields) return json({ error: "body must be a JSON object" }, 400);
+			const checked = planIdList(fields.plan_ids);
+			if ("error" in checked) return json({ error: checked.error }, 400);
+			if (override) return json({ override: overrideOf.immediate(checked.ids, login, gate.now) }, 200);
+			return json({ vote: voteOf.immediate(checked.ids, login, gate.now) }, 200);
+		}
+		if (req.method === "POST" && (path === "/pause" || path === "/resume")) {
+			const paused = path === "/pause";
+			const gate = await writeGate(req, login, "member", `POST ${path}`);
+			if ("res" in gate) return gate.res;
+			if (!jsonObject(gate.body)) return json({ error: "body must be a JSON object" }, 400);
+			pauseOf.immediate(login, paused, gate.now);
+			return json({ paused }, 200);
+		}
+		return null;
+	}
+
 	/** Claim routes: POST /claims/:id takes or refreshes, POST /claims/:id/beat heartbeats, DELETE /claims/:id releases, GET /claims/:id reads. */
 	async function claimRoute(req: Request, id: string, beat: boolean, login: string): Promise<Response> {
 		if (req.method === "GET") {
@@ -351,11 +564,8 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 					const idMatch = /^\/plans\/([^/]+)$/.exec(url.pathname);
 					let planId: string | null = null;
 					if (idMatch?.[1]) {
-						try {
-							planId = decodeURIComponent(idMatch[1]);
-						} catch {
-							return json({ error: "bad plan id" }, 400);
-						}
+						planId = decodeSegment(idMatch[1]);
+						if (planId === null) return json({ error: "bad plan id" }, 400);
 					}
 					if (req.method === "GET" && planId !== null) {
 						const row = selectPlan.get(planId, config.team);
@@ -367,14 +577,12 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 					}
 					const claimMatch = /^\/claims\/([^/]+)(\/beat)?$/.exec(url.pathname);
 					if (claimMatch?.[1]) {
-						let claimId: string;
-						try {
-							claimId = decodeURIComponent(claimMatch[1]);
-						} catch {
-							return json({ error: "bad plan id" }, 400);
-						}
+						const claimId = decodeSegment(claimMatch[1]);
+						if (claimId === null) return json({ error: "bad plan id" }, 400);
 						return await claimRoute(req, claimId, claimMatch[2] !== undefined, login);
 					}
+					const memberResponse = await memberRoute(req, url.pathname, login);
+					if (memberResponse) return memberResponse;
 					if (!WRITE_METHOD[req.method] || planId === null || req.method !== "PUT") return json({ error: "not found" }, 404);
 					const body = await readBody(req);
 					if (body === "too-big") return json({ error: "body too large" }, 413);
@@ -438,4 +646,40 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 		hostname,
 		port: Number(server.port),
 	};
+}
+
+/** Members of this team on the database, sorted. Before the first start the members table is empty, so this returns []. Opens through openTeamDb and closes again. */
+export function listTeamMembers(dbPath: string): string[] {
+	const db = openTeamDb(dbPath);
+	try {
+		return db.query<{ login: string }, []>("SELECT login FROM members ORDER BY login").all().map(row => row.login);
+	} finally {
+		db.close();
+	}
+}
+
+/** Adds a member from the host, acting as the admin. No write slot and no role check. Refuses until the team has started once. */
+export function addTeamMember(dbPath: string, config: TeamServerConfig, login: string): { ok: true; added: boolean } | { ok: false; error: string } {
+	const db = openTeamDb(dbPath);
+	try {
+		if (!initialised(db)) return { ok: false, error: `team ${config.team} not initialised: its server has never started on this database; start it once, then retry` };
+		if (!validLogin(login)) return { ok: false, error: LOGIN_ERROR };
+		return { ok: true, added: addMemberTx(db, login, config.admin, nowSec()).added };
+	} finally {
+		db.close();
+	}
+}
+
+/** Removes a member from the host, acting as the admin. Refuses exactly as DELETE /members/:login does. Refuses until the team has started once. */
+export function removeTeamMember(dbPath: string, config: TeamServerConfig, login: string): { ok: true; claimsFreed: number } | { ok: false; error: string } {
+	const db = openTeamDb(dbPath);
+	try {
+		if (!initialised(db)) return { ok: false, error: `team ${config.team} not initialised: its server has never started on this database; start it once, then retry` };
+		const out = removeMemberTx(db, config, login, config.admin, nowSec());
+		if (out.status === 409) return { ok: false, error: ADMIN_REMOVE };
+		if (out.status === 404) return { ok: false, error: NO_MEMBER };
+		return { ok: true, claimsFreed: out.claimsFreed };
+	} finally {
+		db.close();
+	}
 }
