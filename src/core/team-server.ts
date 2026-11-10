@@ -1,4 +1,4 @@
-// Team queue server (plan 20261027_1305 P2a). Binds the tailnet address only.
+// Team queue server (plan 20261027_1305 P2a; claims P2b). Binds the tailnet address only.
 // Every route, health included, checks Host, then the peer, then whois membership,
 // then Origin on every write. Plan text is stored only when its header is Queue: team.
 
@@ -6,7 +6,9 @@ import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { claimExpired } from "./claims.ts";
 import { nowSec } from "./clock.ts";
+import { MAIN_ID_RE } from "./guards.ts";
 import { hostAllowlist, isLoopback, isTailnet, originIsHost, type UiHttpServer } from "./owner-ui.ts";
 import { headerField, sha } from "./queue/lib.ts";
 import { remotePath } from "./mr-sweep.ts";
@@ -37,6 +39,8 @@ export interface TeamServerOptions {
 	hostname?: string;
 	peerOf?: (req: Request, server: UiHttpServer) => string;
 	clock?: () => number;
+	/** Minutes without a heartbeat before a claim may be taken over (`queue.claim_ttl_min`). Required: this server has no default. */
+	claimTtlMin: number;
 }
 
 export interface TeamServer {
@@ -100,17 +104,58 @@ interface PutArgs {
 	route: string;
 }
 
-/** Starts the queue server. Refuses to start with no tailnet address, and never binds every interface. */
-export function startTeamServer(opts: TeamServerOptions): TeamServer {
-	const { tailscale, config } = opts;
-	const hostname = opts.hostname ?? tailscale.ip4();
-	if (!hostname) throw new Error("team server: tailscale ip -4 did not answer — is tailscale up?");
-	if (bindsEveryInterface(hostname)) throw new Error("team server: refuses to bind every interface");
-	const peerOf = opts.peerOf ?? ((req: Request, server: UiHttpServer) => server.requestIP(req)?.address ?? "");
-	const clock = opts.clock ?? nowSec;
-	const hostAllowed = hostAllowlist(tailscale);
-	mkdirSync(dirname(opts.dbPath), { recursive: true });
-	const db = new Database(opts.dbPath);
+/** One claim row. `id` is the plan id; `login` is the whois login that holds it. */
+interface ClaimRow {
+	id: string;
+	team: string;
+	main: string;
+	host: string;
+	pid: number;
+	since: number;
+	beat: number;
+	login: string;
+}
+
+type ClaimOutcome = { status: 200; claim: ClaimRow } | { status: 404 } | { status: 409; held: ClaimRow };
+type BeatOutcome = { status: 200; claim: ClaimRow } | { status: 404 } | { status: 403 };
+type ReleaseOutcome = { status: 200 } | { status: 404 } | { status: 403 };
+
+/** A claim is the caller's own when both the login and the Main id match. */
+function isOwn(row: ClaimRow, login: string, main: string): boolean {
+	return row.login === login && row.main === main;
+}
+
+/** The claim as the wire shows it. `mine` is true when the caller's login holds it. */
+function wireClaim(row: ClaimRow, login: string) {
+	return {
+		plan: row.id,
+		main: row.main,
+		host: row.host,
+		pid: row.pid,
+		since: row.since,
+		beat: row.beat,
+		login: row.login,
+		mine: row.login === login,
+	};
+}
+
+/** The body as a JSON object, or null when it is not one. */
+function jsonObject(body: Uint8Array): Record<string, unknown> | null {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(new TextDecoder().decode(body));
+	} catch {
+		return null;
+	}
+	if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+	return parsed as Record<string, unknown>;
+}
+
+/** Opens the team database and creates its tables. busy_timeout makes a second writer wait for the lock instead of failing with SQLITE_BUSY. */
+export function openTeamDb(dbPath: string): Database {
+	mkdirSync(dirname(dbPath), { recursive: true });
+	const db = new Database(dbPath);
+	db.exec("PRAGMA busy_timeout = 5000;");
 	db.exec(`
 		CREATE TABLE IF NOT EXISTS plans (
 			id TEXT PRIMARY KEY,
@@ -132,7 +177,30 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 			route TEXT NOT NULL,
 			plan_id TEXT
 		);
+		CREATE TABLE IF NOT EXISTS claims (
+			id TEXT PRIMARY KEY,
+			team TEXT NOT NULL,
+			main TEXT NOT NULL,
+			host TEXT NOT NULL,
+			pid INTEGER NOT NULL,
+			since INTEGER NOT NULL,
+			beat INTEGER NOT NULL,
+			login TEXT NOT NULL
+		);
 	`);
+	return db;
+}
+
+/** Starts the queue server. Refuses to start with no tailnet address, and never binds every interface. */
+export function startTeamServer(opts: TeamServerOptions): TeamServer {
+	const { tailscale, config } = opts;
+	const hostname = opts.hostname ?? tailscale.ip4();
+	if (!hostname) throw new Error("team server: tailscale ip -4 did not answer — is tailscale up?");
+	if (bindsEveryInterface(hostname)) throw new Error("team server: refuses to bind every interface");
+	const peerOf = opts.peerOf ?? ((req: Request, server: UiHttpServer) => server.requestIP(req)?.address ?? "");
+	const clock = opts.clock ?? nowSec;
+	const hostAllowed = hostAllowlist(tailscale);
+	const db = openTeamDb(opts.dbPath);
 	const addMember = db.prepare("INSERT OR IGNORE INTO members (login) VALUES (?)");
 	for (const login of config.members) addMember.run(login);
 	const isMember = db.query<{ ok: number }, [string]>("SELECT 1 AS ok FROM members WHERE login = ?");
@@ -161,7 +229,101 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 		insertAudit.run(args.login, args.now, args.route, args.id);
 		return { status: 200, sha: args.nextSha };
 	});
+	const planExists = db.query<{ ok: number }, [string, string]>("SELECT 1 AS ok FROM plans WHERE id = ? AND team = ?");
+	const selectClaim = db.query<ClaimRow, [string]>("SELECT id, team, main, host, pid, since, beat, login FROM claims WHERE id = ?");
+	const listClaims = db.query<ClaimRow, [string]>("SELECT id, team, main, host, pid, since, beat, login FROM claims WHERE team = ? ORDER BY id");
+	const replaceClaim = db.prepare("INSERT OR REPLACE INTO claims (id, team, main, host, pid, since, beat, login) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+	const beatClaim = db.prepare("UPDATE claims SET beat = ? WHERE id = ?");
+	const deleteClaim = db.prepare("DELETE FROM claims WHERE id = ?");
+	// Claim writes run with .immediate (BEGIN IMMEDIATE): the read and the write take the write lock together. Refusals return a status instead of throwing, so their audit row still commits.
+	const claimOf = db.transaction((args: { id: string; main: string; host: string; pid: number; login: string; now: number; route: string }): ClaimOutcome => {
+		if (!planExists.get(args.id, config.team)) return { status: 404 };
+		const cur = selectClaim.get(args.id);
+		if (cur && isOwn(cur, args.login, args.main)) {
+			beatClaim.run(args.now, args.id);
+			insertAudit.run(args.login, args.now, args.route, args.id);
+			return { status: 200, claim: { ...cur, beat: args.now } };
+		}
+		if (cur && !claimExpired(cur, args.now, opts.claimTtlMin)) {
+			insertAudit.run(args.login, args.now, `refused ${args.route}`, args.id);
+			return { status: 409, held: cur };
+		}
+		const fresh: ClaimRow = { id: args.id, team: config.team, main: args.main, host: args.host, pid: args.pid, since: args.now, beat: args.now, login: args.login };
+		replaceClaim.run(fresh.id, fresh.team, fresh.main, fresh.host, fresh.pid, fresh.since, fresh.beat, fresh.login);
+		insertAudit.run(args.login, args.now, args.route, args.id);
+		return { status: 200, claim: fresh };
+	});
+	const beatOf = db.transaction((args: { id: string; main: string; login: string; now: number; route: string }): BeatOutcome => {
+		const cur = selectClaim.get(args.id);
+		if (!cur) return { status: 404 };
+		if (!isOwn(cur, args.login, args.main)) {
+			insertAudit.run(args.login, args.now, `refused ${args.route}`, args.id);
+			return { status: 403 };
+		}
+		beatClaim.run(args.now, args.id);
+		return { status: 200, claim: { ...cur, beat: args.now } };
+	});
+	const releaseOf = db.transaction((args: { id: string; main: string; login: string; now: number; route: string }): ReleaseOutcome => {
+		const cur = selectClaim.get(args.id);
+		if (!cur) return { status: 404 };
+		if (!isOwn(cur, args.login, args.main)) {
+			insertAudit.run(args.login, args.now, `refused ${args.route}`, args.id);
+			return { status: 403 };
+		}
+		deleteClaim.run(args.id);
+		insertAudit.run(args.login, args.now, args.route, args.id);
+		return { status: 200 };
+	});
 	const writes = new Map<string, number[]>();
+	function takeWriteSlot(login: string, now: number): boolean {
+		const recent = (writes.get(login) ?? []).filter(t => now - t < 60);
+		writes.set(login, recent);
+		if (recent.length >= WRITES_PER_MIN) return false;
+		recent.push(now);
+		return true;
+	}
+
+	/** Claim routes: POST /claims/:id takes or refreshes, POST /claims/:id/beat heartbeats, DELETE /claims/:id releases, GET /claims/:id reads. */
+	async function claimRoute(req: Request, id: string, beat: boolean, login: string): Promise<Response> {
+		if (req.method === "GET") {
+			if (beat) return json({ error: "not found" }, 404);
+			if (!planExists.get(id, config.team)) return json({ error: "no such plan" }, 404);
+			const row = selectClaim.get(id);
+			if (!row || claimExpired(row, clock(), opts.claimTtlMin)) return json({ claim: null }, 200);
+			return json({ claim: wireClaim(row, login) }, 200);
+		}
+		let op: "claim" | "beat" | "release";
+		if (req.method === "POST") op = beat ? "beat" : "claim";
+		else if (req.method === "DELETE" && !beat) op = "release";
+		else return json({ error: "not found" }, 404);
+		const body = await readBody(req);
+		if (body === "too-big") return json({ error: "body too large" }, 413);
+		const now = clock();
+		if (!takeWriteSlot(login, now)) return json({ error: "too many writes" }, 429);
+		const fields = jsonObject(body);
+		if (!fields) return json({ error: "body must be a JSON object" }, 400);
+		const main = fields.main;
+		if (typeof main !== "string" || !MAIN_ID_RE.test(main)) return json({ error: "main must be a valid main id" }, 400);
+		if (op === "claim") {
+			const { host, pid } = fields;
+			if (typeof host !== "string" || host.length < 1 || host.length > 253) return json({ error: "host must be 1 to 253 characters" }, 400);
+			if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return json({ error: "pid must be a positive integer" }, 400);
+			const out = claimOf.immediate({ id, main, host, pid, login, now, route: `POST /claims/${id}` });
+			if (out.status === 404) return json({ error: "no such plan" }, 404);
+			if (out.status === 409) return json({ heldBy: wireClaim(out.held, login) }, 409);
+			return json({ claim: wireClaim(out.claim, login) }, 200);
+		}
+		if (op === "beat") {
+			const out = beatOf.immediate({ id, main, login, now, route: `POST /claims/${id}/beat` });
+			if (out.status === 404) return json({ error: "no such claim" }, 404);
+			if (out.status === 403) return json({ error: "forbidden: claim belongs to another main" }, 403);
+			return json({ claim: wireClaim(out.claim, login) }, 200);
+		}
+		const out = releaseOf.immediate({ id, main, login, now, route: `DELETE /claims/${id}` });
+		if (out.status === 404) return json({ error: "no such claim" }, 404);
+		if (out.status === 403) return json({ error: "forbidden: claim belongs to another main" }, 403);
+		return json({ ok: true }, 200);
+	}
 	let server: { stop(closeActiveConnections?: boolean): void; port?: number };
 	try {
 		server = Bun.serve({
@@ -200,17 +362,24 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 						if (!row) return json({ error: "not found" }, 404);
 						return json({ id: planId, ...row }, 200);
 					}
+					if (req.method === "GET" && url.pathname === "/claims") {
+						return json({ claims: listClaims.all(config.team).map(row => wireClaim(row, login)) }, 200);
+					}
+					const claimMatch = /^\/claims\/([^/]+)(\/beat)?$/.exec(url.pathname);
+					if (claimMatch?.[1]) {
+						let claimId: string;
+						try {
+							claimId = decodeURIComponent(claimMatch[1]);
+						} catch {
+							return json({ error: "bad plan id" }, 400);
+						}
+						return await claimRoute(req, claimId, claimMatch[2] !== undefined, login);
+					}
 					if (!WRITE_METHOD[req.method] || planId === null || req.method !== "PUT") return json({ error: "not found" }, 404);
 					const body = await readBody(req);
 					if (body === "too-big") return json({ error: "body too large" }, 413);
 					const now = clock();
-					const recent = (writes.get(login) ?? []).filter(t => now - t < 60);
-					if (recent.length >= WRITES_PER_MIN) {
-						writes.set(login, recent);
-						return json({ error: "too many writes" }, 429);
-					}
-					recent.push(now);
-					writes.set(login, recent);
+					if (!takeWriteSlot(login, now)) return json({ error: "too many writes" }, 429);
 					let parsed: unknown;
 					try {
 						parsed = JSON.parse(new TextDecoder().decode(body));

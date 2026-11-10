@@ -38,6 +38,11 @@ export interface ClaimStore {
 	list(): Claim[];
 }
 
+/** Whether a claim's last beat is `ttlMin` minutes old, so the plan is free for takeover. The file store and the team server share this rule. */
+export function claimExpired(c: { beat: number }, now: number, ttlMin: number): boolean {
+	return now - c.beat >= ttlMin * 60;
+}
+
 // Claim files are only ever written by temp+rename under the lock, so an unreadable one
 // means outside tampering; treating it as absent lets the next claim replace it.
 function readClaim(path: string): Claim | null {
@@ -81,10 +86,6 @@ export function fileClaimStore(stateDir: string, clock: () => number, ttlMin: nu
 		return join(dir, `${createHash("sha256").update(plan).digest("hex")}.json`);
 	}
 
-	function expired(c: Claim, now: number): boolean {
-		return now - c.beat >= ttlMin * 60;
-	}
-
 	return {
 		claim(plan, main) {
 			return run(() => {
@@ -97,7 +98,7 @@ export function fileClaimStore(stateDir: string, clock: () => number, ttlMin: nu
 					writeClaim(path, next);
 					return next;
 				}
-				if (cur && !expired(cur, now)) return { heldBy: cur };
+				if (cur && !claimExpired(cur, now, ttlMin)) return { heldBy: cur };
 				const fresh: Claim = { plan, main, host: hostname(), pid: process.pid, since: now, beat: now };
 				writeClaim(path, fresh);
 				return fresh;
@@ -115,7 +116,7 @@ export function fileClaimStore(stateDir: string, clock: () => number, ttlMin: nu
 		holder(plan) {
 			return run(() => {
 				const cur = readClaim(fileFor(plan));
-				return cur && !expired(cur, clock()) ? cur : null;
+				return cur && !claimExpired(cur, clock(), ttlMin) ? cur : null;
 			});
 		},
 		release(plan, main) {

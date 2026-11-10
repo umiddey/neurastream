@@ -75,6 +75,7 @@ function start(over: Partial<TeamServerOptions> = {}): { svc: TeamServer; dbPath
 		hostname: LOOPBACK,
 		peerOf: () => PEER,
 		clock: () => now,
+		claimTtlMin: 30,
 		...over,
 	});
 	stopFns.push(() => svc.stop());
