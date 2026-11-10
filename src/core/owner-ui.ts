@@ -1782,6 +1782,31 @@ function handleReorder(cfg: Config, fields: Record<string, string>, login: strin
 	return redirect(sentTo(fields.tab ?? "", `sent=reorder&to=${to + 1}`));
 }
 
+/**
+ * DNS-rebinding guard, built once per server. A page on another host sends that Host with a
+ * matching Origin, so the peer and Origin checks alone would pass it. The Host header must
+ * name this server — the tailnet address or the MagicDNS name (dnsName(), trailing dot already
+ * stripped) — with the served port. No bound port: nothing is allowed. The phone page and the
+ * team server both call this.
+ */
+export function hostAllowlist(tailscale: { ip4(): string | null; dnsName(): string | null }): (hostHeader: string, port: number | undefined) => boolean {
+	let allowedHosts: string[] | null = null;
+	return (hostHeader, port) => {
+		// No bound port (never expected): nothing is allowed — fail closed.
+		if (port === undefined) return false;
+		if (allowedHosts === null) {
+			const dns = tailscale.dnsName();
+			allowedHosts = [tailscale.ip4(), dns].filter((h): h is string => Boolean(h)).map(h => `${h}:${port}`);
+		}
+		return allowedHosts.includes(hostHeader);
+	};
+}
+
+/** True when Origin is exactly `http://` plus the Host header. Callers apply it to the methods they write. */
+export function originIsHost(origin: string | null, hostHeader: string): boolean {
+	return origin === `http://${hostHeader}`;
+}
+
 /** Starts the page. Refuses to start when workspace.enabled is false or workspace.owner_login is empty, and on the default hostname when tailscale does not answer. */
 export function startOwnerUi(opts: OwnerUiOptions): OwnerUiServer {
 	const { cfg, tailscale, source } = opts;
@@ -1796,21 +1821,7 @@ export function startOwnerUi(opts: OwnerUiOptions): OwnerUiServer {
 	const hostname = opts.hostname ?? tailscale.ip4();
 	if (!hostname) throw new Error("owner ui: tailscale ip -4 did not answer — is tailscale up?");
 	const peerOf = opts.peerOf ?? ((req: Request, server: UiHttpServer) => server.requestIP(req)?.address ?? "");
-	// Host allowlist (plan P3a): a DNS-rebinding page sends evil.example's Host with a matching
-	// Origin from the owner's own phone, so the peer and Origin checks alone pass it. On every
-	// request, before whois, the Host header must name this page — the tailnet address or the
-	// MagicDNS name (dnsName(), trailing dot stripped) — with the served port. Anything else is a
-	// 403 no matter whose peer it is. Built once, against the bound port (tests bind 0).
-	let allowedHosts: string[] | null = null;
-	const hostAllowed = (hostHeader: string, port: number | undefined): boolean => {
-		// No bound port (never expected): nothing is allowed — fail closed.
-		if (port === undefined) return false;
-		if (allowedHosts === null) {
-			const dns = tailscale.dnsName();
-			allowedHosts = [tailscale.ip4(), dns].filter((h): h is string => Boolean(h)).map(h => `${h}:${port}`);
-		}
-		return allowedHosts.includes(hostHeader);
-	};
+	const hostAllowed = hostAllowlist(tailscale);
 	const server = Bun.serve({
 		hostname,
 		port: opts.port ?? cfg.workspace.port,
@@ -1831,7 +1842,7 @@ export function startOwnerUi(opts: OwnerUiOptions): OwnerUiServer {
 						code = 403;
 					} else {
 						login = auth.login;
-						if (req.method === "POST" && req.headers.get("origin") !== `http://${hostHeader}`) {
+						if (req.method === "POST" && !originIsHost(req.headers.get("origin"), hostHeader)) {
 							res = textRes("forbidden: origin is not this page", 403);
 							code = 403;
 						} else if (req.method === "GET" && url.pathname === "/") {

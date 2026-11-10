@@ -89,15 +89,20 @@ export function teamConfigError(teams: unknown): string | null {
 	return null;
 }
 
+/** True when a git origin URL matches one of these repo globs. Unparseable is not listed. The team server calls this with the remote it was given, so it does not shell out. */
+export function remoteListed(remote: string, repos: string[]): boolean {
+	const path = remotePath(remote);
+	if (!path) return false;
+	return repos.some(p => globMatch(normPattern(p), path, ""));
+}
+
 /** The team whose `repos` glob matches this repo's origin, or null (no origin, unparseable, or no match). */
 export function repoTeam(repoDir: string, cfg: Config, run: CommandRunner = defaultRunner): string | null {
 	const remote = run(["git", "-C", repoDir, "remote", "get-url", "origin"], {});
 	const url = remote.code === 0 ? remote.stdout.trim() : "";
 	if (!url) return null;
-	const path = remotePath(url);
-	if (!path) return null;
 	for (const team of cfg.teams) {
-		if (team.repos.some(p => globMatch(normPattern(p), path, ""))) return team.name;
+		if (remoteListed(url, team.repos)) return team.name;
 	}
 	return null;
 }
