@@ -2,8 +2,8 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, fstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileClaimStore } from "./claims.ts";
-import { nowSec } from "./clock.ts";
+import { claimStoreFor } from "./team-client.ts";
+
 import type { Config } from "./config.ts";
 import { mainId } from "./guards.ts";
 import { applyQueueEnv } from "./queue/env.ts";
@@ -321,7 +321,7 @@ export function queueClose(args: string[], cfg: Config): number {
 	}
 	// Multi-main P3: closing the plan frees this Main's claim; another Main's claim stays
 	// (release is keyed by the holder).
-	fileClaimStore(cfg.paths.queue_state, nowSec, cfg.queue.claim_ttl_min).release(file, mainId());
+	claimStoreFor(file, cfg).release(file, mainId());
 	console.log("queue-close: CLOSED");
 	return 0;
 }

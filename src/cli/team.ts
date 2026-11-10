@@ -1,21 +1,25 @@
-// `neurastream team share|unshare <plan>` (plan 20261027_1305 P1). share writes `Queue: team`
-// when the repo's origin matches a teams: glob; unshare removes that line and keeps the file.
-// The holder check goes through the claim store the same way claim.ts does (fileClaimStore +
-// holder). When team claims are remote, this must use claimStoreFor — a local-only read would
-// unshare a plan another member holds. The server upload/delete lands with the team server;
-// planShare is the gate that refuses to send a plan without the marker.
+// `neurastream team share|unshare <plan>` (plan 20261027_1305 P1) and `team sync` (P3). share
+// writes `Queue: team` when the repo's origin matches a teams: glob and pushes that one plan;
+// unshare removes that line, keeps the file and deletes the plan's sync-record entries. The
+// holder check goes through the chooser (claimStoreFor): a local-only read would unshare a plan
+// another member holds on the server. planShare is the gate that refuses to send a plan without
+// the marker; sync runs only when called — no hook and no heartbeat tick runs it.
 
 import { readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { fileClaimStore, type ClaimStore } from "../core/claims.ts";
-import { nowSec } from "../core/clock.ts";
+import { heldByOther, type ClaimStore } from "../core/claims.ts";
 import { ConfigError, loadConfig, type Config } from "../core/config.ts";
 import { mainId } from "../core/guards.ts";
 import { defaultRunner, type CommandRunner } from "../core/mr-sweep.ts";
 import { headerField, planRepo } from "../core/queue/lib.ts";
+import { deleteRecordEntries, claimStoreFor, pushTeamPlan, syncTeam, type TeamEntry } from "../core/team-client.ts";
 import { repoTeam } from "../core/team-labels.ts";
 
-const USAGE = ["usage: neurastream team share <plan>", "       neurastream team unshare <plan>"].join("\n");
+const USAGE = [
+	"usage: neurastream team share <plan>",
+	"       neurastream team unshare <plan>",
+	"       neurastream team sync [--team <name>]",
+].join("\n");
 
 /** Header text with `Queue:` set to team, or removed (absent means personal). The first `##` section is kept. */
 function withQueue(text: string, value: "team" | null): string {
@@ -31,6 +35,24 @@ function withQueue(text: string, value: "team" | null): string {
 
 export function runTeam(args: string[], opts: { cfg?: Config; run?: CommandRunner; store?: ClaimStore } = {}): number {
 	const sub = args[0];
+	if (sub === "sync") {
+		let cfg: Config;
+		try {
+			cfg = opts.cfg ?? loadConfig();
+		} catch (err) {
+			console.error(err instanceof ConfigError ? err.message : String(err));
+			return 1;
+		}
+		const run = opts.run ?? defaultRunner;
+		const name = args.includes("--team") ? args[args.indexOf("--team") + 1] : undefined;
+		const teams = name ? (cfg.teams ?? []).filter(t => t.name === name) : cfg.teams ?? [];
+		if (name && !teams.length) {
+			console.error(`team sync: no teams: entry named ${name}`);
+			return 1;
+		}
+		for (const team of teams) syncTeam(team, cfg, run);
+		return 0;
+	}
 	const planArg = args[1];
 	if ((sub !== "share" && sub !== "unshare") || !planArg || args.length !== 2) {
 		console.error(USAGE);
@@ -67,20 +89,30 @@ export function runTeam(args: string[], opts: { cfg?: Config; run?: CommandRunne
 		}
 		writeFileSync(file, withQueue(text, "team"));
 		console.log(`team share: ${file} marked Queue: team for ${team}`);
+		// P3: share uploads the plan — one plan's push, guarded like every push.
+		const entry = (cfg.teams ?? []).find(t => t.name === team) as TeamEntry | undefined;
+		if (entry) pushTeamPlan(entry, cfg, file, undefined, run);
 		return 0;
 	}
 	if (headerField(text, "Queue") !== "team") {
 		console.log(`team unshare: ${file} is already personal`);
 		return 0;
 	}
-	const store = opts.store ?? fileClaimStore(cfg.paths.queue_state, nowSec, cfg.queue.claim_ttl_min);
+	const store = opts.store ?? claimStoreFor(file, cfg);
 	const held = store.holder(file);
 	const me = mainId();
-	if (held && held.main !== me) {
+	if (held !== null && "unreachable" in held) {
+		console.error(`team unshare: team server ${held.unreachable} unreachable`);
+		return 1;
+	}
+	if (held && heldByOther(held, me)) {
 		console.error(`team unshare: ${file} is held by Main ${held.main}; unshare only while you hold the claim, or the plan is unclaimed`);
 		return 1;
 	}
 	writeFileSync(file, withQueue(text, null));
+	// The record entries go too: the chooser's record rule must not keep routing a plan whose
+	// header says personal (that rule would fail open the other way).
+	deleteRecordEntries(cfg, file, run);
 	console.log(`team unshare: ${file} is personal again (local copy kept)`);
 	return 0;
 }

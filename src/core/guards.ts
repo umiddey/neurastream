@@ -38,7 +38,8 @@ import { unlandedRows } from "./wip-check.ts";
 import * as q from "./queue/lib.ts";
 import type { Plan } from "./queue/lib.ts";
 
-import { fileClaimStore, type Claim, type ClaimStore } from "./claims.ts";
+import { heldByOther, type Claim, type ClaimStore, type Unreachable } from "./claims.ts";
+import { claimStoreFor, summaryHolder } from "./team-client.ts";
 import { nowSec, strftime } from "./clock.ts";
 import { outUntil, pinModel, providerOfModel, readOut } from "./provider-state.ts";
 import { lint } from "./brief-lint.ts";
@@ -1827,16 +1828,10 @@ export function planReadNote(tool: string, input: Record<string, unknown>, cwd: 
 	return `plan-guard: before you edit this plan, re-read: ${stale.join(", ")}`;
 }
 
-/**
- * P3 (plan 20261027_1300): the claim store behind the spawn and Main edit gates. Claims live under
- * `<queue_state>/claims/`; the free-after TTL is queue.claim_ttl_min (never the store's default).
- */
-function claims(cfg: Config): ClaimStore {
-	return fileClaimStore(cfg.paths.queue_state, nowSec, cfg.queue.claim_ttl_min);
-}
-
-/** The held refusal (plan 20261027_1300 P3): "plan X is held by Main B since HH:MM" (HH:MM local). */
-function heldProblem(file: string, held: Claim): string {
+/** The held refusal (plan 20261027_1300 P3, widened 20261027_1305 P3): a down team server, another member's row, or today's "plan X is held by Main B since HH:MM" (HH:MM local). */
+function heldProblem(file: string, held: Claim | Unreachable): string {
+	if ("unreachable" in held) return `team server ${held.unreachable} unreachable; plan ${file} is refused until it answers`;
+	if (held.mine === false) return `plan ${file} is held by another member's Main ${held.main} since ${strftime(held.since, "%H:%M")}`;
 	return `plan ${file} is held by Main ${held.main} since ${strftime(held.since, "%H:%M")}`;
 }
 
@@ -1846,19 +1841,37 @@ function heldProblem(file: string, held: Claim): string {
  * holds the claim. Returns the refusal, or null.
  */
 function claimGate(files: string[], cfg: Config): string | null {
-	const store = claims(cfg);
 	const mine = mainId();
-	const fresh: string[] = [];
+	// With the chooser each file has its own store; `fresh` carries the store beside each file,
+	// so a fresh claim is released through the store that took it (a team claim released through
+	// the file store would be a silent no-op that outlives the refusal until the TTL).
+	const fresh: { file: string; store: ClaimStore }[] = [];
+	// A refusal leaves the store as it found it: claims this call newly created are released
+	// again through the store that took each one; a claim this Main already held before the
+	// call stays.
+	const releaseFresh = (): void => {
+		for (const g of fresh) g.store.release(g.file, mine);
+	};
 	for (const f of files) {
-		const heldBefore = store.holder(f)?.main === mine;
+		const store = claimStoreFor(f, cfg);
+		const h = store.holder(f);
+		// Fail closed: an unreachable server refuses the spawn and leaves no claim this call took.
+		if (h !== null && "unreachable" in h) {
+			releaseFresh();
+			return heldProblem(f, h);
+		}
+		const heldBefore = h !== null && !heldByOther(h, mine);
 		const c = store.claim(f, mine);
+		if ("unreachable" in c) {
+			// The outage started between holder() and claim(): release what this call took.
+			releaseFresh();
+			return heldProblem(f, c);
+		}
 		if ("heldBy" in c) {
-			// A refusal leaves the store as it found it (P3 review finding 2): claims this call
-			// newly created are released again; a claim this Main already held before the call stays.
-			for (const g of fresh) store.release(g, mine);
+			releaseFresh();
 			return heldProblem(f, c.heldBy);
 		}
-		if (!heldBefore) fresh.push(f);
+		if (!heldBefore) fresh.push({ file: f, store });
 	}
 	return null;
 }
@@ -1964,7 +1977,7 @@ export function checkInject(e: InjectEvent, cfg: Config): Decision {
 	recordOwnerMessage(e.inject, cfg);
 	let summary: string;
 	try {
-		summary = q.queueSummary(undefined, cfg.review.agents, claims(cfg));
+		summary = q.queueSummary(undefined, cfg.review.agents, summaryHolder(cfg));
 	} catch (err) {
 		summary = `Queue unreadable (${q.INDEX}): ${err}`;
 	}
@@ -2145,9 +2158,19 @@ function checkMainPlan(e: PlanEditEvent, cfg: Config): PlanEditDecision {
 		};
 	}
 	// P3 (plan 20261027_1300): another Main's live claim on this plan refuses the edit, restored
-	// like any refused plan edit. No claim — or this Main's own — edits freely.
-	const holder = claims(cfg).holder(e.path);
-	if (holder && holder.main !== mainId()) {
+	// like any refused plan edit. No claim — or this Main's own — edits freely. The chooser gets
+	// `e.before` (the file on disk already holds the edit, so a team plan stays guarded while an
+	// edit removes its header; the record rule covers it too).
+	const holder = claimStoreFor(e.path, cfg, e.before).holder(e.path);
+	if (holder !== null && "unreachable" in holder) {
+		log(cfg.paths.plan_guard_log, `RESTORE ${e.path} (team server ${holder.unreachable} unreachable)`);
+		return {
+			allow: false,
+			reason: `plan-guard: ${heldProblem(e.path, holder)}; the file was restored.`,
+			restore: { path: e.path, text: e.before || null },
+		};
+	}
+	if (holder && heldByOther(holder, mainId())) {
 		log(cfg.paths.plan_guard_log, `RESTORE ${e.path} (held by Main ${holder.main})`);
 		return {
 			allow: false,

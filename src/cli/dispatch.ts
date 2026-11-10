@@ -139,6 +139,7 @@ export function helpText(): string {
 		"  neurastream team share <plan> add Queue: team when the repo's origin matches a teams: glob",
 		"  neurastream team unshare <plan>",
 		"                                remove Queue: team (only while you hold the claim, or it is free)",
+		"  neurastream team sync [--team <name>]        pull and push team plans (no hook and no heartbeat runs it)",
 		"  neurastream pages on|off|serve|publish|list  host static files over the tailnet",
 		"                                publish --plan <plan.md> adds the Approve bar that records the plan's approval",
 		"  neurastream notes check <page>               list the notes without an answer, exit 1 while any is open",

@@ -1,9 +1,8 @@
 import type { Config } from "./config.ts";
-import { fileClaimStore } from "./claims.ts";
-import { nowSec } from "./clock.ts";
 import { applyQueueEnv } from "./queue/env.ts";
 import { activePlans, allowedAgents, holdWarnings, queueProblems, queueSummary, reviewAgentsProblem } from "./queue/lib.ts";
 import { mrSweep } from "./mr-sweep.ts";
+import { summaryHolder } from "./team-client.ts";
 import { recheckHolds, staleHoldLines } from "./waiting-check.ts";
 
 // One index (20261024_1400_one_index): the main index lists plan files directly, so there are no
@@ -15,7 +14,7 @@ export function queueCheck(args: string[], cfg: Config): number {
 		for (const p of activePlans()) if (p.priorityId && !p.waiting && p.status === "open") console.log(p.priorityId);
 		return 0;
 	}
-	const claims = fileClaimStore(cfg.paths.queue_state, nowSec, cfg.queue.claim_ttl_min);
+	const claims = summaryHolder(cfg);
 	const plans = activePlans();
 	const holds = recheckHolds(cfg, plans);
 	console.log(queueSummary(undefined, cfg.review.agents, claims, Infinity));

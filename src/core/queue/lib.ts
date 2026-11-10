@@ -1227,17 +1227,17 @@ export function holdWarnings(plans: Plan[]): string[] {
 // and passes `cap = Infinity`.
 export const SUMMARY_CAP = 10;
 
-export function queueSummary(index = INDEX, reviewAgents: string[] = [], staleOrClaims: ReadonlySet<string> | ClaimStore | null = null, cap: number = SUMMARY_CAP): string {
+export function queueSummary(index = INDEX, reviewAgents: string[] = [], staleOrClaims: ReadonlySet<string> | Pick<ClaimStore, "holder"> | null = null, cap: number = SUMMARY_CAP): string {
 	// Index order IS priority (20261025_0215_index_priority): the list is flat and ranked,
 	// rank 1 = the index's top line; repos only surface through each plan's own path.
 	const plans = activePlans(index);
 	const rank = new Map(plans.map((p, i) => [p.file, i + 1] as const));
 	const repos = [...new Set(plans.map(p => p.repo))];
 	const lines = [`Queue (${index}): ${plans.length ? `${plans.length} plan(s) in ${repos.length} repo(s)` : "empty, no open work"}`];
-	let claimStore: ClaimStore | null = null;
+	let claimStore: Pick<ClaimStore, "holder"> | null = null;
 	let stale: ReadonlySet<string> = new Set<string>();
-	if (staleOrClaims != null && typeof (staleOrClaims as ClaimStore).holder === 'function') {
-		claimStore = staleOrClaims as ClaimStore;
+	if (staleOrClaims != null && typeof (staleOrClaims as Pick<ClaimStore, "holder">).holder === 'function') {
+		claimStore = staleOrClaims as Pick<ClaimStore, "holder">;
 	} else {
 		stale = staleOrClaims as ReadonlySet<string> ?? new Set<string>();
 	}
@@ -1257,7 +1257,13 @@ export function queueSummary(index = INDEX, reviewAgents: string[] = [], staleOr
 		// P4 multi-main (20261027_1300): with the claim store handed in (guards' inject and
 		// queue-check pass it), every plan shows `held by <id> since HH:MM` or `free`.
 		const holder = claimStore?.holder(p.file) ?? null;
-		const claimFlag = claimStore ? (holder ? `held by ${holder.main} since ${strftime(holder.since, "%H:%M")}` : "free") : "";
+		const claimFlag = claimStore
+			? (holder === null
+				? "free"
+				: "unreachable" in holder
+					? `team server ${holder.unreachable} unreachable`
+					: `held by ${holder.main} since ${strftime(holder.since, "%H:%M")}`)
+			: "";
 		const flags = [status, done, hold, ...waits, claimFlag, p.priorityId ?? ""].filter(Boolean).join(", ");
 		const goal = items(sections(p.text).get("goal") ?? "")[0]?.slice(0, 100) ?? "";
 		lines.push(`  ${i + 1}. ${p.file} [${flags}] ${goal}`);

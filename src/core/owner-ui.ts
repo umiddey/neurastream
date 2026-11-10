@@ -13,7 +13,7 @@ import os from "node:os";
 import { basename, resolve } from "node:path";
 import type { RunSource } from "./adapter.ts";
 import { chatTier, currentTier, type Tier } from "./autonomy.ts";
-import { fileClaimStore } from "./claims.ts";
+import { summaryHolder } from "./team-client.ts";
 import type { Config } from "./config.ts";
 import { nowSec, strftime } from "./clock.ts";
 import { cpuCount } from "./host.ts";
@@ -260,9 +260,9 @@ function queueState(p: Plan, plans: Plan[]): string {
 
 export function queueRows(cfg: Config): QueueRow[] {
 	const plans = activePlans(cfg.paths.queue_index).filter(p => p.status === "open");
-	const claims = fileClaimStore(cfg.paths.queue_state, nowSec, cfg.queue.claim_ttl_min);
+	const claims = summaryHolder(cfg);
 	return plans.map(p => {
-		const holder = claims.holder(p.file)?.main ?? null;
+		const holder = claims.holder(p.file);
 		return {
 			repo: basename(p.repo),
 			file: p.file,
@@ -271,7 +271,7 @@ export function queueRows(cfg: Config): QueueRow[] {
 			waiting: p.waiting,
 			summary: p.summary ?? (goalSummary(p.goal[0] ?? "") || null),
 			state: queueState(p, plans),
-			holder,
+			holder: holder === null ? null : "unreachable" in holder ? "team server unreachable" : holder.main,
 		};
 	});
 }
@@ -586,7 +586,7 @@ function queueHtml(rows: QueueRow[], tab: string): string {
 <span class="qhandle" title="Drag to reorder" aria-label="Drag ${esc(r.title)}">≡</span>
 <span class="qrank">${i + 1}</span>
 <span class="qtitle">${esc(r.title)}${r.summary ? `<span class="qsum">${esc(r.summary)}</span>` : ""}</span>
-${r.holder ? `<span class="chip c-held">Main ${esc(r.holder)}</span>` : ""}<span class="chip ${r.state.startsWith("waits") ? "c-wait" : "c-ready"}">${esc(r.state)}</span>
+${r.holder ? `<span class="chip c-held">${r.holder === "team server unreachable" ? esc(r.holder) : `Main ${esc(r.holder)}`}</span>` : ""}<span class="chip ${r.state.startsWith("waits") ? "c-wait" : "c-ready"}">${esc(r.state)}</span>
 <span class="qbtns"><button type="button" class="qmove" data-move="top">↑ top</button><button type="button" class="qmove" data-move="up">↑</button><button type="button" class="qmove" data-move="down">↓</button></span>
 </li>`,
 		)
