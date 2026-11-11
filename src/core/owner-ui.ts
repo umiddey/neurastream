@@ -28,7 +28,7 @@ import { featuresReport, gatherTags, loadPlans, releasesReport, type FeaturesRep
 import type { Tailscale } from "./tailscale.ts";
 import { recheckHolds, staleFiles, type HoldRunner } from "./waiting-check.ts";
 
-const ANSWER_MAX = 2000;
+export const ANSWER_MAX = 2000;
 const MESSAGE_MAX = 4000;
 const MESSAGE_IMAGES_MAX = 4;
 const MESSAGE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;

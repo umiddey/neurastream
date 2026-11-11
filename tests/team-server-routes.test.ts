@@ -4,7 +4,8 @@
 
 import { afterAll, afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -129,9 +130,10 @@ function planId(rel = REL): string {
 	return id;
 }
 
-async function seedPlan(port: number, rel = REL, peer = A_PEER): Promise<void> {
+async function seedPlan(port: number, rel = REL, peer = A_PEER): Promise<string> {
 	const res = await call(port, "PUT", `/plans/${planId(rel)}`, peer, { remote: REMOTE, rel_path: rel, text: TEAM_TEXT, base_sha: null });
 	expect(res.status).toBe(200);
+	return res.body.sha as string;
 }
 
 function claimBody(main: string) {
@@ -439,3 +441,147 @@ test("the host exports change membership on a running server's database", async 
 	expect(removeTeamMember(dbPath, CFG, "nobody")).toEqual({ ok: false, error: "no such member" });
 	expect(auditRows(dbPath).map(r => r.route)).toEqual([`POST /members/${D}`, `DELETE /members/${D}`]);
 });
+
+// --- P4a: GET /view and POST /answer/:id ---
+
+test("a stranger gets 403 on /view and /answer/<id>, and nothing is audited", async () => {
+	const { svc, dbPath } = start();
+	const replies = await Promise.all([
+		call(svc.port, "GET", "/view", S_PEER),
+		call(svc.port, "POST", `/answer/${planId()}`, S_PEER, { answer: "yes" }),
+	]);
+	expect(replies.map(r => r.status)).toEqual([403, 403]);
+	expect(auditRows(dbPath)).toEqual([]);
+});
+
+test("GET /view returns the plans with text, the team's claims and P2c's four tables in one answer", async () => {
+	const { svc, dbPath } = start();
+	const port = svc.port;
+	const putSha = await seedPlan(port);
+	const id = planId();
+	expect((await call(port, "POST", `/claims/${id}`, B_PEER, claimBody("m-b"))).status).toBe(200);
+	expect((await call(port, "POST", `/approve/${id}`, B_PEER, {})).status).toBe(200);
+	expect((await call(port, "POST", "/order", A_PEER, { plan_ids: [id] })).status).toBe(200);
+	expect((await call(port, "POST", "/pause", C_PEER, {})).status).toBe(200);
+	expect((await call(port, "POST", `/answer/${id}`, A_PEER, { answer: "yes" })).status).toBe(200);
+	const claims = (await call(port, "GET", "/claims", C_PEER)).body.claims as unknown[];
+	expect(claims).toEqual([{ plan: id, main: "m-b", host: "laptop", pid: 4242, since: T0, beat: T0, login: B, mine: false }]);
+	expect(await call(port, "GET", "/view", C_PEER)).toEqual({
+		status: 200,
+		body: {
+			plans: [{ id, remote: "gitlab.com/acme/pm", rel_path: REL, sha: putSha, text: TEAM_TEXT, updated_by: A, updated_at: T0 }],
+			claims,
+			approvals: [{ plan: id, login: B, time: T0 }],
+			votes: [{ login: A, plan_ids: [id], time: T0 }],
+			override: null,
+			paused: [{ login: C, time: T0 }],
+			answers: [{ id: 1, plan: id, login: A, time: T0, sha: putSha, answer: "yes" }],
+		},
+	});
+	expect((await call(port, "POST", "/order/override", B_PEER, { plan_ids: [id] })).status).toBe(200);
+	const after = await call(port, "GET", "/view", C_PEER);
+	expect(after.body.override).toEqual({ plan_ids: [id], login: B, time: T0 });
+	expect(auditRows(dbPath).map(r => r.route)).not.toContain("GET /view");
+});
+
+test("POST /answer stores the whois login, the trimmed answer and the plan's sha; bad answers leave no row and no audit", async () => {
+	const { svc, dbPath } = start();
+	const port = svc.port;
+	const putSha = await seedPlan(port);
+	const id = planId();
+	expect(await call(port, "POST", `/answer/${id}`, B_PEER, { answer: " yes ", login: C })).toEqual({
+		status: 200,
+		body: { answer: { id: 1, plan: id, login: B, time: T0, sha: putSha, answer: "yes" } },
+	});
+	expect(readRows(dbPath, "SELECT plan_id, login, time, sha, answer FROM answers")).toEqual([
+		{ plan_id: id, login: B, time: T0, sha: putSha, answer: "yes" },
+	]);
+	expect(auditRows(dbPath).filter(r => r.route === `POST /answer/${id}`)).toEqual([{ login: B, route: `POST /answer/${id}`, plan_id: id }]);
+	// Without the cap on the server, tooLong would be stored: this 400 is the only thing that stops it.
+	const bad = [{ answer: "a".repeat(2001) }, { answer: "   " }, { answer: "" }, { answer: 5 }, {}];
+	const refused = await Promise.all(bad.map(body => call(port, "POST", `/answer/${id}`, A_PEER, body)));
+	expect(refused).toEqual(bad.map(() => ({ status: 400, body: { error: "answer must be 1 to 2000 characters" } })));
+	expect(await call(port, "POST", `/answer/${id}`, A_PEER, "not json")).toEqual({ status: 400, body: { error: "body must be a JSON object" } });
+	expect(await call(port, "POST", "/answer/nosuch", A_PEER, { answer: "yes" })).toEqual({ status: 404, body: { error: "no such plan" } });
+	expect(await call(port, "POST", "/answer/%E0%A4%A", A_PEER, { answer: "yes" })).toEqual({ status: 400, body: { error: "bad plan id" } });
+	expect(readRows(dbPath, "SELECT id FROM answers")).toEqual([{ id: 1 }]);
+	expect(auditRows(dbPath).map(r => r.route)).toEqual([`PUT /plans/${id}`, `POST /answer/${id}`]);
+});
+
+test("answers are capped at 60 a minute per login: the 61st is 429 with no answer row and no audit row", async () => {
+	const { svc, dbPath } = start();
+	const port = svc.port;
+	await seedPlan(port, REL, C_PEER); // C's write slot, so A's window is untouched
+	const id = planId();
+	const replies = await Array.from({ length: 61 }, (_, i) => i).reduce<Promise<Reply[]>>(async (acc, i) => {
+		const out = await acc;
+		out.push(await call(port, "POST", `/answer/${id}`, A_PEER, { answer: `a${i}` }));
+		return out;
+	}, Promise.resolve([]));
+	expect(replies.slice(0, 60).map(r => r.status)).toEqual(Array.from({ length: 60 }, () => 200));
+	expect(replies[60]).toEqual({ status: 429, body: { error: "too many writes" } });
+	expect(readRows(dbPath, "SELECT id FROM answers")).toHaveLength(60);
+	expect(auditRows(dbPath).filter(r => r.route === `POST /answer/${id}`)).toHaveLength(60);
+});
+
+test("a GET /view over the client's 8 MB defaultSend cap is sent whole and the client fails closed on it", async () => {
+	const childServer = join(dir, "cap-server.ts");
+	writeFileSync(
+		childServer,
+		`import { startTeamServer } from ${JSON.stringify(join(import.meta.dir, "..", "src", "core", "team-server.ts"))};
+const whois = ${JSON.stringify(Object.fromEntries(LOGINS))};
+const svc = startTeamServer({
+	tailscale: {
+		ip4: () => ${JSON.stringify(OWN_IP)},
+		dnsName: () => ${JSON.stringify(DNS_NAME)},
+		whois: (peer: string) => whois[peer] ?? null,
+		logins: () => ${JSON.stringify([...LOGINS.values()])},
+		state: () => "running",
+	},
+	config: ${JSON.stringify(CFG)},
+	dbPath: process.argv[2]!,
+	port: 0,
+	hostname: ${JSON.stringify(LOOPBACK)},
+	peerOf: (req: Request) => req.headers.get("x-test-peer") ?? "",
+	clock: () => ${T0},
+	claimTtlMin: ${TTL_MIN},
+});
+console.log(svc.port);
+`,
+	);
+	const dbPath = join(dir, `${++n}.sqlite`);
+	// A child server: the test must block in spawnSync to observe the transport's cap.
+	const child = Bun.spawn([process.execPath, childServer, dbPath], { stdout: "pipe", stderr: "pipe" });
+	try {
+		const reader = child.stdout!.getReader();
+		const first = await reader.read();
+		await reader.cancel();
+		const port = Number(new TextDecoder().decode(first.value ?? new Uint8Array()).trim());
+		expect(port).toBeGreaterThan(0);
+		const text = `Queue: team\n${"x".repeat(256 * 1024 - 12)}`; // the server's 256 KiB plan cap
+		const seeded = await Promise.all(
+			Array.from({ length: 33 }, (_, i) => {
+				const rel = `docs/plans/big-${i}.md`;
+				return call(port, "PUT", `/plans/${planId(rel)}`, A_PEER, { remote: REMOTE, rel_path: rel, text, base_sha: null });
+			}),
+		);
+		expect(seeded.map(r => r.status)).toEqual(Array.from({ length: 33 }, () => 200));
+		const view = await call(port, "GET", "/view", C_PEER);
+		expect(view.status).toBe(200);
+		const texts = (view.body.plans as { text: string }[]).map(plan => plan.text);
+		expect(texts).toHaveLength(33);
+		expect(texts.reduce((sum, t) => sum + t.length, 0)).toBeGreaterThan(8 * 1024 * 1024);
+		// The client's transport (team-client.ts defaultSend: one child, maxBuffer 8 MB) cannot read that answer: the child hits ENOBUFS, which askRaw treats as an error, so the team reads as unreachable (fail closed) — never a truncated view.
+		const wired = { url: `http://${LOOPBACK}:${port}/view`, method: "GET", headers: { host: `${OWN_IP}:${port}`, "x-test-peer": C_PEER } };
+		const sent = spawnSync(process.execPath, [join(import.meta.dir, "..", "src", "core", "team-client.ts")], {
+			input: JSON.stringify(wired),
+			timeout: 5_000,
+			encoding: "utf8",
+			maxBuffer: 8 * 1024 * 1024,
+		});
+		expect(String(sent.error)).toContain("ENOBUFS");
+	} finally {
+		child.kill();
+		await child.exited;
+	}
+}, 30_000);

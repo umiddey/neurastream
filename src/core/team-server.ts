@@ -9,7 +9,7 @@ import { dirname } from "node:path";
 import { claimExpired } from "./claims.ts";
 import { nowSec } from "./clock.ts";
 import { MAIN_ID_RE } from "./guards.ts";
-import { hostAllowlist, isLoopback, isTailnet, originIsHost, type UiHttpServer } from "./owner-ui.ts";
+import { ANSWER_MAX, hostAllowlist, isLoopback, isTailnet, originIsHost, type UiHttpServer } from "./owner-ui.ts";
 import { headerField, sha } from "./queue/lib.ts";
 import { remotePath } from "./mr-sweep.ts";
 import type { Tailscale } from "./tailscale.ts";
@@ -139,8 +139,19 @@ function isOwn(row: ClaimRow, login: string, main: string): boolean {
 	return row.login === login && row.main === main;
 }
 
-/** The claim as the wire shows it. `mine` is true when the caller's login holds it. */
-function wireClaim(row: ClaimRow, login: string) {
+/** A claim as the wire shows it. `mine` is true when the caller's login holds it. */
+export interface ClaimView {
+	plan: string;
+	main: string;
+	host: string;
+	pid: number;
+	since: number;
+	beat: number;
+	login: string;
+	mine: boolean;
+}
+
+function wireClaim(row: ClaimRow, login: string): ClaimView {
 	return {
 		plan: row.id,
 		main: row.main,
@@ -275,8 +286,80 @@ export function openTeamDb(dbPath: string): Database {
 			login TEXT PRIMARY KEY,
 			time INTEGER NOT NULL
 		);
+		CREATE TABLE IF NOT EXISTS answers (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			plan_id TEXT NOT NULL,
+			login TEXT NOT NULL,
+			time INTEGER NOT NULL,
+			sha TEXT NOT NULL,
+			answer TEXT NOT NULL
+		);
 	`);
 	return db;
+}
+
+interface AnswerRow {
+	id: number;
+	plan: string;
+	login: string;
+	time: number;
+	sha: string;
+	answer: string;
+}
+
+interface PausedRow {
+	login: string;
+	time: number;
+}
+
+interface VoteRow {
+	login: string;
+	plan_ids: string[];
+	time: number;
+}
+
+interface OverrideRow {
+	plan_ids: string[];
+	login: string;
+	time: number;
+}
+
+/** The one read the team page and P4's client render: every plan with its text, the team's claims and P2c's four tables. */
+export interface TeamView {
+	plans: ({ id: string } & PlanRow)[];
+	claims: ClaimView[];
+	approvals: ApprovalRow[];
+	votes: VoteRow[];
+	override: OverrideRow | null;
+	paused: PausedRow[];
+	answers: AnswerRow[];
+}
+
+/** Reads a team view in one deferred transaction: one snapshot, nothing written. P5's page calls this in process. */
+export function readTeamView(db: Database, team: string, login: string): TeamView {
+	return db.transaction((): TeamView => {
+		const plans = db
+			.query<{ id: string } & PlanRow, [string]>("SELECT id, remote, rel_path, sha, text, updated_by, updated_at FROM plans WHERE team = ? ORDER BY rel_path, id")
+			.all(team);
+		const claims = db
+			.query<ClaimRow, [string]>("SELECT id, team, main, host, pid, since, beat, login FROM claims WHERE team = ? ORDER BY id")
+			.all(team)
+			.map(row => wireClaim(row, login));
+		const approvals = db.query<ApprovalRow, []>("SELECT plan_id AS plan, login, time FROM approvals ORDER BY plan_id, time").all();
+		const votes = db.query<{ login: string; plan_ids: string; time: number }, []>("SELECT login, plan_ids, time FROM votes ORDER BY login").all();
+		const override = db.query<{ value: string }, []>("SELECT value FROM meta WHERE key = 'order_override'").get();
+		const paused = db.query<PausedRow, []>("SELECT login, time FROM paused ORDER BY login").all();
+		const answers = db.query<AnswerRow, []>("SELECT id, plan_id AS plan, login, time, sha, answer FROM answers ORDER BY id DESC LIMIT 500").all();
+		return {
+			plans,
+			claims,
+			approvals,
+			votes: votes.map(row => ({ login: row.login, plan_ids: JSON.parse(row.plan_ids) as string[], time: row.time })),
+			override: override ? (JSON.parse(override.value) as OverrideRow) : null,
+			paused,
+			answers,
+		};
+	})();
 }
 
 /** Starts the queue server. Refuses to start with no tailnet address, and never binds every interface. */
@@ -409,6 +492,15 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 		else deletePause.run(login);
 		insertAudit.run(login, now, paused ? "POST /pause" : "POST /resume", null);
 	});
+	const insertAnswer = db.prepare("INSERT INTO answers (plan_id, login, time, sha, answer) VALUES (?, ?, ?, ?, ?)");
+	// The answer keeps the plan's sha when it landed, so a reader can tell an answer to an older version. A `login` in the body is ignored: the whois login is stored, as approve does.
+	const answerOf = db.transaction((id: string, login: string, now: number, answer: string) => {
+		const plan = selectPlan.get(id, config.team);
+		if (!plan) return null;
+		const { lastInsertRowid } = insertAnswer.run(id, login, now, plan.sha, answer);
+		insertAudit.run(login, now, `POST /answer/${id}`, id);
+		return { id: Number(lastInsertRowid), plan: id, login, time: now, sha: plan.sha, answer };
+	});
 
 	/** plan_ids as a checked list: 1 to 500 distinct ids, each a stored plan of this team. The first bad entry is named. */
 	function planIdList(raw: unknown): { ids: string[] } | { error: string } {
@@ -473,6 +565,20 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 			const approval = approveOf.immediate(id, login, gate.now);
 			if (!approval) return json({ error: "no such plan" }, 404);
 			return json({ approval }, 200);
+		}
+		const answerPath = /^\/answer\/([^/]+)$/.exec(path);
+		if (req.method === "POST" && answerPath?.[1]) {
+			const id = decodeSegment(answerPath[1]);
+			if (id === null) return json({ error: "bad plan id" }, 400);
+			const gate = await writeGate(req, login, "member", `POST /answer/${id}`);
+			if ("res" in gate) return gate.res;
+			const fields = jsonObject(gate.body);
+			if (!fields) return json({ error: "body must be a JSON object" }, 400);
+			const text = typeof fields.answer === "string" ? fields.answer.trim() : "";
+			if (text.length < 1 || text.length > ANSWER_MAX) return json({ error: `answer must be 1 to ${ANSWER_MAX} characters` }, 400);
+			const answer = answerOf.immediate(id, login, gate.now, text);
+			if (!answer) return json({ error: "no such plan" }, 404);
+			return json({ answer }, 200);
 		}
 		if (req.method === "POST" && (path === "/order" || path === "/order/override")) {
 			const override = path === "/order/override";
@@ -575,6 +681,8 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 					if (req.method === "GET" && url.pathname === "/claims") {
 						return json({ claims: listClaims.all(config.team).map(row => wireClaim(row, login)) }, 200);
 					}
+					// One read for P4/P5: plan text, claims and P2c's tables together. Auth chain only, no write slot, not audited.
+					if (req.method === "GET" && url.pathname === "/view") return json(readTeamView(db, config.team, login), 200);
 					const claimMatch = /^\/claims\/([^/]+)(\/beat)?$/.exec(url.pathname);
 					if (claimMatch?.[1]) {
 						const claimId = decodeSegment(claimMatch[1]);
