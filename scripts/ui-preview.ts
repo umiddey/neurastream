@@ -236,6 +236,7 @@ export function fixtureData(): PageData {
 		},
 		machine: { freeGb: 6.2, diskMin: 20, load: 1.84, loadMax: 16, cores: 16 },
 		stats,
+		teams: [],
 		knowledge: [
 			{ repo: "neurastream", topic: "architecture", title: "How the pieces fit", updated: new Date((ts - 86_400) * 1000).toISOString() },
 		],

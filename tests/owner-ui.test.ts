@@ -21,7 +21,8 @@ import { createOmpAdapter, reset as resetAdapter, ownerInboxCursorPath, ownerInb
 import { fileClaimStore } from "../src/core/claims.ts";
 import { tryLock } from "../src/core/file-lock.ts";
 import { recordPublish } from "../src/core/pages-expiry.ts";
-import { inboxPath, agentRows, buildPageData, ciRows, dropSlot, edgeScrollStep, incidentRows, machineRow, nowStats, questionRows, queueRows, renderPage, resultsCachePath, scoresData, startOwnerUi, type OwnerUiOptions, type OwnerUiServer, type PageData, type ResultsData } from "../src/core/owner-ui.ts";
+import { inboxPath, agentRows, buildPageData, ciRows, dropSlot, edgeScrollStep, incidentRows, machineRow, nowStats, questionRows, queueRows, renderPage, resultsCachePath, scoresData, startOwnerUi, teamSections, type OwnerUiOptions, type OwnerUiServer, type PageData, type QueueRow, type ResultsData } from "../src/core/owner-ui.ts";
+import type { TeamView } from "../src/core/team-client.ts";
 import type { ChainRow, FeaturesReport, ReleaseRow, ReleaseSideStats } from "../src/core/results.ts";
 import { runWorkspace } from "../src/cli/workspace.ts";
 import { parsePlan, stateDirPath, unlockPath } from "../src/core/queue/lib.ts";
@@ -2041,11 +2042,116 @@ const EMPTY_DATA: PageData = {
 	scores: { header: [], rows: [], text: [] },
 	machine: null,
 	stats: null,
+	teams: null,
 	knowledge: null,
 	pages: null,
 	messages: [],
 	lockMinutesLeft: null,
 };
+
+/** A team plan's text as the server sends it: a header, a goal and an open WAITING line. */
+const TEAM_TEXT = (title: string, waiting: string): string => `# ${title}
+Summary: ${title} summary
+
+## Goal
+- ${title} goal
+
+## Forbidden
+- Never push.
+
+## Phases
+- [ ] P1 do it — verify: \`true\`
+
+## Done check
+\`true\`
+
+## Progress
+Status: open
+
+WAITING on owner: ${waiting}
+`;
+
+/** One team view plan row, as the server sends it. */
+const teamPlanRow = (rel: string, title: string, waiting: string): TeamView["plans"][number] => ({
+	id: `id-${rel}`,
+	remote: "https://gitlab.com/acme/pm.git",
+	rel_path: rel,
+	sha: `sha-${rel}`,
+	text: TEAM_TEXT(title, waiting),
+	updated_by: OWNER,
+	updated_at: nowSec(),
+});
+
+/** One already-read team view (P4): two plans, the first held by another member on the server. */
+const teamViewFixture = (): TeamView => ({
+	plans: [teamPlanRow("docs/plans/a.md", "Team plan one", "approve the migration?"), teamPlanRow("docs/plans/b.md", "Team plan two", "pick a window")],
+	claims: [{ plan: "id-docs/plans/a.md", main: "main", host: "laptop", pid: 4242, since: nowSec(), beat: nowSec(), login: "teammate@example.com", mine: false }],
+	approvals: [],
+	votes: [],
+	override: null,
+	paused: [],
+	answers: [],
+});
+
+/** The loopback URL a test team points at (a port nothing listens on unless a recorder answers). */
+const teamUrl = (port: number): string => `http://${[127, 0, 0, 1].join(".")}:${port}`;
+
+test("the queue tab puts each team's plans under its own card, with no claim handle and no reorder form", () => {
+	const cfgTeam: Config = { ...CFG, teams: [{ name: "acme", server: teamUrl(9), repos: ["gitlab.com/acme/*"] }] };
+	const sections = teamSections(cfgTeam, new Map([["acme", teamViewFixture()]]));
+	const queues: QueueRow[] = [{ repo: "toy", file: PLAN_W, title: "Personal plan", status: "open", waiting: false, summary: "mine", state: "no open phases", holder: null }];
+	const html = renderPage(cfgTeam, { ...EMPTY_DATA, queue: queues, teams: sections }, new URLSearchParams("tab=queue"), "n");
+	expect(html).toContain("Personal plan");
+	expect(html).toContain('class="qhandle"');
+	expect(html).toContain('action="/reorder"');
+	expect(html).toContain("<h2>Team acme</h2>");
+	const card = html.slice(html.indexOf("<h2>Team acme</h2>"), html.indexOf("<script"));
+	expect(card).toContain("docs/plans/a.md");
+	expect(card).toContain("docs/plans/b.md");
+	// The view's claim reaches the team row, so a render never asks the server for it again.
+	expect(card).toContain("main (teammate@example.com)");
+	// The server owns these plans: no drag handle, no move buttons, no reorder form.
+	expect(card).not.toContain('class="qhandle"');
+	expect(card).not.toContain('class="qmove"');
+	expect(card).not.toContain('action="/reorder"');
+	// The open WAITING line is a question card whose form carries the team, so the answer routes.
+	expect(card).toContain("approve the migration?");
+	expect(card).toContain('name="team" value="acme"');
+});
+
+test("one page build sends one GET /view per team and no GET /claims", async () => {
+	// buildPageData has no send seam, so the count is read where the requests land: a recorder
+	// in another process logs every path and answers the view (the client sends in a child).
+	const log = join(TMP, "page-view.log");
+	const child = join(TMP, "page-view-recorder.ts");
+	writeFileSync(
+		child,
+		`import { appendFileSync } from "node:fs";
+const [logFile, viewJson] = process.argv.slice(2);
+const view = JSON.parse(viewJson!);
+const svc = Bun.serve({
+	hostname: ${JSON.stringify([127, 0, 0, 1].join("."))},
+	port: 0,
+	fetch: (req) => {
+		appendFileSync(logFile!, req.method + " " + new URL(req.url).pathname + "\\n");
+		return Response.json(view);
+	},
+});
+console.log(svc.port);
+`,
+	);
+	const proc = Bun.spawn([process.execPath, child, log, JSON.stringify(teamViewFixture())], { stdout: "pipe", stderr: "pipe" });
+	const reader = proc.stdout.getReader();
+	const first = await reader.read();
+	await reader.cancel();
+	const recCfg: Config = { ...CFG, teams: [{ name: "acme", server: teamUrl(Number(new TextDecoder().decode(first.value).trim())), repos: ["gitlab.com/acme/*"] }] };
+	applyQueueEnv(recCfg);
+	const data = buildPageData(recCfg, RUNS, "queue");
+	expect(data.teams?.[0]?.rows.map((r) => r.repo)).toEqual(["docs/plans/a.md", "docs/plans/b.md"]);
+	expect(data.teams?.[0]?.rows[0]?.holder).toBe("main (teammate@example.com)");
+	expect(readFileSync(log, "utf8").trim().split("\n")).toEqual(["GET /view"]);
+	proc.kill();
+});
 
 function resultsPage(params: string, results: ResultsData | null = RESULTS): string {
 	return renderPage(CFG, { ...EMPTY_DATA, results: results && { data: results, at: nowSec(), building: false } }, new URLSearchParams(params), "results-nonce");

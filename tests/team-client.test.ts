@@ -15,19 +15,19 @@ import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createOmpAdapter } from "../src/adapters/omp/index.ts";
-import type { SpawnEvent } from "../src/core/adapter.ts";
+import type { RunSource, SpawnEvent } from "../src/core/adapter.ts";
 import { fileClaimStore, heldByOther, type Unreachable } from "../src/core/claims.ts";
 import { nowSec, strftime } from "../src/core/clock.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
-import { checkPlanEdit, checkSpawn } from "../src/core/guards.ts";
+import { checkInject, checkPlanEdit, checkSpawn } from "../src/core/guards.ts";
 import { defaultRunner, type CommandRunner } from "../src/core/mr-sweep.ts";
-import { isLoopback } from "../src/core/owner-ui.ts";
+import { isLoopback, startOwnerUi, type OwnerUiServer } from "../src/core/owner-ui.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
-import { queueSummary, refreshQueuePaths, sha } from "../src/core/queue/lib.ts";
+import { parsePlan, queueSummary, refreshQueuePaths, sha } from "../src/core/queue/lib.ts";
 import { startTeamServer, teamPlanId, type TeamServer } from "../src/core/team-server.ts";
 import type { Tailscale } from "../src/core/tailscale.ts";
-import type { TeamEntry, WireRequest, WireResponse } from "../src/core/team-client.ts";
-import { claimStoreFor, pushTeamPlan, remoteClaimStore, remoteStoreFor, resetTeamStores, summaryHolder, syncTeam } from "../src/core/team-client.ts";
+import type { TeamEntry, TeamView, WireRequest, WireResponse } from "../src/core/team-client.ts";
+import { claimStoreFor, postTeamAnswer, pushTeamPlan, remoteClaimStore, remoteStoreFor, resetTeamStores, summaryHolder, syncTeam, teamPlans, teamSummaryLines, teamViews } from "../src/core/team-client.ts";
 import { claimCli } from "../src/cli/claim.ts";
 import { runTeam } from "../src/cli/team.ts";
 
@@ -915,4 +915,219 @@ test("with the team server down the tick still beats the personal claim", async 
 	beat!.cb();
 	expect(claims().list().find((c) => c.plan === PERS)?.beat).toBe(NOW + 60);
 	claims().release(PERS, "main");
+});
+
+// --- the queue view (P4): the server text is every team section's only source ---
+
+const VIEW_REL = "docs/plans/20261020_0104_teamh.md";
+
+/**
+ * Team text as it leaves the server, naming paths that exist nowhere here: an absolute blocker
+ * the guard could execute elsewhere, and a reuse citation below its own directory.
+ */
+const VIEW_TEXT = `# Team plan from the server
+Summary: server summary
+
+## Goal
+- Team goal from the server.
+
+## Forbidden
+- Never push.
+
+## Blockers
+- \`/nonexistent-team-queue/blocker.sh\`
+
+## Reuse
+- new: thing — checked: \`../missing-team-queue.ts:1\` — reuse: nothing
+
+## Phases
+- [ ] P1 do it — verify: \`true\`
+
+## Done check
+\`true\`
+
+## Progress
+Status: open
+
+WAITING on owner: approve the team plan
+`;
+
+/** One `GET /view` body: the plan text plus the P2c rows the view carries for it. */
+function viewBody(text: string, o: { claim?: string; approvals?: string[]; answers?: { login: string; answer: string }[] } = {}): Record<string, unknown> {
+	const id = teamPlanId(ORIGIN, VIEW_REL)!;
+	return {
+		plans: [{ id, remote: ORIGIN, rel_path: VIEW_REL, sha: sha(text), text, updated_by: B, updated_at: NOW }],
+		claims: o.claim ? [{ plan: id, main: "main", host: "laptop", pid: 4242, since: NOW, beat: NOW, login: o.claim, mine: false }] : [],
+		approvals: (o.approvals ?? []).map((login) => ({ plan: id, login, time: NOW })),
+		votes: [],
+		override: null,
+		paused: [],
+		answers: (o.answers ?? []).map((a, i) => ({ id: i + 1, plan: id, login: a.login, time: NOW, sha: sha(text), answer: a.answer })),
+	};
+}
+
+test("team rows come from the view text: the blocker path and the ../ reuse citation are never stat'ed", () => {
+	const body = viewBody(VIEW_TEXT, { claim: B, approvals: [A, B], answers: [{ login: B, answer: "yes" }] });
+	const [row] = teamPlans(cfg, cfg.teams[0]!, body as unknown as TeamView);
+	expect(row!.relPath).toBe(VIEW_REL);
+	expect(row!.file).toBe(join(STATE, "team/acme/plans", `${row!.id}.md`));
+	expect(existsSync(row!.file)).toBe(false);
+	expect(row!.plan.title).toBe("Team plan from the server");
+	expect(row!.plan.summary).toBe("server summary");
+	expect(row!.plan.waitingLine).toBe("approve the team plan");
+	expect(row!.plan.blockers).toEqual([]);
+	expect(row!.plan.errors.join("\n")).not.toContain("nonexistent-team-queue");
+	// A team-chosen worktree and appliesTo never reach code that stats or runs git.
+	expect(row!.plan.worktree).toBeNull();
+	expect(row!.plan.appliesTo).toEqual([]);
+	expect(row!.holder).toMatchObject({ main: "main", login: B });
+	expect(row!.approvals).toEqual([A, B]);
+	expect(row!.answers.map((a) => a.answer)).toEqual(["yes"]);
+	// The sixth argument itself, with a reviewer list so the reuse gate would run: false means
+	// neither path is touched; today's five arguments report both.
+	const dir = join(STATE, "team/acme/plans");
+	const gated = parsePlan(dir, join(dir, "x.md"), VIEW_TEXT, undefined, ["reviewer"], false);
+	expect(gated.blockers).toEqual([]);
+	expect(gated.errors.join("\n")).not.toContain("nonexistent-team-queue");
+	expect(gated.errors.join("\n")).not.toContain("missing-team-queue");
+	const local = parsePlan(dir, join(dir, "x.md"), VIEW_TEXT, undefined, ["reviewer"]);
+	expect(local.blockers.length).toBe(1);
+	expect(local.errors.join("\n")).toContain("nonexistent-team-queue/blocker.sh");
+	expect(local.errors.join("\n")).toContain("missing-team-queue.ts");
+});
+
+test("the team summary lists a view plan by rel_path with its holder and approvals, and a down team prints one line", () => {
+	const body = viewBody(VIEW_TEXT, { claim: B, approvals: [A, B] });
+	const views = teamViews(cfg, { send: () => ({ status: 200, body }) });
+	expect(views.get("acme")).not.toHaveProperty("unreachable");
+	const lines = teamSummaryLines(cfg, views);
+	expect(lines[0]).toBe("Team acme: 1 plan(s)");
+	expect(lines[1]).toContain(`T1. ${VIEW_REL} [held by main (${B}) since ${SINCE}, WAITING on owner: approve the team plan, approved by ${A}, ${B}]`);
+	expect(lines[1]).toContain("Team goal from the server.");
+	// A 200 whose body is not the view is Unreachable, as list() answers its own read.
+	expect(teamViews(cfg, { send: () => ({ status: 200, body: { plans: [] } }) }).get("acme")).toEqual({ unreachable: SERVER_URL });
+	// One line for the team that did not answer, no plans, and nothing added to the personal summary.
+	const cfgDown = cfgWith([cfg.teams[0]!, DOWN_TEAM]);
+	const down = teamViews(cfgDown, { send: (req) => (req.url.startsWith(SERVER_URL) ? { status: 200, body } : { error: "stubbed outage" }) });
+	const downLines = teamSummaryLines(cfgDown, down);
+	expect(downLines[0]).toBe("Team acme: 1 plan(s)");
+	expect(downLines.at(-1)).toBe(`Team down: team server ${DOWN_PORT} unreachable`);
+	expect(queueSummary(INDEX, [], summaryHolder(cfgDown, {}, down), Infinity)).not.toContain("Team down");
+});
+
+test("checkInject reads one GET /view per team and never GET /claims", async () => {
+	// checkInject has no send seam, so the count is read where the requests land: a recorder
+	// in another process logs every path and answers the view (the client sends in a child).
+	const log = join(TMP, "inject-view.log");
+	const child = join(TMP, "view-recorder.ts");
+	writeFileSync(
+		child,
+		`import { appendFileSync } from "node:fs";
+const [logFile, viewJson] = process.argv.slice(2);
+const view = JSON.parse(viewJson!);
+const svc = Bun.serve({
+	hostname: ${JSON.stringify(LOOPBACK)},
+	port: 0,
+	fetch: (req) => {
+		appendFileSync(logFile!, req.method + " " + new URL(req.url).pathname + "\\n");
+		return Response.json(view);
+	},
+});
+console.log(svc.port);
+`,
+	);
+	const proc = Bun.spawn([process.execPath, child, log, JSON.stringify(viewBody(VIEW_TEXT, { claim: B, approvals: [A] }))], { stdout: "pipe", stderr: "pipe" });
+	const reader = proc.stdout.getReader();
+	const first = await reader.read();
+	await reader.cancel();
+	const PORT_REC = Number(new TextDecoder().decode(first.value).trim());
+	const recCfg = cfgWith([{ name: "acme", server: `http://${LOOPBACK}:${PORT_REC}`, repos: ["gitlab.com/acme/*"] }]);
+	applyQueueEnv(recCfg);
+	writePlan(TEAMH, "", "Queue: team");
+	indexPlans(TEAMH);
+	const d = checkInject({ agent: "main", inject: "what is next" }, recCfg);
+	expect(d.inject).toContain("Team acme: 1 plan(s)");
+	expect(d.inject).toContain(VIEW_REL);
+	expect(readFileSync(log, "utf8").trim().split("\n")).toEqual(["GET /view"]);
+	proc.kill();
+	applyQueueEnv(cfg);
+});
+
+test("postTeamAnswer posts the answer alone to the percent-encoded /answer/<id>, and the server stores the caller's login", async () => {
+	const spy = spySend({ status: 200, body: { answer: {} } });
+	// The route id is percent-encoded, like every other id in a path.
+	expect(postTeamAnswer(cfg.teams[0]!, "a/b?c d", "yes", { send: spy.send })).toEqual({ ok: true });
+	const [sent] = spy.calls;
+	expect(sent!.url).toBe(`${SERVER_URL}/answer/a%2Fb%3Fc%20d`);
+	expect(sent!.method).toBe("POST");
+	expect(sent!.body).toBe(JSON.stringify({ answer: "yes" }));
+	expect(sent!.headers!.origin).toBe(SERVER_URL);
+	// The real route: B holds the text, A answers; the whois login is stored, the body carries none.
+	writePlan(TEAMH, "", "Queue: team");
+	await publish(TEAMH, B_PEER);
+	const id = idOf(TEAMH);
+	expect(postTeamAnswer(cfg.teams[0]!, id, "ship it")).toEqual({ ok: true });
+	const view = await call("GET", "/view", B_PEER);
+	const answer = (view.body.answers as { plan: string; login: string; answer: string }[]).find((a) => a.plan === id);
+	expect(answer).toMatchObject({ login: A, answer: "ship it" });
+});
+
+const PAGE_SOURCE: RunSource = { listRuns: () => [], mainSession: () => null };
+
+/** POST /answer to the page as the owner's phone (form-encoded, the browser's own shape). */
+function pagePost(svc: OwnerUiServer, fields: Record<string, string>): Promise<{ status: number; text: string; location: string }> {
+	const host = `${LOOPBACK}:${svc.port}`;
+	const { promise, resolve, reject } = Promise.withResolvers<{ status: number; text: string; location: string }>();
+	const req = request(
+		{ host: LOOPBACK, port: svc.port, method: "POST", path: "/answer", headers: { host, origin: `http://${host}`, "content-type": "application/x-www-form-urlencoded" } },
+		(res) => {
+			const chunks: Buffer[] = [];
+			res.on("data", (c: Buffer) => chunks.push(c));
+			res.on("end", () =>
+				resolve({ status: res.statusCode ?? 0, text: Buffer.concat(chunks).toString(), location: String(res.headers.location ?? "") }),
+			);
+		},
+	);
+	req.on("error", reject);
+	req.end(new URLSearchParams(fields).toString());
+	return promise;
+}
+
+test("a team answer from the page goes to the team server only: login stored, nothing in the inbox", async () => {
+	writePlan(TEAMH, "", "Queue: team");
+	await publish(TEAMH, A_PEER);
+	const id = idOf(TEAMH);
+	const pageCfg: Config = { ...cfg, workspace: { ...cfg.workspace, enabled: true, owner_login: A } };
+	applyQueueEnv(pageCfg);
+	const page = startOwnerUi({ cfg: pageCfg, tailscale: TS, source: PAGE_SOURCE, hostname: LOOPBACK, port: 0, peerOf: () => A_PEER, resultsBuild: () => {} });
+	try {
+		const answersOf = async (): Promise<{ plan: string; login: string; answer: string }[]> =>
+			((await call("GET", "/view", B_PEER)).body.answers as { plan: string; login: string; answer: string }[]).filter((a) => a.plan === id);
+		// The id was answered on this server by the test above, so count from here.
+		const before = (await answersOf()).length;
+		const sent = await pagePost(page, { plan: id, team: "acme", answer: "yes" });
+		expect(sent.status).toBe(303);
+		expect(sent.location).toBe("/?sent=team-answer&team=acme");
+		const after = await answersOf();
+		expect(after).toHaveLength(before + 1);
+		expect(after[0]).toMatchObject({ login: A, answer: "yes" }); // the view is newest first
+		// A second identical press within 10 s sends nothing.
+		expect((await pagePost(page, { plan: id, team: "acme", answer: "yes" })).status).toBe(303);
+		expect(await answersOf()).toHaveLength(before + 1);
+		// Longer than ANSWER_MAX: 400 and no request (the server still holds the one answer).
+		expect((await pagePost(page, { plan: id, team: "acme", answer: "x".repeat(2001) })).status).toBe(400);
+		expect(await answersOf()).toHaveLength(before + 1);
+		// The answer went to the team alone: no inbox file was written.
+		expect(existsSync(join(STATE, "owner-inbox.jsonl"))).toBe(false);
+	} finally {
+		page.stop();
+	}
+	// A team whose server did not answer is a 503, not a stored answer.
+	const downCfg: Config = { ...pageCfg, teams: [pageCfg.teams[0]!, DOWN_TEAM] };
+	const downPage = startOwnerUi({ cfg: downCfg, tailscale: TS, source: PAGE_SOURCE, hostname: LOOPBACK, port: 0, peerOf: () => A_PEER, resultsBuild: () => {} });
+	try {
+		expect((await pagePost(downPage, { plan: "any", team: "down", answer: "yes" })).status).toBe(503);
+	} finally {
+		downPage.stop();
+	}
 });

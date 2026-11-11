@@ -371,7 +371,12 @@ function reuseProblems(repo: string, file: string, secs: Map<string, string>, re
 	return probs;
 }
 
-export function parsePlan(repo: string, file: string, text: string | null, blockersDir = blockersDirPath(), reviewAgents: string[] = []): Plan {
+/**
+ * `localPaths` false is for text that came from a team server (P4): it names paths on its
+ * author's machine, so nothing here may stat this machine's disk — no blocker executable()
+ * check and no reuse existsSync. Its blockers are `[]`; every other field is parsed as usual.
+ */
+export function parsePlan(repo: string, file: string, text: string | null, blockersDir = blockersDirPath(), reviewAgents: string[] = [], localPaths = true): Plan {
 	const empty = { repo, file, text: "", status: null, blockers: [], doneCheck: null, worktree: null, branch: null, appliesTo: [], waiting: false, waitingLine: null, waitingAsk: null, waitingBlocked: null, waitingWhy: null, waitingCheck: null, waitsOn: [], priorityId: null, title: path.basename(file), goal: [], summary: null, phases: { done: 0, total: 0 }, started: false };
 	if (text === null) return { ...empty, errors: ["plan file listed in the index does not exist"] };
 	const errors: string[] = [];
@@ -383,7 +388,7 @@ export function parsePlan(repo: string, file: string, text: string | null, block
 	const stamp = /^(\d{8}_\d{4})/.exec(path.basename(file))?.[1] ?? "";
 	if (stamp >= READ_CUTOVER && !items(secs.get("code read by main") ?? "").length)
 		errors.push(`missing or empty "## Code read by Main" section (plans stamped ${READ_CUTOVER} or later list each file they cite)`);
-	for (const problem of reuseProblems(repo, file, secs, reviewAgents)) errors.push(problem);
+	for (const problem of localPaths ? reuseProblems(repo, file, secs, reviewAgents) : []) errors.push(problem);
 	const known = new Set([...REQUIRED, "applies to", "background", "code read by main", "reuse"]);
 	for (const s of secs.keys()) if (!known.has(s)) errors.push(`unknown section "## ${s}" (allowed: ${[...known].join(", ")})`);
 	const status = statusOf(text);
@@ -391,7 +396,7 @@ export function parsePlan(repo: string, file: string, text: string | null, block
 	if (status === "cancelled" && !/^Cancelled by owner:\s*\S.{5,}/m.test(progressBody(text)))
 		errors.push('a cancelled plan needs a Progress line: Cancelled by owner: <date> "<the owner\'s words>"');
 	const blockers: Blocker[] = [];
-	for (const line of items(secs.get("blockers") ?? "")) {
+	for (const line of localPaths ? items(secs.get("blockers") ?? "") : []) {
 		const [ref = "", ...args] = line.replace(/`/g, "").split(/\s+/);
 		const script = ref.includes("/") ? path.resolve(path.dirname(file), expandHome(ref)) : path.join(blockersDir, ref);
 		if (!executable(script)) errors.push(`blocker "${ref}": ${script} missing or not executable`);

@@ -13,7 +13,8 @@ import os from "node:os";
 import { basename, resolve } from "node:path";
 import type { RunSource } from "./adapter.ts";
 import { chatTier, currentTier, type Tier } from "./autonomy.ts";
-import { summaryHolder } from "./team-client.ts";
+import { summaryHolder, postTeamAnswer, teamPlans, teamViews, type TeamView } from "./team-client.ts";
+import type { Unreachable } from "./claims.ts";
 import type { Config } from "./config.ts";
 import { nowSec, strftime } from "./clock.ts";
 import { cpuCount } from "./host.ts";
@@ -119,8 +120,10 @@ export interface QuestionRow {
 	unblocks: string[];
 	goal: string[];
 	waitingMin: number;
-	/** The last answer this plan already got (from the owner inbox), so the card can say so. */
-	answered: { answer: string; at: number } | null;
+	/** The last answer this plan already got (from the owner inbox, so the card can say so; for a team plan, the newest server answer). */
+	answered: { answer: string; at: number; login?: string } | null;
+	/** The team this card belongs to; `plan` is then the server plan id, not a local path (P4). */
+	team?: string;
 }
 
 /** The newest inbox record that carries an answer for this plan, if any. A missing or torn inbox is simply "no answer". */
@@ -258,9 +261,9 @@ function queueState(p: Plan, plans: Plan[]): string {
 	return `phase ${Math.min(done + 1, total)} of ${total}`;
 }
 
-export function queueRows(cfg: Config): QueueRow[] {
+export function queueRows(cfg: Config, views?: Map<string, TeamView | Unreachable>): QueueRow[] {
 	const plans = activePlans(cfg.paths.queue_index).filter(p => p.status === "open");
-	const claims = summaryHolder(cfg);
+	const claims = summaryHolder(cfg, {}, views);
 	return plans.map(p => {
 		const holder = claims.holder(p.file);
 		return {
@@ -273,6 +276,62 @@ export function queueRows(cfg: Config): QueueRow[] {
 			state: queueState(p, plans),
 			holder: holder === null ? null : "unreachable" in holder ? "team server unreachable" : holder.main,
 		};
+	});
+}
+
+/** One team's card on the phone page: its plans as queue rows and its open WAITING lines. */
+export interface TeamSection {
+	name: string;
+	server: string;
+	/** False when the team server did not answer: the card says so instead of listing plans. */
+	reachable: boolean;
+	rows: QueueRow[];
+	questions: QuestionRow[];
+}
+
+/**
+ * The team half of the phone page (P4): each team's already-read view mapped to the page's own
+ * row types, so the render stays one shape. A plan is a QueueRow whose `file` is the server id
+ * (team order is not INDEX order, so no drag and no /reorder) and whose state is queueState over
+ * the team's own parsed plans; each open plan with a WAITING line is a QuestionRow whose newest
+ * server answer fills `answered`. Sends nothing.
+ */
+export function teamSections(cfg: Config, views: Map<string, TeamView | Unreachable>): TeamSection[] {
+	return cfg.teams.map(team => {
+		const view = views.get(team.name);
+		if (view === undefined || "unreachable" in view) return { name: team.name, server: team.server, reachable: false, rows: [], questions: [] };
+		const plans = teamPlans(cfg, team, view);
+		const parsed = plans.map(p => p.plan);
+		const rows: QueueRow[] = plans.map(p => ({
+			repo: p.relPath,
+			file: p.id,
+			title: p.plan.title,
+			status: p.plan.status ?? "?",
+			waiting: p.plan.waiting,
+			summary: p.plan.summary ?? (goalSummary(p.plan.goal[0] ?? "") || null),
+			holder: p.holder ? `${p.holder.main} (${p.holder.login})` : null,
+			state: queueState(p.plan, parsed),
+		}));
+		const questions: QuestionRow[] = plans
+			.filter(p => p.plan.status === "open" && p.plan.waiting && p.plan.waitingLine)
+			.map(p => {
+				const last = p.answers[0];
+				return {
+					plan: p.id,
+					team: team.name,
+					title: p.plan.title,
+					repo: p.relPath,
+					waitingLine: p.plan.waitingLine ?? "",
+					waitingAsk: p.plan.waitingAsk ?? p.plan.waitingLine ?? "",
+					waitingBlocked: p.plan.waitingBlocked,
+					waitingWhy: p.plan.waitingWhy,
+					unblocks: [],
+					goal: p.plan.goal,
+					waitingMin: 0,
+					answered: last ? { answer: last.answer, at: last.time, login: last.login } : null,
+				};
+			});
+		return { name: team.name, server: team.server, reachable: true, rows, questions };
 	});
 }
 
@@ -381,7 +440,9 @@ export function nowStats(cfg: Config, source: RunSource, now: number): NowStats 
 		models.set(short, m);
 	}
 	const byModel = [...models.entries()].map(([model, v]) => ({ model, spend: v.spend, runs: v.runs })).sort((a, b) => b.spend - a.spend);
-	return { spend24, mainSpend, agentSpend, runs24, running, died, spendByHour, runsByHour, byModel, openPlans: queueRows(cfg).length };
+	// The tile counts the open plans the queue card renders; a holder read here would ask every
+	// team server a second time on a page that already read one view per team (P4).
+	return { spend24, mainSpend, agentSpend, runs24, running, died, spendByHour, runsByHour, byModel, openPlans: activePlans(cfg.paths.queue_index).filter(p => p.status === "open").length };
 }
 
 // ---- owner messages (plan P13): a one-way note plus images, kept for 12 h ----
@@ -540,7 +601,7 @@ function needCard(row: QuestionRow, i: number, tab: string): string {
 		const text = row.answered.answer;
 		const quote = text.length > 80 ? `${text.slice(0, 80)}…` : text;
 		const verb = text.toLowerCase() === "yes" || text.toLowerCase() === "no" ? "answered" : "replied";
-		said = `<p class="answered">You ${verb} "${esc(quote)}" · ${esc(strftime(row.answered.at, "%H:%M"))} — Main is on it</p>
+		said = `<p class="answered">${row.answered.login ? esc(row.answered.login) : "You"} ${verb} "${esc(quote)}" · ${esc(strftime(row.answered.at, "%H:%M"))} — Main is on it</p>
 <button type="button" class="replybtn link">change answer</button>`;
 	}
 	const question = ask.endsWith("?");
@@ -563,7 +624,7 @@ ${parts.join("\n")}
 ${bg}
 <form method="post" action="/answer">
 <input type="hidden" name="plan" value="${esc(row.plan)}">
-<input type="hidden" name="tab" value="${esc(tab)}">
+${row.team ? `<input type="hidden" name="team" value="${esc(row.team)}">\n` : ""}<input type="hidden" name="tab" value="${esc(tab)}">
 ${acts}
 <div class="reply" hidden>
 <textarea name="answer_text" maxlength="${ANSWER_MAX}" rows="3" placeholder="Type your reply"></textarea>
@@ -579,30 +640,34 @@ function agentRowHtml(r: AgentRow): string {
 	return `<li class="agent"><span class="dot ${dot}" aria-hidden="true"></span><span class="aid">${esc(r.id)}</span><span class="model">${esc(r.model)}</span><span class="detail">${esc(r.detail)}${mins}</span></li>`;
 }
 
-function queueHtml(rows: QueueRow[], tab: string): string {
+/** The queue list. `reorder` false is a team card (P4): no drag handle, no ↑/↓ buttons and no /reorder form — team order is the server's, not INDEX order. */
+function queueHtml(rows: QueueRow[], tab: string, reorder = true): string {
+	const handle = (r: QueueRow): string => `<span class="qhandle" title="Drag to reorder" aria-label="Drag ${esc(r.title)}">≡</span>
+`;
+	const btns = `<span class="qbtns"><button type="button" class="qmove" data-move="top">↑ top</button><button type="button" class="qmove" data-move="up">↑</button><button type="button" class="qmove" data-move="down">↓</button></span>`;
 	const cards = rows
 		.map(
 			(r, i) => `<li class="qcard" data-plan="${esc(r.file)}">
-<span class="qhandle" title="Drag to reorder" aria-label="Drag ${esc(r.title)}">≡</span>
-<span class="qrank">${i + 1}</span>
+${reorder ? handle(r) : ""}<span class="qrank">${i + 1}</span>
 <span class="qtitle">${esc(r.title)}${r.summary ? `<span class="qsum">${esc(r.summary)}</span>` : ""}</span>
 ${r.holder ? `<span class="chip c-held">${r.holder === "team server unreachable" ? esc(r.holder) : `Main ${esc(r.holder)}`}</span>` : ""}<span class="chip ${r.state.startsWith("waits") ? "c-wait" : "c-ready"}">${esc(r.state)}</span>
-<span class="qbtns"><button type="button" class="qmove" data-move="top">↑ top</button><button type="button" class="qmove" data-move="up">↑</button><button type="button" class="qmove" data-move="down">↓</button></span>
+${reorder ? btns : ""}
 </li>`,
 		)
 		.join("\n");
 	// before = the order this page was rendered with; the server refuses the move when the real
 	// order has drifted (409), so a stale page can never reorder on a guess.
 	const before = rows.map(r => r.file).join("\n");
-	return `<ul class="qlist" id="qlist">
-${cards}
-</ul>
-<form id="reorder-form" method="post" action="/reorder" hidden>
+	const form = `<form id="reorder-form" method="post" action="/reorder" hidden>
 <input type="hidden" name="before" value="${esc(before)}">
 <input type="hidden" name="order" value="">
 <input type="hidden" name="moved" value="">
 <input type="hidden" name="tab" value="${esc(tab)}">
 </form>`;
+	return `<ul class="qlist"${reorder ? ` id="qlist"` : ""}>
+${cards}
+</ul>
+${reorder ? form : ""}`;
 }
 
 function ciHtml(rows: CiRow[]): string {
@@ -708,6 +773,25 @@ function queueCard(rows: QueueRow[] | null, full: boolean, tab: string): string 
 	return `${head}<div class="card">${body}${more}</div>`;
 }
 
+/**
+ * Each team as its own card under the queue card (P4): its plans through queueHtml with
+ * `reorder` off, then one question card per open WAITING line. A team the server did not answer
+ * says so instead of showing a stale list. Nothing here counts in the "Needs you" tile.
+ */
+function teamCardsHtml(sections: TeamSection[] | null, tab: string): string {
+	if (sections === null) return `<h2>Team queue</h2><div class="card">${na("Team queue")}</div>`;
+	return sections
+		.map(s => {
+			const body = s.reachable ? (s.rows.length ? queueHtml(s.rows, tab, false) : `<p class="empty">No team plans</p>`) : `<p class="empty">team server ${esc(s.server)} unreachable</p>`;
+			const asks = s.questions.map((row, i) => needCard(row, i, tab)).join("\n");
+			return `<h2>Team ${esc(s.name)}</h2>
+<div class="card">
+${body}${asks ? `\n${asks}` : ""}
+</div>`;
+		})
+		.join("\n");
+}
+
 function modelSpendTable(stats: NowStats | null): string {
 	if (stats === null) return na("Spend");
 	if (!stats.byModel.length) return `<p class="empty">No spend recorded in the last 24 hours</p>`;
@@ -726,6 +810,11 @@ function receiptText(sent: string, params: URLSearchParams): string | null {
 		case "message":
 			text = `Sent to Main · ${strftime(nowSec(), "%H:%M")}`;
 			break;
+		case "team-answer": {
+			const team = params.get("team") ?? "";
+			text = `Sent to team ${team} · ${strftime(nowSec(), "%H:%M")}`;
+			break;
+		}
 		case "incident-closed":
 			text = `Marked as a false alarm · ${strftime(nowSec(), "%H:%M")}`;
 			break;
@@ -792,6 +881,8 @@ export interface PageData {
 	pages: PublishedPageRow[] | null;
 	/** The 24 h tile numbers; null when the run source is unreadable. */
 	stats: NowStats | null;
+	/** Each team's card, built from one already-read view per team (P4); absent or null when the views could not be read. */
+	teams?: TeamSection[] | null;
 	/** The Results tab's saved numbers and build state; absent on every other tab. The numbers come from a background process (computeResults), never from the request. */
 	results?: ResultsView | null;
 	/** The owner's messages newer than the keep window, newest first; null when unreadable. */
@@ -824,10 +915,13 @@ function lockMinutesLeft(cfg: Config): number | null {
 }
 
 export function buildPageData(cfg: Config, source: RunSource, tab: string, build: ResultsBuild = spawnResultsBuild, pagesHost = "tailnet"): PageData {
+	// P4: one GET /view per team, read once and handed to the queue rows' holder and the team
+	// cards, so a render makes no second request per team.
+	const views = safe(() => teamViews(cfg));
 	return {
 		questions: safe(() => questionRows(cfg)),
 		agents: safe(() => agentRows(cfg, source)),
-		queue: safe(() => queueRows(cfg)),
+		queue: safe(() => queueRows(cfg, views ?? undefined)),
 		ci: safe(() => ciRows(cfg)),
 		incidents: safe(() => incidentRows(cfg)),
 		scores: safe(() => scoresData(cfg)),
@@ -835,6 +929,7 @@ export function buildPageData(cfg: Config, source: RunSource, tab: string, build
 		knowledge: safe(() => knowledgeManifest(cfg)),
 		pages: safe(() => publishedRows(cfg, pagesHost)),
 		stats: safe(() => nowStats(cfg, source, nowSec())),
+		teams: views === null ? null : safe(() => teamSections(cfg, views)),
 		results: tab === "results" ? safe(() => resultsView(nowSec(), build)) : undefined,
 		messages: safe(() => recentOwnerMessages(nowSec())),
 		lockMinutesLeft: lockMinutesLeft(cfg),
@@ -1286,6 +1381,8 @@ export function renderPage(cfg: Config, data: PageData, params: URLSearchParams,
 	const incidents = data.incidents === null ? na("Incidents") : data.incidents.length ? incidentsHtml(data.incidents, tab) : `<p class="empty">No open incidents</p>`;
 	const merges = data.ci === null ? na("Merges") : data.ci.length ? ciHtml(data.ci) : `<p class="empty">No CI runs recorded</p>`;
 	const machine = data.machine === null ? na("Machine") : machineHtml(cfg, data.machine);
+	// P4: one card per team, under the queue card on the two tabs that show the queue.
+	const teams = tab === "now" || tab === "queue" ? teamCardsHtml(data.teams ?? null, tab) : "";
 	const body =
 		tab === "now"
 			? `${messageCard(data.messages, runningMains(cfg))}
@@ -1298,11 +1395,11 @@ ${tilesHtml(data)}
 <div class="card">
 ${needsBody}
 </div>
-${queueCard(data.queue, false, tab)}`
+${queueCard(data.queue, false, tab)}${teams ? `\n${teams}` : ""}`
 			: tab === "queue"
 				? `<h1>Queue</h1>
 <p class="sub">Drag ≡ to sort — Main works by the new order on its next turn.</p>
-${queueCard(data.queue, true, tab)}`
+${queueCard(data.queue, true, tab)}${teams ? `\n${teams}` : ""}`
 				: tab === "agents"
 					? `<h1>Agents</h1>
 <p class="sub">Who is working right now, how they score, and what went wrong.</p>
@@ -1524,6 +1621,9 @@ function handleAnswer(cfg: Config, source: RunSource, fields: Record<string, str
 	const answer = (fields.answer_text ?? "").trim() || (fields.answer ?? "").trim();
 	if (!planFile || !answer) return wantsJson ? jsonFail("plan and answer are required", 400) : textRes("plan and answer are required", 400);
 	if (answer.length > ANSWER_MAX) return wantsJson ? jsonFail(`answer is longer than ${ANSWER_MAX} chars`, 400) : textRes(`answer is longer than ${ANSWER_MAX} chars`, 400);
+	// P4: a team plan is answered on its server, never in this machine's inbox; the branch sits
+	// before the INDEX lookup, which knows only this machine's own plans.
+	if ((fields.team ?? "").trim()) return handleTeamAnswer(cfg, fields, planFile, answer, wantsJson);
 	const plan = activePlans(cfg.paths.queue_index).find(p => p.file === planFile);
 	if (!plan) return wantsJson ? jsonFail("plan is not open and waiting", 409) : textRes("plan is not open and waiting", 409);
 	if (plan.status !== "open" || !plan.waiting || !plan.waitingLine) {
@@ -1537,8 +1637,34 @@ function handleAnswer(cfg: Config, source: RunSource, fields: Record<string, str
 	return redirect(sentTo(fields.tab ?? "", "sent=answer"));
 }
 
-// ---- POST /incident (plan P3): the owner's tap on a finding: "false alarm" closes it, "bug" plans it ----
+/**
+ * An answer to a team plan (P4): `POST /answer/<id>` on that team's server with the answer
+ * alone — the server stores the whois login — and nothing is written to this machine's inbox,
+ * which belongs to its own Main. The double-press guard is the page's own memory, keyed
+ * `<team>/<id>`; a repeated press within 10 s sends nothing again.
+ */
+function handleTeamAnswer(cfg: Config, fields: Record<string, string>, planId: string, answer: string, wantsJson: boolean): Response {
+	const name = (fields.team ?? "").trim();
+	const team = cfg.teams.find(t => t.name === name);
+	if (!team) return wantsJson ? jsonFail("unknown team", 400) : textRes("unknown team", 400);
+	const key = `${team.name}/${planId}`;
+	const now = nowSec();
+	const last = lastAnswerByPlan.get(key);
+	const repeat = last !== undefined && last.answer === answer && now - last.ts < DOUBLE_PRESS_SEC;
+	if (!repeat) {
+		const out = postTeamAnswer(team, planId, answer);
+		if ("unreachable" in out) return wantsJson ? jsonFail(`team server ${out.unreachable} unreachable`, 503) : textRes(`team server ${out.unreachable} unreachable`, 503);
+		if (!out.ok) {
+			const error = out.status === 404 ? "plan is not on the team server" : out.error;
+			return wantsJson ? jsonFail(error, out.status === 404 ? 409 : out.status) : textRes(error, out.status === 404 ? 409 : out.status);
+		}
+		lastAnswerByPlan.set(key, { answer, ts: now });
+	}
+	if (wantsJson) return jsonSent("team-answer", receiptText("team-answer", new URLSearchParams({ team: team.name })));
+	return redirect(sentTo(fields.tab ?? "", `sent=team-answer&team=${encodeURIComponent(team.name)}`));
+}
 
+// ---- POST /incident (plan P3): the owner's tap on a finding: "false alarm" closes it, "bug" plans it ----
 function handleIncident(cfg: Config, fields: Record<string, string>, login: string, wantsJson: boolean): Response {
 	const id = (fields.id ?? "").trim();
 	const choice = (fields.choice ?? "").trim();

@@ -39,7 +39,7 @@ import * as q from "./queue/lib.ts";
 import type { Plan } from "./queue/lib.ts";
 
 import { heldByOther, type Claim, type ClaimStore, type Unreachable } from "./claims.ts";
-import { claimStoreFor, summaryHolder } from "./team-client.ts";
+import { claimStoreFor, summaryHolder, teamSummaryLines, teamViews } from "./team-client.ts";
 import { nowSec, strftime } from "./clock.ts";
 import { outUntil, pinModel, providerOfModel, readOut } from "./provider-state.ts";
 import { lint } from "./brief-lint.ts";
@@ -1977,7 +1977,12 @@ export function checkInject(e: InjectEvent, cfg: Config): Decision {
 	recordOwnerMessage(e.inject, cfg);
 	let summary: string;
 	try {
-		summary = q.queueSummary(undefined, cfg.review.agents, summaryHolder(cfg));
+		// P4 (20261027_1305): one GET /view per team, read once and handed to the holder and the
+		// team lines, so the summary costs one request per team and never a second GET /claims.
+		const views = teamViews(cfg);
+		summary = q.queueSummary(undefined, cfg.review.agents, summaryHolder(cfg, {}, views));
+		const teamLines = teamSummaryLines(cfg, views, q.SUMMARY_CAP);
+		if (teamLines.length) summary += `\n${teamLines.join("\n")}`;
 	} catch (err) {
 		summary = `Queue unreadable (${q.INDEX}): ${err}`;
 	}

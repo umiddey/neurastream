@@ -13,15 +13,18 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync, writeSync } from "n
 import { hostname } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { claimExpired, fileClaimStore, heldByOther, type Claim, type ClaimStore } from "./claims.ts";
-import { nowSec } from "./clock.ts";
+import { claimExpired, fileClaimStore, heldByOther, type Claim, type ClaimStore, type Unreachable } from "./claims.ts";
+import { nowSec, strftime } from "./clock.ts";
 import type { Config } from "./config.ts";
 import { lock } from "./file-lock.ts";
 import { mainId } from "./guards.ts";
 import { defaultRunner, type CommandRunner } from "./mr-sweep.ts";
-import { activePlans, headerField, planRepo, sha } from "./queue/lib.ts";
-import { teamPlanId } from "./team-server.ts";
+import { activePlans, headerField, parsePlan, planRepo, sha, SUMMARY_CAP, type Plan } from "./queue/lib.ts";
+import { teamPlanId, type TeamView } from "./team-server.ts";
 import { planShare, repoTeam } from "./team-labels.ts";
+
+/** The server's one-read view, as the server defines it: every client consumer reads it from here. */
+export type { TeamView };
 
 /** One `cfg.teams` entry. */
 export type TeamEntry = Config["teams"][number];
@@ -367,28 +370,35 @@ export function claimStoreFor(file: string, cfg: Config, text?: string, run: Com
  * A holder-only store for one queue summary (checkInject, queue-check, the owner page's rows):
  * a plan the chooser sends to the file store is answered locally; a plan of team T is answered
  * from that team's claims, fetched once on first use within this summary (one child, one
- * request) and matched by plan id — never by recorded path, so a never-synced `Queue: team`
- * plan still shows its server holder. Liveness uses this member's claim_ttl_min; it only
- * colours the summary, every decision still asks the server per plan.
+ * request) — or, when the caller already read a team view (P4's `teamViews`), from that view's
+ * `claims`, which are the same rows `GET /claims` sends, so one render stays one request per
+ * team. Matching is by plan id, never by recorded path, so a never-synced `Queue: team` plan
+ * still shows its server holder. Liveness uses this member's claim_ttl_min; it only colours the
+ * summary, every decision still asks the server per plan.
  */
-export function summaryHolder(cfg: Config, opts: RawOpts = {}): Pick<ClaimStore, "holder"> {
+export function summaryHolder(cfg: Config, opts: RawOpts = {}, views?: Map<string, TeamView | Unreachable>): Pick<ClaimStore, "holder"> {
 	const clock = opts.clock ?? nowSec;
 	const byTeam = new Map<string, Map<string, WireRow> | "down">();
 
 	function rowsFor(team: TeamEntry): Map<string, WireRow> | "down" {
 		const hit = byTeam.get(team.name);
 		if (hit) return hit;
-		const res = askRaw(team, { url: `${team.server}/claims`, method: "GET" }, opts);
 		let out: Map<string, WireRow> | "down";
-		if (res !== "down" && res.status === 200 && isObj(res.body) && Array.isArray(res.body.claims)) {
-			const rows = new Map<string, WireRow>();
-			for (const row of res.body.claims as WireRow[]) {
-				const planId = typeof row?.plan === "string" ? row.plan : typeof row?.id === "string" ? row.id : undefined;
-				if (isObj(row) && planId) rows.set(planId, row);
-			}
-			out = rows;
+		const seen = views?.get(team.name);
+		if (seen !== undefined) {
+			out = "unreachable" in seen ? "down" : new Map(seen.claims.map(row => [row.plan, row] as const));
 		} else {
-			out = "down";
+			const res = askRaw(team, { url: `${team.server}/claims`, method: "GET" }, opts);
+			if (res !== "down" && res.status === 200 && isObj(res.body) && Array.isArray(res.body.claims)) {
+				const rows = new Map<string, WireRow>();
+				for (const row of res.body.claims as WireRow[]) {
+					const planId = typeof row?.plan === "string" ? row.plan : typeof row?.id === "string" ? row.id : undefined;
+					if (isObj(row) && planId) rows.set(planId, row);
+				}
+				out = rows;
+			} else {
+				out = "down";
+			}
 		}
 		byTeam.set(team.name, out);
 		return out;
@@ -521,4 +531,132 @@ export function deleteRecordEntries(cfg: Config, file: string, run: CommandRunne
 			for (const [entryId] of hits) delete next[entryId];
 		});
 	}
+}
+
+// --- team views: one GET /view per team per render or summary (P4) ---
+
+/** One plan of a team's view, as every team section reads it. */
+export interface TeamPlanRow {
+	/** The server's plan id. */
+	id: string;
+	/** This machine's path for the plan: the sync record's path, else the read copy `team sync` writes. Display only. */
+	file: string;
+	/** The server text parsed with `localPaths` false, its worktree and appliesTo blanked: nothing stats a team-chosen path. */
+	plan: Plan;
+	/** The repo-relative path on the server: the plan's identity in a team card. */
+	relPath: string;
+	/** The live claim on the server; `login` is the member holding it. */
+	holder: (Claim & { login: string }) | null;
+	approvals: string[];
+	/** The plan's answers, newest first (the view's own order). */
+	answers: TeamView["answers"];
+}
+
+/** True when the body carries the arrays `readTeamView` sends. */
+function isView(body: unknown): body is TeamView {
+	return (
+		isObj(body) &&
+		Array.isArray(body.plans) &&
+		Array.isArray(body.claims) &&
+		Array.isArray(body.approvals) &&
+		Array.isArray(body.votes) &&
+		Array.isArray(body.paused) &&
+		Array.isArray(body.answers)
+	);
+}
+
+/**
+ * One `GET /view` per `cfg.teams` entry: plan text, claims and the P2c tables in one request, so
+ * a render costs one child per team instead of one per table. The outage memo and the 5 s bound
+ * are askRaw's, and a non-200 or a body of the wrong shape is Unreachable — the same answer
+ * remoteClaimStore.list() gives its own read.
+ */
+export function teamViews(cfg: Config, opts: RawOpts = {}): Map<string, TeamView | Unreachable> {
+	const out = new Map<string, TeamView | Unreachable>();
+	for (const team of cfg.teams) {
+		const res = askRaw(team, { url: `${team.server}/view`, method: "GET" }, opts);
+		out.set(team.name, res === "down" || res.status !== 200 || !isView(res.body) ? { unreachable: team.server } : res.body);
+	}
+	return out;
+}
+
+/**
+ * The plans of one team's view in the server's order (`ORDER BY rel_path, id`), as every team
+ * section reads them. The text is the server's; the path is the record's, else the read copy.
+ * `parsePlan` runs with `localPaths` false: team text names paths on its author's machine, so no
+ * blocker is executed and no reuse citation is stat'ed. Worktree and appliesTo are blanked for
+ * the same reason — later code that stats or runs git on them must never see a team-chosen path.
+ */
+export function teamPlans(cfg: Config, team: TeamEntry, view: TeamView): TeamPlanRow[] {
+	const rec = readRecord(cfg, team);
+	const copyDir = path.join(teamDir(cfg, team), "plans");
+	const now = nowSec();
+	const claims = new Map(view.claims.map(row => [row.plan, row] as const));
+	const approvals = new Map<string, string[]>();
+	for (const a of view.approvals) approvals.set(a.plan, [...(approvals.get(a.plan) ?? []), a.login]);
+	const answers = new Map<string, TeamView["answers"]>();
+	for (const a of view.answers) answers.set(a.plan, [...(answers.get(a.plan) ?? []), a]);
+	return view.plans.map(row => {
+		const file = rec[row.id]?.path ?? path.join(copyDir, `${row.id}.md`);
+		const claim = claims.get(row.id);
+		const live = claim !== undefined && !claimExpired(claim, now, cfg.queue.claim_ttl_min) ? { ...toClaim(claim, file), login: claim.login } : null;
+		return {
+			id: row.id,
+			file,
+			plan: { ...parsePlan(path.dirname(file), file, row.text, undefined, [], false), worktree: null, appliesTo: [] },
+			relPath: row.rel_path,
+			holder: live,
+			approvals: approvals.get(row.id) ?? [],
+			answers: answers.get(row.id) ?? [],
+		};
+	});
+}
+
+/**
+ * The team half of the queue summary and `main-start`: per team one line, then up to `cap`
+ * plans in queueSummary's line form — rel_path, the holder with its login, the WAITING ask, the
+ * approvals, the first Goal bullet. A team whose view is Unreachable prints one line and no
+ * plans. Sends nothing: the caller built `views` once.
+ */
+export function teamSummaryLines(cfg: Config, views: Map<string, TeamView | Unreachable>, cap = SUMMARY_CAP): string[] {
+	const lines: string[] = [];
+	for (const team of cfg.teams) {
+		const view = views.get(team.name);
+		if (view === undefined || "unreachable" in view) {
+			lines.push(`Team ${team.name}: team server ${team.server} unreachable`);
+			continue;
+		}
+		const rows = teamPlans(cfg, team, view);
+		lines.push(`Team ${team.name}: ${rows.length} plan(s)`);
+		rows.slice(0, cap).forEach((row, i) => {
+			const flags = [
+				row.holder ? `held by ${row.holder.main} (${row.holder.login}) since ${strftime(row.holder.since, "%H:%M")}` : "free",
+				row.plan.waiting ? `WAITING on owner: ${(row.plan.waitingLine ?? "").slice(0, 80)}` : "",
+				row.approvals.length ? `approved by ${row.approvals.join(", ")}` : "",
+			]
+				.filter(Boolean)
+				.join(", ");
+			lines.push(`  T${i + 1}. ${row.relPath} [${flags}] ${(row.plan.goal[0] ?? "").slice(0, 100)}`);
+		});
+	}
+	return lines;
+}
+
+/** What `POST /answer/<id>` answered: stored, the server's refusal, or a team that did not answer. */
+export type TeamAnswerOutcome = { ok: true } | { ok: false; status: number; error: string } | Unreachable;
+
+/**
+ * One member's answer to a team plan's WAITING line: `POST /answer/<id>` with `{ answer }` only.
+ * The body carries no login — the server stores the whois login. Built as pushTeamPlan builds
+ * its write (content-type and Origin), with the id percent-encoded like every other route id.
+ */
+export function postTeamAnswer(team: TeamEntry, id: string, answer: string, opts: RawOpts = {}): TeamAnswerOutcome {
+	const res = askRaw(
+		team,
+		{ url: `${team.server}/answer/${encodeURIComponent(id)}`, method: "POST", headers: { "content-type": "application/json", origin: originOf(team.server) }, body: JSON.stringify({ answer }) },
+		opts,
+	);
+	if (res === "down" || res.status === undefined) return { unreachable: team.server };
+	if (res.status === 200) return { ok: true };
+	return { ok: false, status: res.status, error: isObj(res.body) && typeof res.body.error === "string" ? res.body.error : `team server answered ${res.status}` };
 }
