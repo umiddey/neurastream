@@ -307,7 +307,13 @@ function reviewRole(name: string | undefined, named: string[], brief: string, ag
 	const reviewed = named.filter(f => isReviewSpawn(f, brief, agent, cfg, spawner));
 	if (reviewed.length > 1) return { plan: null, problem: "a review spawn reviews one plan; split the spawn." };
 	if (reviewed.length && !name) return { plan: null, problem: "a review spawn needs a name (the task name keys its review lock)." };
-	return { plan: reviewed[0] ?? null, problem: null };
+	const plan = reviewed[0] ?? null;
+	if (plan) {
+		const rec = readPlanReviews()[plan];
+		if (rec?.verdict === "PASS" && rec.hash === reviewHash(readPlanText(plan)))
+			return { plan: null, problem: `plan ${plan} already has a current reviewer PASS (by ${rec.by}); a second review is waste. Change the plan text, or spawn the implementer.` };
+	}
+	return { plan, problem: null };
 }
 
 /** P4f/P4k: the named review spawns, spawn name → its review role: the plan, the plan text and hash as the spawn first saw them, and the verdicts it wrote (review-spawns.json in the state dir). */

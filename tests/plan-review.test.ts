@@ -585,6 +585,22 @@ test("the named review spawn's PASS records", () => {
 	expect(reviewsNow()[LOCKED]).toMatchObject({ verdict: "PASS" });
 });
 
+test("a review spawn is refused while the plan has a current PASS, and allowed once the plan text changed", () => {
+	rmSync(REVIEWS, { force: true });
+	freshProgress();
+	registerReviewer();
+	const before = readFileSync(LOCKED, "utf8");
+	checkPlanEdit({ path: LOCKED, before, after: before + PASS_ENTRY, agent: "sub", agentId: "rev1" }, gcfg);
+	expect(gspawn(`Plan review: ${LOCKED}\nReview P1.`, "reviewer", gcfg, "rev2")).toMatchObject({
+		allow: false,
+		reason: expect.stringContaining("already has a current reviewer PASS"),
+	});
+	const original = readFileSync(LOCKED, "utf8");
+	writeFileSync(LOCKED, original.replace("## Progress", "A changed body line.\n\n## Progress"));
+	expect(gspawn(`Plan review: ${LOCKED}\nReview P1.`, "reviewer", gcfg, "rev2")).toMatchObject({ allow: true });
+	writeFileSync(LOCKED, original);
+});
+
 test("a non-review spawn reusing the review name drops the entry and its lock", () => {
 	registerReviewer();
 	freshProgress();
