@@ -3,16 +3,17 @@
 // then Origin on every write. Plan text is stored only when its header is Queue: team.
 
 import { Database } from "bun:sqlite";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { claimExpired } from "./claims.ts";
-import { nowSec } from "./clock.ts";
+import { nowSec, strftime } from "./clock.ts";
 import { MAIN_ID_RE } from "./guards.ts";
-import { ANSWER_MAX, hostAllowlist, isLoopback, isTailnet, originIsHost, type UiHttpServer } from "./owner-ui.ts";
+import { ANSWER_MAX, fieldsOf, hostAllowlist, isLoopback, isTailnet, jsonFail, jsonSent, originIsHost, pageCsp, renderTeamPage, teamSection, textRes, type UiHttpServer } from "./owner-ui.ts";
 import { headerField, sha } from "./queue/lib.ts";
 import { remotePath } from "./mr-sweep.ts";
 import type { Tailscale } from "./tailscale.ts";
+import { viewPlanRows } from "./team-client.ts";
 import { remoteListed } from "./team-labels.ts";
 
 const BODY_MAX = 1024 * 1024;
@@ -174,6 +175,24 @@ function jsonObject(body: Uint8Array): Record<string, unknown> | null {
 	}
 	if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
 	return parsed as Record<string, unknown>;
+}
+
+/** The form fields of a POST whose body the write gate has already read. */
+function formOf(req: Request, body: Uint8Array): Promise<Record<string, string>> {
+	return fieldsOf(new Request(req.url, { method: "POST", headers: req.headers, body: new TextDecoder().decode(body) }));
+}
+
+/** A JSON client (Accept asks for application/json) gets JSON; the page's scriptless forms get a 303 back to the page. */
+function wantsJson(req: Request): boolean {
+	return (req.headers.get("accept") ?? "").includes("application/json");
+}
+
+function pageDone(req: Request, sent: string): Response {
+	return wantsJson(req) ? jsonSent(sent) : new Response(null, { status: 303, headers: { location: "/" } });
+}
+
+function pageRefused(req: Request, error: string, status: number): Response {
+	return wantsJson(req) ? jsonFail(error, status) : textRes(error, status);
 }
 
 /** A path segment decoded, or null when its percent-encoding is bad. */
@@ -463,6 +482,7 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 	}
 
 	const listAudit = db.query<AuditRow, []>("SELECT id, login, time, route, plan_id FROM audit ORDER BY id DESC LIMIT 200");
+	const listMembers = db.query<{ login: string }, []>("SELECT login FROM members ORDER BY login");
 	const insertApproval = db.prepare("INSERT OR IGNORE INTO approvals (plan_id, login, time) VALUES (?, ?, ?)");
 	const selectApproval = db.query<ApprovalRow, [string, string]>("SELECT plan_id AS plan, login, time FROM approvals WHERE plan_id = ? AND login = ?");
 	const replaceVote = db.prepare("INSERT OR REPLACE INTO votes (login, plan_ids, time) VALUES (?, ?, ?)");
@@ -602,6 +622,63 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 		return null;
 	}
 
+	/** The team page's plain forms (P5): exact paths /approve, /answer and /member. Success answers 303 back to the page, or JSON when Accept asks for it. Auth chain and Origin run before this. */
+	async function pageRoute(req: Request, path: string, login: string): Promise<Response | null> {
+		if (req.method !== "POST") return null;
+		if (path === "/approve") {
+			const gate = await writeGate(req, login, "member", "POST /approve");
+			if ("res" in gate) return gate.res;
+			const form = await formOf(req, gate.body);
+			if (!approveOf.immediate(form.plan ?? "", login, gate.now)) return pageRefused(req, "no such plan", 404);
+			return pageDone(req, "approve");
+		}
+		if (path === "/answer") {
+			const gate = await writeGate(req, login, "member", "POST /answer");
+			if ("res" in gate) return gate.res;
+			const form = await formOf(req, gate.body);
+			const text = (form.answer_text ?? form.answer ?? "").trim();
+			if (text.length < 1 || text.length > ANSWER_MAX) return pageRefused(req, `answer must be 1 to ${ANSWER_MAX} characters`, 400);
+			if (!answerOf.immediate(form.plan ?? "", login, gate.now, text)) return pageRefused(req, "no such plan", 404);
+			return pageDone(req, "answer");
+		}
+		if (path === "/member") {
+			const gate = await writeGate(req, login, "admin", "POST /member");
+			if ("res" in gate) return gate.res;
+			const form = await formOf(req, gate.body);
+			const member = form.login ?? "";
+			if (!validLogin(member)) return pageRefused(req, LOGIN_ERROR, 400);
+			if (form.op === "add") {
+				addMemberTx(db, member, login, gate.now);
+				return pageDone(req, "add");
+			}
+			if (form.op === "remove") {
+				const out = removeMemberTx(db, config, member, login, gate.now);
+				if (out.status === 409) return pageRefused(req, ADMIN_REMOVE, 409);
+				if (out.status === 404) return pageRefused(req, NO_MEMBER, 404);
+				return pageDone(req, "remove");
+			}
+			return pageRefused(req, "op must be add or remove", 400);
+		}
+		return null;
+	}
+
+	/** The team page (P5): one read of the team view, rendered in process. Auth chain only, no write slot, not audited. Audit rows go to the admin only. */
+	function teamPage(req: Request, login: string): Response {
+		const admin = login === config.admin;
+		const rows = viewPlanRows(readTeamView(db, config.team, login), opts.claimTtlMin, clock(), id => id);
+		const html = renderTeamPage({
+			team: config.team,
+			login,
+			admin,
+			adminLogin: config.admin,
+			section: teamSection(config.team, req.headers.get("host") ?? "", rows),
+			plans: rows.map(row => ({ id: row.id, relPath: row.relPath, title: row.plan.title, approvals: row.approvals })),
+			members: listMembers.all().map(row => row.login),
+			audit: admin ? listAudit.all().map(row => ({ at: strftime(row.time, "%H:%M"), login: row.login, route: row.route })) : null,
+		});
+		return new Response(html, { status: 200, headers: { "content-type": "text/html; charset=utf-8", "content-security-policy": pageCsp(randomBytes(16).toString("base64")) } });
+	}
+
 	/** Claim routes: POST /claims/:id takes or refreshes, POST /claims/:id/beat heartbeats, DELETE /claims/:id releases, GET /claims/:id reads. */
 	async function claimRoute(req: Request, id: string, beat: boolean, login: string): Promise<Response> {
 		if (req.method === "GET") {
@@ -681,6 +758,7 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 					if (req.method === "GET" && url.pathname === "/claims") {
 						return json({ claims: listClaims.all(config.team).map(row => wireClaim(row, login)) }, 200);
 					}
+					if (req.method === "GET" && url.pathname === "/") return teamPage(req, login);
 					// One read for P4/P5: plan text, claims and P2c's tables together. Auth chain only, no write slot, not audited.
 					if (req.method === "GET" && url.pathname === "/view") return json(readTeamView(db, config.team, login), 200);
 					const claimMatch = /^\/claims\/([^/]+)(\/beat)?$/.exec(url.pathname);
@@ -691,6 +769,8 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 					}
 					const memberResponse = await memberRoute(req, url.pathname, login);
 					if (memberResponse) return memberResponse;
+					const pageResponse = await pageRoute(req, url.pathname, login);
+					if (pageResponse) return pageResponse;
 					if (!WRITE_METHOD[req.method] || planId === null || req.method !== "PUT") return json({ error: "not found" }, 404);
 					const body = await readBody(req);
 					if (body === "too-big") return json({ error: "body too large" }, 413);

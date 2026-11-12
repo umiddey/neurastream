@@ -590,16 +590,23 @@ export function teamViews(cfg: Config, opts: RawOpts = {}): Map<string, TeamView
 export function teamPlans(cfg: Config, team: TeamEntry, view: TeamView): TeamPlanRow[] {
 	const rec = readRecord(cfg, team);
 	const copyDir = path.join(teamDir(cfg, team), "plans");
-	const now = nowSec();
+	return viewPlanRows(view, cfg.queue.claim_ttl_min, nowSec(), id => rec[id]?.path ?? path.join(copyDir, `${id}.md`));
+}
+
+/**
+ * The plan rows of one view, each parsed under the file `fileOf` names for it. The phone section
+ * (teamPlans) and the team page (P5) share this body. Reads no path and runs no git.
+ */
+export function viewPlanRows(view: TeamView, ttlMin: number, now: number, fileOf: (id: string) => string): TeamPlanRow[] {
 	const claims = new Map(view.claims.map(row => [row.plan, row] as const));
 	const approvals = new Map<string, string[]>();
 	for (const a of view.approvals) approvals.set(a.plan, [...(approvals.get(a.plan) ?? []), a.login]);
 	const answers = new Map<string, TeamView["answers"]>();
 	for (const a of view.answers) answers.set(a.plan, [...(answers.get(a.plan) ?? []), a]);
 	return view.plans.map(row => {
-		const file = rec[row.id]?.path ?? path.join(copyDir, `${row.id}.md`);
+		const file = fileOf(row.id);
 		const claim = claims.get(row.id);
-		const live = claim !== undefined && !claimExpired(claim, now, cfg.queue.claim_ttl_min) ? { ...toClaim(claim, file), login: claim.login } : null;
+		const live = claim !== undefined && !claimExpired(claim, now, ttlMin) ? { ...toClaim(claim, file), login: claim.login } : null;
 		return {
 			id: row.id,
 			file,
