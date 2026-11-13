@@ -3,7 +3,7 @@
 // is one folder under src/adapters plus one entry in ADAPTERS below — zero core changes
 // (docs/adapter.md, "Adding a harness").
 
-import type { DumpRef, LaunchOptions, RelatedTrace, RunSource, TaskResult, TraceRun, TraceSource } from "../core/adapter.ts";
+import type { DumpRef, LaunchOptions, OwnerTurn, RelatedTrace, RunSource, TaskResult, TraceRun, TraceSource } from "../core/adapter.ts";
 import type { Config } from "../core/config.ts";
 import type { ProviderStatus } from "../core/provider-state.ts";
 import type { Episode } from "../core/episodes.ts";
@@ -17,6 +17,8 @@ export interface HarnessAdapter {
 	bin: string;
 	/** Session reader: the runs and the main session (docs/adapter.md). */
 	runSource(cfg: Config): RunSource;
+	/** Owner prompts and Main replies in the session files at or after the epoch second `since` (the recall backfill, plan 20261109_2335 P3). */
+	ownerTurns(cfg: Config, since: number): OwnerTurn[];
 	/** Completed subagent task-results announced in the newest main session file. */
 	completedResults(cfg: Config): TaskResult[];
 	/** TraceSource for agent-score, over the config's sessions root. */

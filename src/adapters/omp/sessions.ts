@@ -1,10 +1,11 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { Config } from "../../core/config.ts";
-import type { MainSession, Run, RunMessage, RunSource, RunStatus, TaskResult } from "../../core/adapter.ts";
+import type { MainSession, OwnerTurn, Run, RunMessage, RunSource, RunStatus, TaskResult } from "../../core/adapter.ts";
 import { bootSec, nowSec } from "../../core/clock.ts";
 import { readBudgets } from "../../core/guards.ts";
 import { pyDumps } from "../../core/pyjson.ts";
+import { readLines } from "../../core/owner-log.ts";
 
 function walk(dir: string, depth: number, out: string[]): void {
 	if (depth < 0 || !existsSync(dir)) return;
@@ -376,8 +377,74 @@ export function ompRunSource(root: string, cfg: Config): RunSource {
 }
 
 export function defaultRunSource(cfg: Config): RunSource {
-	const root = cfg.adapter?.sessions || join(cfg.paths.home, ".omp", "agent", "sessions");
-	return ompRunSource(root, cfg);
+	return ompRunSource(cfg.adapter?.sessions || join(cfg.paths.home, ".omp", "agent", "sessions"), cfg);
+}
+
+/** The text of a user message: a string, or the text parts joined. */
+function userText(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.map(p => asObj(p))
+		.filter((p): p is Record<string, unknown> => p !== null && typeof p.text === "string")
+		.map(p => p.text as string)
+		.join(" ");
+}
+
+/** A Main reply's text, or null when it is not one: no text parts, or a tool call in it. */
+function replyText(message: Record<string, unknown>): string | null {
+	if (!Array.isArray(message.content)) return null;
+	const parts = message.content.map(p => asObj(p));
+	if (parts.some(p => p?.type === "toolCall")) return null;
+	const text = parts
+		.filter((p): p is Record<string, unknown> => p !== null && p.type === "text" && typeof p.text === "string")
+		.map(p => p.text as string)
+		.join("\n")
+		.trim();
+	return text || null;
+}
+
+/** The owner's prompts and Main's replies in the depth-1 session files, at or after the epoch second `since` (plan 20261109_2335 P3). Each file is read newest line first, so a reply is the last text message before the next user line; a message with a tool call, or one that did not stop, is not a reply, as on the live path. Unparsable lines are skipped. */
+export function ompOwnerTurns(root: string, since: number): OwnerTurn[] {
+	const out: OwnerTurn[] = [];
+	for (const file of jsonlAt(root, 1)) {
+		let mtime: number;
+		try {
+			mtime = statSync(file).mtimeMs / 1000;
+		} catch {
+			continue;
+		}
+		if (mtime < since) continue;
+		let reply: { at: number; text: string } | undefined;
+		for (const line of readLines(file)) {
+			let obj: Record<string, unknown> | null;
+			try {
+				obj = asObj(JSON.parse(line) as unknown);
+			} catch {
+				continue;
+			}
+			const message = obj ? asObj(obj.message) : null;
+			const at = obj && typeof obj.timestamp === "string" ? parseTs(obj.timestamp) : null;
+			if (!message || at === null) continue;
+			if (message.role === "assistant") {
+				if (reply === undefined && message.stopReason === "stop") {
+					const text = replyText(message);
+					if (text) reply = { at, text };
+				}
+				continue;
+			}
+			if (message.role !== "user") continue;
+			const prompt = userText(message.content).trim();
+			if (prompt && at >= since) out.push({ at, role: "owner", text: prompt });
+			if (reply && reply.at >= since) out.push({ at: reply.at, role: "main", text: reply.text });
+			reply = undefined;
+		}
+	}
+	return out;
+}
+
+export function defaultOwnerTurns(cfg: Config, since: number): OwnerTurn[] {
+	return ompOwnerTurns(cfg.adapter?.sessions || join(cfg.paths.home, ".omp", "agent", "sessions"), since);
 }
 
 /**

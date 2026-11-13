@@ -1,13 +1,15 @@
 // `neurastream recall`: searches the owner's messages and Main's answers (the recall log, see
 // core/owner-log.ts) and shows an entry with the entry it pairs with. Read-only.
 
+import { getAdapter } from "../adapters/index.ts";
 import { nowSec } from "../core/clock.ts";
 import { ConfigError, loadConfig, type Config } from "../core/config.ts";
 import { helpDoc, printText } from "../core/help.ts";
-import { type LogEntry, searchEntries, showEntries } from "../core/owner-log.ts";
+import { backfillOwnerLog, type LogEntry, searchEntries, showEntries } from "../core/owner-log.ts";
 import { applyQueueEnv } from "../core/queue/env.ts";
 
 const USAGE = "usage: neurastream recall <words>... [--since 7d|12h|YYYY-MM-DD] [--limit N] [--json]\n       neurastream recall --show <id> [--json]";
+const BACKFILL_USAGE = "usage: neurastream recall backfill [--since 7d|12h|YYYY-MM-DD]";
 const DEFAULT_LIMIT = 20;
 const PREVIEW_CHARS = 160;
 const HOUR = 3600;
@@ -76,6 +78,28 @@ function jsonLine(e: LogEntry): string {
 	return JSON.stringify({ at: e.at, id: e.id, role: e.role, text: e.text });
 }
 
+// `recall backfill [--since ...]`: writes the session files' owner prompts and Main replies to the backfill
+// file, once. Reads the session files only; no model call.
+function backfillCli(args: string[], cfg: Config): number {
+	let since = 0;
+	if (args.length > 0) {
+		const value = args[1];
+		if (args.length !== 2 || args[0] !== "--since" || value === undefined) {
+			console.error(BACKFILL_USAGE);
+			return 2;
+		}
+		const at = sinceAt(value, nowSec());
+		if (at === undefined) {
+			console.error(`--since takes 7d, 12h or a date (YYYY-MM-DD), not ${value}\n${BACKFILL_USAGE}`);
+			return 2;
+		}
+		since = at;
+	}
+	const written = backfillOwnerLog(cfg, getAdapter(cfg).ownerTurns(cfg, since));
+	console.log(`backfill: ${written} entries`);
+	return 0;
+}
+
 export function recallCli(args: string[], cfg: Config): number {
 	if (args.includes("--help") || args.includes("-h")) {
 		printText(helpDoc("recall"));
@@ -83,6 +107,7 @@ export function recallCli(args: string[], cfg: Config): number {
 	}
 	// The log paths follow the queue state directory, so the config's queue env is applied first.
 	applyQueueEnv(cfg);
+	if (args[0] === "backfill") return backfillCli(args.slice(1), cfg);
 	const parsed = parseArgs(args);
 	if (typeof parsed === "string") {
 		console.error(`${parsed}\n${USAGE}`);

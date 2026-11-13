@@ -10,6 +10,9 @@ import { nowSec } from "./clock.ts";
 import type { Config } from "./config.ts";
 import { ownerMessagesFile } from "./incidents.ts";
 import { loadKnownSecrets, redactSecrets } from "./secret-redact.ts";
+import type { OwnerTurn } from "./adapter.ts";
+import { isOwnerProse } from "./guards.ts";
+import { ownerText } from "./rollover.ts";
 
 export type LogRole = "owner" | "main";
 
@@ -63,6 +66,47 @@ export function appendOwnerLog(
 export function recordOwnerLog(cfg: Config, role: LogRole, text: string): void {
 	const clean = redactSecrets(text, loadKnownSecrets(cfg), cfg.secrets.extra_patterns).text;
 	appendOwnerLog(role, clean);
+}
+
+// The first (newest) or last (oldest) parsable entry of one log file; undefined when it has none.
+function logEdge(file: string, newest: boolean): LogEntry | undefined {
+	let edge: LogEntry | undefined;
+	for (const line of readLines(file)) {
+		const entry = parseEntry(line);
+		if (entry === undefined) continue;
+		edge = entry;
+		if (newest) break;
+	}
+	return edge;
+}
+
+// Writes the session files' owner prompts and Main replies to the backfill file, once. A turn is kept
+// only strictly between the newest backfill entry and the oldest live entry, so a rerun adds nothing and
+// the live log is never touched. Owner prompts pass the live path's gates (owner prose, then the owner's
+// part of a handoff or unanswered prompt). Returns the number of entries written.
+export function backfillOwnerLog(cfg: Config, turns: Iterable<OwnerTurn>): number {
+	const kept: OwnerTurn[] = [];
+	for (const turn of turns) {
+		if (turn.role === "main") {
+			kept.push(turn);
+		} else if (isOwnerProse(turn.text)) {
+			const owner = ownerText(turn.text);
+			if (owner !== undefined) kept.push({ at: turn.at, role: "owner", text: owner });
+		}
+	}
+	kept.sort((a, b) => a.at - b.at);
+	const newest = logEdge(ownerBackfillFile(), true);
+	const oldest = logEdge(ownerLogFile(), false);
+	const known = loadKnownSecrets(cfg);
+	let written = 0;
+	for (const turn of kept) {
+		if (newest !== undefined && turn.at <= newest.at) continue;
+		if (oldest !== undefined && turn.at >= oldest.at) continue;
+		const clean = redactSecrets(turn.text, known, cfg.secrets.extra_patterns).text;
+		appendLogLine(ownerBackfillFile(), { id: newEntryId(turn.at * 1000), at: turn.at, role: turn.role, text: clean });
+		written++;
+	}
+	return written;
 }
 
 const BLOCK = 64 * 1024;

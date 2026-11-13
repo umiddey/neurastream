@@ -49,6 +49,13 @@ export interface RunSource {
 	mainSession(file?: string): MainSession | null;
 }
 
+/** One line of the recall backfill (plan 20261109_2335 P3): an owner prompt or a Main reply found in a session file. `at` is epoch seconds. */
+export interface OwnerTurn {
+	at: number;
+	role: "owner" | "main";
+	text: string;
+}
+
 // Trace events: the raw activity of one run, used for claimed-vs-done checks and cross-run
 // questions. Harness-specific parsing lives in the adapters; core only defines the shape.
 
