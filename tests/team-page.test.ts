@@ -248,7 +248,9 @@ test("POST /answer from the page: answer_text wins over answer, and a bad length
 	expect(blank.status).toBe(400);
 	expect(readRows(dbPath, "SELECT id FROM answers")).toHaveLength(1);
 	const fallback = await raw(svc.port, "POST", "/answer", B_PEER, { form: { plan: waiting, answer: "Sqlite" } });
-	expect(fallback.status).toBe(303);
+	expect(fallback.status).toBe(200);
+	expect(fallback.text).toContain(`answer kept; an earlier answer by ${C} at `);
+	expect(fallback.text).toContain(`won: "Postgres"`);
 	expect(readRows(dbPath, "SELECT login, answer FROM answers ORDER BY id")).toEqual([
 		{ login: C, answer: "Postgres" },
 		{ login: B, answer: "Sqlite" },

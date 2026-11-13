@@ -1056,7 +1056,7 @@ console.log(svc.port);
 test("postTeamAnswer posts the answer alone to the percent-encoded /answer/<id>, and the server stores the caller's login", async () => {
 	const spy = spySend({ status: 200, body: { answer: {} } });
 	// The route id is percent-encoded, like every other id in a path.
-	expect(postTeamAnswer(cfg.teams[0]!, "a/b?c d", "yes", { send: spy.send })).toEqual({ ok: true });
+	expect(postTeamAnswer(cfg.teams[0]!, "a/b?c d", "yes", { send: spy.send })).toEqual({ ok: true, earlier: null });
 	const [sent] = spy.calls;
 	expect(sent!.url).toBe(`${SERVER_URL}/answer/a%2Fb%3Fc%20d`);
 	expect(sent!.method).toBe("POST");

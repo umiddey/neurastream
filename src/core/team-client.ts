@@ -649,8 +649,15 @@ export function teamSummaryLines(cfg: Config, views: Map<string, TeamView | Unre
 	return lines;
 }
 
-/** What `POST /answer/<id>` answered: stored, the server's refusal, or a team that did not answer. */
-export type TeamAnswerOutcome = { ok: true } | { ok: false; status: number; error: string } | Unreachable;
+/** The first answer to the same WAITING question, when the server says it won. A later answer is kept but does not count. */
+export interface TeamEarlier {
+	login: string;
+	time: number;
+	answer: string;
+}
+
+/** What `POST /answer/<id>` answered: stored (with the earlier answer to the same question, when one won), the server's refusal, or a team that did not answer. */
+export type TeamAnswerOutcome = { ok: true; earlier: TeamEarlier | null } | { ok: false; status: number; error: string } | Unreachable;
 
 /**
  * One member's answer to a team plan's WAITING line: `POST /answer/<id>` with `{ answer }` only.
@@ -664,6 +671,10 @@ export function postTeamAnswer(team: TeamEntry, id: string, answer: string, opts
 		opts,
 	);
 	if (res === "down" || res.status === undefined) return { unreachable: team.server };
-	if (res.status === 200) return { ok: true };
+	if (res.status === 200) {
+		const e = isObj(res.body) ? res.body.earlier : null;
+		const earlier = isObj(e) && typeof e.login === "string" && typeof e.time === "number" && typeof e.answer === "string" ? { login: e.login, time: e.time, answer: e.answer } : null;
+		return { ok: true, earlier };
+	}
 	return { ok: false, status: res.status, error: isObj(res.body) && typeof res.body.error === "string" ? res.body.error : `team server answered ${res.status}` };
 }

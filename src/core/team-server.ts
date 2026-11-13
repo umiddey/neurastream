@@ -10,7 +10,7 @@ import { claimExpired } from "./claims.ts";
 import { nowSec, strftime } from "./clock.ts";
 import { MAIN_ID_RE } from "./guards.ts";
 import { ANSWER_MAX, fieldsOf, hostAllowlist, isLoopback, isTailnet, jsonFail, jsonSent, originIsHost, pageCsp, renderTeamPage, teamSection, textRes, type UiHttpServer } from "./owner-ui.ts";
-import { headerField, sha } from "./queue/lib.ts";
+import { headerField, parsePlan, sha } from "./queue/lib.ts";
 import { remotePath } from "./mr-sweep.ts";
 import type { Tailscale } from "./tailscale.ts";
 import { viewPlanRows } from "./team-client.ts";
@@ -195,6 +195,12 @@ function pageRefused(req: Request, error: string, status: number): Response {
 	return wantsJson(req) ? jsonFail(error, status) : textRes(error, status);
 }
 
+/** The reply when an earlier answer to the same question already won: the new answer is kept, and the sender is told who won. */
+function earlierReply(req: Request, earlier: FirstAnswer): Response {
+	const note = `answer kept; an earlier answer by ${earlier.login} at ${strftime(earlier.time, "%H:%M")} won: "${earlier.answer}"`;
+	return wantsJson(req) ? jsonSent(note) : textRes(note, 200);
+}
+
 /** A path segment decoded, or null when its percent-encoding is bad. */
 function decodeSegment(raw: string): string | null {
 	try {
@@ -336,6 +342,13 @@ interface AnswerRow {
 	answer: string;
 }
 
+interface FirstAnswer {
+	plan: string;
+	login: string;
+	time: number;
+	answer: string;
+}
+
 interface PausedRow {
 	login: string;
 	time: number;
@@ -363,8 +376,18 @@ export interface TeamView {
 	override: OverrideRow | null;
 	paused: PausedRow[];
 	answers: AnswerRow[];
+	first: FirstAnswer[];
 	me_paused: boolean;
 }
+
+/** The hash of a plan's current WAITING line: the question an answer is for. Null when the plan waits on nothing. */
+function waitingKeyOf(text: string, id: string): string | null {
+	const line = parsePlan(".", id, text, undefined, [], false).waitingLine;
+	return line === null ? null : sha(line);
+}
+
+/** The earliest answer to a plan's current WAITING question, by its waiting key. */
+const FIRST_ANSWER_SQL = "SELECT plan_id AS plan, login, time, answer FROM answers WHERE plan_id = ? AND waiting_key = ? ORDER BY id LIMIT 1";
 
 /** Reads a team view in one deferred transaction: one snapshot, nothing written. P5's page calls this in process. */
 export function readTeamView(db: Database, team: string, login: string): TeamView {
@@ -382,6 +405,12 @@ export function readTeamView(db: Database, team: string, login: string): TeamVie
 		const paused = db.query<PausedRow, []>("SELECT login, time FROM paused ORDER BY login").all();
 		const answers = db.query<AnswerRow, []>("SELECT id, plan_id AS plan, login, time, sha, answer FROM answers ORDER BY id DESC LIMIT 500").all();
 		const mePaused = db.query<{ ok: number }, [string]>("SELECT 1 AS ok FROM paused WHERE login = ?").get(login) !== null;
+		const first: FirstAnswer[] = [];
+		for (const plan of plans) {
+			const key = waitingKeyOf(plan.text, plan.id);
+			const row = key === null ? null : db.query<FirstAnswer, [string, string]>(FIRST_ANSWER_SQL).get(plan.id, key);
+			if (row) first.push(row);
+		}
 		return {
 			plans,
 			claims,
@@ -390,6 +419,7 @@ export function readTeamView(db: Database, team: string, login: string): TeamVie
 			override: override ? (JSON.parse(override.value) as OverrideRow) : null,
 			paused,
 			answers,
+			first,
 			me_paused: mePaused,
 		};
 	})();
@@ -534,14 +564,17 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 		else deletePause.run(login);
 		insertAudit.run(login, now, paused ? "POST /pause" : "POST /resume", null);
 	});
-	const insertAnswer = db.prepare("INSERT INTO answers (plan_id, login, time, sha, answer) VALUES (?, ?, ?, ?, ?)");
+	const insertAnswer = db.prepare("INSERT INTO answers (plan_id, login, time, sha, answer, waiting_key) VALUES (?, ?, ?, ?, ?, ?)");
 	// The answer keeps the plan's sha when it landed, so a reader can tell an answer to an older version. A `login` in the body is ignored: the whois login is stored, as approve does.
+	// Answers are keyed by the WAITING line they answer: the first one to a question is the one that counts. A later answer is still stored; `earlier` names the one that won.
 	const answerOf = db.transaction((id: string, login: string, now: number, answer: string) => {
 		const plan = selectPlan.get(id, config.team);
 		if (!plan) return null;
-		const { lastInsertRowid } = insertAnswer.run(id, login, now, plan.sha, answer);
+		const key = waitingKeyOf(plan.text, id);
+		const earlier = key === null ? null : db.query<FirstAnswer, [string, string]>(FIRST_ANSWER_SQL).get(id, key);
+		const { lastInsertRowid } = insertAnswer.run(id, login, now, plan.sha, answer, key);
 		insertAudit.run(login, now, `POST /answer/${id}`, id);
-		return { id: Number(lastInsertRowid), plan: id, login, time: now, sha: plan.sha, answer };
+		return { answer: { id: Number(lastInsertRowid), plan: id, login, time: now, sha: plan.sha, answer }, earlier };
 	});
 
 	/** plan_ids as a checked list: 1 to 500 distinct ids, each a stored plan of this team. The first bad entry is named. */
@@ -630,9 +663,9 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 			if (!fields) return json({ error: "body must be a JSON object" }, 400);
 			const text = typeof fields.answer === "string" ? fields.answer.trim() : "";
 			if (text.length < 1 || text.length > ANSWER_MAX) return json({ error: `answer must be 1 to ${ANSWER_MAX} characters` }, 400);
-			const answer = answerOf.immediate(id, login, gate.now, text);
-			if (!answer) return json({ error: "no such plan" }, 404);
-			return json({ answer }, 200);
+			const result = answerOf.immediate(id, login, gate.now, text);
+			if (!result) return json({ error: "no such plan" }, 404);
+			return json({ answer: result.answer, earlier: result.earlier }, 200);
 		}
 		if (req.method === "POST" && (path === "/order" || path === "/order/override")) {
 			const override = path === "/order/override";
@@ -676,7 +709,9 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 			const form = await formOf(req, gate.body);
 			const text = (form.answer_text ?? form.answer ?? "").trim();
 			if (text.length < 1 || text.length > ANSWER_MAX) return pageRefused(req, `answer must be 1 to ${ANSWER_MAX} characters`, 400);
-			if (!answerOf.immediate(form.plan ?? "", login, gate.now, text)) return pageRefused(req, "no such plan", 404);
+			const result = answerOf.immediate(form.plan ?? "", login, gate.now, text);
+			if (!result) return pageRefused(req, "no such plan", 404);
+			if (result.earlier) return earlierReply(req, result.earlier);
 			return pageDone(req, "answer");
 		}
 		if (path === "/member") {

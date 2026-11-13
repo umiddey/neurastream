@@ -498,7 +498,7 @@ test("POST /answer stores the whois login, the trimmed answer and the plan's sha
 	const id = planId();
 	expect(await call(port, "POST", `/answer/${id}`, B_PEER, { answer: " yes ", login: C })).toEqual({
 		status: 200,
-		body: { answer: { id: 1, plan: id, login: B, time: T0, sha: putSha, answer: "yes" } },
+		body: { answer: { id: 1, plan: id, login: B, time: T0, sha: putSha, answer: "yes" }, earlier: null },
 	});
 	expect(readRows(dbPath, "SELECT plan_id, login, time, sha, answer FROM answers")).toEqual([
 		{ plan_id: id, login: B, time: T0, sha: putSha, answer: "yes" },

@@ -13,7 +13,7 @@ import os from "node:os";
 import { basename, resolve } from "node:path";
 import type { RunSource } from "./adapter.ts";
 import { chatTier, currentTier, type Tier } from "./autonomy.ts";
-import { summaryHolder, postTeamAnswer, teamPlans, teamViews, type TeamPlanRow, type TeamView } from "./team-client.ts";
+import { summaryHolder, postTeamAnswer, teamPlans, teamViews, type TeamEarlier, type TeamPlanRow, type TeamView } from "./team-client.ts";
 import type { Unreachable } from "./claims.ts";
 import type { Config } from "./config.ts";
 import { nowSec, strftime } from "./clock.ts";
@@ -1721,6 +1721,7 @@ function handleTeamAnswer(cfg: Config, fields: Record<string, string>, planId: s
 	const now = nowSec();
 	const last = lastAnswerByPlan.get(key);
 	const repeat = last !== undefined && last.answer === answer && now - last.ts < DOUBLE_PRESS_SEC;
+	let earlier: TeamEarlier | null = null;
 	if (!repeat) {
 		const out = postTeamAnswer(team, planId, answer);
 		if ("unreachable" in out) return wantsJson ? jsonFail(`team server ${out.unreachable} unreachable`, 503) : textRes(`team server ${out.unreachable} unreachable`, 503);
@@ -1729,8 +1730,11 @@ function handleTeamAnswer(cfg: Config, fields: Record<string, string>, planId: s
 			return wantsJson ? jsonFail(error, out.status === 404 ? 409 : out.status) : textRes(error, out.status === 404 ? 409 : out.status);
 		}
 		lastAnswerByPlan.set(key, { answer, ts: now });
+		earlier = out.earlier;
 	}
-	if (wantsJson) return jsonSent("team-answer", receiptText("team-answer", new URLSearchParams({ team: team.name })));
+	const note = earlier ? `answer kept; an earlier answer by ${earlier.login} at ${strftime(earlier.time, "%H:%M")} won: "${earlier.answer}"` : null;
+	if (wantsJson) return jsonSent("team-answer", note ?? receiptText("team-answer", new URLSearchParams({ team: team.name })));
+	if (note) return textRes(note, 200);
 	return redirect(sentTo(fields.tab ?? "", `sent=team-answer&team=${encodeURIComponent(team.name)}`));
 }
 
