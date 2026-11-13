@@ -26,6 +26,13 @@ const ONE = `teams:
     repos: ["gitlab.com/acme/*"]
 `;
 
+const EMPTY_VIEW = { plans: [], claims: [], approvals: [], votes: [], paused: [], answers: [], first: [], me_paused: false };
+
+function forgeWith(url: string): CommandRunner {
+	const remote = origin(url);
+	return (argv, opts) => (argv[0] === "glab" ? { code: 0, stdout: "[]", stderr: "" } : remote(argv, opts));
+}
+
 function origin(url: string): CommandRunner {
 	return () => ({ code: 0, stdout: `${url}\n`, stderr: "" });
 }
@@ -110,7 +117,7 @@ test("share writes Queue: team; unshare while another Main holds the claim is re
 	const cfg = cfgWith(ONE);
 	const file = path.join(TMP, "shared.md");
 	writeFileSync(file, "# t\nBranch: feat/x\n\n## Goal\n- g\n");
-	const shared = capture(() => runTeam(["share", file], { cfg, run: origin("https://gitlab.com/acme/pm.git") }));
+	const shared = capture(() => runTeam(["share", file], { cfg, run: forgeWith("https://gitlab.com/acme/pm.git"), send: () => ({ status: 200, body: EMPTY_VIEW }) }));
 	expect(shared.rc).toBe(0);
 	expect(readFileSync(file, "utf8")).toBe("# t\nBranch: feat/x\nQueue: team\n\n## Goal\n- g\n");
 	fileClaimStore(cfg.paths.queue_state, nowSec, cfg.queue.claim_ttl_min).claim(file, "other");
