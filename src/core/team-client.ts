@@ -706,3 +706,21 @@ export function postTeamAnswer(team: TeamEntry, id: string, answer: string, opts
 	}
 	return { ok: false, status: res.status, error: isObj(res.body) && typeof res.body.error === "string" ? res.body.error : `team server answered ${res.status}` };
 }
+
+/** `team pause|resume`: the server's POST /pause or /resume for this login. Ok only on a 200; any other answer carries the server's error text. */
+export function postTeamPause(team: TeamEntry, paused: boolean, opts: RawOpts = {}): { ok: true } | { ok: false; error: string } {
+	const res = askRaw(team, { url: `${team.server}/${paused ? "pause" : "resume"}`, method: "POST", headers: { "content-type": "application/json", origin: originOf(team.server) }, body: "{}" }, opts);
+	if (res === "down" || res.status === undefined) return { ok: false, error: `team server ${team.server} unreachable` };
+	if (res.status === 200) return { ok: true };
+	return { ok: false, error: isObj(res.body) && typeof res.body.error === "string" ? res.body.error : `team server answered ${res.status}` };
+}
+
+/** `team pause` releases this Main's own claims by plan id, so a plan with no local copy is released too. Void on any answer, as the store's release is. */
+export function releaseTeamClaim(team: TeamEntry, id: string, main: string, opts: RawOpts = {}): void {
+	askRaw(team, { url: `${team.server}/claims/${encodeURIComponent(id)}`, method: "DELETE", headers: { "content-type": "application/json", origin: originOf(team.server) }, body: JSON.stringify({ main }) }, opts);
+}
+
+/** This machine's file for a plan as the sync record names it; undefined when the record has no entry for the id. */
+export function recordPath(cfg: Config, team: TeamEntry, id: string): string | undefined {
+	return readRecord(cfg, team)[id]?.path;
+}

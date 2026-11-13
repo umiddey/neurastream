@@ -7,17 +7,19 @@
 // `team join <url> --name <name> --repo <glob>...` and `team leave <name>` (P6) add and remove one
 // teams: entry in the config. join asks the server for its view first and writes nothing when the
 // server does not answer this login (down, or not a member).
+// `team pause <name>` and `team resume <name>` (P6b1): pause stops this login's claims on the team, and also gives up this Main's own claims there (see pauseTeam). resume only lifts the stop.
 
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { heldByOther, type ClaimStore } from "../core/claims.ts";
+import { nowSec, strftime } from "../core/clock.ts";
 import { ConfigError, configFile, loadConfig, type Config } from "../core/config.ts";
 import { setConfigKeys } from "../core/config-edit.ts";
 import { mainId } from "../core/guards.ts";
 import { defaultRunner, type CommandRunner } from "../core/mr-sweep.ts";
 import { headerField, planRepo } from "../core/queue/lib.ts";
-import { deleteRecordEntries, claimStoreFor, pushTeamPlan, syncTeam, teamViews, type TeamEntry } from "../core/team-client.ts";
+import { deleteRecordEntries, claimStoreFor, postTeamPause, pushTeamPlan, recordPath, releaseTeamClaim, syncTeam, teamViews, type TeamEntry } from "../core/team-client.ts";
 import { TEAM_NAME_HINT, TEAM_NAME_RE, repoTeam, teamConfigError } from "../core/team-labels.ts";
 
 const USAGE = [
@@ -26,6 +28,8 @@ const USAGE = [
 	"       neurastream team sync [--team <name>]",
 	"       neurastream team join <url> --name <name> --repo <glob>...",
 	"       neurastream team leave <name>",
+	"       neurastream team pause <name>",
+	"       neurastream team resume <name>",
 ].join("\n");
 
 /** Header text with `Queue:` set to team, or removed (absent means personal). The first `##` section is kept. */
@@ -43,6 +47,7 @@ function withQueue(text: string, value: "team" | null): string {
 export function runTeam(args: string[], opts: { cfg?: Config; run?: CommandRunner; store?: ClaimStore; home?: string; send?: ViewSend } = {}): number {
 	const sub = args[0];
 	if (sub === "join" || sub === "leave") return runJoinLeave(args, opts);
+	if (sub === "pause" || sub === "resume") return runPause(args, opts);
 	if (sub === "sync") {
 		let cfg: Config;
 		try {
@@ -123,6 +128,77 @@ export function runTeam(args: string[], opts: { cfg?: Config; run?: CommandRunne
 	deleteRecordEntries(cfg, file, run);
 	console.log(`team unshare: ${file} is personal again (local copy kept)`);
 	return 0;
+}
+
+/** The text with `line` as the last line of its `## Progress` section, or in a new section at the end when the plan has none. */
+function withProgress(text: string, line: string): string {
+	const lines = text.replace(/\s*$/, "").split("\n");
+	const head = lines.findIndex(l => /^## Progress\s*$/.test(l));
+	if (head < 0) return `${lines.join("\n")}\n\n## Progress\n${line}\n`;
+	let end = lines.findIndex((l, i) => i > head && l.startsWith("## "));
+	if (end < 0) end = lines.length;
+	let last = end - 1;
+	while (last > head && lines[last]?.trim() === "") last--;
+	lines.splice(last + 1, 0, line);
+	return `${lines.join("\n")}\n`;
+}
+
+/** `team pause <name>` stops this login's claims on the team; it then gives up this Main's own claims there: each plan with a local copy the sync record names gets a Progress line, is pushed, and its claim is released by id. `team resume` only lifts the stop. */
+export function pauseTeam(team: TeamEntry, cfg: Config, paused: boolean, opts: { run?: CommandRunner; send?: ViewSend } = {}): number {
+	const sent = postTeamPause(team, paused, { send: opts.send });
+	if (!sent.ok) {
+		console.error(`team ${paused ? "pause" : "resume"}: ${sent.error}`);
+		return 1;
+	}
+	if (!paused) {
+		console.log(`team resume: ${team.name} open to this member again`);
+		return 0;
+	}
+	const view = teamViews({ ...cfg, teams: [team] }, { send: opts.send }).get(team.name);
+	if (!view || "unreachable" in view) {
+		console.error(`team pause: ${team.name} is paused on the server, but its claims could not be read; none were released`);
+		return 1;
+	}
+	const me = mainId();
+	const run = opts.run ?? defaultRunner;
+	for (const claim of view.claims.filter(c => c.mine && c.main === me)) {
+		const file = recordPath(cfg, team, claim.plan);
+		if (file && existsSync(file)) {
+			const stamp = strftime(nowSec(), "%Y-%m-%d %H:%M");
+			const next = withProgress(readFileSync(file, "utf8"), `- ${stamp} ${me}: team ${team.name} paused by this member; claim released.`);
+			const tmp = `${file}.${process.pid}.tmp`;
+			writeFileSync(tmp, next);
+			renameSync(tmp, file);
+			pushTeamPlan(team, cfg, file, next, run);
+		}
+		releaseTeamClaim(team, claim.plan, me, { send: opts.send });
+		console.log(`team pause: released ${claim.plan} (${team.name})`);
+	}
+	console.log(`team pause: ${team.name} paused for this member`);
+	return 0;
+}
+
+/** `team pause|resume <name>`: looks up the named teams: entry, then runs pauseTeam. */
+function runPause(args: string[], opts: { cfg?: Config; run?: CommandRunner; send?: ViewSend }): number {
+	const sub = args[0];
+	const name = args[1];
+	if (!name || args.length !== 2) {
+		console.error(USAGE);
+		return 2;
+	}
+	let cfg: Config;
+	try {
+		cfg = opts.cfg ?? loadConfig();
+	} catch (err) {
+		console.error(err instanceof ConfigError ? err.message : String(err));
+		return 1;
+	}
+	const team = (cfg.teams ?? []).find(t => t.name === name) as TeamEntry | undefined;
+	if (!team) {
+		console.error(`team ${sub}: no teams: entry named ${name}`);
+		return 1;
+	}
+	return pauseTeam(team, cfg, sub === "pause", opts);
 }
 
 // Writes the teams: list into the config file and keeps every other key as it is.
