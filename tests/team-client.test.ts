@@ -1136,3 +1136,60 @@ test("a team answer from the page goes to the team server only: login stored, no
 		downPage.stop();
 	}
 });
+
+// A stub team server in its own process: the client sends from a blocking child, so a stub in
+// this process could not answer. It logs each request as one JSON line and answers from
+// `replies`, keyed "METHOD /path" then "METHOD"; anything else is a 404 with no body.
+let stubs = 0;
+async function stubTeam(replies: Record<string, { status: number; body: unknown }>): Promise<{ url: string; requests: () => { method: string; path: string; body: string }[]; stop: () => void }> {
+	const log = join(TMP, `stub-${stubs++}.log`);
+	const child = join(TMP, "stub-team.ts");
+	writeFileSync(
+		child,
+		`import { appendFileSync } from "node:fs";
+const [logFile, repliesJson] = process.argv.slice(2);
+const replies = JSON.parse(repliesJson!);
+const svc = Bun.serve({
+	hostname: ${JSON.stringify(LOOPBACK)},
+	port: 0,
+	fetch: async (req) => {
+		const path = new URL(req.url).pathname;
+		const body = await req.text();
+		appendFileSync(logFile!, JSON.stringify({ method: req.method, path, body }) + "\\n");
+		const r = replies[req.method + " " + path] ?? replies[req.method] ?? { status: 404, body: {} };
+		return Response.json(r.body, { status: r.status });
+	},
+});
+console.log(svc.port);
+`,
+	);
+	const proc = Bun.spawn([process.execPath, child, log, JSON.stringify(replies)], { stdout: "pipe", stderr: "pipe" });
+	const reader = proc.stdout.getReader();
+	const first = await reader.read();
+	await reader.cancel();
+	const port = Number(new TextDecoder().decode(first.value).trim());
+	return {
+		url: `http://${LOOPBACK}:${port}`,
+		requests: () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").map(l => JSON.parse(l) as { method: string; path: string; body: string }) : []),
+		stop: () => proc.kill(),
+	};
+}
+
+test("the PUT body names the origin as host/path: no userinfo, no port (ii-1)", async () => {
+	const stub = await stubTeam({ PUT: { status: 200, body: { sha: "s1" } } });
+	try {
+		const repo = join(TMP, "creds");
+		mkdirSync(repo, { recursive: true });
+		spawnSync("git", ["init", "-q"], { cwd: repo });
+		spawnSync("git", ["remote", "add", "origin", "https://user:pw@gitlab.com:8443/acme/pm.git"], { cwd: repo });
+		const file = join(repo, "docs/plans/20261101_0900_creds.md");
+		writePlan(file, "", "Queue: team");
+		const team: TeamEntry = { name: "stubteam", server: stub.url, repos: ["gitlab.com/acme/*"] };
+		pushTeamPlan(team, cfgWith([team]), file);
+		const puts = stub.requests().filter(r => r.method === "PUT");
+		expect(puts).toHaveLength(1);
+		expect(JSON.parse(puts[0]!.body).remote).toBe("https://gitlab.com/acme/pm");
+	} finally {
+		stub.stop();
+	}
+});

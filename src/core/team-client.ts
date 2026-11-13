@@ -19,7 +19,7 @@ import type { Config } from "./config.ts";
 import { lock } from "./file-lock.ts";
 import { mainId } from "./guards.ts";
 import { jaccard } from "./incident-detectors.ts";
-import { defaultRunner, listOpenMrs, type CommandRunner } from "./mr-sweep.ts";
+import { defaultRunner, listOpenMrs, remotePath, type CommandRunner } from "./mr-sweep.ts";
 import { activePlans, headerField, parsePlan, planRepo, sha, SUMMARY_CAP, type Plan } from "./queue/lib.ts";
 import { teamPlanId, type TeamView } from "./team-server.ts";
 import { planShare, repoTeam } from "./team-labels.ts";
@@ -225,6 +225,11 @@ function gitOrigin(repo: string, run: CommandRunner): string {
 	const url = r.code === 0 ? r.stdout.trim() : "";
 	originCache.set(repo, url);
 	return url;
+}
+
+/** The origin as the wire carries it: host/path under https, so no userinfo, port or scheme from the git config. The server stores remotePath of what it gets, so the plan id is the same either way. */
+function wireRemote(origin: string): string {
+	return `https://${remotePath(origin) ?? ""}`;
 }
 
 /** The server's id for this plan file: the sync record's id for the path when recorded, else the hash of the repo origin and the repo-relative path. Null when neither names a plan. */
@@ -474,7 +479,7 @@ export function pushTeamPlan(team: TeamEntry, cfg: Config, file: string, text?: 
 		url: `${team.server}/plans/${encodeURIComponent(id)}`,
 		method: "PUT",
 		headers: { "content-type": "application/json", origin: originOf(team.server) },
-		body: JSON.stringify({ remote: gitOrigin(repo, run), rel_path: path.relative(repo, file), text: body, base_sha: base, distinct }),
+		body: JSON.stringify({ remote: wireRemote(gitOrigin(repo, run)), rel_path: path.relative(repo, file), text: body, base_sha: base, distinct }),
 	});
 	if (res === "down") {
 		console.log(`team sync: ${file} not pushed: team server ${team.server} unreachable`);
