@@ -24,7 +24,7 @@ const TOY = join(HOME, "projects/toy");
 const STATE = join(HOME, ".local/state/queue");
 const PLAN = join(TOY, "docs/plans/20261029_0100_gate.md");
 
-const OPEN_211 = JSON.stringify([{ iid: 211, source_branch: "feat/e2-classification", state: "opened" }]);
+const OPEN_211 = JSON.stringify([{ iid: 211, source_branch: "feat/e2-classification", state: "opened", title: "E2 classification" }]);
 const MERGED_211 = JSON.stringify([{ iid: 211, source_branch: "feat/e2-classification", state: "merged" }]);
 const UNLANDED = [
 	"UNLANDED branches (commits on no remote): 2  limit 5",
@@ -143,7 +143,7 @@ test("listOpenMrs lists open MRs with their token and degrades like the sweep", 
 	resetForge();
 	expect(listOpenMrs(TOY, runner)).toEqual({
 		ok: true,
-		mrs: [{ forge: "gitlab", number: 211, token: "!211", branch: "feat/e2-classification" }],
+		mrs: [{ forge: "gitlab", number: 211, token: "!211", branch: "feat/e2-classification", title: "E2 classification" }],
 	});
 	glabFails = true;
 	expect(listOpenMrs(TOY, runner)).toEqual({ ok: false, why: "forge unreachable" });

@@ -19,11 +19,11 @@ import { setConfigKeys } from "../core/config-edit.ts";
 import { mainId } from "../core/guards.ts";
 import { defaultRunner, type CommandRunner } from "../core/mr-sweep.ts";
 import { headerField, planRepo } from "../core/queue/lib.ts";
-import { deleteRecordEntries, claimStoreFor, postTeamPause, pushTeamPlan, recordPath, releaseTeamClaim, syncTeam, teamViews, type TeamEntry } from "../core/team-client.ts";
+import { deleteRecordEntries, claimStoreFor, postTeamPause, pushTeamPlan, recordPath, releaseTeamClaim, sameGoalCheck, syncTeam, teamViews, type TeamEntry } from "../core/team-client.ts";
 import { TEAM_NAME_HINT, TEAM_NAME_RE, repoTeam, teamConfigError } from "../core/team-labels.ts";
 
 const USAGE = [
-	"usage: neurastream team share <plan>",
+	"usage: neurastream team share <plan> [--distinct \"<reason>\"]",
 	"       neurastream team unshare <plan>",
 	"       neurastream team sync [--team <name>]",
 	"       neurastream team join <url> --name <name> --repo <glob>...",
@@ -67,8 +67,15 @@ export function runTeam(args: string[], opts: { cfg?: Config; run?: CommandRunne
 		return 0;
 	}
 	const planArg = args[1];
-	if ((sub !== "share" && sub !== "unshare") || !planArg || args.length !== 2) {
+	const distinctAt = args.indexOf("--distinct");
+	const distinct = distinctAt === -1 ? undefined : args[distinctAt + 1];
+	const shaped = distinctAt === -1 ? args.length === 2 : sub === "share" && distinctAt === 2 && args.length === 4;
+	if ((sub !== "share" && sub !== "unshare") || !planArg || !shaped) {
 		console.error(USAGE);
+		return 2;
+	}
+	if (distinct !== undefined && (distinct.trim() === "" || distinct.length > 200)) {
+		console.error("team share: --distinct needs a reason of 1 to 200 characters");
 		return 2;
 	}
 	let cfg = opts.cfg;
@@ -100,11 +107,25 @@ export function runTeam(args: string[], opts: { cfg?: Config; run?: CommandRunne
 			console.log(`team share: ${file} already Queue: team for ${team}`);
 			return 0;
 		}
+		const entry = (cfg.teams ?? []).find(t => t.name === team) as TeamEntry | undefined;
+		// P6b2 rule a: a plan with the same goal as a plan or MR already in the team is refused unless --distinct gives a reason.
+		if (entry && distinct === undefined) {
+			const check = sameGoalCheck(entry, cfg, file, text, run, { send: opts.send });
+			if ("refused" in check) {
+				console.error(`team share: ${file} refused: ${check.refused}; pass --distinct "<reason>" to share anyway`);
+				return 1;
+			}
+			if (check.overlaps.length) {
+				console.error(`team share: ${file} has the same goal as:`);
+				for (const o of check.overlaps) console.error(`  ${o.item} (overlap ${o.score.toFixed(2)})`);
+				console.error(`team share: refused; pass --distinct "<reason>" if this plan's goal is distinct`);
+				return 1;
+			}
+		}
 		writeFileSync(file, withQueue(text, "team"));
 		console.log(`team share: ${file} marked Queue: team for ${team}`);
 		// P3: share uploads the plan — one plan's push, guarded like every push.
-		const entry = (cfg.teams ?? []).find(t => t.name === team) as TeamEntry | undefined;
-		if (entry) pushTeamPlan(entry, cfg, file, undefined, run);
+		if (entry) pushTeamPlan(entry, cfg, file, undefined, run, distinct);
 		return 0;
 	}
 	if (headerField(text, "Queue") !== "team") {

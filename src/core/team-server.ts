@@ -103,6 +103,7 @@ interface PutArgs {
 	login: string;
 	now: number;
 	route: string;
+	note: string | null;
 }
 
 /** One claim row. `id` is the plan id; `login` is the whois login that holds it. */
@@ -330,6 +331,7 @@ export function openTeamDb(dbPath: string): Database {
 		);
 	`);
 	addColumn(db, "answers", "waiting_key", "TEXT");
+	addColumn(db, "audit", "note", "TEXT");
 	return db;
 }
 
@@ -458,6 +460,7 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 	);
 	// Audit is insert-only: no update and no delete statement exists for this table.
 	const insertAudit = db.prepare("INSERT INTO audit (login, time, route, plan_id) VALUES (?, ?, ?, ?)");
+	const insertNoteAudit = db.prepare("INSERT INTO audit (login, time, route, plan_id, note) VALUES (?, ?, ?, ?, ?)");
 	const writePlan = db.transaction((args: PutArgs): { status: 200; sha: string } | { status: 409; sha: string | null } => {
 		const existing = selectPlan.get(args.id, config.team);
 		if (!existing) {
@@ -468,7 +471,7 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 		} else {
 			updatePlan.run(args.remote, args.relPath, args.nextSha, args.text, args.login, args.now, args.id, config.team);
 		}
-		insertAudit.run(args.login, args.now, args.route, args.id);
+		insertNoteAudit.run(args.login, args.now, args.route, args.id, args.note);
 		return { status: 200, sha: args.nextSha };
 	});
 	const planExists = db.query<{ ok: number }, [string, string]>("SELECT 1 AS ok FROM plans WHERE id = ? AND team = ?");
@@ -896,6 +899,13 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 					if (!("base_sha" in fields) || fields.base_sha === null || fields.base_sha === "") base = null;
 					else if (typeof fields.base_sha !== "string") return json({ error: "base_sha must be a string or null" }, 400);
 					else base = fields.base_sha;
+					let note: string | null = null;
+					if (fields.distinct !== undefined) {
+						if (typeof fields.distinct !== "string" || fields.distinct.trim() === "" || fields.distinct.length > 200) {
+							return json({ error: "distinct must be a reason of 1 to 200 characters" }, 400);
+						}
+						note = fields.distinct;
+					}
 					if (!relPathOk(relPath)) return json({ error: "rel_path must be a relative path" }, 400);
 					if (new TextEncoder().encode(text).byteLength > PLAN_MAX) return json({ error: "plan too large" }, 413);
 					if (headerField(text, "Queue") !== "team") return json({ error: "forbidden: plan is not Queue: team" }, 403);
@@ -913,6 +923,7 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 						login,
 						now,
 						route: `PUT /plans/${id}`,
+						note,
 					});
 					if (written.status === 409) return json({ error: "stale base", sha: written.sha }, 409);
 					return json({ id, sha: written.sha }, 200);

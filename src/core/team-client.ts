@@ -18,7 +18,8 @@ import { nowSec, strftime } from "./clock.ts";
 import type { Config } from "./config.ts";
 import { lock } from "./file-lock.ts";
 import { mainId } from "./guards.ts";
-import { defaultRunner, type CommandRunner } from "./mr-sweep.ts";
+import { jaccard } from "./incident-detectors.ts";
+import { defaultRunner, listOpenMrs, type CommandRunner } from "./mr-sweep.ts";
 import { activePlans, headerField, parsePlan, planRepo, sha, SUMMARY_CAP, type Plan } from "./queue/lib.ts";
 import { teamPlanId, type TeamView } from "./team-server.ts";
 import { planShare, repoTeam } from "./team-labels.ts";
@@ -179,7 +180,7 @@ function defaultSend(req: WireRequest): WireResponse | null {
 
 // --- records: <queue_state>/team/<team>/record.json, every read-modify-write under the lock ---
 
-function teamDir(cfg: Config, team: TeamEntry): string {
+export function teamDir(cfg: Config, team: TeamEntry): string {
 	return path.join(cfg.paths.queue_state, "team", team.name);
 }
 
@@ -332,7 +333,7 @@ export function resetTeamStores(): void {
 }
 
 /** The team this plan's claims belong to: a `Queue: team` plan goes to the repo's team (the order planShare uses); a headerless plan whose path sits in some team's sync record goes there anyway — the record is a local JSON read, no git. */
-function routeTeam(file: string, cfg: Config, text: string | undefined, run: CommandRunner): TeamEntry | null {
+export function routeTeam(file: string, cfg: Config, text: string | undefined, run: CommandRunner): TeamEntry | null {
 	const header = headerField(text ?? readText(file) ?? "", "Queue");
 	if (header === "team") {
 		const name = repoTeam(planRepo(file), cfg, run);
@@ -450,7 +451,7 @@ function pullPlan(team: TeamEntry, cfg: Config, id: string): void {
  * server sha it re-reads, with `sha: null` the plan is absent on the server and the record
  * entry stays, so every later sync conflicts again until the plan is unshared and shared anew.
  */
-export function pushTeamPlan(team: TeamEntry, cfg: Config, file: string, text?: string, run: CommandRunner = defaultRunner): void {
+export function pushTeamPlan(team: TeamEntry, cfg: Config, file: string, text?: string, run: CommandRunner = defaultRunner, distinct?: string): void {
 	const body = text ?? readText(file) ?? "";
 	if (headerField(body, "Queue") !== "team") return; // a plan without the marker is never pushed
 	const id = pathId(team, cfg, file, run);
@@ -473,7 +474,7 @@ export function pushTeamPlan(team: TeamEntry, cfg: Config, file: string, text?: 
 		url: `${team.server}/plans/${encodeURIComponent(id)}`,
 		method: "PUT",
 		headers: { "content-type": "application/json", origin: originOf(team.server) },
-		body: JSON.stringify({ remote: gitOrigin(repo, run), rel_path: path.relative(repo, file), text: body, base_sha: base }),
+		body: JSON.stringify({ remote: gitOrigin(repo, run), rel_path: path.relative(repo, file), text: body, base_sha: base, distinct }),
 	});
 	if (res === "down") {
 		console.log(`team sync: ${file} not pushed: team server ${team.server} unreachable`);
@@ -569,6 +570,12 @@ function isView(body: unknown): body is TeamView {
 	);
 }
 
+/** One team's view (`GET /view`): the TeamView, or the typed Unreachable. teamViews is this over every team. */
+export function teamView(team: TeamEntry, opts: RawOpts = {}): TeamView | Unreachable {
+	const res = askRaw(team, { url: `${team.server}/view`, method: "GET" }, opts);
+	return res === "down" || res.status !== 200 || !isView(res.body) ? { unreachable: team.server } : res.body;
+}
+
 /**
  * One `GET /view` per `cfg.teams` entry: plan text, claims and the P2c tables in one request, so
  * a render costs one child per team instead of one per table. The outage memo and the 5 s bound
@@ -577,11 +584,74 @@ function isView(body: unknown): body is TeamView {
  */
 export function teamViews(cfg: Config, opts: RawOpts = {}): Map<string, TeamView | Unreachable> {
 	const out = new Map<string, TeamView | Unreachable>();
-	for (const team of cfg.teams) {
-		const res = askRaw(team, { url: `${team.server}/view`, method: "GET" }, opts);
-		out.set(team.name, res === "down" || res.status !== 200 || !isView(res.body) ? { unreachable: team.server } : res.body);
-	}
+	for (const team of cfg.teams) out.set(team.name, teamView(team, opts));
 	return out;
+}
+
+const GOAL_STOP = new Set(
+	"a an the and or but of to in on for with by at from into onto is are was be been being it its this that these those as so not no we our you your they their can will should must all any each per via vs then than when where which who what how do does done make add use new".split(" "),
+);
+
+/** Lowercase word tokens of the given lines: one-letter words and the stopwords above are dropped. */
+function goalTokens(lines: string[]): Set<string> {
+	const out = new Set<string>();
+	for (const t of lines.join(" ").toLowerCase().split(/[^a-z0-9]+/)) if (t.length > 1 && !GOAL_STOP.has(t)) out.add(t);
+	return out;
+}
+
+/** The share of a title's tokens that the Goal also has: |G∩T| / |T|. */
+function coverage(goal: Set<string>, title: Set<string>): number {
+	let shared = 0;
+	for (const t of title) if (goal.has(t)) shared++;
+	return shared / title.size;
+}
+
+/** One same-goal hit: `item` names the plan, finished plan or MR; `score` is the overlap that blocked. */
+export interface GoalOverlap {
+	item: string;
+	score: number;
+}
+
+/**
+ * The same-goal check (plan P6b2 rule a), pure. A plan not yet complete is compared Goal to Goal
+ * (Jaccard >= 0.5); a finished plan and an open MR are compared Goal to title (|G∩T| / |T| >= 0.6,
+ * titles of 3+ tokens only). Only the first 6 Goal bullets count. The plan's own id is skipped.
+ */
+export function goalOverlaps(goal: string[], view: TeamView, mrs: { token: string; title: string }[], selfId: string | null): GoalOverlap[] {
+	const g = goalTokens(goal);
+	const out: GoalOverlap[] = [];
+	const titleHit = (title: string, item: string): void => {
+		const t = goalTokens([title]);
+		if (t.size < 3) return;
+		const score = coverage(g, t);
+		if (score >= 0.6) out.push({ item, score });
+	};
+	for (const p of view.plans) {
+		if (p.id === selfId) continue;
+		const plan = parsePlan(".", p.rel_path, p.text, undefined, [], false);
+		if (plan.status === "complete") {
+			titleHit(plan.title, `finished ${plan.title}`);
+			continue;
+		}
+		const score = jaccard(g, goalTokens(plan.goal));
+		if (score >= 0.5) out.push({ item: `plan ${p.rel_path}`, score });
+	}
+	for (const mr of mrs) titleHit(mr.title, `MR ${mr.token} ${mr.title}`);
+	return out;
+}
+
+/**
+ * `team share`'s same-goal gate: the team's view and the repo's open MRs, then goalOverlaps. A view
+ * the server did not answer, or an MR list that failed, refuses (`refused`): the check fails closed.
+ */
+export function sameGoalCheck(team: TeamEntry, cfg: Config, file: string, text: string, run: CommandRunner = defaultRunner, opts: RawOpts = {}): { overlaps: GoalOverlap[] } | { refused: string } {
+	const view = teamView(team, opts);
+	if ("unreachable" in view) return { refused: `team server ${team.server} unreachable` };
+	const repo = planRepo(file);
+	const mrs = listOpenMrs(repo, run);
+	if (!mrs.ok) return { refused: `open MRs of ${repo} not listed (${mrs.why})` };
+	const plan = parsePlan(repo, file, text, undefined, [], false);
+	return { overlaps: goalOverlaps(plan.goal, view, mrs.mrs, pathId(team, cfg, file, run)) };
 }
 
 /**

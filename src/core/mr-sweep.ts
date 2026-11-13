@@ -165,11 +165,11 @@ export function parseList(stdout: string): Record<string, unknown>[] | null {
 interface Listed {
 	missing?: boolean;
 	fail?: boolean;
-	items: { number: number; branch: string }[];
+	items: { number: number; branch: string; title: string }[];
 }
 
-function takeItems(parsed: Record<string, unknown>[], numberKey: "iid" | "number", branchKeys: string[]): { number: number; branch: string }[] {
-	const items: { number: number; branch: string }[] = [];
+function takeItems(parsed: Record<string, unknown>[], numberKey: "iid" | "number", branchKeys: string[]): { number: number; branch: string; title: string }[] {
+	const items: { number: number; branch: string; title: string }[] = [];
 	const seen = new Set<number>();
 	for (const item of parsed) {
 		const n = asNumber(item[numberKey] ?? item.number);
@@ -187,13 +187,13 @@ function takeItems(parsed: Record<string, unknown>[], numberKey: "iid" | "number
 				break;
 			}
 		}
-		items.push({ number: n, branch });
+		items.push({ number: n, branch, title: typeof item.title === "string" ? item.title : "" });
 	}
 	return items;
 }
 
 function listGitlab(repo: string, run: CommandRunner, env?: NodeJS.ProcessEnv): Listed {
-	const items: { number: number; branch: string }[] = [];
+	const items: { number: number; branch: string; title: string }[] = [];
 	const seen = new Set<number>();
 	for (let page = 1; page <= MAX_PAGES; page++) {
 		const r = run(["glab", "mr", "list", "-F", "json", "-P", String(PAGE), "-p", String(page)], { cwd: repo, env });
@@ -229,6 +229,7 @@ export interface OpenMr {
 	number: number;
 	token: string;
 	branch: string;
+	title: string;
 }
 
 /** `{ ok: false, why }` is the sweep's degrade: the caller logs it and never treats it as "no MRs". */
@@ -258,7 +259,7 @@ export function listOpenMrs(repo: string, run: CommandRunner = defaultRunner, en
 	return {
 		ok: true,
 		mrs: listed.items
-			.map(item => ({ forge, number: item.number, token: forge === "gitlab" ? `!${item.number}` : `#${item.number}`, branch: item.branch }))
+			.map(item => ({ forge, number: item.number, token: forge === "gitlab" ? `!${item.number}` : `#${item.number}`, branch: item.branch, title: item.title }))
 			.toSorted((a, b) => a.number - b.number),
 	};
 }

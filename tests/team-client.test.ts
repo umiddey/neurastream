@@ -276,6 +276,9 @@ function spawnEv(file: string): SpawnEvent {
 const gateRun: CommandRunner = (args, opts) =>
 	args[0] === "git" ? defaultRunner(args, opts) : { code: 127, stdout: "", stderr: "missing", missing: true };
 
+/** The share tests' runner: real git, and a forge CLI that lists no open MRs, so the same-goal check sees none. */
+const shareRun: CommandRunner = (args, opts) => (args[0] === "git" ? defaultRunner(args, opts) : { code: 0, stdout: "[]", stderr: "" });
+
 /** The file claim store the guards used before P3, pointed at this sandbox. */
 function claims() {
 	return fileClaimStore(STATE, () => nowSec(), TTL_MIN);
@@ -436,7 +439,7 @@ test("a synced team plan whose header was stripped on disk is claimed on the ser
 	indexPlans(RP);
 	await dropClaim(RP, A_PEER);
 	// share records the plan (the record maps the id to the repo path) and pushes it.
-	expect(capture(() => runTeam(["share", RP], { cfg })).rc).toBe(0);
+	expect(capture(() => runTeam(["share", RP], { cfg, run: shareRun })).rc).toBe(0);
 	expect(Object.values(readRecord("acme"))).toEqual([{ path: RP, sha: sha(readFileSync(RP, "utf8")) }]);
 	// B holds the plan on the server; the stripped header must not hand it to the file store.
 	expect((await call("POST", `/claims/${idOf(RP)}`, B_PEER, { main: "main", host: "laptop", pid: 4242 })).status).toBe(200);
@@ -477,7 +480,7 @@ test("team sync pulls into the read copy and the record, and the push sends the 
 
 test("a 409 with a sha pulls that id, keeps the local file and prints the conflict line", async () => {
 	writePlan(CP);
-	expect(capture(() => runTeam(["share", CP], { cfg })).rc).toBe(0);
+	expect(capture(() => runTeam(["share", CP, "--distinct", "fixture plans share one toy goal"], { cfg, run: shareRun })).rc).toBe(0);
 	const local = readFileSync(CP, "utf8");
 	const v2 = `${local}\n- B edited this.\n`;
 	expect((await call("PUT", `/plans/${idOf(CP)}`, B_PEER, { remote: ORIGIN, rel_path: relOf(CP), text: v2, base_sha: sha(local) })).status).toBe(200);
@@ -522,7 +525,7 @@ pushTeamPlan(cfg.teams[0]!, cfg, plan!);
 test("team share pushes the plan once, and a second share pushes nothing", async () => {
 	writePlan(SH); // no header yet: share writes it and uploads
 	const before = (await auditRoutes()).filter((r) => r === `PUT /plans/${idOf(SH)}`).length;
-	expect(capture(() => runTeam(["share", SH], { cfg })).rc).toBe(0);
+	expect(capture(() => runTeam(["share", SH, "--distinct", "fixture plans share one toy goal"], { cfg, run: shareRun })).rc).toBe(0);
 	expect((await auditRoutes()).filter((r) => r === `PUT /plans/${idOf(SH)}`).length).toBe(before + 1);
 	expect(capture(() => runTeam(["share", SH], { cfg })).out).toContain(`team share: ${SH} already Queue: team`);
 	expect((await auditRoutes()).filter((r) => r === `PUT /plans/${idOf(SH)}`).length).toBe(before + 1);
