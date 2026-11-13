@@ -320,7 +320,7 @@ export function teamSection(name: string, server: string, plans: TeamPlanRow[]):
 	const questions: QuestionRow[] = plans
 		.filter(p => p.plan.status === "open" && p.plan.waiting && p.plan.waitingLine)
 		.map(p => {
-			const last = p.answers[0];
+			const first = p.answered;
 			return {
 				plan: p.id,
 				team: name,
@@ -333,7 +333,7 @@ export function teamSection(name: string, server: string, plans: TeamPlanRow[]):
 				unblocks: [],
 				goal: p.plan.goal,
 				waitingMin: 0,
-				answered: last ? { answer: last.answer, at: last.time, login: last.login } : null,
+				answered: first ? { answer: first.answer, at: first.time, login: first.login } : null,
 			};
 		});
 	return { name, server, reachable: true, rows, questions };
