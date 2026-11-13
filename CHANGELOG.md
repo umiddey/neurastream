@@ -1,4 +1,8 @@
 # Changelog
+## 0.3.2
+### Fixed
+- `templates/systemd/neurastream-workspace.service` lost its `[Install]` / `WantedBy=default.target` lines in the 0.3.0 rename, so `workspace on` (personal and team) ran `systemctl enable` on a unit with nothing to link: the page ran, but did not start at login. The section is back, and a test pins it in the installed unit. If you ran `workspace on` with 0.3.0 or 0.3.1, run it again.
+
 ## 0.3.1
 ### Fixed
 - Release 0.3.0 never reached npm: its publish run failed `tests/index-guard.test.ts` (e), because `tests/team-client.test.ts` left `QUEUE_*` variables it had set in the process after its run. The test now removes every `QUEUE_*` variable before restoring the inherited ones. 0.3.0 is a tag without a package, so install 0.3.1.

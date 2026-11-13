@@ -161,6 +161,8 @@ test("workspace on: installs the user unit from the package template", () => {
 	const r = doOn();
 	expect(r.code).toBe(0);
 	expect(readFileSync(UNIT_FILE, "utf8")).toBe(readFileSync(UNIT_TEMPLATE, "utf8"));
+	// `systemctl enable` links nothing without an [Install] section: the page would not start at login.
+	expect(readFileSync(UNIT_FILE, "utf8")).toMatch(/\n\[Install\]\nWantedBy=default\.target\n?$/);
 });
 
 // --- (e) the systemctl calls, in order; the pre-rename neurastream-ui unit is retired first ---

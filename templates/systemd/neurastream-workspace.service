@@ -12,3 +12,6 @@ After=network-online.target
 ExecStart=%h/.bun/bin/neurastream workspace
 Restart=on-failure
 RestartSec=5
+
+[Install]
+WantedBy=default.target
