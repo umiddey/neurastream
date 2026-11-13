@@ -1,4 +1,9 @@
 # Changelog
+## 0.3.1
+### Fixed
+- Release 0.3.0 never reached npm: its publish run failed `tests/index-guard.test.ts` (e), because `tests/team-client.test.ts` left `QUEUE_*` variables it had set in the process after its run. The test now removes every `QUEUE_*` variable before restoring the inherited ones. 0.3.0 is a tag without a package, so install 0.3.1.
+- The team server's start-up column migration took no write lock, so two server processes starting on one database at once could both try `ALTER TABLE ... ADD COLUMN` and one died with `duplicate column name`; the check and the ALTER now share one immediate transaction (found by `tests/team-server-claims.test.ts` under load).
+
 ## 0.3.0
 ### Changed
 - `neurastream ui` is renamed `neurastream workspace` (clean cutover, no alias): the command (`workspace`, `workspace on --login <tailscale login> [--port N]`, `workspace off`), the `ui:` config block (`workspace:`; an existing `ui:` block still loads as `workspace:` with a rename notice naming the file — rename it by hand), and the user unit (`neurastream-ui.service` → `neurastream-workspace.service`; `workspace on` first disables the old `neurastream-ui` unit and removes its file when one is installed). The old command name is an unknown command. The page itself — auth, Host/Origin checks, owner inbox, guard refusals — is unchanged.

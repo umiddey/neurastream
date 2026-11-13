@@ -175,7 +175,7 @@ afterAll(() => {
 	else process.env.NEURASTREAM_MAIN_ID = savedId;
 	if (savedNow === undefined) delete process.env.NEURASTREAM_NOW;
 	else process.env.NEURASTREAM_NOW = savedNow;
-	for (const k of Object.keys(queueEnvBefore)) delete process.env[k];
+	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
 	Object.assign(process.env, queueEnvBefore);
 	refreshQueuePaths();
 	rmSync(TMP, { recursive: true, force: true });

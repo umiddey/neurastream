@@ -259,11 +259,13 @@ function removeMemberTx(db: Database, config: TeamServerConfig, login: string, a
 	}).immediate();
 }
 
-/** Adds one column to a table when it is absent. CREATE TABLE IF NOT EXISTS never alters a table an earlier start made, so new columns arrive this way. */
+/** Adds one column to a table when it is absent. CREATE TABLE IF NOT EXISTS never alters a table an earlier start made, so new columns arrive this way. The check and the ALTER share one write lock: two servers starting on one database must not both see the column missing. */
 function addColumn(db: Database, table: string, column: string, decl: string): void {
-	const have = db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all();
-	if (have.some(row => row.name === column)) return;
-	db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
+	db.transaction((): void => {
+		const have = db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all();
+		if (have.some(row => row.name === column)) return;
+		db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
+	}).immediate();
 }
 
 /** Opens the team database and creates its tables. busy_timeout makes a second writer wait for the lock instead of failing with SQLITE_BUSY. */
