@@ -323,6 +323,21 @@ The 30-minute rule: a claim lives by its heartbeat — the adapter beats every c
 
 Claim heartbeats are not the job heartbeats of the watch section above. A job heartbeat says a cron job ran (`<queue_state>/heartbeats/<name>.json`, stale per `watch.expect`); a claim heartbeat is per-Main liveness recorded in the claim itself, under `<queue_state>/claims/` — one JSON file per plan, its `beat` refreshed every minute. Claims are never wired into `watch`.
 
+## Team queue
+
+A team queue shares one plan queue between the members of a team, through a server the team runs on its own Tailscale network. Your personal Tailscale is separate and is never used for the team server. The full server reference (auth, data, backup, routes) is [docs/team-server.md](docs/team-server.md); the config is `teams:` in [config.md](docs/config.md).
+
+- Setup: `neurastream workspace on --team <name> --admin <login> --repo <glob>` starts the server as the systemd user unit `neurastream-team-<name>`; `workspace off --team <name>` stops it and keeps its database. Members join with `neurastream team join <url> --name <name> --repo <path>`, and leave with `team leave`.
+- Labels: a plan reaches the team queue only when its header says `Queue: team` and it sits in a repo the team lists under `teams[].repos`. Personal plans and plans in other repos never leave your PC. `neurastream team share <plan>` sends one plan, and `team unshare <plan>` takes it back.
+- Who approves: a plan is approved by a member who did not last claim it (cross review). With fewer than two members, the one member may approve its own plan; that approval is audited with the note `solo`.
+- The 30-minute rule is the same as the personal queue: a team claim lives by its heartbeat and is free `queue.claim_ttl_min` (default 30) minutes after the last beat.
+- Order: the leader's override (`POST /order/override`) comes first, in its order; then voted plans by rank sum, lowest first; then unvoted plans. Each member's ranks are replaced whole on every vote.
+- First answer wins: when a question is waiting on the team, the first owner answer is the one that counts.
+- Pause: `neurastream team pause <name>` refuses your claims on that team and releases your own claims there; `team resume` reopens it.
+- Same goal: sharing a plan whose goal matches one already on the queue is refused unless you give `--distinct "<reason>"`.
+- Share cap: `teams[].max_share` (above 0, at most 1) caps the team's share of today's model calls. This is a soft rule. The spawn log is not locked, so concurrent spawns can overshoot the cap. When a team sets `max_share`, a spawn without a name is refused so its calls count against the cap; that refusal is not covered by a test yet.
+- Cross review is soft too: it checks only the last claimer, so handing a claim to another member lets the same person claim and approve.
+
 ## Secrets never reach the chat
 
 A value the machine holds is hidden before the model, the chat and the session log see it (`src/core/secret-redact.ts`, plan 20261025_2204, incident I-20261025-197). Detection is by **content**, not by file name — the old name list never knew about `~/.npmrc`.

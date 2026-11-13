@@ -168,6 +168,12 @@ Only this folder may name the harness. It does three things:
 
 Claim heartbeats (plan 20261027_1300 P3): on `session_start` the extension starts a 60 s timer (`CLAIM_BEAT_MS`) that heartbeats every claim this Main holds (`mainId()`) while the session lives. It releases nothing on `session_stop`/`session_shutdown` — `queue.claim_ttl_min` frees a dead Main's claims, and a restarted Main with the same id resumes beating them within that window. These are not the job heartbeats (`<queue_state>/heartbeats/`, `watch.expect`); a hook-only harness runs no timer, so its claims expire by the TTL.
 
+### Claim store
+
+Claims go through one store per plan. A personal plan uses the file store, one JSON file per plan under `<queue_state>/claims/`. A team plan uses the remote store for its team: `claimStoreFor` (`src/core/team-client.ts:362-365`) picks it when `routeTeam` (`:336`) finds a team for the plan, that is when the plan's header says `Queue: team` in a repo labelled for a team, or the team's sync record lists it. Everything else, including every plan in a repo no team labels, stays on the file store.
+
+The heartbeat timer (above) builds the file store plus one `remoteStoreFor` per `cfg.teams` entry (`src/adapters/omp/index.ts:969-972`). It lists each store's claims for this Main and beats them through `store.heartbeat`; it skips rows it does not list (`:973-978`). A store the heartbeat cannot reach is therefore not beaten in that pass, and its claims age out under `queue.claim_ttl_min` like any dead Main's.
+
 Agent pins ship as templates. Adapter install copies `templates/agents/*.md` (no `.bak*`) into `adapter.pins` only when that file is absent.
 
 Spawn names are the pin `name` field. Core checks the name against `## Allowed` in `paths.subagents`. It does not know which names exist.
