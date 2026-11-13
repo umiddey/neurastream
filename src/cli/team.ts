@@ -282,6 +282,14 @@ function runJoinLeave(args: string[], opts: { cfg?: Config; home?: string; send?
 		console.error(`team join: ${TEAM_NAME_HINT}`);
 		return 2;
 	}
+	let scheme = "";
+	try {
+		scheme = new URL(url).protocol;
+	} catch {}
+	if (scheme !== "http:" && scheme !== "https:") {
+		console.error("team join: server must be an http or https URL");
+		return 2;
+	}
 	if (teams.some(t => t.name === name)) {
 		console.error(`team join: a teams: entry named ${name} already exists`);
 		return 1;

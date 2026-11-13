@@ -255,3 +255,15 @@ test("team leave removes the entry and refuses a name it does not hold", () => {
 	expect(runTeam(["leave", "acme"], { home: HOME })).toBe(0);
 	expect(loadConfig({ home: HOME }).teams).toEqual([]);
 });
+
+test("team join refuses a server that is not an http or https URL, and asks the server nothing (iii-7)", () => {
+	let asked = 0;
+	const send = () => {
+		asked++;
+		return { status: 200, body: EMPTY_VIEW };
+	};
+	for (const bad of ["ftp://x", "not a url"]) {
+		expect(runTeam(["join", bad, "--name", "acme", "--repo", REPOS[0]!], { home: HOME, send })).toBe(2);
+	}
+	expect(asked).toBe(0);
+});
