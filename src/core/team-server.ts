@@ -655,6 +655,7 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 		if (req.method === "DELETE" && memberPath?.[1]) {
 			const target = decodeSegment(memberPath[1]);
 			if (target === null) return json({ error: "bad login" }, 400);
+			if (!validLogin(target)) return json({ error: LOGIN_ERROR }, 400);
 			const gate = await writeGate(req, login, "admin", `DELETE /members/${target}`);
 			if ("res" in gate) return gate.res;
 			const out = removeMemberTx(db, config, target, login, gate.now);

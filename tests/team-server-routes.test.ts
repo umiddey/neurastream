@@ -654,3 +654,12 @@ test("the team database directory and file are private to the owner", () => {
 	expect(statSync(join(sub, "team")).mode & 0o777).toBe(0o700);
 	expect(statSync(dbPath).mode & 0o777).toBe(0o600);
 });
+
+test("DELETE /members refuses a login that fails validation before it is audited", async () => {
+	const { svc, dbPath } = start();
+	const port = svc.port;
+	const invalid = { status: 400, body: { error: "login must be 1 to 256 characters with no whitespace or control character" } };
+	expect(await call(port, "DELETE", "/members/bad%20login", B_PEER)).toEqual(invalid);
+	expect(await call(port, "DELETE", "/members/bad%20login", A_PEER)).toEqual(invalid);
+	expect(auditRows(dbPath)).toEqual([]);
+});
