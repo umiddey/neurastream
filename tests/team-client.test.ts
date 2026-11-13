@@ -963,6 +963,8 @@ function viewBody(text: string, o: { claim?: string; approvals?: string[]; answe
 		override: null,
 		paused: [],
 		answers: (o.answers ?? []).map((a, i) => ({ id: i + 1, plan: id, login: a.login, time: NOW, sha: sha(text), answer: a.answer })),
+		first: [],
+		me_paused: false,
 	};
 }
 

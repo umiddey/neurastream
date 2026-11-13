@@ -2091,6 +2091,8 @@ const teamViewFixture = (): TeamView => ({
 	override: null,
 	paused: [],
 	answers: [],
+	first: [],
+	me_paused: false,
 });
 
 /** The loopback URL a test team points at (a port nothing listens on unless a recorder answers). */

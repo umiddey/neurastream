@@ -25,7 +25,7 @@ const LOOPBACK = [127, 0, 0, 1].join(".");
 const TEAM: Scope = { kind: "team", name: "acme" };
 const REPOS = ["github.com/acme/*"];
 const TEAM_URL = "http://100.64.1.2:7800";
-const EMPTY_VIEW = { plans: [], claims: [], approvals: [], votes: [], paused: [], answers: [] };
+const EMPTY_VIEW = { plans: [], claims: [], approvals: [], votes: [], paused: [], answers: [], first: [], me_paused: false };
 // An existing config that turns nothing on. An empty file is not a YAML object, so loadConfig refuses it.
 const BASE_CONFIG = "workspace:\n  enabled: false\n";
 

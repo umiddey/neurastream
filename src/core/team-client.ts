@@ -550,6 +550,8 @@ export interface TeamPlanRow {
 	approvals: string[];
 	/** The plan's answers, newest first (the view's own order). */
 	answers: TeamView["answers"];
+	/** The first answer to the plan's current WAITING question (the server's), or null when none. */
+	answered: TeamEarlier | null;
 }
 
 /** True when the body carries the arrays `readTeamView` sends. */
@@ -561,7 +563,9 @@ function isView(body: unknown): body is TeamView {
 		Array.isArray(body.approvals) &&
 		Array.isArray(body.votes) &&
 		Array.isArray(body.paused) &&
-		Array.isArray(body.answers)
+		Array.isArray(body.answers) &&
+		Array.isArray(body.first) &&
+		typeof body.me_paused === "boolean"
 	);
 }
 
@@ -593,9 +597,20 @@ export function teamPlans(cfg: Config, team: TeamEntry, view: TeamView): TeamPla
 	return viewPlanRows(view, cfg.queue.claim_ttl_min, nowSec(), id => rec[id]?.path ?? path.join(copyDir, `${id}.md`));
 }
 
+/** A plan's sort key: [tier, value]. Tier 0 is the leader's override (value: its position); tier 1 a voted plan (value: its rank sum); tier 2 no vote. */
+function planOrderKey(id: string, overridePos: Map<string, number>, scores: Map<string, number>): [number, number] {
+	const pos = overridePos.get(id);
+	if (pos !== undefined) return [0, pos];
+	const score = scores.get(id);
+	return score === undefined ? [2, 0] : [1, score];
+}
+
 /**
  * The plan rows of one view, each parsed under the file `fileOf` names for it. The phone section
  * (teamPlans) and the team page (P5) share this body. Reads no path and runs no git.
+ * Order: the leader's override first, in its order; then the voted plans by rank sum, lowest first
+ * (ranked 1 by one member and 2 by another scores 3); then the plans nobody voted on. Ties keep
+ * `rel_path, id`. `answered` is the server's first answer to the current WAITING question.
  */
 export function viewPlanRows(view: TeamView, ttlMin: number, now: number, fileOf: (id: string) => string): TeamPlanRow[] {
 	const claims = new Map(view.claims.map(row => [row.plan, row] as const));
@@ -603,7 +618,19 @@ export function viewPlanRows(view: TeamView, ttlMin: number, now: number, fileOf
 	for (const a of view.approvals) approvals.set(a.plan, [...(approvals.get(a.plan) ?? []), a.login]);
 	const answers = new Map<string, TeamView["answers"]>();
 	for (const a of view.answers) answers.set(a.plan, [...(answers.get(a.plan) ?? []), a]);
-	return view.plans.map(row => {
+	const answered = new Map(view.first.map(a => [a.plan, { login: a.login, time: a.time, answer: a.answer }] as const));
+	const overridePos = new Map((view.override?.plan_ids ?? []).map((id, i) => [id, i] as const));
+	const scores = new Map<string, number>();
+	for (const v of view.votes) scores.set(v.plan_id, (scores.get(v.plan_id) ?? 0) + v.rank);
+	const ordered = view.plans.toSorted((a, b) => {
+		const [tierA, valueA] = planOrderKey(a.id, overridePos, scores);
+		const [tierB, valueB] = planOrderKey(b.id, overridePos, scores);
+		if (tierA !== tierB) return tierA - tierB;
+		if (valueA !== valueB) return valueA - valueB;
+		if (a.rel_path !== b.rel_path) return a.rel_path < b.rel_path ? -1 : 1;
+		return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+	});
+	return ordered.map(row => {
 		const file = fileOf(row.id);
 		const claim = claims.get(row.id);
 		const live = claim !== undefined && !claimExpired(claim, now, ttlMin) ? { ...toClaim(claim, file), login: claim.login } : null;
@@ -615,6 +642,7 @@ export function viewPlanRows(view: TeamView, ttlMin: number, now: number, fileOf
 			holder: live,
 			approvals: approvals.get(row.id) ?? [],
 			answers: answers.get(row.id) ?? [],
+			answered: answered.get(row.id) ?? null,
 		};
 	});
 }
@@ -649,7 +677,7 @@ export function teamSummaryLines(cfg: Config, views: Map<string, TeamView | Unre
 	return lines;
 }
 
-/** The first answer to the same WAITING question, when the server says it won. A later answer is kept but does not count. */
+/** An answer to a WAITING question: the first one to it (a plan's `answered`), or the earlier one a later answer lost to. */
 export interface TeamEarlier {
 	login: string;
 	time: number;
