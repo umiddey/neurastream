@@ -75,11 +75,12 @@ export function teamConfigError(teams: unknown): string | null {
 	const parsed: { name: string; repos: string[] }[] = [];
 	for (const [i, raw] of teams.entries()) {
 		if (!isObj(raw)) return `teams[${i}] must be {name, server, repos}`;
-		const { name, server, repos } = raw;
+		const { name, server, repos, max_share } = raw;
 		if (typeof name !== "string" || !TEAM_NAME_RE.test(name)) return `teams[${i}].name must match ${TEAM_NAME_RE.source}`;
 		if (names.has(name)) return `teams: two entries named "${name}"`;
 		names.add(name);
 		if (typeof server !== "string" || server.trim() === "") return `teams[${i}].server must be a non-empty string`;
+		if (max_share !== undefined && (typeof max_share !== "number" || !(max_share > 0 && max_share <= 1))) return `teams[${i}].max_share must be a number above 0 and at most 1`;
 		const repoErr = repoListError(repos);
 		if (repoErr) return `teams[${i}].${repoErr}`;
 		parsed.push({ name, repos: repos as string[] });

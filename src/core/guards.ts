@@ -25,7 +25,7 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import type { Decision, InjectEvent, PlanEditEvent, SpawnEvent, StopEvent, ToolEvent } from "./adapter.ts";
+import type { Decision, InjectEvent, PlanEditEvent, RunSource, SpawnEvent, StopEvent, ToolEvent } from "./adapter.ts";
 import { currentPlanner, currentTier, takeGo } from "./autonomy.ts";
 import { approvalProblem, MAIN_ONLY_LINE, reviewHash } from "./plan-approval.ts";
 export { reviewHash };
@@ -39,7 +39,7 @@ import * as q from "./queue/lib.ts";
 import type { Plan } from "./queue/lib.ts";
 
 import { heldByOther, type Claim, type ClaimStore, type Unreachable } from "./claims.ts";
-import { claimStoreFor, summaryHolder, teamSummaryLines, teamViews } from "./team-client.ts";
+import { claimStoreFor, pathId, routeTeam, summaryHolder, teamDir, teamSummaryLines, teamViews, type TeamEntry } from "./team-client.ts";
 import { nowSec, strftime } from "./clock.ts";
 import { outUntil, pinModel, providerOfModel, readOut } from "./provider-state.ts";
 import { lint } from "./brief-lint.ts";
@@ -1482,7 +1482,7 @@ function incidentSpawnProblem(label: string, brief: string, namedPlans: string[]
  * A `task` launch: the cancel check, the spawn gates, then the records. Main's and a sub's launch
  * both come through here (plan 20261028_1600 P4i). Returns the refusal, or null.
  */
-function taskLaunch(input: Record<string, unknown>, cfg: Config, runningJobs: string[] | undefined, spawner: Spawner): string | null {
+function taskLaunch(input: Record<string, unknown>, cfg: Config, runningJobs: string[] | undefined, spawner: Spawner, runs?: RunSource): string | null {
 	const pending = q.cancelPending();
 	if (pending) {
 		log(cfg.paths.guard_log, `BLOCK spawn: cancel pending (${pending.words})`);
@@ -1500,7 +1500,13 @@ function taskLaunch(input: Record<string, unknown>, cfg: Config, runningJobs: st
 	}
 	const inc = incidentSpawnProblem("spawn", JSON.stringify(input), files, cfg);
 	if (inc) return inc;
-	const held = claimGate(files, cfg);
+	const spawned: unknown[] = Array.isArray(input.tasks) ? input.tasks : [];
+	const names = spawned.map((t) => (t as { name?: unknown } | null)?.name);
+	const held = claimGate(files, cfg, {
+		agentIds: names.filter((n): n is string => typeof n === "string" && n !== ""),
+		unnamed: names.some((n) => typeof n !== "string" || n === ""),
+		runs,
+	});
 	if (held) {
 		log(cfg.paths.guard_log, `BLOCK spawn: ${held}`);
 		return held;
@@ -1514,7 +1520,7 @@ function taskLaunch(input: Record<string, unknown>, cfg: Config, runningJobs: st
  * A shell launch of a bypass_spawn agent: the cancel check, the plan gate, the review PASS, the
  * incidents, then the record. Main's and a sub's launch both come through here (plan 20261028_1600 P4i).
  */
-function bypassLaunch(command: string, cfg: Config, spawner: Spawner): string | null {
+function bypassLaunch(command: string, cfg: Config, spawner: Spawner, runs?: RunSource): string | null {
 	for (const entry of cfg.guards.bypass_spawn) {
 		if (!bypassRegExp(entry).test(command)) continue;
 		const pending = q.cancelPending();
@@ -1536,7 +1542,7 @@ function bypassLaunch(command: string, cfg: Config, spawner: Spawner): string | 
 		if (inc) return inc;
 		// I-20261031-280: a bypass launch takes the claims like every other spawn, as its last
 		// refusal before the record.
-		const held = claimGate(named, cfg);
+		const held = claimGate(named, cfg, { agentIds: [], unnamed: true, runs });
 		if (held) {
 			log(cfg.paths.guard_log, `BLOCK bypass launch: ${held}`);
 			return held;
@@ -1546,9 +1552,9 @@ function bypassLaunch(command: string, cfg: Config, spawner: Spawner): string | 
 	return null;
 }
 
-function mainTool(e: ToolEvent, input: Record<string, unknown>, cfg: Config): Decision {
+function mainTool(e: ToolEvent, input: Record<string, unknown>, cfg: Config, runs?: RunSource): Decision {
 	if (e.tool === "task") {
-		const why = taskLaunch(input, cfg, e.runningJobs, "main");
+		const why = taskLaunch(input, cfg, e.runningJobs, "main", runs);
 		return why ? deny(`main-guard: ${why}`) : ALLOW;
 	}
 	if (cfg.guards.shell_tools.includes(e.tool)) {
@@ -1561,7 +1567,7 @@ function mainTool(e: ToolEvent, input: Record<string, unknown>, cfg: Config): De
 			return deny(`main-guard: tier strict — type "${cfg.autonomy.go_phrase}" to approve one push/merge`);
 		}
 		const command = String(input?.command ?? input?.code ?? "");
-		const why = bypassLaunch(command, cfg, "main");
+		const why = bypassLaunch(command, cfg, "main", runs);
 		if (why) return deny(`main-guard: ${why}`);
 	}
 	return editWindow(e, input, cfg);
@@ -1630,7 +1636,7 @@ export const MAIN_PLAN_FILE = /\/docs\/plans\/(?!archive\/)(?:[^/]+\/)*[^/]+\.md
  * pre-tool: plan-guard checkCall for subs (protected files, budget, plan-edit rules, blockers)
  * plus, for Main, the spawn gates and the project-file edit window.
  */
-export function checkTool(e: ToolEvent, cfg: Config): Decision {
+export function checkTool(e: ToolEvent, cfg: Config, runs?: RunSource): Decision {
 	const lock = e.agent === "sub" ? reviewLockProblem(e, cfg) : null;
 	if (lock) {
 		log(cfg.paths.plan_guard_log, `BLOCK ${e.agent}:${e.agentId} tool=${e.tool} review lock: ${lock}`);
@@ -1712,7 +1718,7 @@ export function checkTool(e: ToolEvent, cfg: Config): Decision {
 			log(cfg.paths.guard_log, `BLOCK tool=${e.tool} after ${readWindow().mainCalls} calls this turn`);
 			return deny(stop);
 		}
-		const d = mainTool(e, input, cfg);
+		const d = mainTool(e, input, cfg, runs);
 		if (!d.allow) return d;
 		const warn = mainCallWarn(e, cfg);
 		// A task brief names paths it does not read; only the other tools' paths count as reads.
@@ -1727,8 +1733,8 @@ export function checkTool(e: ToolEvent, cfg: Config): Decision {
 	}
 	// A sub's own launch passes the same spawn gates as Main's (plan 20261028_1600 P4i).
 	let launch: string | null = null;
-	if (e.tool === "task") launch = taskLaunch(input, cfg, e.runningJobs, "sub");
-	else if (cfg.guards.shell_tools.includes(e.tool)) launch = bypassLaunch(String(input?.command ?? input?.code ?? ""), cfg, "sub");
+	if (e.tool === "task") launch = taskLaunch(input, cfg, e.runningJobs, "sub", runs);
+	else if (cfg.guards.shell_tools.includes(e.tool)) launch = bypassLaunch(String(input?.command ?? input?.code ?? ""), cfg, "sub", runs);
 	if (launch) {
 		log(cfg.paths.plan_guard_log, `BLOCK ${e.agent}:${e.agentId} tool=${e.tool} ${launch}`);
 		return deny(`plan-guard: ${launch}`);
@@ -1840,7 +1846,12 @@ function heldProblem(file: string, held: Claim | Unreachable): string {
  * another Main's live claim refuses the launch — a sub's launch too, once its Main no longer
  * holds the claim. Returns the refusal, or null.
  */
-function claimGate(files: string[], cfg: Config): string | null {
+function claimGate(files: string[], cfg: Config, spawn: SpawnIdent): string | null {
+	const teams = routedTeams(files, cfg);
+	const uncountable = teams.find(({ team }) => team.max_share !== undefined);
+	if (spawn.unnamed && uncountable) {
+		return `team ${uncountable.team.name} sets max_share: name this agent (tasks[].name) so its calls count against the team cap`;
+	}
 	const mine = mainId();
 	// With the chooser each file has its own store; `fresh` carries the store beside each file,
 	// so a fresh claim is released through the store that took it (a team claim released through
@@ -1873,14 +1884,104 @@ function claimGate(files: string[], cfg: Config): string | null {
 		}
 		if (!heldBefore) fresh.push({ file: f, store });
 	}
+	const capped = teamCapProblem(teams, spawn, cfg);
+	if (capped) {
+		releaseFresh();
+		return capped;
+	}
+	recordTeamSpawns(teams, spawn.agentIds, cfg);
 	return null;
+}
+
+/** A spawn's identity for the team cap: its named agents, and whether any spawned agent has no name (the cap cannot count it). */
+export interface SpawnIdent {
+	agentIds: string[];
+	unnamed: boolean;
+	runs?: RunSource;
+}
+
+/** A plan file and the team it routes to. */
+export interface RoutedTeam {
+	team: TeamEntry;
+	file: string;
+}
+
+function routedTeams(files: string[], cfg: Config): RoutedTeam[] {
+	const out: RoutedTeam[] = [];
+	for (const file of files) {
+		const team = routeTeam(file, cfg, undefined, defaultRunner);
+		if (team) out.push({ team, file });
+	}
+	return out;
+}
+
+/** Epoch seconds at local midnight: the start of the cap's day. */
+function dayStartSec(): number {
+	const d = new Date(nowSec() * 1000);
+	d.setHours(0, 0, 0, 0);
+	return d.getTime() / 1000;
+}
+
+/** Agent ids recorded against a team's plans since `since`, from its spawns.jsonl rows; a corrupt row counts for nothing. */
+function teamAgentsSince(cfg: Config, team: TeamEntry, since: number): Set<string> {
+	const ids = new Set<string>();
+	let text: string;
+	try {
+		text = readFileSync(path.join(teamDir(cfg, team), "spawns.jsonl"), "utf8");
+	} catch {
+		return ids;
+	}
+	for (const line of text.split("\n")) {
+		if (!line) continue;
+		try {
+			const row = JSON.parse(line) as { agentId?: unknown; at?: unknown };
+			if (typeof row.agentId === "string" && typeof row.at === "number" && row.at >= since) ids.add(row.agentId);
+		} catch {}
+	}
+	return ids;
+}
+
+/** The team token cap (plan P6b2 d): a refusal when a capped team's calls today reach its max_share of all calls today. Null when no team is capped or it is under. */
+export function teamCapProblem(teams: RoutedTeam[], spawn: SpawnIdent, cfg: Config): string | null {
+	const capped = teams.flatMap(({ team }) => (team.max_share === undefined ? [] : [{ team, cap: team.max_share }]));
+	const [first] = capped;
+	if (first === undefined) return null;
+	if (!spawn.runs) return `team ${first.team.name} sets max_share: the cap cannot be computed without a run source`;
+	const since = dayStartSec();
+	const runs = spawn.runs.listRuns(since);
+	const total = runs.reduce((sum, r) => sum + r.calls, 0);
+	if (total === 0) return null;
+	for (const { team, cap } of capped) {
+		const ids = teamAgentsSince(cfg, team, since);
+		const mine = runs.filter((r) => ids.has(r.id)).reduce((sum, r) => sum + r.calls, 0);
+		if (mine / total >= cap) return `team ${team.name} cap reached: ${mine} of ${total} calls today (max_share ${cap}); team plans wait until local midnight`;
+	}
+	return null;
+}
+
+/** Records each named agent against each team plan it spawned on, one spawns.jsonl row each, so the cap counts its calls. Rows are written only for team plans. */
+function recordTeamSpawns(teams: RoutedTeam[], agentIds: string[], cfg: Config): void {
+	if (agentIds.length === 0) return;
+	for (const { team, file } of teams) {
+		const planId = pathId(team, cfg, file, defaultRunner);
+		if (planId === null) continue;
+		const dir = teamDir(cfg, team);
+		const at = nowSec();
+		const rows = agentIds.map((agentId) => `${JSON.stringify({ planId, agentId, at })}\n`).join("");
+		try {
+			mkdirSync(dir, { recursive: true });
+			appendFileSync(path.join(dir, "spawns.jsonl"), rows);
+		} catch (err) {
+			log(cfg.paths.guard_log, `cannot record team spawn for ${team.name}: ${err}`);
+		}
+	}
 }
 
 /**
  * spawn: the allow-list, task-only and open-plan gates for one implementer launch. Covers both
  * original paths (the extension spawn event and a `task` tool call); the brief names the plan.
  */
-export function checkSpawn(e: SpawnEvent, cfg: Config, runner: CommandRunner = defaultRunner): Decision {
+export function checkSpawn(e: SpawnEvent, cfg: Config, runner: CommandRunner = defaultRunner, runs?: RunSource): Decision {
 	const pending = q.cancelPending();
 	if (pending) {
 		log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: cancel pending (${pending.words})`);
@@ -1928,7 +2029,7 @@ export function checkSpawn(e: SpawnEvent, cfg: Config, runner: CommandRunner = d
 		}
 		return deny(`main-guard: ${verdict}`);
 	}
-	const held = claimGate(named, cfg);
+	const held = claimGate(named, cfg, { agentIds: e.name ? [e.name] : [], unnamed: !e.name, runs });
 	if (held) {
 		log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${held}`);
 		return deny(`main-guard: ${held}`);

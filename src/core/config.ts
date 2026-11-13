@@ -184,8 +184,8 @@ export interface Config {
 	};
 	/** The owner's phone page (`neurastream workspace`): binds the tailnet address only. */
 	workspace: { enabled: boolean; port: number; owner_login: string; allow_this_machine: boolean };
-	/** Repo labels: an origin matching `repos` may share plans that carry `Queue: team`. Empty = every repo is personal. */
-	teams: { name: string; server: string; repos: string[] }[];
+	/** Repo labels: an origin matching `repos` may share plans that carry `Queue: team`. Empty = every repo is personal. max_share (optional, 0 < x <= 1) caps the team's share of today's model calls; absent = no cap. */
+	teams: { name: string; server: string; repos: string[]; max_share?: number }[];
 	/** Plan review gate (plan 20261028_1600): reuse lines and, from P2 on, the reviewer PASS lock. */
 	review: {
 		/** Agents a review spawn may run under: the PASS exemption needs one of these plus the brief's `Plan review: <plan>` line. An empty list turns only the `## Reuse` requirement off; the PASS gate follows `plan` (P6). */

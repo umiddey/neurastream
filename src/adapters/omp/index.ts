@@ -1126,6 +1126,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		const d = checkTool(
 			{ tool, input, cwd, agent, agentId: id, calls: n - 1, paths: [], writes: [], command: asString(input.command), runningJobs },
 			cfg,
+			defaultRunSource(cfg),
 		);
 		if (!d.allow) {
 			// P3b: Main refused on a protected guard file sits blocked until the owner unlocks.

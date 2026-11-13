@@ -228,7 +228,7 @@ function gitOrigin(repo: string, run: CommandRunner): string {
 }
 
 /** The server's id for this plan file: the sync record's id for the path when recorded, else the hash of the repo origin and the repo-relative path. Null when neither names a plan. */
-function pathId(team: TeamEntry, cfg: Config, file: string, run: CommandRunner): string | null {
+export function pathId(team: TeamEntry, cfg: Config, file: string, run: CommandRunner): string | null {
 	for (const [id, entry] of Object.entries(readRecord(cfg, team))) if (entry.path === file) return id;
 	const repo = planRepo(file);
 	return teamPlanId(gitOrigin(repo, run), path.relative(repo, file));
