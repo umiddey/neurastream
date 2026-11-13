@@ -1,5 +1,5 @@
 # Changelog
-## Unreleased
+## 0.3.4
 ### Added
 - `neurastream recall <words>` finds something the owner said, or Main answered, in any past session and prints it as it was said; `recall --show <id>` shows an entry with the entry it pairs with; `recall backfill` fills the log from the session files on disk. Main's rules tell it to run `recall` when the owner refers to something not in its context.
 
