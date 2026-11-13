@@ -2071,9 +2071,12 @@ Status: open
 WAITING on owner: ${waiting}
 `;
 
+/** The id the server gives a plan: 64 lowercase hex characters (the client refuses any other). */
+const teamPlanIdOf = (rel: string): string => new Bun.CryptoHasher("sha256").update(rel).digest("hex");
+
 /** One team view plan row, as the server sends it. */
 const teamPlanRow = (rel: string, title: string, waiting: string): TeamView["plans"][number] => ({
-	id: `id-${rel}`,
+	id: teamPlanIdOf(rel),
 	remote: "https://gitlab.com/acme/pm.git",
 	rel_path: rel,
 	sha: `sha-${rel}`,
@@ -2085,7 +2088,7 @@ const teamPlanRow = (rel: string, title: string, waiting: string): TeamView["pla
 /** One already-read team view (P4): two plans, the first held by another member on the server. */
 const teamViewFixture = (): TeamView => ({
 	plans: [teamPlanRow("docs/plans/a.md", "Team plan one", "approve the migration?"), teamPlanRow("docs/plans/b.md", "Team plan two", "pick a window")],
-	claims: [{ plan: "id-docs/plans/a.md", main: "main", host: "laptop", pid: 4242, since: nowSec(), beat: nowSec(), login: "teammate@example.com", mine: false }],
+	claims: [{ plan: teamPlanIdOf("docs/plans/a.md"), main: "main", host: "laptop", pid: 4242, since: nowSec(), beat: nowSec(), login: "teammate@example.com", mine: false }],
 	approvals: [],
 	votes: [],
 	override: null,
