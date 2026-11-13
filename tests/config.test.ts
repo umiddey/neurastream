@@ -239,3 +239,26 @@ describe("write_check config", () => {
 		expect(cfg.write_check.linters[0]!.only_with_config).toEqual(["ruff.toml", ".ruff.toml"]);
 	});
 });
+
+// Topic index config (plan 20261109_2335, P7 l). Red until P9 adds the recall keys.
+describe("recall topics config", () => {
+	test("recall.topics_model is a string, default empty (off)", () => {
+		const cfg = loadConfig({ file: withFile("recall:\n  topics_model: \"zai/glm-5.3-flash\"\n"), home, env: {} });
+		expect(cfg.recall.topics_model).toBe("zai/glm-5.3-flash");
+		expect(loadConfig({ file: withFile("{}\n"), home, env: {} }).recall.topics_model).toBe("");
+	});
+
+	test("recall.topics_every defaults to 30 and accepts an integer >= 1", () => {
+		expect(loadConfig({ file: withFile("{}\n"), home, env: {} }).recall.topics_every).toBe(30);
+		expect(loadConfig({ file: withFile("recall:\n  topics_every: 5\n"), home, env: {} }).recall.topics_every).toBe(5);
+	});
+
+	test.each([
+		["topics_every 0", "recall:\n  topics_every: 0\n"],
+		["topics_every 2.5", "recall:\n  topics_every: 2.5\n"],
+		["topics_every as a string", "recall:\n  topics_every: \"30\"\n"],
+		["topics_model as a number", "recall:\n  topics_model: 5\n"],
+	])("%s is rejected", (_name, yaml) => {
+		expect(() => loadConfig({ file: withFile(yaml), home, env: {} })).toThrow(ConfigError);
+	});
+});
