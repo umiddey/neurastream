@@ -7,4 +7,7 @@ Usage: recall --show <id> [--json]
   Shows the entry with that id and its pair: an owner message with the nearest newer Main
   answer, or a Main answer with the nearest older owner message. Chronological order.
   --json prints one JSON object per line with the keys at, id, role, text.
+Usage: recall backfill [--since 7d|12h|YYYY-MM-DD]
+  Reads the harness's session files once and logs every owner message and Main answer from before the
+  live log began (secrets redacted). A second run adds nothing. Prints `backfill: <n> entries`.
 Exit: 0 on a match, 1 when nothing matches, 2 on bad arguments or an unknown id.

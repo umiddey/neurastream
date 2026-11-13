@@ -209,6 +209,7 @@ The user picks it with `harness: <name>` in the config (default `omp`; an unknow
 | spawn check | call `checkSpawn` or the CLI | |
 | plan-edit restriction | call `checkPlanEdit` or the CLI, and apply `restore` if the harness will not | |
 | stop | call `checkStop` or the CLI | |
+| owner turns for the recall backfill | `ownerTurns(cfg, since)` returns every `{ at, role, text }` of the Main sessions it can read: `at` in epoch seconds, `role` `owner` for a user message (raw, including text the core will drop as machine text) and `main` for the answer that followed it (the last assistant message with non-empty text before the next user message); any order, the core sorts and filters | return `[]` |
 | provider status | `providers(cfg)` returns its list | return `[]` |
 
 Nothing else. Queue files, blockers, score events, and config are core.

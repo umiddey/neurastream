@@ -338,6 +338,16 @@ A team queue shares one plan queue between the members of a team, through a serv
 - Share cap: `teams[].max_share` (above 0, at most 1) caps the team's share of today's model calls. This is a soft rule. The spawn log is not locked, so concurrent spawns can overshoot the cap. When a team sets `max_share`, a spawn without a name is refused so its calls count against the cap; that refusal is not covered by a test yet.
 - Cross review is soft too: it checks only the last claimer, so handing a claim to another member lets the same person claim and approve.
 
+## Recall
+
+Every owner message and every Main answer is kept word for word in one append-only log, so a question or decision from a month ago is one command away.
+
+- Logged: the owner's words (not guard output, system notices, task results or a handoff wrapper) and Main's answer to each; entries from sessions before this feature come from `neurastream recall backfill`.
+- Not logged: tool calls and results, subagent output, anything Main never said to the owner.
+- Redaction: every entry goes through the secret redactor before it is written (known values, `secrets.extra_patterns`, the built-in rules), so a pasted token is stored as `[REDACTED:<type>]`.
+- Commands: `neurastream recall <words>... [--since 7d|12h|YYYY-MM-DD] [--limit N] [--json]` searches (every word must appear, newest first); `neurastream recall --show <id>` prints an entry with the entry it pairs with; `neurastream recall backfill [--since ...]` reads the session files on disk once (a second run adds nothing). Example: `neurastream recall tailnet second node`.
+- Files: `<queue_state>/recall/` (mode 0700): `owner-log.jsonl` (live) and `owner-log.backfill.jsonl` (history), both mode 0600, never rewritten or trimmed. `neurastream help recall` has the full usage.
+
 ## Secrets never reach the chat
 
 A value the machine holds is hidden before the model, the chat and the session log see it (`src/core/secret-redact.ts`, plan 20261025_2204, incident I-20261025-197). Detection is by **content**, not by file name — the old name list never knew about `~/.npmrc`.

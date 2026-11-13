@@ -1,4 +1,8 @@
 # Changelog
+## Unreleased
+### Added
+- `neurastream recall <words>` finds something the owner said, or Main answered, in any past session and prints it as it was said; `recall --show <id>` shows an entry with the entry it pairs with; `recall backfill` fills the log from the session files on disk. Main's rules tell it to run `recall` when the owner refers to something not in its context.
+
 ## 0.3.3
 ### Changed
 - A plan-review spawn is refused unless its brief carries the line `Scope: whole plan`: reviewers review every unticked phase in one pass, never one phase per round. `templates/plan-review-brief.md` says the same.
