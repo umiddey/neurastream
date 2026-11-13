@@ -6,7 +6,7 @@ Reviewer: read-only — you never edit code, never write repo files, never push,
 Stop and report within ~20 tool calls.
 
 ## Goal
-- Review P<n> of the plan against its phases: is it free of redundant, inefficient and insecure work before anyone is spawned on it? Name exactly one unticked phase here (the spawn gate requires it).
+- Review the WHOLE plan: every unticked phase, one pass: is it free of redundant, inefficient and insecure work before anyone is spawned on it? The brief carries the line `Scope: whole plan` (the spawn gate requires it); never review one phase only.
 
 ## Forbidden
 - never push, never open a PR, never edit a file (read-only review)

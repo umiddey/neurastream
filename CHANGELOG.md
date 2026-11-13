@@ -1,4 +1,9 @@
 # Changelog
+## 0.3.3
+### Changed
+- A plan-review spawn is refused unless its brief carries the line `Scope: whole plan`: reviewers review every unticked phase in one pass, never one phase per round. `templates/plan-review-brief.md` says the same.
+- The packaged rules' planner-choice line: only a complex plan goes to the deep planner; every other plan goes to the fast planner; a really simple change is made by Main itself.
+
 ## 0.3.2
 ### Fixed
 - `templates/systemd/neurastream-workspace.service` lost its `[Install]` / `WantedBy=default.target` lines in the 0.3.0 rename, so `workspace on` (personal and team) ran `systemctl enable` on a unit with nothing to link: the page ran, but did not start at login. The section is back, and a test pins it in the installed unit. If you ran `workspace on` with 0.3.0 or 0.3.1, run it again.

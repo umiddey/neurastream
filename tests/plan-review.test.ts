@@ -210,7 +210,7 @@ test("a review spawn is exempt without a record", () => {
 	rmSync(REVIEWS, { force: true });
 	rmSync(join(GSTATE, "incidents.jsonl"), { force: true }); // the FAIL test's finding is an open incident; this test is about the PASS gate
 	freshProgress();
-	expect(gspawn(`Plan review: ${LOCKED}\nReview P1 against its phases.`, "reviewer", gcfg, "rev1")).toMatchObject({ allow: true });
+	expect(gspawn(`Plan review: ${LOCKED}\nScope: whole plan\nReview P1 against its phases.`, "reviewer", gcfg, "rev1")).toMatchObject({ allow: true });
 });
 
 // --- P5 (plan 20261028_1600): the cutover is gone; every plan needs a current PASS ---
@@ -514,7 +514,7 @@ test("a sub task naming a plan with a current PASS and an Allowed agent is allow
 test("a sub cannot spawn a plan review: the review exemption is Main's only", () => {
 	rmSync(REVIEWS, { force: true });
 	freshProgress();
-	const input = { tasks: [{ agent: "reviewer", name: "r1", task: `Plan review: ${LOCKED}\nReview P1 against its phases.` }] };
+	const input = { tasks: [{ agent: "reviewer", name: "r1", task: `Plan review: ${LOCKED}\nScope: whole plan\nReview P1 against its phases.` }] };
 	expect(checkTool(subEvent("task", input), gcfg)).toMatchObject({
 		allow: false,
 		reason: expect.stringContaining("no current reviewer PASS"),
@@ -556,7 +556,7 @@ const spawnedAs = (tool: string, input: Record<string, unknown>, agentId: string
 test("a named review spawn of its plan is registered and exempt", () => {
 	rmSync(REVIEW_SPAWNS, { force: true });
 	freshProgress();
-	expect(gspawn(`Plan review: ${LOCKED}\nReview P1 of ${LOCKED}.`, "reviewer", gcfg, "rev1")).toMatchObject({ allow: true });
+	expect(gspawn(`Plan review: ${LOCKED}\nScope: whole plan\nReview P1 of ${LOCKED}.`, "reviewer", gcfg, "rev1")).toMatchObject({ allow: true });
 	expect(reviewSpawns()).toMatchObject({ rev1: { plan: LOCKED, verdicts: 0 } });
 });
 
@@ -591,14 +591,23 @@ test("a review spawn is refused while the plan has a current PASS, and allowed o
 	registerReviewer();
 	const before = readFileSync(LOCKED, "utf8");
 	checkPlanEdit({ path: LOCKED, before, after: before + PASS_ENTRY, agent: "sub", agentId: "rev1" }, gcfg);
-	expect(gspawn(`Plan review: ${LOCKED}\nReview P1.`, "reviewer", gcfg, "rev2")).toMatchObject({
+	expect(gspawn(`Plan review: ${LOCKED}\nScope: whole plan\nReview P1.`, "reviewer", gcfg, "rev2")).toMatchObject({
 		allow: false,
 		reason: expect.stringContaining("already has a current reviewer PASS"),
 	});
 	const original = readFileSync(LOCKED, "utf8");
 	writeFileSync(LOCKED, original.replace("## Progress", "A changed body line.\n\n## Progress"));
-	expect(gspawn(`Plan review: ${LOCKED}\nReview P1.`, "reviewer", gcfg, "rev2")).toMatchObject({ allow: true });
+	expect(gspawn(`Plan review: ${LOCKED}\nScope: whole plan\nReview P1.`, "reviewer", gcfg, "rev2")).toMatchObject({ allow: true });
 	writeFileSync(LOCKED, original);
+});
+
+test("a review spawn without the `Scope: whole plan` line is refused", () => {
+	rmSync(REVIEW_SPAWNS, { force: true });
+	freshProgress();
+	expect(gspawn(`Plan review: ${LOCKED}\nReview P1 only.`, "reviewer", gcfg, "rev1")).toMatchObject({
+		allow: false,
+		reason: expect.stringContaining("Scope: whole plan"),
+	});
 });
 
 test("a non-review spawn reusing the review name drops the entry and its lock", () => {

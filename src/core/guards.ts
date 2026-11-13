@@ -308,6 +308,7 @@ function reviewRole(name: string | undefined, named: string[], brief: string, ag
 	const reviewed = named.filter(f => isReviewSpawn(f, brief, agent, cfg, spawner));
 	if (reviewed.length > 1) return { plan: null, problem: "a review spawn reviews one plan; split the spawn." };
 	if (reviewed.length && !name) return { plan: null, problem: "a review spawn needs a name (the task name keys its review lock)." };
+	if (reviewed.length && !/^Scope: whole plan\s*$/m.test(brief)) return { plan: null, problem: "a review spawn reviews the whole plan: add the line `Scope: whole plan` to the brief (every unticked phase, one pass; no per-phase reviews)." };
 	const plan = reviewed[0] ?? null;
 	if (plan) {
 		const rec = readPlanReviews()[plan];

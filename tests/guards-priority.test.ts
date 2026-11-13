@@ -434,7 +434,7 @@ function readyLow(): void {
 
 /** A named review spawn by the fixture's one allowed agent; the caller toggles cfg.review.agents. */
 function reviewEv(plan: string, runningJobs?: string[]): SpawnEvent {
-	return { ...spawnEv(`Plan review: ${plan}\nConfirm the plan's P1.`, runningJobs), name: "rev-low" };
+	return { ...spawnEv(`Plan review: ${plan}\nScope: whole plan\nConfirm the plan's P1.`, runningJobs), name: "rev-low" };
 }
 
 test("P8: a review spawn on rank 3 passes the priority gate while rank 1 is idle, with no skip line", () => {
