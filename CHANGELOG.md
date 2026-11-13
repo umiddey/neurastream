@@ -1,9 +1,11 @@
 # Changelog
-## Unreleased
+## 0.3.0
 ### Changed
 - `neurastream ui` is renamed `neurastream workspace` (clean cutover, no alias): the command (`workspace`, `workspace on --login <tailscale login> [--port N]`, `workspace off`), the `ui:` config block (`workspace:`; an existing `ui:` block still loads as `workspace:` with a rename notice naming the file — rename it by hand), and the user unit (`neurastream-ui.service` → `neurastream-workspace.service`; `workspace on` first disables the old `neurastream-ui` unit and removes its file when one is installed). The old command name is an unknown command. The page itself — auth, Host/Origin checks, owner inbox, guard refusals — is unchanged.
 ### Added
 - Team queue (plan 20261027_1305, P0-P7): a shared plan queue for a team, served by one per-team SQLite-backed server on the team's Tailscale network. `neurastream workspace on --team <name> --admin <login> --repo <glob>` runs it as `neurastream-team-<name>`; `team join`, `team leave`, `team share`, `team unshare`, `team sync`, `team pause`, `team resume` are the member commands. The team server's auth, data, backup and routes are in `docs/team-server.md`; the README "Team queue" section and `docs/adapter.md` "Claim store" describe the rest. Ranked voting, leader override, first answer wins, `--distinct`, `teams[].max_share` and cross review are part of it.
+- Security review of the team queue (P8): the client strips credentials from the git origin before sending it, refuses plans whose repo is not in the team, and accepts only 64-hex plan ids; the server pins its own tailnet address at start, keeps its data dir 0700 and file 0600, and `workspace on` refuses when the old `neurastream-ui` unit cannot be stopped. The client's claim check before a plan PUT is UX only: the server does not check claims on PUT.
+- `Plan review:` spawns are refused while the plan already has a current reviewer PASS (d68735e).
 
 ## 0.2.86
 ### Fixed
