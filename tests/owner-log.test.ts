@@ -38,13 +38,14 @@ const nowBefore = process.env.NEURASTREAM_NOW;
 const queueEnvBefore = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("QUEUE_")));
 process.env.HOME = HOME;
 process.env.NEURASTREAM_NOW = String(NOW_SEC);
-for (const k of Object.keys(queueEnvBefore)) delete process.env[k];
+const mainEnvBefore = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("NEURASTREAM_MAIN_")));
+for (const k of [...Object.keys(queueEnvBefore), ...Object.keys(mainEnvBefore)]) delete process.env[k];
 
 afterAll(() => {
 	resetAdapter();
 	rmSync(TMP, { recursive: true, force: true });
-	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
-	Object.assign(process.env, queueEnvBefore);
+	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_") || k.startsWith("NEURASTREAM_MAIN_")) delete process.env[k];
+	Object.assign(process.env, queueEnvBefore, mainEnvBefore);
 	if (homeBefore === undefined) delete process.env.HOME;
 	else process.env.HOME = homeBefore;
 	if (nowBefore === undefined) delete process.env.NEURASTREAM_NOW;
@@ -72,8 +73,11 @@ adapter:
   extensions: "${join(TMP, "extensions")}"
 rollover:
   enabled: false
+guards:
+  ledger_command: "true"
 ${extra}`,
 	);
+	writeFileSync(join(TMP, "INDEX.md"), "");
 	const cfg = loadConfig({ home: HOME, env: {} });
 	applyQueueEnv(cfg);
 	return cfg;
