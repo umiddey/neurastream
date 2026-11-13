@@ -1211,3 +1211,18 @@ test("a plan whose repo the team does not list is never sent (ii-2)", async () =
 		stub.stop();
 	}
 });
+
+test("a server plan id that is not a plan id is never fetched, written, or read as a record key (ii-3, ii-7)", async () => {
+	const stub = await stubTeam({
+		"GET /plans": { status: 200, body: { plans: [{ id: "../../x", sha: "s1" }, { id: "__proto__", sha: "s1" }] } },
+		GET: { status: 200, body: { text: "pwned", sha: "s1" } },
+	});
+	try {
+		const team: TeamEntry = { name: "stubteam", server: stub.url, repos: ["gitlab.com/none/*"] };
+		expect(syncTeam(team, cfgWith([team]))).toBe(0);
+		expect(existsSync(join(STATE, "team", "x.md"))).toBe(false);
+		expect(stub.requests().filter(r => r.method === "GET" && r.path.startsWith("/plans/"))).toEqual([]);
+	} finally {
+		stub.stop();
+	}
+});

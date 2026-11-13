@@ -192,6 +192,12 @@ function readRecord(cfg: Config, team: TeamEntry): TeamRecord {
 	return {};
 }
 
+/** A plan id as the server makes it: the sha256 hex of the origin and path. Any other string names no file, so it is never joined into a path or used as a record key. */
+const PLAN_ID_RE = /^[0-9a-f]{64}$/;
+function validId(id: unknown): id is string {
+	return typeof id === "string" && PLAN_ID_RE.test(id);
+}
+
 /**
  * One read-modify-write of the sync record, under the file lock the claims store uses
  * (fileClaimStore's run() convention): the lock sits beside the data, the write is tmp + rename
@@ -428,6 +434,7 @@ export function summaryHolder(cfg: Config, opts: RawOpts = {}, views?: Map<strin
 
 /** One GET /plans/:id pulled into this machine: the read copy is written unless the record maps the id to a repo path (then the repo file is left alone and only the sha is noted for the next push's base). */
 function pullPlan(team: TeamEntry, cfg: Config, id: string): void {
+	if (!validId(id)) return; // a server id that is not a plan id is never fetched, joined into a path, or read as a record key
 	const res = askRaw(team, { url: `${team.server}/plans/${encodeURIComponent(id)}`, method: "GET" });
 	if (res === "down" || res.status !== 200 || !isObj(res.body) || typeof res.body.text !== "string" || typeof res.body.sha !== "string") return;
 	const text = res.body.text;
@@ -674,7 +681,7 @@ export function sameGoalCheck(team: TeamEntry, cfg: Config, file: string, text: 
 export function teamPlans(cfg: Config, team: TeamEntry, view: TeamView): TeamPlanRow[] {
 	const rec = readRecord(cfg, team);
 	const copyDir = path.join(teamDir(cfg, team), "plans");
-	return viewPlanRows(view, cfg.queue.claim_ttl_min, nowSec(), id => rec[id]?.path ?? path.join(copyDir, `${id}.md`));
+	return viewPlanRows({ ...view, plans: view.plans.filter(p => validId(p.id)) }, cfg.queue.claim_ttl_min, nowSec(), id => rec[id]?.path ?? path.join(copyDir, `${id}.md`));
 }
 
 /** A plan's sort key: [tier, value]. Tier 0 is the leader's override (value: its position); tier 1 a voted plan (value: its rank sum); tier 2 no vote. */
