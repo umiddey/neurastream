@@ -5,7 +5,7 @@
 import { afterAll, afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -645,4 +645,12 @@ test("a request from this machine's own tailnet address is refused even when tai
 	// The host header names the MagicDNS name, so the host check does not depend on ip4() either.
 	const res = await call(svc.port, "GET", "/health", OWN_IP, undefined, `${DNS_NAME}:${svc.port}`);
 	expect(res).toEqual({ status: 403, body: { error: "forbidden: this machine's own tailnet address" } });
+});
+
+test("the team database directory and file are private to the owner", () => {
+	const sub = join(dir, `${++n}-private`);
+	const dbPath = join(sub, "team", "queue.sqlite");
+	openTeamDb(dbPath).close();
+	expect(statSync(join(sub, "team")).mode & 0o777).toBe(0o700);
+	expect(statSync(dbPath).mode & 0o777).toBe(0o600);
 });

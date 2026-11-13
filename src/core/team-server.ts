@@ -4,7 +4,7 @@
 
 import { Database } from "bun:sqlite";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { chmodSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { claimExpired } from "./claims.ts";
 import { nowSec, strftime } from "./clock.ts";
@@ -268,8 +268,9 @@ function addColumn(db: Database, table: string, column: string, decl: string): v
 
 /** Opens the team database and creates its tables. busy_timeout makes a second writer wait for the lock instead of failing with SQLITE_BUSY. */
 export function openTeamDb(dbPath: string): Database {
-	mkdirSync(dirname(dbPath), { recursive: true });
+	mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
 	const db = new Database(dbPath);
+	chmodSync(dbPath, 0o600);
 	db.exec("PRAGMA busy_timeout = 5000;");
 	db.exec(`
 		CREATE TABLE IF NOT EXISTS plans (
