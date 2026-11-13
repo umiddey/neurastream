@@ -1193,3 +1193,21 @@ test("the PUT body names the origin as host/path: no userinfo, no port (ii-1)", 
 		stub.stop();
 	}
 });
+
+test("a plan whose repo the team does not list is never sent (ii-2)", async () => {
+	const stub = await stubTeam({ PUT: { status: 200, body: { sha: "s1" } } });
+	try {
+		const repo = join(TMP, "elsewhere");
+		mkdirSync(repo, { recursive: true });
+		spawnSync("git", ["init", "-q"], { cwd: repo });
+		spawnSync("git", ["remote", "add", "origin", "https://gitlab.com/other/pm.git"], { cwd: repo });
+		const file = join(repo, "docs/plans/20261101_0900_elsewhere.md");
+		writePlan(file, "", "Queue: team");
+		const team: TeamEntry = { name: "stubteam", server: stub.url, repos: ["gitlab.com/acme/*"] };
+		const got = capture(() => pushTeamPlan(team, cfgWith([team]), file));
+		expect(got.out).toContain(`team sync: ${file} not pushed: its repo is not in team stubteam`);
+		expect(stub.requests()).toEqual([]);
+	} finally {
+		stub.stop();
+	}
+});

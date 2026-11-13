@@ -22,7 +22,7 @@ import { jaccard } from "./incident-detectors.ts";
 import { defaultRunner, listOpenMrs, remotePath, type CommandRunner } from "./mr-sweep.ts";
 import { activePlans, headerField, parsePlan, planRepo, sha, SUMMARY_CAP, type Plan } from "./queue/lib.ts";
 import { teamPlanId, type TeamView } from "./team-server.ts";
-import { planShare, repoTeam } from "./team-labels.ts";
+import { planShare, remoteListed, repoTeam } from "./team-labels.ts";
 
 /** The server's one-read view, as the server defines it: every client consumer reads it from here. */
 export type { TeamView };
@@ -459,6 +459,12 @@ function pullPlan(team: TeamEntry, cfg: Config, id: string): void {
 export function pushTeamPlan(team: TeamEntry, cfg: Config, file: string, text?: string, run: CommandRunner = defaultRunner, distinct?: string): void {
 	const body = text ?? readText(file) ?? "";
 	if (headerField(body, "Queue") !== "team") return; // a plan without the marker is never pushed
+	// The server refuses a repo its team does not list; checking here keeps the text on this machine.
+	const repo = planRepo(file);
+	if (!remoteListed(gitOrigin(repo, run), team.repos)) {
+		console.log(`team sync: ${file} not pushed: its repo is not in team ${team.name}`);
+		return;
+	}
 	const id = pathId(team, cfg, file, run);
 	if (id === null) {
 		console.log(`team sync: ${file} not pushed: its repo origin does not parse`);
@@ -473,7 +479,6 @@ export function pushTeamPlan(team: TeamEntry, cfg: Config, file: string, text?: 
 		console.log(`team sync: ${file} not pushed: held by another member's Main`);
 		return;
 	}
-	const repo = planRepo(file);
 	const base = readRecord(cfg, team)[id]?.sha ?? null;
 	const res = askRaw(team, {
 		url: `${team.server}/plans/${encodeURIComponent(id)}`,
