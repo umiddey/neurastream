@@ -18,7 +18,8 @@ for f in $(echo "$FILES" | grep -E '^src/core/.*\.ts$'); do
   if grep -niwE 'omp|opencode|codex|claude|cursor' "$f"; then echo "multi-main-scope: $f names a harness"; rc=1; fi
 done
 if echo "$FILES" | grep -E '^tests/' | xargs -r grep -lE 'homedir\(\)|/home/ukd' 2>/dev/null; then echo "multi-main-scope: a test touches the real home"; rc=1; fi
-# Atomic claims only.
-if [ -f src/core/claims.ts ] && ! grep -qE 'O_EXCL|"wx"|linkSync|BEGIN' src/core/claims.ts; then echo "multi-main-scope: claims.ts has no atomic create"; rc=1; fi
+# Atomic claims only: every claim change under the flock store lock (src/core/file-lock.ts).
+if [ -f src/core/claims.ts ] && ! grep -qE 'from "\./file-lock(\.ts)?"' src/core/claims.ts; then echo "multi-main-scope: claims.ts does not use the file-lock store lock"; rc=1; fi
+if [ -f src/core/claims.ts ] && grep -nE 'renameSync\([^)]*stale' src/core/claims.ts; then echo "multi-main-scope: no rename-then-recreate takeover"; rc=1; fi
 [ $rc -eq 0 ] && echo "multi-main-scope: clean"
 exit $rc

@@ -8,7 +8,7 @@ fi
 WT=/home/ukd/Work/neurastream-write-checks
 [ -d "$WT" ] || { echo "write-checks-scope: no worktree"; exit 0; }
 cd "$WT" || exit 1
-ALLOWED='^(src/core/(write-check|config)\.ts|src/adapters/omp/index\.ts|templates/config\.yml|docs/(config|adapter)\.md|tests/[^/]+\.test\.ts|tests/fixtures/write-check/.+|README\.md|CHANGELOG\.md)$'
+ALLOWED='^(src/core/(write-check|config|guards|blockers)\.ts|src/adapters/omp/index\.ts|templates/config\.yml|docs/(config|adapter)\.md|tests/[^/]+\.test\.ts|tests/fixtures/write-check/.+|README\.md|CHANGELOG\.md)$'
 BASE=$(git merge-base origin/main HEAD 2>/dev/null || echo origin/main)
 FILES=$( { git diff --name-only "$BASE"; git ls-files --others --exclude-standard; } 2>/dev/null | sort -u)
 rc=0

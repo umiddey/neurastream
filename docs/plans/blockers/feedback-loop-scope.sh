@@ -8,7 +8,11 @@ fi
 WT=/home/ukd/Work/neurastream-feedback-loop
 [ -d "$WT" ] || { echo "feedback-loop-scope: no worktree"; exit 0; }
 cd "$WT" || exit 1
-ALLOWED='^(src/core/(heartbeat|watch|incident-detectors|incidents|notify|metrics|report|main-start|config|init|doctor|ui-setup|service-manager|wip-[a-z-]+)\.ts|src/adapters/omp/index\.ts|src/cli/[^/]+\.ts|templates/config\.yml|templates/systemd/neurastream-watch\.(service|timer)|templates/launchd/[^/]+\.plist|templates/help/[a-z-]+\.txt|tests/[^/]+\.test\.ts|tests/fixtures/[^ ]+|README\.md|CHANGELOG\.md|docs/[^/]+\.md)$'
+ALLOWED='^(src/core/(heartbeat|watch|incident-detectors|incidents|notify|metrics|report|main-start|config|init|doctor|ui-setup|service-manager|guards|trace-actions|wip-[a-z-]+)\.ts|src/adapters/omp/index\.ts|src/cli/[^/]+\.ts|templates/config\.yml|templates/systemd/neurastream-watch\.(service|timer)|templates/launchd/[^/]+\.plist|templates/help/[a-z-]+\.txt|tests/[^/]+\.test\.ts|tests/fixtures/[^ ]+|README\.md|CHANGELOG\.md|docs/[^/]+\.md)$'
+# Owner unlock 2026-10-31 08:35: P6b's CI scan (src/core/ci.ts) and repoForge in mr-sweep.
+ALLOWED="^src/core/(ci|mr-sweep)\.ts\$|^src/adapters/omp/launch\.ts\$|$ALLOWED"
+# Owner unlock 2026-11-01 13:35: P10c reuses the brief path extraction in brief-lint.ts (plan Reuse line).
+ALLOWED="^src/core/brief-lint\.ts\$|$ALLOWED"
 BASE=$(git merge-base origin/main HEAD 2>/dev/null || echo origin/main)
 FILES=$( { git diff --name-only "$BASE"; git ls-files --others --exclude-standard; } 2>/dev/null | sort -u)
 rc=0

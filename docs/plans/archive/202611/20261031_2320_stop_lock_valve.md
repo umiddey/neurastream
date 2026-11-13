@@ -1,0 +1,51 @@
+# Stop lock: no false "landed", always a way out (0.2.61)
+Worktree: /home/ukd/Work/neurastream-stop-valve
+Branch: fix/stop-valve
+Summary: 0.2.60 froze the owner's chat: an empty branch counted as "landed" and the stop lock had no way out. This makes "landed" need every phase ticked and gives the lock the same 3-try way out the other stop blocks have.
+
+## Goal
+- INCIDENT I-20261031-361 (owner, 2026-10-31 ~23:10): "the new version of neurastream is completely fucked … when I do neuro stream main, I can't even type in the chat" → root cause asked → owner picked fix 3 (23:20): "do 3" = fix the false alarm, keep the block, add a way out.
+- A real stuck plan still pushes Main back (up to `guards.idle_stops` tries); then Main stops, names what is stuck, and the owner can type.
+
+## Forbidden
+- never push, tag, publish, install
+- no warning-only lock (owner rejected fix 1); no removal of the lock
+- no change outside the files in the scope blocker
+
+## Blockers
+- no-push
+- blockers/stop-valve-scope.sh
+
+## Phases
+- [x] P1 False "landed": `autoCloseCandidate` (src/core/queue/lib.ts:69-74) returns true for an open plan only when every phase is ticked (`p.phases.total > 0 && p.phases.done === p.phases.total`) AND (no branch, or the branch exists and `landed(...)`). Today an empty branch (0 commits ahead of origin/main) passes `merge-base --is-ancestor` (lib.ts:57) and counts as landed: team_queue (0/10), pressure_alerts (0/4), wip_harden (1/13) were all locked this way. fail-before: test plants a plan with 0/2 phases ticked and a branch at origin/main → `autoCloseCandidate` true on origin/main fbbb14f; after: false. Also: all phases ticked + branch at origin/main → true (a fast-forward merge still closes) — difficulty: 2 — verify: `bun test tests/auto-close.test.ts`
+- [x] P2 Way out: the landed-lock block in `checkStop` (src/core/guards.ts:2017-2032) counts empty stop attempts like the incident block above it (guards.ts:2003-2004: `if (state.callsSinceStop === 0) state.idleStops++; state.callsSinceStop = 0`) and lets the stop through once `state.idleStops >= cfg.guards.idle_stops`, logging `ALLOW stop after N idle stop attempts; locked: <plans>`; the refusal text says how many tries are left. The comment "there is no idle-stop valve" goes. fail-before: test drives `checkStop` 4 times with a locked plan and callsSinceStop 0 → all 4 blocked on fbbb14f; after: the 3rd (idle_stops: 3) is allowed; a stop with callsSinceStop > 0 resets the count and blocks again — difficulty: 2 — verify: `bun test tests/guards.test.ts tests/auto-close.test.ts`
+- [x] P3 Release 0.2.61 (package.json + CHANGELOG "0.2.60 froze chat input: …"), full suite via heavy-run, typecheck, lint, PR, CI green, merge, tag. — difficulty: 1 — verify: `bun run typecheck && bun run lint`
+- [x] P4 Main: live typing test before telling the owner: install 0.2.61 (owner unlock), open `neurastream main` in a separate tmux pane with the real queue, let one turn end, type `ping` and see it accepted; guard log shows no endless `BLOCK stop: landed but not closed`. Owner runs `npm deprecate neurastream@0.2.60 "froze chat input; use 0.2.61"` (no local npm token). — difficulty: 1 — verify: `neurastream doctor`
+
+## Done check
+`cd /home/ukd/projects/neurastream && bun run typecheck && bun test tests/auto-close.test.ts tests/guards.test.ts`
+
+## Reuse
+- new: none — checked: src/core/guards.ts:2003-2004 — reuse: the incident block's idleStops counter and `cfg.guards.idle_stops` (guards.ts:2043, templates/config.yml:127); no new config key
+- new: none — checked: src/core/queue/lib.ts:71 — reuse: the branchless all-phases-ticked rule, applied to branch plans too
+
+## Code read by Main
+- `src/core/guards.ts`
+- `src/core/queue/lib.ts`
+- `src/adapters/omp/index.ts`
+- `templates/config.yml`
+
+## Progress
+Status: complete
+- 2026-11-01 08:18 Main: P4 done on installed 0.2.63 (holds 0.2.61's fix; doctor ok exit 0 at 08:00). `tmux new-session -d -s p4test 'neurastream main'` in /home/ukd/projects with the real queue; typed `ping — test only …` → accepted, the session answered and ended its turns (chat input not frozen). `grep -c 'landed but not closed' ~/.local/state/main-guard.log` → 2, both 2026-10-31T22:07/22:10Z (before 0.2.61), none since. `npm view neurastream@0.2.60 deprecated` → "broken: blocks chat input, use 0.2.59". Findings: none
+- 2026-10-31 23:22 Main: root cause read from the 0.2.60 diff (230b397..fbbb14f): guards.ts:2017-2032 stop lock with no valve + lib.ts:69-74 empty branch = landed (feat/pressure-alerts, feat/wip-harden, feat/team-queue each 0 commits ahead of origin/main). Owner picked fix 3. Findings: none
+- 2026-10-31 23:29 RevStopValvePlanGlm: PLAN REVIEW: PASS — redundant: none — inefficient: none — insecure: none
+  - P1 is safe for every real close path: all three landed consumers read the one shared predicate — adapter autoClose filter (src/adapters/omp/index.ts:223), checkStop lock (src/core/guards.ts:1971), planGate lock (src/core/guards.ts:598), queueProblems (src/core/queue/lib.ts:1101) — so gating autoCloseCandidate on `phases.total > 0 && done === total` fixes trigger and lock together, no second site to miss.
+  - No existing auto-close test breaks: every planted plan in tests/auto-close.test.ts goes through openPlanText, which carries exactly one ticked phase (`- [x] P1`, lines 111-112) → total=1 done=1 → still a candidate under the new rule; (f) squash-landed+1/1 closes, (g) 1/1+failed done still locks, (i) single checkStop call with idleStops 0 < 3 stays blocked; guards.test.ts stop-valve tests (lines 531-556) run with no locked plan, so P2's new locked-block valve does not touch them.
+  - queue-close --auto is untouched and consistent: it re-checks landed with its own upstreamBase and the shared landed() (src/core/queue-close.ts:96-101, 128) — P1 changes only the trigger, not landed() semantics; manual `--auto` closes still require a passing done check (queue-close.ts:131-160).
+  - P2 valve matches the incident counter exactly: guards.ts:1991-1996 (`if (state.callsSinceStop === 0) state.idleStops++; else …= 0; state.callsSinceStop = 0;` → ALLOW at `>= cfg.guards.idle_stops`, state reset `{callsSinceStop: 0, idleStops: 0}`); idle_stops default 3 confirmed (templates/config.yml:127, src/core/config.ts:128); the busy-stop reset the plan's quote omits is pinned by its own fail-after clause; lock is not weakened: escape needs 3 consecutive zero-call stops, any real work resets — owner's fix 3, not the rejected warning-only variant.
+  - Reuse checks confirmed: guards.ts:1991-1996 counter exists as cited in content; lib.ts:69-74 autoCloseCandidate and lib.ts:71 branchless all-phases rule exist as cited; landed()'s merge-base --is-ancestor sits ~lib.ts:59 (cited 57, within 2 lines).
+  - Secrets/auth: none — no credentials, no new config keys, no hardcoded paths introduced by the plan; worktree clean at fbbb14f (0 modified files).
+  - Findings: (1) plan's guards.ts line cites are stale on fbbb14f — landed-lock block is guards.ts:1968-1977 (comment "no idle-stop valve" at 1970, BLOCK at 1976), counter at 1991-1996, cfg.guards.idle_stops used at 1994, not 2017-2032 / 2003-2004 / 2043 (lib.ts and config.yml cites are accurate); (2) P3 "PR, CI green, merge, tag" contradicts this plan's own Forbidden "never push, tag, publish, install" and the no-push blocker — needs "Main does" attribution like P4 has, else the implementer is forbidden to run its own P3; (3) intended edge, worth one test: a branched plan with a Phases section of zero entries (or none) and a landed branch is no longer a candidate — no auto-close and no lock; it stays open until ticked or manually closed; (4) could not verify the stop-valve scope blocker's file list (plan-guard refuses reading it) — confirm it lists tests/auto-close.test.ts + tests/guards.test.ts, since P1/P2 verify commands and the new fail-before tests need them in scope.
+- 2026-10-31 23:47 Main: NsStopValveP1P2Glm done on fix/stop-valve: a50d870 (P1 autoCloseCandidate needs all phases ticked; tests k/l/m, red 2 fail → 43/0) and 9ae995f (P2 landed-lock counts idle stops, allows at guards.idle_stops; red 1 fail → 44/0); typecheck 0, lint 0, scope clean. Main read the whole src diff: matches the plan. Next: GLM code review, then P3 release. Findings: none
+- 2026-10-31 23:52 RevStopValveCodeGlm: CODE REVIEW P1 P2: PASS — autoCloseCandidate gates branched and branchless plans on all phases ticked before landed (src/core/queue/lib.ts:69-75); all four consumers read the one shared predicate — adapter autoClose filter (src/adapters/omp/index.ts:223), planGate (src/core/guards.ts:598), checkStop (src/core/guards.ts:1972), queueProblems (src/core/queue/lib.ts:1102) — repo-wide grep: no fifth consumer, no duplicated predicate; landed-lock valve counts empty stops like the incident block and resets on calls (src/core/guards.ts:1977-1984), counters round-trip through the omp adapter (index.ts:873, 1093-1094) so a busy stop re-locks end to end; every other allow:false in checkStop has a valve: cancel-pending and incidents release at idleStops 2 (guards.ts:1944-1956), open-queue at cfg.guards.idle_stops (guards.ts:2001-2006), plan-offer refusal (guards.ts:1924) is reply-conditional, touches no counters, deliberately valve-less per 20261028_0900 — no new freeze; revert failure proven statically against fbbb14f: old predicate returned landed() for branch plans so tests (k)/(m) fail their toBe(false) while (l) passes both (regression guard), old landed block returned state untouched so the P2 test fails at state toEqual {callsSinceStop:0, idleStops:1}, "2 idle stop attempts left", and third.code===0; diff is exactly the four allow-listed files (docs/plans/blockers/stop-valve-scope.sh). Test runs were denied for this read-only review spawn, so check 3 rests on assertion-level static proof plus the implementer's witnessed red runs (k/m red 2 fail → 43/0; valve red 1 fail → 44/0). Findings: (1) guards.ts:1969-1971 comment says "like the incident block above" but the incident block counts toward its hardcoded 2 with no busy-stop reset — the valve's exact shape (cfg.guards.idle_stops threshold, reset-on-calls) matches the open-queue valve at guards.ts:2001-2006; wording only, behavior plan-compliant

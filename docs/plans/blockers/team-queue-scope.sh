@@ -8,7 +8,7 @@ fi
 WT=/home/ukd/Work/neurastream-team-queue
 [ -d "$WT" ] || { echo "team-queue-scope: no worktree"; exit 0; }
 cd "$WT" || exit 1
-ALLOWED='^(src/core/(team-[a-z-]+|claims|guards|config|main-start|owner-ui|owner-inbox|tailscale|doctor)\.ts|src/core/queue/lib\.ts|src/adapters/omp/(index|doctor)\.ts|src/cli/[^/]+\.ts|templates/config\.yml|templates/systemd/neurastream-team\.service|templates/launchd/[^/]+\.plist|templates/help/[^/]+\.txt|tests/[^/]+\.test\.ts|README\.md|CHANGELOG\.md|docs/[^/]+\.md|package\.json)$'
+ALLOWED='^(src/core/(team-[a-z-]+|claims|guards|config|main-start|owner-ui|owner-inbox|tailscale|doctor|ui-setup|queue-check|queue-close|pages|mr-sweep|incident-detectors)\.ts|src/core/queue/lib\.ts|src/adapters/omp/(index|doctor)\.ts|src/cli/[^/]+\.ts|scripts/ui-preview\.ts|templates/config\.yml|templates/systemd/neurastream-[a-z-]+\.service|templates/queue/TEMPLATE\.md|templates/launchd/[^/]+\.plist|templates/help/[^/]+\.txt|tests/[^/]+\.test\.ts|README\.md|CHANGELOG\.md|docs/[^/]+\.md|package\.json)$'
 BASE=$(git merge-base origin/main HEAD 2>/dev/null || echo origin/main)
 FILES=$( { git diff --name-only "$BASE"; git ls-files --others --exclude-standard; } 2>/dev/null | sort -u)
 rc=0

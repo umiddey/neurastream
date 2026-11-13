@@ -8,7 +8,7 @@ fi
 WT=/home/ukd/Work/neurastream-live-recheck
 [ -d "$WT" ] || { echo "live-recheck-scope: no worktree"; exit 0; }
 cd "$WT" || exit 1
-ALLOWED='^(src/core/(waiting-check|queue/lib|owner-ui|main-start|queue-check|rollover|metrics|config|incidents)\.ts|src/adapters/omp/index\.ts|src/cli/[^/]+\.ts|templates/config\.yml|templates/queue/TEMPLATE\.md|tests/[^/]+\.test\.ts|README\.md|CHANGELOG\.md|docs/[^/]+\.md)$'
+ALLOWED='^(src/core/(waiting-check|queue/lib|owner-ui|main-start|queue-check|rollover|metrics|config|incidents|queue-cancel|brief-lint|queue-close|queue-trim|pages-setup|ui-setup|guards|notify)\.ts|src/adapters/omp/(index|launch)\.ts|src/cli/[^/]+\.ts|templates/config\.yml|templates/queue/TEMPLATE\.md|tests/[^/]+\.test\.ts|README\.md|CHANGELOG\.md|docs/[^/]+\.md)$'
 BASE=$(git merge-base origin/main HEAD 2>/dev/null || echo origin/main)
 FILES=$( { git diff --name-only "$BASE"; git ls-files --others --exclude-standard; } 2>/dev/null | sort -u)
 rc=0

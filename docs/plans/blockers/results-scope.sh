@@ -12,7 +12,7 @@ WT=/home/ukd/Work/neurastream-results
 [ -d "$WT" ] || { echo "results-scope: no worktree"; exit 0; }
 cd "$WT" || exit 1
 HARNESS='\b(omp|claude|codex|opencode|anthropic|openrouter|zai|glm|openai|gemini|deepseek)\b'
-ALLOWED='^(src/core/adapter\.ts|src/adapters/omp/sessions\.ts|src/core/results\.ts|src/core/metrics\.ts|src/cli/metrics\.ts|src/core/owner-ui\.ts|src/core/config\.ts|src/core/help\.ts|scripts/ui-preview\.ts|templates/config\.yml|docs/config\.md|README\.md|CHANGELOG\.md|tests/results[a-z-]*\.test\.ts|tests/owner-ui\.test\.ts|tests/metrics\.test\.ts|tests/fixtures/results/.*|docs/plans/20261025_2148_feature_results\.md)$'
+ALLOWED='^(src/core/adapter\.ts|src/adapters/omp/sessions\.ts|src/core/results\.ts|src/core/metrics\.ts|src/core/queue-finished\.ts|src/cli/metrics\.ts|src/cli/dispatch\.ts|src/core/owner-ui\.ts|src/core/config\.ts|src/core/help\.ts|scripts/ui-preview\.ts|templates/config\.yml|docs/config\.md|README\.md|CHANGELOG\.md|package\.json|tests/results[a-z-]*\.test\.ts|tests/owner-ui\.test\.ts|tests/metrics\.test\.ts|tests/golden/ports-p4\.test\.ts|tests/fixtures/results/.*|docs/plans/20261025_2148_feature_results\.md)$'
 BASE=$(git merge-base origin/main HEAD 2>/dev/null || echo origin/main)
 FILES=$( { git diff --name-only "$BASE"; git ls-files --others --exclude-standard; } 2>/dev/null | sort -u)
 rc=0
