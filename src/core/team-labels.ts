@@ -54,6 +54,16 @@ function globsOverlap(a: string, b: string): boolean {
 	return as.every((seg, i) => segOverlap(seg, bs[i]!));
 }
 
+/** Team names become unit names, file names and URL-safe ids, so one shape everywhere (CLI, config, unit files). */
+export const TEAM_NAME_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
+export const TEAM_NAME_HINT = `team name must match ${TEAM_NAME_RE.source}`;
+
+/** Refusal text when a team's repo list (config `repos`, or `--repo` on the CLI) is not a non-empty list of non-empty globs. */
+export function repoListError(repos: unknown): string | null {
+	if (Array.isArray(repos) && repos.length > 0 && repos.every(r => typeof r === "string" && r.trim() !== "")) return null;
+	return "repos must be a list of non-empty origin globs (host/path, * does not cross /)";
+}
+
 /**
  * Why `teams` cannot load, or null. Two teams that can name the same remote are an error:
  * a repo must belong to one team. Shape is checked here because an array in the template
@@ -66,14 +76,13 @@ export function teamConfigError(teams: unknown): string | null {
 	for (const [i, raw] of teams.entries()) {
 		if (!isObj(raw)) return `teams[${i}] must be {name, server, repos}`;
 		const { name, server, repos } = raw;
-		if (typeof name !== "string" || name.trim() === "" || /\s/.test(name))
-			return `teams[${i}].name must be a non-empty name without spaces`;
+		if (typeof name !== "string" || !TEAM_NAME_RE.test(name)) return `teams[${i}].name must match ${TEAM_NAME_RE.source}`;
 		if (names.has(name)) return `teams: two entries named "${name}"`;
 		names.add(name);
 		if (typeof server !== "string" || server.trim() === "") return `teams[${i}].server must be a non-empty string`;
-		if (!Array.isArray(repos) || repos.length === 0 || repos.some(r => typeof r !== "string" || r.trim() === ""))
-			return `teams[${i}].repos must be a list of non-empty origin globs (host/path, * does not cross /)`;
-		parsed.push({ name, repos });
+		const repoErr = repoListError(repos);
+		if (repoErr) return `teams[${i}].${repoErr}`;
+		parsed.push({ name, repos: repos as string[] });
 	}
 	for (let i = 0; i < parsed.length; i++) {
 		for (let j = i + 1; j < parsed.length; j++) {

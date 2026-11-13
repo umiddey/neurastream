@@ -17,6 +17,7 @@ import { allowedAgents, readIndex, reviewAgentsProblem } from "../../core/queue/
 import { systemRunner, type Runner } from "../../core/pages-setup.ts";
 import { packageJsonPath } from "./package-root.ts";
 import { realTailscale, type Tailscale } from "../../core/tailscale.ts";
+import { teamViews } from "../../core/team-client.ts";
 import { wipHealth } from "../../core/wip-setup.ts";
 import { readOmpProviders } from "./providers.ts";
 
@@ -241,6 +242,12 @@ export function doctorReport(home: string, env: NodeJS.ProcessEnv = process.env,
 		else problems.push(`tailscale: ${state === "missing" ? "missing" : "logged out"}`);
 		if (!cfg.workspace.owner_login) problems.push("workspace.enabled but workspace.owner_login is empty");
 		else if (state === "running") ok.push(`workspace owner page: login ${cfg.workspace.owner_login}`);
+	}
+	// Teams (plan 20261027_1305 P6): each teams: entry must answer its view for this login. A team that
+	// is down, or refuses this login (not a member), is a problem; a reachable one shows the claims held here.
+	for (const [teamName, view] of teamViews(cfg)) {
+		if ("unreachable" in view) problems.push(`team ${teamName}: ${view.unreachable} did not answer — down, or this login is not a member`);
+		else ok.push(`team ${teamName}: ${view.claims.filter(c => c.mine).length} claim(s) held by this login`);
 	}
 	// WIP timers (plan 20261027_1130 P6): roots set with nothing scheduled is a silent stop, and so
 	// is a run that failed — the state that went unnoticed for a week before this plan.

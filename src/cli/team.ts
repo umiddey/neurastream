@@ -4,21 +4,28 @@
 // holder check goes through the chooser (claimStoreFor): a local-only read would unshare a plan
 // another member holds on the server. planShare is the gate that refuses to send a plan without
 // the marker; sync runs only when called — no hook and no heartbeat tick runs it.
+// `team join <url> --name <name> --repo <glob>...` and `team leave <name>` (P6) add and remove one
+// teams: entry in the config. join asks the server for its view first and writes nothing when the
+// server does not answer this login (down, or not a member).
 
-import { readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { heldByOther, type ClaimStore } from "../core/claims.ts";
-import { ConfigError, loadConfig, type Config } from "../core/config.ts";
+import { ConfigError, configFile, loadConfig, type Config } from "../core/config.ts";
+import { setConfigKeys } from "../core/config-edit.ts";
 import { mainId } from "../core/guards.ts";
 import { defaultRunner, type CommandRunner } from "../core/mr-sweep.ts";
 import { headerField, planRepo } from "../core/queue/lib.ts";
-import { deleteRecordEntries, claimStoreFor, pushTeamPlan, syncTeam, type TeamEntry } from "../core/team-client.ts";
-import { repoTeam } from "../core/team-labels.ts";
+import { deleteRecordEntries, claimStoreFor, pushTeamPlan, syncTeam, teamViews, type TeamEntry } from "../core/team-client.ts";
+import { TEAM_NAME_HINT, TEAM_NAME_RE, repoTeam, teamConfigError } from "../core/team-labels.ts";
 
 const USAGE = [
 	"usage: neurastream team share <plan>",
 	"       neurastream team unshare <plan>",
 	"       neurastream team sync [--team <name>]",
+	"       neurastream team join <url> --name <name> --repo <glob>...",
+	"       neurastream team leave <name>",
 ].join("\n");
 
 /** Header text with `Queue:` set to team, or removed (absent means personal). The first `##` section is kept. */
@@ -33,8 +40,9 @@ function withQueue(text: string, value: "team" | null): string {
 	return body === "" ? "" : `${body}\n`;
 }
 
-export function runTeam(args: string[], opts: { cfg?: Config; run?: CommandRunner; store?: ClaimStore } = {}): number {
+export function runTeam(args: string[], opts: { cfg?: Config; run?: CommandRunner; store?: ClaimStore; home?: string; send?: ViewSend } = {}): number {
 	const sub = args[0];
+	if (sub === "join" || sub === "leave") return runJoinLeave(args, opts);
 	if (sub === "sync") {
 		let cfg: Config;
 		try {
@@ -114,5 +122,85 @@ export function runTeam(args: string[], opts: { cfg?: Config; run?: CommandRunne
 	// header says personal (that rule would fail open the other way).
 	deleteRecordEntries(cfg, file, run);
 	console.log(`team unshare: ${file} is personal again (local copy kept)`);
+	return 0;
+}
+
+// Writes the teams: list into the config file and keeps every other key as it is.
+function writeTeamsKey(home: string, teams: TeamEntry[]): void {
+	const file = configFile(home);
+	mkdirSync(path.dirname(file), { recursive: true });
+	const text = existsSync(file) ? readFileSync(file, "utf8") : null;
+	writeFileSync(file, setConfigKeys(text, { teams: JSON.stringify(teams) }));
+}
+
+// `team join` adds one teams: entry; `team leave` removes it. join asks the server for its view
+// before it writes: an unreachable server, or one that refuses this login, writes nothing. The repo
+// globs are the admin's and come from the command line. leave leaves this machine's plan files alone.
+// The probe's transport: the team-client seam, so tests stub the server's answer.
+type ViewSend = NonNullable<Parameters<typeof teamViews>[1]>["send"];
+function runJoinLeave(args: string[], opts: { cfg?: Config; home?: string; send?: ViewSend }): number {
+	const sub = args[0];
+	const rest = args.slice(1);
+	const home = opts.home ?? homedir();
+	let cfg = opts.cfg;
+	if (!cfg) {
+		try {
+			cfg = loadConfig({ home });
+		} catch (err) {
+			console.error(err instanceof ConfigError ? err.message : String(err));
+			return 1;
+		}
+	}
+	const teams = cfg.teams ?? [];
+	if (sub === "leave") {
+		const name = rest[0];
+		if (!name || rest.length !== 1) {
+			console.error(USAGE);
+			return 2;
+		}
+		if (!teams.some(t => t.name === name)) {
+			console.error(`team leave: no teams: entry named ${name}`);
+			return 1;
+		}
+		writeTeamsKey(home, teams.filter(t => t.name !== name));
+		console.log(`team leave: ${name} removed from teams:`);
+		return 0;
+	}
+	const url = rest[0];
+	let name: string | undefined;
+	const repos: string[] = [];
+	for (let i = 1; i < rest.length; i++) {
+		if (rest[i] === "--name") name = rest[++i];
+		else if (rest[i] === "--repo") repos.push(rest[++i] ?? "");
+		else {
+			console.error(USAGE);
+			return 2;
+		}
+	}
+	if (!url || name === undefined || repos.length === 0) {
+		console.error(USAGE);
+		return 2;
+	}
+	if (!TEAM_NAME_RE.test(name)) {
+		console.error(`team join: ${TEAM_NAME_HINT}`);
+		return 2;
+	}
+	if (teams.some(t => t.name === name)) {
+		console.error(`team join: a teams: entry named ${name} already exists`);
+		return 1;
+	}
+	const candidate: TeamEntry = { name, server: url.replace(/\/+$/, ""), repos };
+	const err = teamConfigError([candidate]);
+	if (err) {
+		console.error(`team join: ${err}`);
+		return 1;
+	}
+	const view = teamViews({ ...cfg, teams: [candidate] }, { send: opts.send }).get(name);
+	if (!view || "unreachable" in view) {
+		console.error(`team join: ${candidate.server} did not return the team view for this login — it is down, or this login is not a member; nothing was written`);
+		return 1;
+	}
+	writeTeamsKey(home, [...teams, candidate]);
+	console.log(`team join: ${name} added to teams: (${candidate.server})`);
 	return 0;
 }
