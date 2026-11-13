@@ -8,7 +8,7 @@ import { nowSec } from "../src/core/clock.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import type { CommandRunner } from "../src/core/mr-sweep.ts";
 import { parsePlan } from "../src/core/queue/lib.ts";
-import { planShare, repoTeam } from "../src/core/team-labels.ts";
+import { planShare, repoListError, repoTeam } from "../src/core/team-labels.ts";
 
 const TMP = mkdtempSync(path.join(tmpdir(), "team-labels-"));
 afterAll(() => rmSync(TMP, { recursive: true, force: true }));
@@ -138,4 +138,11 @@ test("unshare while this Main holds the claim, or the plan is free, removes the 
 		else process.env.NEURASTREAM_MAIN_ID = prev;
 	}
 	expect(readFileSync(mine, "utf8")).toBe("# t\n\n## Goal\n- stay\n");
+});
+
+test("a bare * or ** repo glob is refused: it would claim every remote (iii-6)", () => {
+	expect(repoListError(["*"])).not.toBeNull();
+	expect(repoListError(["**"])).not.toBeNull();
+	expect(repoListError([" * ", "gitlab.com/acme/*"])).not.toBeNull();
+	expect(repoListError(["gitlab.com/acme/*"])).toBeNull();
 });

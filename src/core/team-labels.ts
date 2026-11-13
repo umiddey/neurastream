@@ -60,8 +60,8 @@ export const TEAM_NAME_HINT = `team name must match ${TEAM_NAME_RE.source}`;
 
 /** Refusal text when a team's repo list (config `repos`, or `--repo` on the CLI) is not a non-empty list of non-empty globs. */
 export function repoListError(repos: unknown): string | null {
-	if (Array.isArray(repos) && repos.length > 0 && repos.every(r => typeof r === "string" && r.trim() !== "")) return null;
-	return "repos must be a list of non-empty origin globs (host/path, * does not cross /)";
+	if (Array.isArray(repos) && repos.length > 0 && repos.every(r => typeof r === "string" && r.trim() !== "" && !/^\*+$/.test(r.trim()))) return null;
+	return "repos must be a list of non-empty origin globs (host/path, * does not cross /); a bare * or ** is refused";
 }
 
 /**
