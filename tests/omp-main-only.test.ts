@@ -5,28 +5,55 @@
 
 import { afterAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import ompExtension, { type ExtensionHost } from "../src/adapters/omp/index.ts";
 import { renderBlock } from "../src/core/agents-md.ts";
+import { nowSec, strftime } from "../src/core/clock.ts";
 import { loadConfig } from "../src/core/config.ts";
+import { refreshQueuePaths } from "../src/core/queue/lib.ts";
 
 const MAIN_ONLY_ENV = "NEURASTREAM_MAIN_LAUNCHER";
 
 const TMP = mkdtempSync(join(tmpdir(), "neurastream-home-"));
-// Live QUEUE_* (omp's plugin exports them to every child) would point loadConfig at the live
-// queue; save and drop them, and point HOME at the sandbox so ompExtension's own loadConfig
-// resolves under it. afterAll restores both.
-const homeBefore = process.env.HOME;
+const STATE = join(TMP, "state");
+// Bun caches os.homedir() at process start, so HOME reaches only child processes, not the
+// loadConfig()/configFile() call inside this process: the adapter reads the live
+// ~/.config/neurastream/config.yml, whose sessions root is the live ~/.omp/agent/sessions.
+// Every path the handler touches is therefore pinned through env (applyEnv wins over the file).
+const SANDBOX: Record<string, string> = {
+	HOME: TMP,
+	QUEUE_AGENT: join(TMP, "agent"),
+	QUEUE_STATE: STATE,
+	QUEUE_INDEX: join(TMP, "INDEX.md"),
+	MAIN_GUARD_LEDGER: "true",
+	MAIN_GUARD_LOG: join(TMP, "main-guard.log"),
+	PLAN_GUARD_LOG: join(TMP, "plan-guard.log"),
+};
+const envBefore = Object.fromEntries(Object.keys(SANDBOX).map(k => [k, process.env[k]]));
 const queueEnvBefore = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("QUEUE_")));
 for (const k of Object.keys(queueEnvBefore)) delete process.env[k];
-process.env.HOME = TMP;
+Object.assign(process.env, SANDBOX);
+// queue/lib.ts fixed its paths from the real home when it loaded: refresh them to the sandbox,
+// or the onStart case appends `hello` to the live recall log and lists the live plans' open MRs.
+refreshQueuePaths();
+// The two incident gates each walk the session root when open: the daily check (once per day)
+// and the detector scan (every scan_interval_sec). A fresh sandbox has neither stamp, so seed
+// them as already run: today's daily stamp, and a scan stamp in the future so the gate stays
+// shut for any interval.
+mkdirSync(STATE, { recursive: true });
+writeFileSync(join(STATE, "incidents-daily.json"), `${JSON.stringify({ date: strftime(nowSec(), "%Y-%m-%d") })}\n`);
+writeFileSync(join(STATE, "incident-scan.json"), `${JSON.stringify({ lastScan: nowSec() + 86400, mainTs: 0 })}\n`);
 
 afterAll(() => {
-	process.env.HOME = homeBefore;
+	for (const [k, v] of Object.entries(envBefore)) {
+		if (v === undefined) delete process.env[k];
+		else process.env[k] = v;
+	}
 	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
 	Object.assign(process.env, queueEnvBefore);
+	refreshQueuePaths();
 	rmSync(TMP, { recursive: true, force: true });
 });
 
