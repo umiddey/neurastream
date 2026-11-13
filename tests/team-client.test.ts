@@ -1068,7 +1068,7 @@ test("postTeamAnswer posts the answer alone to the percent-encoded /answer/<id>,
 	writePlan(TEAMH, "", "Queue: team");
 	await publish(TEAMH, B_PEER);
 	const id = idOf(TEAMH);
-	expect(postTeamAnswer(cfg.teams[0]!, id, "ship it")).toEqual({ ok: true });
+	expect(postTeamAnswer(cfg.teams[0]!, id, "ship it")).toEqual({ ok: true, earlier: null });
 	const view = await call("GET", "/view", B_PEER);
 	const answer = (view.body.answers as { plan: string; login: string; answer: string }[]).find((a) => a.plan === id);
 	expect(answer).toMatchObject({ login: A, answer: "ship it" });
