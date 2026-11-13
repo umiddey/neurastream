@@ -107,8 +107,7 @@ interface Reply {
 }
 
 /** One request from a tailnet peer. A string body is sent as-is; anything else is JSON-encoded. */
-function call(port: number, method: string, path: string, peer: string, body?: unknown): Promise<Reply> {
-	const host = `${OWN_IP}:${port}`;
+function call(port: number, method: string, path: string, peer: string, body?: unknown, host = `${OWN_IP}:${port}`): Promise<Reply> {
 	const headers: Record<string, string> = { host, "x-test-peer": peer };
 	let payload: string | undefined;
 	if (typeof body === "string") payload = body;
@@ -635,3 +634,15 @@ console.log(svc.port);
 		await child.exited;
 	}
 }, 30_000);
+
+test("a request from this machine's own tailnet address is refused even when tailscale.ip4() stops answering", async () => {
+	// ip4() answers once, at server start, then null: the own-address refusal must not depend on a later call.
+	let calls = 0;
+	const onceThenNull: Tailscale = { ...TS, ip4: () => (calls++ === 0 ? OWN_IP : null) };
+	const dbPath = join(dir, `${++n}.sqlite`);
+	const svc = startTeamServer({ tailscale: onceThenNull, config: CFG, dbPath, port: 0, hostname: LOOPBACK, peerOf: req => req.headers.get("x-test-peer") ?? "", clock: () => now, claimTtlMin: TTL_MIN });
+	stopFns.push(() => svc.stop());
+	// The host header names the MagicDNS name, so the host check does not depend on ip4() either.
+	const res = await call(svc.port, "GET", "/health", OWN_IP, undefined, `${DNS_NAME}:${svc.port}`);
+	expect(res).toEqual({ status: 403, body: { error: "forbidden: this machine's own tailnet address" } });
+});

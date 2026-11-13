@@ -433,7 +433,8 @@ export function readTeamView(db: Database, team: string, login: string): TeamVie
 /** Starts the queue server. Refuses to start with no tailnet address, and never binds every interface. */
 export function startTeamServer(opts: TeamServerOptions): TeamServer {
 	const { tailscale, config } = opts;
-	const hostname = opts.hostname ?? tailscale.ip4();
+	const ownAddress = tailscale.ip4();
+	const hostname = opts.hostname ?? ownAddress;
 	if (!hostname) throw new Error("team server: tailscale ip -4 did not answer — is tailscale up?");
 	if (bindsEveryInterface(hostname)) throw new Error("team server: refuses to bind every interface");
 	const peerOf = opts.peerOf ?? ((req: Request, server: UiHttpServer) => server.requestIP(req)?.address ?? "");
@@ -857,8 +858,7 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 					const peer = peerOf(req, srv);
 					if (isLoopback(peer)) return json({ error: "forbidden: loopback peer" }, 403);
 					if (!isTailnet(peer)) return json({ error: "forbidden: peer is not a tailnet address" }, 403);
-					const own = tailscale.ip4();
-					if (own !== null && peer === own) return json({ error: "forbidden: this machine's own tailnet address" }, 403);
+					if (peer === ownAddress) return json({ error: "forbidden: this machine's own tailnet address" }, 403);
 					const login = tailscale.whois(peer);
 					if (!login) return json({ error: "forbidden: tailscale whois failed" }, 403);
 					if (!isMember.get(login)) return json({ error: "forbidden: not a team member" }, 403);
