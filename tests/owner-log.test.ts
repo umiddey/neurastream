@@ -12,12 +12,15 @@ import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { checkInject } from "../src/core/guards.ts";
 import { ownerMessagesFile } from "../src/core/incidents.ts";
 import { createOmpAdapter, reset as resetAdapter, type ExtensionHost } from "../src/adapters/omp/index.ts";
+import { getAdapter } from "../src/adapters/index.ts";
 import {
 	appendOwnerLog,
 	newEntryId,
 	ownerLogDir,
 	ownerLogFile,
 	readLines,
+	backfillOwnerLog,
+	ownerBackfillFile,
 } from "../src/core/owner-log.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "owner-log-"));
@@ -295,15 +298,114 @@ test("(f) readLines yields lines newest first across the 64 KiB buffer, a longer
 	expect([...readLines(join(ownerLogDir(), "missing.jsonl"))]).toEqual([]);
 });
 
+// ---- (i) backfill from the session files ----
+
+/** One session-file line: a user prompt, or an assistant reply that ended on stop. */
+function turn(ts: string, role: "user" | "assistant", text: string): string {
+	const message = role === "assistant" ? { role, stopReason: "stop", content: [{ type: "text", text }] } : { role, content: text };
+	return JSON.stringify({ type: "message", timestamp: ts, message });
+}
+
+test("(i) backfill keeps owner prose and final replies of Main, in time order, and nothing else", () => {
+	const SK = `sk-ant-api03-${"ZyXw9876".repeat(5)}`;
+	const cfg = freshSandbox();
+	const PROJ = join(SESSIONS, "-proj");
+	mkdirSync(join(PROJ, "sub-session"), { recursive: true });
+	// Depth 1: two Main sessions. The first holds the guard prompts that must be skipped.
+	writeFileSync(
+		join(PROJ, "main-a.jsonl"),
+		[
+			turn("2025-10-01T10:00:00Z", "user", "ship the traces series"),
+			turn("2025-10-01T10:00:05Z", "assistant", "Shipped the traces series."),
+			turn("2025-10-01T10:01:00Z", "user", "main-guard: continuation"),
+			turn("2025-10-01T10:02:00Z", "user", "<system-notice> harness notice"),
+			turn("2025-10-01T10:03:00Z", "user", "<b>keep this</b>"),
+			turn("2025-10-01T10:04:00Z", "user", `token ${SK} for the deploy`),
+		].join("\n") + "\n",
+	);
+	// The second session ends with a line the writer had not finished: it must be skipped.
+	writeFileSync(
+		join(PROJ, "main-b.jsonl"),
+		[
+			turn("2025-10-01T10:06:00Z", "user", "second session owner"),
+			turn("2025-10-01T10:06:05Z", "assistant", "second answer"),
+			turn("2025-10-01T10:11:00Z", "user", "after the live entry"),
+		].join("\n") +
+			'\n{"type":"message","timestamp":"2025-10-01T10:07:0',
+	);
+	// Depth 2: a subagent session. It adds nothing.
+	writeFileSync(
+		join(PROJ, "sub-session", "sub.jsonl"),
+		[turn("2025-10-01T10:07:00Z", "user", "sub task"), turn("2025-10-01T10:07:05Z", "assistant", "sub answer")].join("\n") + "\n",
+	);
+	// The live log's first entry is at 10:10: backfill takes only what is before it.
+	mkdirSync(ownerLogDir(), { recursive: true });
+	const LIVE_AT = Date.parse("2025-10-01T10:10:00Z") / 1000;
+	writeFileSync(ownerLogFile(), `${JSON.stringify({ id: "00000000a00000001", at: LIVE_AT, role: "owner", text: "live" })}\n`);
+
+	expect(backfillOwnerLog(cfg, getAdapter(cfg).ownerTurns(cfg, 0))).toBe(6);
+	const rows = lines(ownerBackfillFile());
+	expect(rows.length).toBe(6);
+	expect(rows[0]).toMatchObject({ role: "owner", text: "ship the traces series" });
+	expect(rows[1]).toMatchObject({ role: "main", text: "Shipped the traces series." });
+	expect(rows[2]).toMatchObject({ role: "owner", text: "<b>keep this</b>" });
+	expect(rows[3]).toMatchObject({ role: "owner" });
+	expect(rows[4]).toMatchObject({ role: "owner", text: "second session owner" });
+	expect(rows[5]).toMatchObject({ role: "main", text: "second answer" });
+	expect(readFileSync(ownerBackfillFile(), "utf8")).not.toContain(SK);
+});
+
+test("(i) a second backfill run adds nothing", () => {
+	const cfg = freshSandbox();
+	const PROJ = join(SESSIONS, "-proj");
+	mkdirSync(PROJ, { recursive: true });
+	writeFileSync(join(PROJ, "main-a.jsonl"), `${turn("2025-10-01T10:00:00Z", "user", "ship the traces series")}\n`);
+	expect(backfillOwnerLog(cfg, getAdapter(cfg).ownerTurns(cfg, 0))).toBe(1);
+	expect(backfillOwnerLog(cfg, getAdapter(cfg).ownerTurns(cfg, 0))).toBe(0);
+	expect(lines(ownerBackfillFile()).length).toBe(1);
+});
+
+// ---- (k) the reply is the last text message before the next user line ----
+
+test("(k) a tool-call-only assistant message between two texts is skipped: the reply is the last text", () => {
+	const cfg = freshSandbox();
+	const PROJ = join(SESSIONS, "-proj");
+	mkdirSync(PROJ, { recursive: true });
+	const toolOnly = JSON.stringify({
+		type: "message",
+		timestamp: "2025-10-01T10:00:07Z",
+		message: { role: "assistant", stopReason: "toolUse", content: [{ type: "toolCall", id: "t1", name: "read", arguments: {} }] },
+	});
+	writeFileSync(
+		join(PROJ, "main-k.jsonl"),
+		[
+			turn("2025-10-01T10:00:00Z", "user", "what did we decide"),
+			turn("2025-10-01T10:00:05Z", "assistant", "first part"),
+			toolOnly,
+			turn("2025-10-01T10:00:09Z", "assistant", "final answer"),
+		].join("\n") + "\n",
+	);
+	expect(backfillOwnerLog(cfg, getAdapter(cfg).ownerTurns(cfg, 0))).toBe(2);
+	const rows = lines(ownerBackfillFile());
+	expect(rows.map(r => r.role)).toEqual(["owner", "main"]);
+	expect(rows[1]).toMatchObject({ text: "final answer" });
+});
+
 // ---- (j) file modes ----
 
 test("(j) the recall dir is 0700 and both log files are 0600, also when they pre-exist looser", () => {
-	freshSandbox();
+	const cfg = freshSandbox();
 	mkdirSync(ownerLogDir(), { recursive: true });
 	chmodSync(ownerLogDir(), 0o755);
 	writeFileSync(ownerLogFile(), "");
 	chmodSync(ownerLogFile(), 0o644);
 	appendOwnerLog("owner", "mode check", { atMs: NOW_MS, rand: seededBytes(3) });
+	mkdirSync(join(SESSIONS, "-proj"), { recursive: true });
+	writeFileSync(join(SESSIONS, "-proj", "main.jsonl"), `${turn("2025-10-01T10:00:00Z", "user", "mode check backfill")}\n`);
+	writeFileSync(ownerBackfillFile(), "");
+	chmodSync(ownerBackfillFile(), 0o644);
+	expect(backfillOwnerLog(cfg, getAdapter(cfg).ownerTurns(cfg, 0))).toBe(1);
 	expect(mode(ownerLogDir())).toBe(0o700);
 	expect(mode(ownerLogFile())).toBe(0o600);
+	expect(mode(ownerBackfillFile())).toBe(0o600);
 });
