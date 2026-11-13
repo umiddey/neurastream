@@ -231,10 +231,15 @@ export function uiOn(opts: UiOnOptions): number {
 			return 1;
 		}
 		if (!checkEdited(edited, home, error)) return 1;
-		// The page's unit was neurastream-ui before the workspace rename: retire it first (best effort —
-		// a machine that never had it still succeeds) and remove its file when one is installed.
-		runner(["systemctl", "--user", "disable", "--now", "neurastream-ui"]);
+		// The page's unit was neurastream-ui before the workspace rename: retire it first. A machine that never
+		// had it still succeeds; an installed unit that cannot be stopped would keep running beside the new one.
 		const oldUnit = join(home, ".config", "systemd", "user", "neurastream-ui.service");
+		const retire = runner(["systemctl", "--user", "disable", "--now", "neurastream-ui"]);
+		if (retire.status !== 0 && existsSync(oldUnit)) {
+			if (retire.stderr.trim()) error(retire.stderr.trimEnd());
+			error("neurastream workspace: could not stop the old neurastream-ui unit — the workspace was not turned on; fix it (systemctl --user disable --now neurastream-ui) and run this command again.");
+			return 1;
+		}
 		if (existsSync(oldUnit)) unlinkSync(oldUnit);
 	}
 	const unit = unitName(scope);

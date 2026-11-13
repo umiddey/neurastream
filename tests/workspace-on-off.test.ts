@@ -195,6 +195,20 @@ test("workspace on: a failing old-unit disable does not fail the command", () =>
 	expect(readConfig()).toBe(`workspace:\n  enabled: true\n  owner_login: ${LOGIN}\n`);
 });
 
+// An installed old unit that cannot be stopped would keep running beside the new one: refuse, and change nothing.
+test("workspace on: a failing old-unit disable refuses the command when the old unit file is installed", () => {
+	writeConfig(`workspace:\n  enabled: false\n`);
+	mkdirSync(dirname(OLD_UNIT_FILE), { recursive: true });
+	writeFileSync(OLD_UNIT_FILE, "old unit");
+	const r = doOn({ fail: { call: 1 } });
+	expect(r.code).toBe(1);
+	expect(r.err.join("\n")).toMatch(/neurastream-ui/);
+	expect(r.calls).toHaveLength(1);
+	expect(existsSync(OLD_UNIT_FILE)).toBe(true);
+	expect(existsSync(UNIT_FILE)).toBe(false);
+	expect(readConfig()).toBe(`workspace:\n  enabled: false\n`);
+});
+
 // --- (f) stdout prints the phone link ---
 
 test("workspace on: prints http://<MagicDNS name>:<port>", () => {
