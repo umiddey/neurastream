@@ -235,6 +235,20 @@ test("POST /approve from the page: a form gets a 303 back to the page, a JSON cl
 	expect(page.text).toContain("approved by bob, cy");
 });
 
+test("POST /approve from the page: the member who last claimed the plan is refused with the cross-review text; another member gets a 303", async () => {
+	const { svc, dbPath } = start();
+	const { alpha } = await seedTeam(svc.port);
+	const claimed = await raw(svc.port, "POST", `/claims/${alpha}`, B_PEER, { json: { main: "m-b", host: "laptop", pid: 4242 } });
+	expect(claimed.status).toBe(200);
+	const refused = await raw(svc.port, "POST", "/approve", B_PEER, { form: { plan: alpha }, accept: "application/json" });
+	expect(refused.status).toBe(403);
+	expect(JSON.parse(refused.text)).toMatchObject({ error: "forbidden: cross review: you last claimed this plan; another member approves it" });
+	expect(readRows(dbPath, "SELECT plan_id FROM approvals")).toEqual([]);
+	const other = await raw(svc.port, "POST", "/approve", C_PEER, { form: { plan: alpha } });
+	expect(other.status).toBe(303);
+	expect(readRows(dbPath, "SELECT plan_id, login FROM approvals")).toEqual([{ plan_id: alpha, login: C }]);
+});
+
 test("POST /answer from the page: answer_text wins over answer, and a bad length leaves no row", async () => {
 	const { svc, dbPath } = start();
 	const { waiting } = await seedTeam(svc.port);

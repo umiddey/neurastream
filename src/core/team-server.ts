@@ -135,6 +135,7 @@ interface ApprovalRow {
 type ClaimOutcome = { status: 200; claim: ClaimRow } | { status: 404 } | { status: 403 } | { status: 409; held: ClaimRow };
 type BeatOutcome = { status: 200; claim: ClaimRow } | { status: 404 } | { status: 403 };
 type ReleaseOutcome = { status: 200 } | { status: 404 } | { status: 403 };
+type ApproveOutcome = { status: 200; approval: ApprovalRow | null } | { status: 404 } | { status: 403 };
 
 /** A claim is the caller's own when both the login and the Main id match. */
 function isOwn(row: ClaimRow, login: string, main: string): boolean {
@@ -215,6 +216,7 @@ const LOGIN_RE = /^[^\s\p{Cc}]{1,256}$/u;
 const LOGIN_ERROR = "login must be 1 to 256 characters with no whitespace or control character";
 const ADMIN_REMOVE = "the admin login cannot be removed";
 const NO_MEMBER = "no such member";
+const CROSS_REVIEW = "forbidden: cross review: you last claimed this plan; another member approves it";
 
 function validLogin(login: unknown): login is string {
 	return typeof login === "string" && LOGIN_RE.test(login);
@@ -332,6 +334,7 @@ export function openTeamDb(dbPath: string): Database {
 	`);
 	addColumn(db, "answers", "waiting_key", "TEXT");
 	addColumn(db, "audit", "note", "TEXT");
+	addColumn(db, "plans", "last_claimer", "TEXT");
 	return db;
 }
 
@@ -477,6 +480,9 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 	const planExists = db.query<{ ok: number }, [string, string]>("SELECT 1 AS ok FROM plans WHERE id = ? AND team = ?");
 	const selectClaim = db.query<ClaimRow, [string]>("SELECT id, team, main, host, pid, since, beat, login FROM claims WHERE id = ?");
 	const pausedOf = db.query<{ ok: number }, [string]>("SELECT 1 AS ok FROM paused WHERE login = ?");
+	const setClaimer = db.prepare("UPDATE plans SET last_claimer = ? WHERE id = ?");
+	const claimerOf = db.query<{ last_claimer: string | null }, [string]>("SELECT last_claimer FROM plans WHERE id = ?");
+	const memberCount = db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM members");
 	const listClaims = db.query<ClaimRow, [string]>("SELECT id, team, main, host, pid, since, beat, login FROM claims WHERE team = ? ORDER BY id");
 	const replaceClaim = db.prepare("INSERT OR REPLACE INTO claims (id, team, main, host, pid, since, beat, login) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
 	const beatClaim = db.prepare("UPDATE claims SET beat = ? WHERE id = ?");
@@ -491,6 +497,7 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 		const cur = selectClaim.get(args.id);
 		if (cur && isOwn(cur, args.login, args.main)) {
 			beatClaim.run(args.now, args.id);
+			setClaimer.run(args.login, args.id);
 			insertAudit.run(args.login, args.now, args.route, args.id);
 			return { status: 200, claim: { ...cur, beat: args.now } };
 		}
@@ -500,6 +507,7 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 		}
 		const fresh: ClaimRow = { id: args.id, team: config.team, main: args.main, host: args.host, pid: args.pid, since: args.now, beat: args.now, login: args.login };
 		replaceClaim.run(fresh.id, fresh.team, fresh.main, fresh.host, fresh.pid, fresh.since, fresh.beat, fresh.login);
+		setClaimer.run(args.login, args.id);
 		insertAudit.run(args.login, args.now, args.route, args.id);
 		return { status: 200, claim: fresh };
 	});
@@ -543,11 +551,18 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 	const replacePause = db.prepare("INSERT OR REPLACE INTO paused (login, time) VALUES (?, ?)");
 	const deletePause = db.prepare("DELETE FROM paused WHERE login = ?");
 	// P2c writes run with .immediate, as the claim writes do: each reads, decides, writes and audits in one step.
-	const approveOf = db.transaction((id: string, login: string, now: number): ApprovalRow | null => {
-		if (!planExists.get(id, config.team)) return null;
+	const approveOf = db.transaction((id: string, login: string, now: number): ApproveOutcome => {
+		if (!planExists.get(id, config.team)) return { status: 404 };
+		const last = claimerOf.get(id)?.last_claimer;
+		const solo = (memberCount.get()?.n ?? 0) < 2;
+		if (last === login && !solo) {
+			insertAudit.run(login, now, `refused POST /approve/${id}`, id);
+			return { status: 403 };
+		}
 		insertApproval.run(id, login, now);
-		insertAudit.run(login, now, `POST /approve/${id}`, id);
-		return selectApproval.get(id, login);
+		if (last === login) insertNoteAudit.run(login, now, `POST /approve/${id}`, id, "solo");
+		else insertAudit.run(login, now, `POST /approve/${id}`, id);
+		return { status: 200, approval: selectApproval.get(id, login) };
 	});
 	// A vote is the member's whole rank map: the old map goes, the new one lands, and one audit row is written, all in one step.
 	const voteOf = db.transaction((ranks: [string, number][], login: string, now: number) => {
@@ -652,9 +667,10 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 			const gate = await writeGate(req, login, "member", `POST /approve/${id}`);
 			if ("res" in gate) return gate.res;
 			if (!jsonObject(gate.body)) return json({ error: "body must be a JSON object" }, 400);
-			const approval = approveOf.immediate(id, login, gate.now);
-			if (!approval) return json({ error: "no such plan" }, 404);
-			return json({ approval }, 200);
+			const out = approveOf.immediate(id, login, gate.now);
+			if (out.status === 404) return json({ error: "no such plan" }, 404);
+			if (out.status === 403) return json({ error: CROSS_REVIEW }, 403);
+			return json({ approval: out.approval }, 200);
 		}
 		const answerPath = /^\/answer\/([^/]+)$/.exec(path);
 		if (req.method === "POST" && answerPath?.[1]) {
@@ -703,7 +719,9 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 			const gate = await writeGate(req, login, "member", "POST /approve");
 			if ("res" in gate) return gate.res;
 			const form = await formOf(req, gate.body);
-			if (!approveOf.immediate(form.plan ?? "", login, gate.now)) return pageRefused(req, "no such plan", 404);
+			const out = approveOf.immediate(form.plan ?? "", login, gate.now);
+			if (out.status === 404) return pageRefused(req, "no such plan", 404);
+			if (out.status === 403) return pageRefused(req, CROSS_REVIEW, 403);
 			return pageDone(req, "approve");
 		}
 		if (path === "/answer") {

@@ -14,6 +14,7 @@ import type { Tailscale } from "../src/core/tailscale.ts";
 import {
 	addTeamMember,
 	listTeamMembers,
+	openTeamDb,
 	removeTeamMember,
 	startTeamServer,
 	teamPlanId,
@@ -44,6 +45,7 @@ const NOT_INIT = "team acme not initialised: its server has never started on thi
 const LOGIN_ERROR = "login must be 1 to 256 characters with no whitespace or control character";
 const ADMIN_REMOVE = "the admin login cannot be removed";
 const ADMIN_ONLY = "forbidden: admin only";
+const CROSS_REVIEW = "forbidden: cross review: you last claimed this plan; another member approves it";
 
 const CFG: TeamServerConfig = { team: "acme", admin: A, leader: B, repos: ["gitlab.com/acme/*"], members: [A, B, C] };
 const LOGINS = new Map([
@@ -290,6 +292,42 @@ test("approvals: an empty body is refused; a member's approval keeps its first t
 	]);
 });
 
+test("cross review: the member who last claimed a plan cannot approve it in a team of two or more; another member can", async () => {
+	const { svc, dbPath } = start();
+	const port = svc.port;
+	await seedPlan(port);
+	const id = planId();
+	expect((await call(port, "POST", `/claims/${id}`, B_PEER, claimBody("m-b"))).status).toBe(200);
+	expect(await call(port, "POST", `/approve/${id}`, B_PEER, {})).toEqual({ status: 403, body: { error: CROSS_REVIEW } });
+	expect(readRows(dbPath, "SELECT plan_id FROM approvals")).toEqual([]);
+	expect(await call(port, "POST", `/approve/${id}`, C_PEER, {})).toEqual({ status: 200, body: { approval: { plan: id, login: C, time: T0 } } });
+	expect(auditRows(dbPath).filter(r => r.route.includes("/approve/"))).toEqual([
+		{ login: B, route: `refused POST /approve/${id}`, plan_id: id },
+		{ login: C, route: `POST /approve/${id}`, plan_id: id },
+	]);
+});
+
+test("cross review: a team of one lets its only member approve a plan it last claimed, and the audit row carries the note solo", async () => {
+	const { svc, dbPath } = start();
+	const port = svc.port;
+	await seedPlan(port);
+	const id = planId();
+	expect((await call(port, "DELETE", `/members/${B}`, A_PEER)).status).toBe(200);
+	expect((await call(port, "DELETE", `/members/${C}`, A_PEER)).status).toBe(200);
+	expect((await call(port, "POST", `/claims/${id}`, A_PEER, claimBody("m-a"))).status).toBe(200);
+	expect((await call(port, "POST", `/approve/${id}`, A_PEER, {})).status).toBe(200);
+	expect(readRows(dbPath, "SELECT route, note FROM audit WHERE route LIKE '%/approve/%'")).toEqual([{ route: `POST /approve/${id}`, note: "solo" }]);
+});
+
+test("an older team database gains plans.last_claimer and keeps its plan rows", () => {
+	const dbPath = join(dir, `${++n}.sqlite`);
+	const old = new Database(dbPath);
+	old.exec("CREATE TABLE plans (id TEXT PRIMARY KEY, team TEXT NOT NULL, remote TEXT NOT NULL, rel_path TEXT NOT NULL, sha TEXT NOT NULL, text TEXT NOT NULL, updated_by TEXT NOT NULL, updated_at INTEGER NOT NULL); INSERT INTO plans VALUES ('p1', 'acme', 'r', 'docs/plans/toy.md', 'sha', 'text', 'ada', 1);");
+	old.close();
+	openTeamDb(dbPath).close();
+	expect(readRows(dbPath, "SELECT id, last_claimer FROM plans")).toEqual([{ id: "p1", last_claimer: null }]);
+});
+
 test("plan order: bad ids are named one at a time; a valid vote replaces the last one", async () => {
 	const { svc, dbPath } = start();
 	const port = svc.port;
@@ -351,12 +389,16 @@ test("removing a member frees their claims, keeps their approvals, and cuts off 
 	const port = svc.port;
 	await seedPlan(port);
 	const id = planId();
+	const other = planId("docs/plans/other.md");
+	await seedPlan(port, "docs/plans/other.md");
 	expect((await call(port, "POST", `/claims/${id}`, C_PEER, claimBody("m-c"))).status).toBe(200);
-	expect((await call(port, "POST", `/approve/${id}`, C_PEER, {})).status).toBe(200);
+	expect((await call(port, "POST", `/approve/${id}`, A_PEER, {})).status).toBe(200);
+	expect((await call(port, "POST", `/claims/${other}`, B_PEER, claimBody("m-b"))).status).toBe(200);
+	expect((await call(port, "POST", `/approve/${other}`, C_PEER, {})).status).toBe(200);
 	expect(await call(port, "DELETE", `/members/${C}`, A_PEER)).toEqual({ status: 200, body: { removed: C, claimsFreed: 1 } });
 	expect(await call(port, "GET", `/claims/${id}`, A_PEER)).toEqual({ status: 200, body: { claim: null } });
-	expect(readRows(dbPath, "SELECT id FROM claims")).toEqual([]);
-	expect(readRows(dbPath, "SELECT login FROM approvals")).toEqual([{ login: C }]);
+	expect(readRows(dbPath, "SELECT id FROM claims")).toEqual([{ id: other }]);
+	expect(readRows(dbPath, "SELECT login FROM approvals ORDER BY login")).toEqual([{ login: A }, { login: C }]);
 	expect(await call(port, "GET", "/health", C_PEER)).toEqual({ status: 403, body: { error: "forbidden: not a team member" } });
 });
 
@@ -466,7 +508,7 @@ test("GET /view returns the plans with text, the team's claims and P2c's four ta
 	const putSha = await seedPlan(port);
 	const id = planId();
 	expect((await call(port, "POST", `/claims/${id}`, B_PEER, claimBody("m-b"))).status).toBe(200);
-	expect((await call(port, "POST", `/approve/${id}`, B_PEER, {})).status).toBe(200);
+	expect((await call(port, "POST", `/approve/${id}`, A_PEER, {})).status).toBe(200);
 	expect((await call(port, "POST", "/order", A_PEER, { ranks: { [id]: 1 } })).status).toBe(200);
 	expect((await call(port, "POST", "/pause", C_PEER, {})).status).toBe(200);
 	expect((await call(port, "POST", `/answer/${id}`, A_PEER, { answer: "yes" })).status).toBe(200);
@@ -477,7 +519,7 @@ test("GET /view returns the plans with text, the team's claims and P2c's four ta
 		body: {
 			plans: [{ id, remote: "gitlab.com/acme/pm", rel_path: REL, sha: putSha, text: TEAM_TEXT, updated_by: A, updated_at: T0 }],
 			claims,
-			approvals: [{ plan: id, login: B, time: T0 }],
+			approvals: [{ plan: id, login: A, time: T0 }],
 			votes: [{ login: A, plan_id: id, rank: 1, time: T0 }],
 			override: null,
 			paused: [{ login: C, time: T0 }],
