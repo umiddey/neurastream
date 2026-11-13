@@ -1619,6 +1619,7 @@ export interface TeamPageData {
 	team: string;
 	login: string;
 	admin: boolean;
+	leader: boolean;
 	adminLogin: string;
 	section: TeamSection;
 	plans: { id: string; relPath: string; title: string; approvals: string[] }[];
@@ -1639,6 +1640,12 @@ export function renderTeamPage(data: TeamPageData): string {
 				return `<div class="ask"><b>${esc(p.title)}</b><p>${esc(p.relPath)}${chip}</p>${form}</div>`;
 			}).join("")
 		: `<p class="empty">No team plans to approve</p>`;
+	const ranking = data.plans.length
+		? `<form method="post" action="/vote">${data.plans.map(p => `<div class="mrow"><span>${esc(p.title)}</span><input name="rank:${esc(p.id)}" inputmode="numeric" size="4" placeholder="rank"></div>`).join("")}<div class="acts"><button class="btn pri" type="submit">Save ranks</button></div></form>`
+		: `<p class="empty">No team plans to rank</p>`;
+	const override = data.leader && data.plans.length
+		? `<h2>Override<small>leader: this order wins over the ranks</small></h2><div class="card"><form method="post" action="/override">${data.plans.map((p, i) => `<div class="mrow"><span>${esc(p.title)}</span><input name="pos:${esc(p.id)}" inputmode="numeric" size="4" value="${i + 1}"></div>`).join("")}<div class="acts"><button class="btn pri" type="submit">Save override</button></div></form></div>`
+		: "";
 	const members = data.members.map(m => {
 		const remove = data.admin && m !== data.adminLogin ? `<form method="post" action="/member"><input type="hidden" name="op" value="remove"><input type="hidden" name="login" value="${esc(m)}"><button class="btn" type="submit">Remove</button></form>` : "";
 		return `<div class="tile"><span>${esc(m)}</span>${remove}</div>`;
@@ -1659,6 +1666,9 @@ export function renderTeamPage(data: TeamPageData): string {
 <main>
 <h2>Queue<small>team order</small></h2>
 <div class="card">${data.section.rows.length ? queueHtml(data.section.rows, "now", false) : `<p class="empty">No team plans</p>`}</div>
+<h2>Rank<small>your order for the team</small></h2>
+<div class="card">${ranking}</div>
+${override}
 <h2>Waiting</h2>
 <div class="card">${waiting}</div>
 <h2>Approve</h2>

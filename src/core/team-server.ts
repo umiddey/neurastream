@@ -693,7 +693,7 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 		return null;
 	}
 
-	/** The team page's plain forms (P5): exact paths /approve, /answer and /member. Success answers 303 back to the page, or JSON when Accept asks for it. Auth chain and Origin run before this. */
+	/** The team page's plain forms (P5, P6b1): exact paths /approve, /answer, /member, /vote and /override. Success answers 303 back to the page, or JSON when Accept asks for it. Auth chain and Origin run before this. */
 	async function pageRoute(req: Request, path: string, login: string): Promise<Response | null> {
 		if (req.method !== "POST") return null;
 		if (path === "/approve") {
@@ -732,6 +732,33 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 			}
 			return pageRefused(req, "op must be add or remove", 400);
 		}
+		if (path === "/vote") {
+			const gate = await writeGate(req, login, "member", "POST /vote");
+			if ("res" in gate) return gate.res;
+			const form = await formOf(req, gate.body);
+			const ranks = Object.fromEntries(Object.entries(form).filter(([key, value]) => key.startsWith("rank:") && value.trim() !== "").map(([key, value]) => [key.slice("rank:".length), Number(value.trim())]));
+			const checked = rankList(ranks);
+			if ("error" in checked) return pageRefused(req, checked.error, 400);
+			voteOf.immediate(checked.ranks, login, gate.now);
+			return pageDone(req, "vote");
+		}
+		if (path === "/override") {
+			const gate = await writeGate(req, login, "leader", "POST /override");
+			if ("res" in gate) return gate.res;
+			const form = await formOf(req, gate.body);
+			const picked: [string, number][] = [];
+			for (const [key, value] of Object.entries(form)) {
+				if (!key.startsWith("pos:") || value.trim() === "") continue;
+				const pos = Number(value.trim());
+				if (!Number.isInteger(pos)) return pageRefused(req, `${key} must be a whole number`, 400);
+				picked.push([key.slice("pos:".length), pos]);
+			}
+			const ids = picked.toSorted(([idA, posA], [idB, posB]) => posA - posB || (idA < idB ? -1 : idA > idB ? 1 : 0)).map(([id]) => id);
+			const checked = planIdList(ids);
+			if ("error" in checked) return pageRefused(req, checked.error, 400);
+			overrideOf.immediate(checked.ids, login, gate.now);
+			return pageDone(req, "override");
+		}
 		return null;
 	}
 
@@ -743,6 +770,7 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 			team: config.team,
 			login,
 			admin,
+			leader: login === config.leader,
 			adminLogin: config.admin,
 			section: teamSection(config.team, req.headers.get("host") ?? "", rows),
 			plans: rows.map(row => ({ id: row.id, relPath: row.relPath, title: row.plan.title, approvals: row.approvals })),
