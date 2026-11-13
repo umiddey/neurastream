@@ -663,3 +663,9 @@ test("DELETE /members refuses a login that fails validation before it is audited
 	expect(await call(port, "DELETE", "/members/bad%20login", A_PEER)).toEqual(invalid);
 	expect(auditRows(dbPath)).toEqual([]);
 });
+
+test("a request whose URL cannot be parsed gets the JSON internal error, not a bare server error", async () => {
+	const { svc } = start();
+	const port = svc.port;
+	expect(await call(port, "GET", "/health", A_PEER, undefined, "[bad")).toEqual({ status: 500, body: { error: "internal error" } });
+});

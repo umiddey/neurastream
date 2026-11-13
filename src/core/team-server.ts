@@ -853,9 +853,9 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 			port: opts.port,
 			maxRequestBodySize: BODY_MAX + 1,
 			fetch: async (req, srv) => {
-				const url = new URL(req.url);
 				const hostHeader = req.headers.get("host") ?? "";
 				try {
+					const url = new URL(req.url);
 					if (!hostAllowed(hostHeader, srv.port)) return json({ error: "forbidden: host is not this server" }, 403);
 					const peer = peerOf(req, srv);
 					if (isLoopback(peer)) return json({ error: "forbidden: loopback peer" }, 403);
