@@ -182,7 +182,7 @@ test("a stranger gets 403 on every P2c route and nothing is audited", async () =
 		["DELETE", `/members/${C}`],
 		["GET", "/audit"],
 		["POST", `/approve/${id}`, {}],
-		["POST", "/order", { plan_ids: [id] }],
+		["POST", "/order", { ranks: { [id]: 1 } }],
 		["POST", "/order/override", { plan_ids: [id] }],
 		["POST", "/pause", {}],
 		["POST", "/resume", {}],
@@ -298,18 +298,24 @@ test("plan order: bad ids are named one at a time; a valid vote replaces the las
 	const id = planId();
 	const other = planId(REL2);
 	const bad: [unknown, string][] = [
-		[{ plan_ids: ["nosuch"] }, "plan_ids[0] is not a stored plan: nosuch"],
-		[{ plan_ids: [id, id] }, `plan_ids[1] repeats ${id}`],
-		[{ plan_ids: [] }, "plan_ids must be an array of 1 to 500 plan ids"],
-		[{ plan_ids: [5] }, "plan_ids[0] must be a string"],
-		[{}, "plan_ids must be an array of 1 to 500 plan ids"],
+		[{ ranks: { nosuch: 1 } }, "ranks.nosuch is not a stored plan"],
+		[{ ranks: { [id]: 0 } }, `ranks.${id} must be a whole number from 1 to 500`],
+		[{ ranks: { [id]: 501 } }, `ranks.${id} must be a whole number from 1 to 500`],
+		[{ ranks: { [id]: 1.5 } }, `ranks.${id} must be a whole number from 1 to 500`],
+		[{ ranks: { [id]: "1" } }, `ranks.${id} must be a whole number from 1 to 500`],
+		[{ ranks: {} }, "ranks must hold 1 to 500 plan ids"],
+		[{ ranks: [id] }, "ranks must be an object of plan id to rank"],
+		[{}, "ranks must be an object of plan id to rank"],
 	];
 	const replies = await Promise.all(bad.map(([body]) => call(port, "POST", "/order", C_PEER, body)));
 	expect(replies).toEqual(bad.map(([, error]) => ({ status: 400, body: { error } })));
-	expect(await call(port, "POST", "/order", C_PEER, { plan_ids: [id] })).toEqual({ status: 200, body: { vote: { login: C, plan_ids: [id], time: T0 } } });
+	expect(await call(port, "POST", "/order", C_PEER, { ranks: { [id]: 1 } })).toEqual({ status: 200, body: { vote: { login: C, ranks: { [id]: 1 }, time: T0 } } });
 	now = T0 + 3;
-	expect((await call(port, "POST", "/order", C_PEER, { plan_ids: [other, id] })).status).toBe(200);
-	expect(readRows(dbPath, "SELECT login, plan_ids, time FROM votes")).toEqual([{ login: C, plan_ids: JSON.stringify([other, id]), time: T0 + 3 }]);
+	expect((await call(port, "POST", "/order", C_PEER, { ranks: { [other]: 2, [id]: 1 } })).status).toBe(200);
+	expect(readRows(dbPath, "SELECT login, plan_id, rank, time FROM vote_ranks ORDER BY rank")).toEqual([
+		{ login: C, plan_id: id, rank: 1, time: T0 + 3 },
+		{ login: C, plan_id: other, rank: 2, time: T0 + 3 },
+	]);
 	expect(auditRows(dbPath).filter(r => r.route === "POST /order")).toHaveLength(2);
 });
 
@@ -362,7 +368,7 @@ test("GET /audit is admin-only and returns rows newest first; the write sequence
 	const id = planId();
 	await call(port, "POST", "/members", A_PEER, { login: D });
 	await call(port, "POST", `/approve/${id}`, B_PEER, {});
-	await call(port, "POST", "/order", C_PEER, { plan_ids: [id] });
+	await call(port, "POST", "/order", C_PEER, { ranks: { [id]: 1 } });
 	await call(port, "POST", "/order/override", B_PEER, { plan_ids: [id] });
 	await call(port, "POST", "/pause", C_PEER, {});
 	await call(port, "POST", "/resume", C_PEER, {});
@@ -461,7 +467,7 @@ test("GET /view returns the plans with text, the team's claims and P2c's four ta
 	const id = planId();
 	expect((await call(port, "POST", `/claims/${id}`, B_PEER, claimBody("m-b"))).status).toBe(200);
 	expect((await call(port, "POST", `/approve/${id}`, B_PEER, {})).status).toBe(200);
-	expect((await call(port, "POST", "/order", A_PEER, { plan_ids: [id] })).status).toBe(200);
+	expect((await call(port, "POST", "/order", A_PEER, { ranks: { [id]: 1 } })).status).toBe(200);
 	expect((await call(port, "POST", "/pause", C_PEER, {})).status).toBe(200);
 	expect((await call(port, "POST", `/answer/${id}`, A_PEER, { answer: "yes" })).status).toBe(200);
 	const claims = (await call(port, "GET", "/claims", C_PEER)).body.claims as unknown[];
@@ -472,10 +478,11 @@ test("GET /view returns the plans with text, the team's claims and P2c's four ta
 			plans: [{ id, remote: "gitlab.com/acme/pm", rel_path: REL, sha: putSha, text: TEAM_TEXT, updated_by: A, updated_at: T0 }],
 			claims,
 			approvals: [{ plan: id, login: B, time: T0 }],
-			votes: [{ login: A, plan_ids: [id], time: T0 }],
+			votes: [{ login: A, plan_id: id, rank: 1, time: T0 }],
 			override: null,
 			paused: [{ login: C, time: T0 }],
 			answers: [{ id: 1, plan: id, login: A, time: T0, sha: putSha, answer: "yes" }],
+			me_paused: true,
 		},
 	});
 	expect((await call(port, "POST", "/order/override", B_PEER, { plan_ids: [id] })).status).toBe(200);

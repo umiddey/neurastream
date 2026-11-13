@@ -242,7 +242,7 @@ function removeMemberTx(db: Database, config: TeamServerConfig, login: string, a
 		}
 		if (!db.query("SELECT 1 FROM members WHERE login = ?").get(login)) return { status: 404 };
 		const claimsFreed = db.query("DELETE FROM claims WHERE login = ? AND team = ?").run(login, config.team).changes;
-		db.query("DELETE FROM votes WHERE login = ?").run(login);
+		db.query("DELETE FROM vote_ranks WHERE login = ?").run(login);
 		db.query("DELETE FROM paused WHERE login = ?").run(login);
 		db.query("DELETE FROM members WHERE login = ?").run(login);
 		writeAudit(db, actor, now, `DELETE /members/${login}`, null);
@@ -303,10 +303,12 @@ export function openTeamDb(dbPath: string): Database {
 			time INTEGER NOT NULL,
 			PRIMARY KEY (plan_id, login)
 		);
-		CREATE TABLE IF NOT EXISTS votes (
-			login TEXT PRIMARY KEY,
-			plan_ids TEXT NOT NULL,
-			time INTEGER NOT NULL
+		CREATE TABLE IF NOT EXISTS vote_ranks (
+			login TEXT NOT NULL,
+			plan_id TEXT NOT NULL,
+			rank INTEGER NOT NULL CHECK (rank >= 1),
+			time INTEGER NOT NULL,
+			PRIMARY KEY (login, plan_id)
 		);
 		CREATE TABLE IF NOT EXISTS paused (
 			login TEXT PRIMARY KEY,
@@ -341,7 +343,8 @@ interface PausedRow {
 
 interface VoteRow {
 	login: string;
-	plan_ids: string[];
+	plan_id: string;
+	rank: number;
 	time: number;
 }
 
@@ -360,6 +363,7 @@ export interface TeamView {
 	override: OverrideRow | null;
 	paused: PausedRow[];
 	answers: AnswerRow[];
+	me_paused: boolean;
 }
 
 /** Reads a team view in one deferred transaction: one snapshot, nothing written. P5's page calls this in process. */
@@ -373,18 +377,20 @@ export function readTeamView(db: Database, team: string, login: string): TeamVie
 			.all(team)
 			.map(row => wireClaim(row, login));
 		const approvals = db.query<ApprovalRow, []>("SELECT plan_id AS plan, login, time FROM approvals ORDER BY plan_id, time").all();
-		const votes = db.query<{ login: string; plan_ids: string; time: number }, []>("SELECT login, plan_ids, time FROM votes ORDER BY login").all();
+		const votes = db.query<VoteRow, []>("SELECT login, plan_id, rank, time FROM vote_ranks ORDER BY login, plan_id").all();
 		const override = db.query<{ value: string }, []>("SELECT value FROM meta WHERE key = 'order_override'").get();
 		const paused = db.query<PausedRow, []>("SELECT login, time FROM paused ORDER BY login").all();
 		const answers = db.query<AnswerRow, []>("SELECT id, plan_id AS plan, login, time, sha, answer FROM answers ORDER BY id DESC LIMIT 500").all();
+		const mePaused = db.query<{ ok: number }, [string]>("SELECT 1 AS ok FROM paused WHERE login = ?").get(login) !== null;
 		return {
 			plans,
 			claims,
 			approvals,
-			votes: votes.map(row => ({ login: row.login, plan_ids: JSON.parse(row.plan_ids) as string[], time: row.time })),
+			votes,
 			override: override ? (JSON.parse(override.value) as OverrideRow) : null,
 			paused,
 			answers,
+			me_paused: mePaused,
 		};
 	})();
 }
@@ -498,7 +504,8 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 	const listMembers = db.query<{ login: string }, []>("SELECT login FROM members ORDER BY login");
 	const insertApproval = db.prepare("INSERT OR IGNORE INTO approvals (plan_id, login, time) VALUES (?, ?, ?)");
 	const selectApproval = db.query<ApprovalRow, [string, string]>("SELECT plan_id AS plan, login, time FROM approvals WHERE plan_id = ? AND login = ?");
-	const replaceVote = db.prepare("INSERT OR REPLACE INTO votes (login, plan_ids, time) VALUES (?, ?, ?)");
+	const deleteVotes = db.prepare("DELETE FROM vote_ranks WHERE login = ?");
+	const insertVote = db.prepare("INSERT INTO vote_ranks (login, plan_id, rank, time) VALUES (?, ?, ?, ?)");
 	const setOverride = db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('order_override', ?)");
 	const replacePause = db.prepare("INSERT OR REPLACE INTO paused (login, time) VALUES (?, ?)");
 	const deletePause = db.prepare("DELETE FROM paused WHERE login = ?");
@@ -509,10 +516,12 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 		insertAudit.run(login, now, `POST /approve/${id}`, id);
 		return selectApproval.get(id, login);
 	});
-	const voteOf = db.transaction((planIds: string[], login: string, now: number) => {
-		replaceVote.run(login, JSON.stringify(planIds), now);
+	// A vote is the member's whole rank map: the old map goes, the new one lands, and one audit row is written, all in one step.
+	const voteOf = db.transaction((ranks: [string, number][], login: string, now: number) => {
+		deleteVotes.run(login);
+		for (const [planId, rank] of ranks) insertVote.run(login, planId, rank, now);
 		insertAudit.run(login, now, "POST /order", null);
-		return { login, plan_ids: planIds, time: now };
+		return { login, ranks: Object.fromEntries(ranks), time: now };
 	});
 	const overrideOf = db.transaction((planIds: string[], login: string, now: number) => {
 		const override = { plan_ids: planIds, login, time: now };
@@ -546,6 +555,18 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 			seen.add(id);
 		}
 		return { ids: raw as string[] };
+	}
+
+	/** `ranks` as a checked map: 1 to 500 entries, each key a stored plan of this team and each value a whole number from 1 to 500. The first bad entry is named. */
+	function rankList(raw: unknown): { ranks: [string, number][] } | { error: string } {
+		if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { error: "ranks must be an object of plan id to rank" };
+		const entries = Object.entries(raw);
+		if (entries.length < 1 || entries.length > 500) return { error: "ranks must hold 1 to 500 plan ids" };
+		for (const [id, rank] of entries) {
+			if (!planExists.get(id, config.team)) return { error: `ranks.${id} is not a stored plan` };
+			if (typeof rank !== "number" || !Number.isInteger(rank) || rank < 1 || rank > 500) return { error: `ranks.${id} must be a whole number from 1 to 500` };
+		}
+		return { ranks: entries as [string, number][] };
 	}
 
 	/** Head of every POST and DELETE in P2c, in the claim routes' order: body size, write slot, role check (a refusal is audited, body not parsed). The caller parses the body when its route takes one. */
@@ -619,10 +640,14 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 			if ("res" in gate) return gate.res;
 			const fields = jsonObject(gate.body);
 			if (!fields) return json({ error: "body must be a JSON object" }, 400);
-			const checked = planIdList(fields.plan_ids);
+			if (override) {
+				const checked = planIdList(fields.plan_ids);
+				if ("error" in checked) return json({ error: checked.error }, 400);
+				return json({ override: overrideOf.immediate(checked.ids, login, gate.now) }, 200);
+			}
+			const checked = rankList(fields.ranks);
 			if ("error" in checked) return json({ error: checked.error }, 400);
-			if (override) return json({ override: overrideOf.immediate(checked.ids, login, gate.now) }, 200);
-			return json({ vote: voteOf.immediate(checked.ids, login, gate.now) }, 200);
+			return json({ vote: voteOf.immediate(checked.ranks, login, gate.now) }, 200);
 		}
 		if (req.method === "POST" && (path === "/pause" || path === "/resume")) {
 			const paused = path === "/pause";
