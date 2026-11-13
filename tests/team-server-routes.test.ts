@@ -482,6 +482,7 @@ test("GET /view returns the plans with text, the team's claims and P2c's four ta
 			override: null,
 			paused: [{ login: C, time: T0 }],
 			answers: [{ id: 1, plan: id, login: A, time: T0, sha: putSha, answer: "yes" }],
+			first: [],
 			me_paused: true,
 		},
 	});
