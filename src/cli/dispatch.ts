@@ -5,6 +5,7 @@ import { ConfigError, configFile, loadConfig, type Config } from "../core/config
 import { beat, withHeartbeat } from "../core/heartbeat.ts";
 import { helpDoc } from "../core/help.ts";
 import { watchOnce, systemUnitLister, watchDoctorLine, watchHealth, timerStaffedPlans } from "../core/watch.ts";
+import { runRecall } from "./recall.ts";
 import { defaultGather } from "../core/main-start.ts";
 import { gatherReleaseTags } from "../core/results.ts";
 import { nowSec } from "../core/clock.ts";
@@ -83,6 +84,10 @@ export function helpText(): string {
 		"  neurastream notify test       post a test message to the configured Discord/Slack webhooks",
 		"  neurastream redact            filter stdin through the secret redactor: stdout gets the text,",
 		"                                stderr the hit summary (types and counts only)",
+		"  neurastream recall <words>... [--since 7d|12h|YYYY-MM-DD] [--limit N] [--json]",
+		"                                search the owner's messages and Main's answers",
+		"  neurastream recall --show <id> [--json]",
+		"                                show an entry with the entry it pairs with",
 		"  neurastream queue migrate     fold the old repo INDEX.md files into the one main index",
 		"  neurastream claim next|list|release <plan> [--force]",
 		"                                claim the highest free plan for this Main, list the holders,",
@@ -206,6 +211,7 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 	}
 	if (cmd === "notify") return runNotify(args);
 	if (cmd === "redact") return runRedact(args);
+	if (cmd === "recall") return runRecall(args);
 	// Hidden: not in helpText. Beats once — the live check (plan P8) and the owner's own cron jobs.
 	if (cmd === "heartbeat") {
 		const failIdx = args.indexOf("--fail");

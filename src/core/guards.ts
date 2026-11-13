@@ -31,7 +31,8 @@ import { approvalProblem, MAIN_ONLY_LINE, reviewHash } from "./plan-approval.ts"
 export { reviewHash };
 import type { Config } from "./config.ts";
 import { openIncidents, ownerMessagesFile, ownerSaid, readOwnerAnswers, readOwnerMessages, type IncidentView, type OwnerMessage, writeOwnerStore } from "./incidents.ts";
-import { UNANSWERED_PREFIX } from "./rollover.ts";
+import { ownerText, UNANSWERED_PREFIX } from "./rollover.ts";
+import { ownerLogFile, recordOwnerLog } from "./owner-log.ts";
 import { notifyProtectedPaths, notifySecretReadHit } from "./notify.ts";
 import { defaultRunner, listOpenMrs, mentioned, type CommandRunner, type OpenMr } from "./mr-sweep.ts";
 import { unlandedRows } from "./wip-check.ts";
@@ -504,6 +505,14 @@ function isOwnerProse(text: string): boolean {
 
 function recordOwnerMessage(text: string, cfg: Config): void {
 	if (!isOwnerProse(text)) return;
+	const owner = ownerText(text);
+	if (owner) {
+		try {
+			recordOwnerLog(cfg, "owner", owner);
+		} catch (err) {
+			log(cfg.paths.guard_log, `cannot write ${ownerLogFile()}: ${err}`);
+		}
+	}
 	try {
 		writeOwnerStore([...readOwnerMessages(), { at: nowSec(), text }], readOwnerAnswers());
 	} catch (err) {

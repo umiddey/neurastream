@@ -30,6 +30,7 @@ import { runDetectors, type DetectorInput } from "../../core/incident-detectors.
 import { fileClaimStore, type ClaimStore } from "../../core/claims.ts";
 import { remoteStoreFor } from "../../core/team-client.ts";
 import { appendOwnerAnswer, readOwnerAnswers, readOwnerMessages } from "../../core/incidents.ts";
+import { recordOwnerLog } from "../../core/owner-log.ts";
 import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, mainId, mainStateDir, newProgressEntries, planReadNote, plannerSpawnPlan, recordMainResult, resetMainCalls, revertMainEdit, rekeySpawnFile, reviewSpawnEnd, STOP_PLAN_OFFER_REFUSAL } from "../../core/guards.ts";
 import { rateLimited } from "../../core/rate-limit.ts";
 import { backPost, clearLimitState, limitMetric, limitedPost, onLimited, readLimitState, timingOf, writeLimitState } from "../../core/limit-probe.ts";
@@ -753,6 +754,11 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 	// blocked and mid-run ends are not turn ends: nothing is recorded.
 	const recordTurnAnswer = (reply: EventReply | null): void => {
 		if (!reply?.text) return;
+		try {
+			recordOwnerLog(cfg, "main", reply.text);
+		} catch (err) {
+			adapterLog(cfg, `RECALL-LOG record failed: ${err instanceof Error ? err.message : String(err)}`);
+		}
 		try {
 			appendOwnerAnswer(reply.text);
 		} catch (err) {

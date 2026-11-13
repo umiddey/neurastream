@@ -1,0 +1,10 @@
+recall: search the owner's messages and Main's answers, and show an entry with the entry it pairs with.
+
+Usage: recall <words>... [--since 7d|12h|YYYY-MM-DD] [--limit N] [--json]
+  Words match case-insensitively; every word must appear in the entry, in any order.
+  Newest first. Default limit 20. Times are UTC.
+Usage: recall --show <id> [--json]
+  Shows the entry with that id and its pair: an owner message with the nearest newer Main
+  answer, or a Main answer with the nearest older owner message. Chronological order.
+  --json prints one JSON object per line with the keys at, id, role, text.
+Exit: 0 on a match, 1 when nothing matches, 2 on bad arguments or an unknown id.
