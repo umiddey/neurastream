@@ -172,7 +172,7 @@ Claim heartbeats (plan 20261027_1300 P3): on `session_start` the extension start
 
 Claims go through one store per plan. A personal plan uses the file store, one JSON file per plan under `<queue_state>/claims/`. A team plan uses the remote store for its team: `claimStoreFor` (`src/core/team-client.ts:362-365`) picks it when `routeTeam` (`:336`) finds a team for the plan, that is when the plan's header says `Queue: team` in a repo labelled for a team, or the team's sync record lists it. Everything else, including every plan in a repo no team labels, stays on the file store.
 
-The heartbeat timer (above) builds the file store plus one `remoteStoreFor` per `cfg.teams` entry (`src/adapters/omp/index.ts:969-972`). It lists each store's claims for this Main and beats them through `store.heartbeat`; it skips rows it does not list (`:973-978`). A store the heartbeat cannot reach is therefore not beaten in that pass, and its claims age out under `queue.claim_ttl_min` like any dead Main's.
+The heartbeat timer (above) builds the file store plus one `remoteStoreFor` per `cfg.teams` entry (`src/adapters/omp/index.ts:969-972`). For each store it calls `list()`; a store whose `list()` does not return an array (a team server it cannot reach) is skipped for that pass, and only claims whose `main` is this Main and whose `mine` is not `false` are beaten through `store.heartbeat` (`:973-978`). A skipped store's claims are therefore not beaten in that pass, and age out under `queue.claim_ttl_min` like any dead Main's.
 
 Agent pins ship as templates. Adapter install copies `templates/agents/*.md` (no `.bak*`) into `adapter.pins` only when that file is absent.
 
