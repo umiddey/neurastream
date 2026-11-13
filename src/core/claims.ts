@@ -22,6 +22,8 @@ export interface Claim {
 	since: number;
 	/** Unix seconds of the last heartbeat or claim. */
 	beat: number;
+	/** True when the claim is this login's own; set only by the team server's wire claims. Absent on file claims, which are this machine's own. */
+	mine?: boolean;
 }
 
 /** The plan answer when another Main holds a live claim. */
@@ -29,13 +31,33 @@ export interface Held {
 	heldBy: Claim;
 }
 
-export interface ClaimStore {
-	claim(plan: string, main: string): Claim | Held;
+/** A team server that did not answer (timeout, refused connection, 5xx, unparseable answer). A value, never null: null keeps meaning "free". */
+export interface Unreachable {
+	unreachable: string;
+}
+
+export interface ClaimStore<U = Unreachable> {
+	claim(plan: string, main: string): Claim | Held | U;
 	/** The live claim for a plan, or null when it is free (absent, unreadable or expired). Read-only: no claim is taken. */
-	holder(plan: string): Claim | null;
+	holder(plan: string): Claim | U | null;
 	heartbeat(plan: string, main: string): boolean;
 	release(plan: string, main: string): void;
-	list(): Claim[];
+	list(): Claim[] | U;
+}
+
+/** Whether a claim's last beat is `ttlMin` minutes old, so the plan is free for takeover. The file store and the team server share this rule. */
+export function claimExpired(c: { beat: number }, now: number, ttlMin: number): boolean {
+	return now - c.beat >= ttlMin * 60;
+}
+
+/**
+ * True when this holder is not simply this Main's own claim: a team server that did not
+ * answer, another member's row (flagged `mine: false` by the server), another Main's id, or
+ * another Main on this login. File claims have no `mine`, so personal plans compare on `main`
+ * exactly as before.
+ */
+export function heldByOther(h: Claim | Unreachable | null, me: string): boolean {
+	return !!h && ("unreachable" in h || h.main !== me || h.mine === false);
 }
 
 // Claim files are only ever written by temp+rename under the lock, so an unreadable one
@@ -63,7 +85,7 @@ function writeClaim(path: string, claim: Claim): void {
  * is free for takeover. The clock is injected in unix seconds (src/core/clock.ts convention) so
  * tests never use real time.
  */
-export function fileClaimStore(stateDir: string, clock: () => number, ttlMin: number): ClaimStore {
+export function fileClaimStore(stateDir: string, clock: () => number, ttlMin: number): ClaimStore<never> {
 	const dir = join(stateDir, "claims");
 	const lockPath = join(dir, ".lock");
 
@@ -81,10 +103,6 @@ export function fileClaimStore(stateDir: string, clock: () => number, ttlMin: nu
 		return join(dir, `${createHash("sha256").update(plan).digest("hex")}.json`);
 	}
 
-	function expired(c: Claim, now: number): boolean {
-		return now - c.beat >= ttlMin * 60;
-	}
-
 	return {
 		claim(plan, main) {
 			return run(() => {
@@ -97,7 +115,7 @@ export function fileClaimStore(stateDir: string, clock: () => number, ttlMin: nu
 					writeClaim(path, next);
 					return next;
 				}
-				if (cur && !expired(cur, now)) return { heldBy: cur };
+				if (cur && !claimExpired(cur, now, ttlMin)) return { heldBy: cur };
 				const fresh: Claim = { plan, main, host: hostname(), pid: process.pid, since: now, beat: now };
 				writeClaim(path, fresh);
 				return fresh;
@@ -115,7 +133,7 @@ export function fileClaimStore(stateDir: string, clock: () => number, ttlMin: nu
 		holder(plan) {
 			return run(() => {
 				const cur = readClaim(fileFor(plan));
-				return cur && !expired(cur, clock()) ? cur : null;
+				return cur && !claimExpired(cur, clock(), ttlMin) ? cur : null;
 			});
 		},
 		release(plan, main) {

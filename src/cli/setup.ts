@@ -96,7 +96,7 @@ const GROUPS: { name: string; keys: string[] }[] = [
 	{ name: "Paths", keys: ["paths.work_roots"] },
 	{ name: "Harness", keys: ["harness"] },
 	{ name: "Autonomy", keys: ["autonomy.tier", "autonomy.planner", "autonomy.strict_edit_limit", "autonomy.go_minutes", "autonomy.go_phrase"] },
-	{ name: "Phone page", keys: ["ui.enabled", "ui.owner_login"] },
+	{ name: "Phone page", keys: ["workspace.enabled", "workspace.owner_login"] },
 	{ name: "Static pages", keys: ["pages.enabled", "pages.port", "pages.dir"] },
 	{ name: "Notify", keys: ["notify.discord_webhook_file", "notify.slack_webhook_file"] },
 	{ name: "Secrets", keys: ["secrets.redact", "secrets.known_value_files", "secrets.proxy"] },
@@ -204,10 +204,10 @@ function runGroup(ctx: Ctx, name: string, keys: string[]): number {
 	const picks: Record<string, unknown> = {};
 	const asking = ctx.auto === "none";
 	for (const key of keys) {
-		if (key === "ui.owner_login" && picks["ui.enabled"] !== true) continue;
+		if (key === "workspace.owner_login" && picks["workspace.enabled"] !== true) continue;
 		const proposed = proposal(ctx, key, valueAt(now, key));
 		let value = askKey(ctx, key, kindOf(key), proposed);
-		if (key === "ui.enabled" && value === true && !phoneReady(ctx)) value = false;
+		if (key === "workspace.enabled" && value === true && !phoneReady(ctx)) value = false;
 		picks[key] = value;
 	}
 	if (asking && Object.keys(picks).some((key) => key.startsWith("notify.") && picks[key] !== "")) {

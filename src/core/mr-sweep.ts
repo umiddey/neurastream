@@ -80,6 +80,32 @@ export function remoteHost(url: string): string | null {
 	return null;
 }
 
+/** `host/path` of an origin URL (`git@host:path`, `ssh://`, `https://`), host lowercased, no `.git`. Null when it does not parse. */
+export function remotePath(url: string): string | null {
+	const u = url.trim();
+	if (!u) return null;
+	let host: string | null = null;
+	let raw = "";
+	if (!u.includes("://")) {
+		const scp = /^[^@\s]+@([^:\s]+):(.+)$/.exec(u);
+		if (!scp?.[1] || !scp[2]) return null;
+		host = scp[1].toLowerCase();
+		raw = scp[2];
+	} else {
+		try {
+			const parsed = new URL(u);
+			host = parsed.hostname.toLowerCase() || null;
+			raw = parsed.pathname;
+		} catch {
+			return null;
+		}
+	}
+	if (!host) return null;
+	let p = raw.trim().replace(/^\/+/, "").replace(/\/+$/, "");
+	if (p.toLowerCase().endsWith(".git")) p = p.slice(0, -4).replace(/\/+$/, "");
+	return p ? `${host}/${p}` : null;
+}
+
 /** `gitlab` in the host → gitlab; `github` in the host → github; anything else is unknown. */
 export function forgeOf(host: string): Forge | null {
 	const h = host.toLowerCase();
@@ -139,11 +165,11 @@ export function parseList(stdout: string): Record<string, unknown>[] | null {
 interface Listed {
 	missing?: boolean;
 	fail?: boolean;
-	items: { number: number; branch: string }[];
+	items: { number: number; branch: string; title: string }[];
 }
 
-function takeItems(parsed: Record<string, unknown>[], numberKey: "iid" | "number", branchKeys: string[]): { number: number; branch: string }[] {
-	const items: { number: number; branch: string }[] = [];
+function takeItems(parsed: Record<string, unknown>[], numberKey: "iid" | "number", branchKeys: string[]): { number: number; branch: string; title: string }[] {
+	const items: { number: number; branch: string; title: string }[] = [];
 	const seen = new Set<number>();
 	for (const item of parsed) {
 		const n = asNumber(item[numberKey] ?? item.number);
@@ -161,13 +187,13 @@ function takeItems(parsed: Record<string, unknown>[], numberKey: "iid" | "number
 				break;
 			}
 		}
-		items.push({ number: n, branch });
+		items.push({ number: n, branch, title: typeof item.title === "string" ? item.title : "" });
 	}
 	return items;
 }
 
 function listGitlab(repo: string, run: CommandRunner, env?: NodeJS.ProcessEnv): Listed {
-	const items: { number: number; branch: string }[] = [];
+	const items: { number: number; branch: string; title: string }[] = [];
 	const seen = new Set<number>();
 	for (let page = 1; page <= MAX_PAGES; page++) {
 		const r = run(["glab", "mr", "list", "-F", "json", "-P", String(PAGE), "-p", String(page)], { cwd: repo, env });
@@ -203,6 +229,7 @@ export interface OpenMr {
 	number: number;
 	token: string;
 	branch: string;
+	title: string;
 }
 
 /** `{ ok: false, why }` is the sweep's degrade: the caller logs it and never treats it as "no MRs". */
@@ -232,7 +259,7 @@ export function listOpenMrs(repo: string, run: CommandRunner = defaultRunner, en
 	return {
 		ok: true,
 		mrs: listed.items
-			.map(item => ({ forge, number: item.number, token: forge === "gitlab" ? `!${item.number}` : `#${item.number}`, branch: item.branch }))
+			.map(item => ({ forge, number: item.number, token: forge === "gitlab" ? `!${item.number}` : `#${item.number}`, branch: item.branch, title: item.title }))
 			.toSorted((a, b) => a.number - b.number),
 	};
 }

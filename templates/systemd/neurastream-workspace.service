@@ -1,0 +1,14 @@
+# User unit for the owner's phone page (neurastream workspace). `neurastream workspace on --login <email>`
+# copies this into ~/.config/systemd/user/ and enables + restarts it; `neurastream workspace off`
+# stops and disables it. Agents never install or start it — that is the owner's move, refused
+# by the guards. (The unit was neurastream-ui.service before the workspace rename; `workspace on`
+# disables the old unit and removes its file when one is installed.)
+
+[Unit]
+Description=neurastream owner page (neurastream workspace)
+After=network-online.target
+
+[Service]
+ExecStart=%h/.bun/bin/neurastream workspace
+Restart=on-failure
+RestartSec=5

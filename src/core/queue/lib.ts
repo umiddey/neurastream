@@ -346,7 +346,7 @@ function executable(p: string): boolean {
 	}
 }
 
-function headerField(text: string, name: string): string | null {
+export function headerField(text: string, name: string): string | null {
 	const m = text.split(/^## /m)[0]?.match(new RegExp(`^${name}:\\s*(.+?)\\s*$`, "m"));
 	const v = m?.[1];
 	return v ? v.replace(/`/g, "").trim() || null : null;
@@ -371,7 +371,12 @@ function reuseProblems(repo: string, file: string, secs: Map<string, string>, re
 	return probs;
 }
 
-export function parsePlan(repo: string, file: string, text: string | null, blockersDir = blockersDirPath(), reviewAgents: string[] = []): Plan {
+/**
+ * `localPaths` false is for text that came from a team server (P4): it names paths on its
+ * author's machine, so nothing here may stat this machine's disk — no blocker executable()
+ * check and no reuse existsSync. Its blockers are `[]`; every other field is parsed as usual.
+ */
+export function parsePlan(repo: string, file: string, text: string | null, blockersDir = blockersDirPath(), reviewAgents: string[] = [], localPaths = true): Plan {
 	const empty = { repo, file, text: "", status: null, blockers: [], doneCheck: null, worktree: null, branch: null, appliesTo: [], waiting: false, waitingLine: null, waitingAsk: null, waitingBlocked: null, waitingWhy: null, waitingCheck: null, waitsOn: [], priorityId: null, title: path.basename(file), goal: [], summary: null, phases: { done: 0, total: 0 }, started: false };
 	if (text === null) return { ...empty, errors: ["plan file listed in the index does not exist"] };
 	const errors: string[] = [];
@@ -383,7 +388,7 @@ export function parsePlan(repo: string, file: string, text: string | null, block
 	const stamp = /^(\d{8}_\d{4})/.exec(path.basename(file))?.[1] ?? "";
 	if (stamp >= READ_CUTOVER && !items(secs.get("code read by main") ?? "").length)
 		errors.push(`missing or empty "## Code read by Main" section (plans stamped ${READ_CUTOVER} or later list each file they cite)`);
-	for (const problem of reuseProblems(repo, file, secs, reviewAgents)) errors.push(problem);
+	for (const problem of localPaths ? reuseProblems(repo, file, secs, reviewAgents) : []) errors.push(problem);
 	const known = new Set([...REQUIRED, "applies to", "background", "code read by main", "reuse"]);
 	for (const s of secs.keys()) if (!known.has(s)) errors.push(`unknown section "## ${s}" (allowed: ${[...known].join(", ")})`);
 	const status = statusOf(text);
@@ -391,7 +396,7 @@ export function parsePlan(repo: string, file: string, text: string | null, block
 	if (status === "cancelled" && !/^Cancelled by owner:\s*\S.{5,}/m.test(progressBody(text)))
 		errors.push('a cancelled plan needs a Progress line: Cancelled by owner: <date> "<the owner\'s words>"');
 	const blockers: Blocker[] = [];
-	for (const line of items(secs.get("blockers") ?? "")) {
+	for (const line of localPaths ? items(secs.get("blockers") ?? "") : []) {
 		const [ref = "", ...args] = line.replace(/`/g, "").split(/\s+/);
 		const script = ref.includes("/") ? path.resolve(path.dirname(file), expandHome(ref)) : path.join(blockersDir, ref);
 		if (!executable(script)) errors.push(`blocker "${ref}": ${script} missing or not executable`);
@@ -407,6 +412,9 @@ export function parsePlan(repo: string, file: string, text: string | null, block
 	if (secs.has("done check") && !doneCheck) errors.push('"## Done check" needs one command in backticks (exit 0 = done)');
 	const bg = (secs.get("background") ?? "").split("\n").filter(l => l.trim()).length;
 	if (bg > BACKGROUND_MAX_LINES) errors.push(`"## Background" has ${bg} lines (max ${BACKGROUND_MAX_LINES}); link a separate file for long context`);
+	const queue = headerField(text, "Queue");
+	if (queue !== null && queue !== "team" && queue !== "personal")
+		errors.push(`Queue: header must be "team" or "personal" (got "${queue}"; absent means personal)`);
 	const wt = headerField(text, "Worktree");
 	const waitingLine = text.match(/^WAITING on owner:[ \t]*(.*)$/m)?.[1] ?? null;
 	const waitingParts = waitingLine === null ? { ask: null, blocked: null, why: null, check: null } : splitWaiting(waitingLine);
@@ -1224,17 +1232,17 @@ export function holdWarnings(plans: Plan[]): string[] {
 // and passes `cap = Infinity`.
 export const SUMMARY_CAP = 10;
 
-export function queueSummary(index = INDEX, reviewAgents: string[] = [], staleOrClaims: ReadonlySet<string> | ClaimStore | null = null, cap: number = SUMMARY_CAP): string {
+export function queueSummary(index = INDEX, reviewAgents: string[] = [], staleOrClaims: ReadonlySet<string> | Pick<ClaimStore, "holder"> | null = null, cap: number = SUMMARY_CAP): string {
 	// Index order IS priority (20261025_0215_index_priority): the list is flat and ranked,
 	// rank 1 = the index's top line; repos only surface through each plan's own path.
 	const plans = activePlans(index);
 	const rank = new Map(plans.map((p, i) => [p.file, i + 1] as const));
 	const repos = [...new Set(plans.map(p => p.repo))];
 	const lines = [`Queue (${index}): ${plans.length ? `${plans.length} plan(s) in ${repos.length} repo(s)` : "empty, no open work"}`];
-	let claimStore: ClaimStore | null = null;
+	let claimStore: Pick<ClaimStore, "holder"> | null = null;
 	let stale: ReadonlySet<string> = new Set<string>();
-	if (staleOrClaims != null && typeof (staleOrClaims as ClaimStore).holder === 'function') {
-		claimStore = staleOrClaims as ClaimStore;
+	if (staleOrClaims != null && typeof (staleOrClaims as Pick<ClaimStore, "holder">).holder === 'function') {
+		claimStore = staleOrClaims as Pick<ClaimStore, "holder">;
 	} else {
 		stale = staleOrClaims as ReadonlySet<string> ?? new Set<string>();
 	}
@@ -1254,7 +1262,13 @@ export function queueSummary(index = INDEX, reviewAgents: string[] = [], staleOr
 		// P4 multi-main (20261027_1300): with the claim store handed in (guards' inject and
 		// queue-check pass it), every plan shows `held by <id> since HH:MM` or `free`.
 		const holder = claimStore?.holder(p.file) ?? null;
-		const claimFlag = claimStore ? (holder ? `held by ${holder.main} since ${strftime(holder.since, "%H:%M")}` : "free") : "";
+		const claimFlag = claimStore
+			? (holder === null
+				? "free"
+				: "unreachable" in holder
+					? `team server ${holder.unreachable} unreachable`
+					: `held by ${holder.main} since ${strftime(holder.since, "%H:%M")}`)
+			: "";
 		const flags = [status, done, hold, ...waits, claimFlag, p.priorityId ?? ""].filter(Boolean).join(", ");
 		const goal = items(sections(p.text).get("goal") ?? "")[0]?.slice(0, 100) ?? "";
 		lines.push(`  ${i + 1}. ${p.file} [${flags}] ${goal}`);

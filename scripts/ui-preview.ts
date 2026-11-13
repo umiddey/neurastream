@@ -236,6 +236,7 @@ export function fixtureData(): PageData {
 		},
 		machine: { freeGb: 6.2, diskMin: 20, load: 1.84, loadMax: 16, cores: 16 },
 		stats,
+		teams: [],
 		knowledge: [
 			{ repo: "neurastream", topic: "architecture", title: "How the pieces fit", updated: new Date((ts - 86_400) * 1000).toISOString() },
 		],
@@ -249,7 +250,7 @@ export function fixtureData(): PageData {
 
 /** A throwaway-home config so neither script touches the real one; chat_unlock on for the demo lock pill. */
 export function fixtureConfig() {
-	const base = loadConfig({ home: join(tmpdir(), "neurastream-ui-preview") });
+	const base = loadConfig({ home: join(tmpdir(), "neurastream-workspace-preview") });
 	return { ...base, guards: { ...base.guards, chat_unlock: true } };
 }
 

@@ -449,6 +449,6 @@ test("(d10) a TTY config set of a mode key stamps and survives the next seam; an
 	expect(verifyPlannerMode(plannerPin(reread())).reverted).toBe(false);
 	expect(reread().autonomy.planner).toBe("delegated");
 	rmSync(plannerBaselineFile(plannerPin(cfg)), { force: true });
-	expect((await capture(() => runConfigKeys(["set", "ui.port", "7788"], root, true))).code).toBe(0);
+	expect((await capture(() => runConfigKeys(["set", "workspace.port", "7788"], root, true))).code).toBe(0);
 	expect(existsSync(plannerBaselineFile(plannerPin(cfg)))).toBe(false);
 });

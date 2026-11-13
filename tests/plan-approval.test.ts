@@ -46,7 +46,7 @@ function setup(): { dir: string; cfg: Config; pages: string } {
 	cfg.pages.enabled = true;
 	cfg.pages.dir = pages;
 	cfg.pages.port = 0;
-	cfg.ui.owner_login = "owner@example.test";
+	cfg.workspace.owner_login = "owner@example.test";
 	return { dir, cfg, pages };
 }
 

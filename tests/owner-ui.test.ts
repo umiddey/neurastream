@@ -21,9 +21,10 @@ import { createOmpAdapter, reset as resetAdapter, ownerInboxCursorPath, ownerInb
 import { fileClaimStore } from "../src/core/claims.ts";
 import { tryLock } from "../src/core/file-lock.ts";
 import { recordPublish } from "../src/core/pages-expiry.ts";
-import { inboxPath, agentRows, buildPageData, ciRows, dropSlot, edgeScrollStep, incidentRows, machineRow, nowStats, questionRows, queueRows, renderPage, resultsCachePath, scoresData, startOwnerUi, type OwnerUiOptions, type OwnerUiServer, type PageData, type ResultsData } from "../src/core/owner-ui.ts";
+import { inboxPath, agentRows, buildPageData, ciRows, dropSlot, edgeScrollStep, incidentRows, machineRow, nowStats, questionRows, queueRows, renderPage, resultsCachePath, scoresData, startOwnerUi, teamSections, type OwnerUiOptions, type OwnerUiServer, type PageData, type QueueRow, type ResultsData } from "../src/core/owner-ui.ts";
+import type { TeamView } from "../src/core/team-client.ts";
 import type { ChainRow, FeaturesReport, ReleaseRow, ReleaseSideStats } from "../src/core/results.ts";
-import { runUi } from "../src/cli/ui.ts";
+import { runWorkspace } from "../src/cli/workspace.ts";
 import { parsePlan, stateDirPath, unlockPath } from "../src/core/queue/lib.ts";
 import { parseWhoisLogin, type Tailscale } from "../src/core/tailscale.ts";
 
@@ -81,7 +82,7 @@ const CFG: Config = {
 		ranking_board: join(TMP, "board.md"),
 	},
 	guards: { ...baseCfg.guards, chat_unlock: true },
-	ui: { enabled: true, port: 7787, owner_login: OWNER, allow_this_machine: false },
+	workspace: { enabled: true, port: 7787, owner_login: OWNER, allow_this_machine: false },
 };
 applyQueueEnv(CFG);
 
@@ -403,12 +404,12 @@ test("a different tailnet login gets 403", async () => {
 	expect((await get(svc)).status).toBe(403);
 });
 
-test("an empty ui.owner_login refuses to start and would serve nobody", () => {
-	expect(() => ui({ cfg: { ...CFG, ui: { ...CFG.ui, owner_login: "" } } })).toThrow();
+test("an empty workspace.owner_login refuses to start and would serve nobody", () => {
+	expect(() => ui({ cfg: { ...CFG, workspace: { ...CFG.workspace, owner_login: "" } } })).toThrow();
 });
 
-test("ui.enabled false refuses to start", () => {
-	expect(() => ui({ cfg: { ...CFG, ui: { ...CFG.ui, enabled: false } } })).toThrow();
+test("workspace.enabled false refuses to start", () => {
+	expect(() => ui({ cfg: { ...CFG, workspace: { ...CFG.workspace, enabled: false } } })).toThrow();
 });
 
 test("a silent tailscale refuses to start on the default hostname", () => {
@@ -420,16 +421,16 @@ test("a real loopback request (no peer injection) gets 403", async () => {
 	expect((await get(svc)).status).toBe(403);
 });
 
-// --- ui.allow_this_machine: this machine (loopback and its own tailnet IP) may press the buttons ---
+// --- workspace.allow_this_machine: this machine (loopback and its own tailnet IP) may press the buttons ---
 
-test("ui.allow_this_machine on: this machine's own tailnet address and loopback are served as the owner", async () => {
-	const on = { ...CFG, ui: { ...CFG.ui, allow_this_machine: true } };
+test("workspace.allow_this_machine on: this machine's own tailnet address and loopback are served as the owner", async () => {
+	const on = { ...CFG, workspace: { ...CFG.workspace, allow_this_machine: true } };
 	expect((await get(ui({ cfg: on, peerOf: () => OWN_IP }))).status).toBe(200);
 	expect((await get(ui({ cfg: on, peerOf: undefined }))).status).toBe(200); // real loopback
 });
 
-test("ui.allow_this_machine on: this machine can POST an answer; other peers keep today's treatment", async () => {
-	const on = { ...CFG, ui: { ...CFG.ui, allow_this_machine: true } };
+test("workspace.allow_this_machine on: this machine can POST an answer; other peers keep today's treatment", async () => {
+	const on = { ...CFG, workspace: { ...CFG.workspace, allow_this_machine: true } };
 	const svc = ui({ cfg: on, peerOf: () => OWN_IP });
 	const res = await post(svc, "/answer", { plan: PLAN_W, answer: "yes" });
 	expect(res.status).toBe(303);
@@ -998,21 +999,21 @@ test("guards refuse agent shell commands that start the owner page", () => {
 	const cfg: Config = { ...CFG, guards: { ...CFG.guards, shell_tools: ["bash"] } };
 	const denies = (command: string, agent: "main" | "sub" = "sub"): boolean =>
 		!checkTool({ tool: "bash", input: { command }, cwd: TMP, agent, agentId: "uistart", calls: 0, paths: [], writes: [], command: "" }, cfg).allow;
-	expect(denies("neurastream ui")).toBe(true);
-	expect(denies("neurastream ui --port 1234")).toBe(true);
-	// ui on/off are the one-command setup of the page itself (plan 20261025_0300): refused like
-	// every other `neurastream ui` command, with any arguments.
-	expect(denies("neurastream ui on --login x@y.z")).toBe(true);
-	expect(denies("neurastream ui off")).toBe(true);
-	expect(denies('sh -c "neurastream ui"', "main")).toBe(true);
-	expect(denies("bun ~/.bun/bin/neurastream ui")).toBe(true);
-	expect(denies("systemctl --user start neurastream-ui")).toBe(true);
-	expect(denies("systemctl --user restart neurastream-ui.service")).toBe(true);
-	expect(denies("sudo systemctl --user enable neurastream-ui.timer")).toBe(true);
+	expect(denies("neurastream workspace")).toBe(true);
+	expect(denies("neurastream workspace --port 1234")).toBe(true);
+	// workspace on/off are the one-command setup of the page itself (plan 20261025_0300): refused
+	// like every other `neurastream workspace` command, with any arguments.
+	expect(denies("neurastream workspace on --login x@y.z")).toBe(true);
+	expect(denies("neurastream workspace off")).toBe(true);
+	expect(denies('sh -c "neurastream workspace"', "main")).toBe(true);
+	expect(denies("bun ~/.bun/bin/neurastream workspace")).toBe(true);
+	expect(denies("systemctl --user start neurastream-workspace")).toBe(true);
+	expect(denies("systemctl --user restart neurastream-workspace.service")).toBe(true);
+	expect(denies("sudo systemctl --user enable neurastream-workspace.timer")).toBe(true);
 	// Reads and unrelated commands stay allowed.
 	expect(denies("neurastream doctor")).toBe(false);
-	expect(denies("systemctl --user status neurastream-ui")).toBe(false);
-	expect(denies("grep neurastream ui notes.md")).toBe(false);
+	expect(denies("systemctl --user status neurastream-workspace")).toBe(false);
+	expect(denies("grep neurastream workspace notes.md")).toBe(false);
 	// The refusal is logged plan-guard style.
 	expect(planGuardLogLines().some(l => l.includes("ui-start"))).toBe(true);
 });
@@ -1024,32 +1025,32 @@ test("P5g: eval prose that only carries the page's words is not a page start; th
 	const ev = (code: string): ToolEvent => ({ tool: "eval", input: { code }, cwd: TMP, agent: "sub", agentId: "p5g-eval", calls: 0, paths: [], writes: [], command: "" });
 	// An eval cell whose string data only mentions the page command runs nothing: a backticked
 	// mention in a plan-file edit and a plan-quote template literal are prose, not shell.
-	expect(checkTool(ev('edit(plan, { old: "x", new: "the card runs `neurastream ui` to serve the page" })'), cfg).allow).toBe(true);
-	expect(checkTool(ev("const forbidden = `\nneurastream ui stays the owner's move\n`;"), cfg).allow).toBe(true);
+	expect(checkTool(ev('edit(plan, { old: "x", new: "the card runs `neurastream workspace` to serve the page" })'), cfg).allow).toBe(true);
+	expect(checkTool(ev("const forbidden = `\nneurastream workspace stays the owner's move\n`;"), cfg).allow).toBe(true);
 	// Real shell exits stay the owner's move: a !cmd line, Bun.$ and spawn arguments.
-	expect(checkTool(ev("!neurastream ui"), cfg).allow).toBe(false);
-	expect(checkTool(ev("await Bun.$`neurastream ui`.nothrow()"), cfg).allow).toBe(false);
-	expect(checkTool(ev('Bun.spawn(["neurastream", "ui"])'), cfg).allow).toBe(false);
-	expect(checkTool(ev("Bun.spawnSync(['neurastream', 'ui'])"), cfg).allow).toBe(false);
+	expect(checkTool(ev("!neurastream workspace"), cfg).allow).toBe(false);
+	expect(checkTool(ev("await Bun.$`neurastream workspace`.nothrow()"), cfg).allow).toBe(false);
+	expect(checkTool(ev('Bun.spawn(["neurastream", "workspace"])'), cfg).allow).toBe(false);
+	expect(checkTool(ev("Bun.spawnSync(['neurastream', 'workspace'])"), cfg).allow).toBe(false);
 	// bash keeps its whole command line.
-	expect(checkTool({ tool: "bash", input: { command: "systemctl --user start neurastream-ui" }, cwd: TMP, agent: "sub", agentId: "p5g-bash", calls: 0, paths: [], writes: [], command: "" }, cfg).allow).toBe(false);
+	expect(checkTool({ tool: "bash", input: { command: "systemctl --user start neurastream-workspace" }, cwd: TMP, agent: "sub", agentId: "p5g-bash", calls: 0, paths: [], writes: [], command: "" }, cfg).allow).toBe(false);
 });
 
-// --- CLI: `neurastream ui` keeps serving (the 0.2.8 unit exited 0 after 90 ms) ---
+// --- CLI: `neurastream workspace` keeps serving (the 0.2.8 unit exited 0 after 90 ms) ---
 
-test("runUi never resolves once the page is started, so the CLI does not exit and kill the server", async () => {
+test("runWorkspace never resolves once the page is started, so the CLI does not exit and kill the server", async () => {
 	let started = 0;
-	const served = runUi([], { cfg: CFG, start: () => (started++, { stop() {}, hostname: "127.0.0.1", port: 0 }) });
-	// An async runUi that returns a code is already settled here, so its .then is queued ahead of
+	const served = runWorkspace([], { cfg: CFG, start: () => (started++, { stop() {}, hostname: "127.0.0.1", port: 0 }) });
+	// An async runWorkspace that returns a code is already settled here, so its .then is queued ahead of
 	// the second racer; one that never resolves loses to it. No clock involved.
 	const winner = await Promise.race([served.then(code => `exited ${code}`), Promise.resolve().then(() => "still serving")]);
 	expect(started).toBe(1);
 	expect(winner).toBe("still serving");
 });
 
-test("runUi refuses with exit 1 and starts nothing when the page is off", async () => {
+test("runWorkspace refuses with exit 1 and starts nothing when the page is off", async () => {
 	let started = 0;
-	const code = await runUi([], { cfg: { ...CFG, ui: { ...CFG.ui, enabled: false } }, start: () => (started++, { stop() {}, hostname: "", port: 0 }) });
+	const code = await runWorkspace([], { cfg: { ...CFG, workspace: { ...CFG.workspace, enabled: false } }, start: () => (started++, { stop() {}, hostname: "", port: 0 }) });
 	expect(code).toBe(1);
 	expect(started).toBe(0);
 });
@@ -2041,11 +2042,121 @@ const EMPTY_DATA: PageData = {
 	scores: { header: [], rows: [], text: [] },
 	machine: null,
 	stats: null,
+	teams: null,
 	knowledge: null,
 	pages: null,
 	messages: [],
 	lockMinutesLeft: null,
 };
+
+/** A team plan's text as the server sends it: a header, a goal and an open WAITING line. */
+const TEAM_TEXT = (title: string, waiting: string): string => `# ${title}
+Summary: ${title} summary
+
+## Goal
+- ${title} goal
+
+## Forbidden
+- Never push.
+
+## Phases
+- [ ] P1 do it — verify: \`true\`
+
+## Done check
+\`true\`
+
+## Progress
+Status: open
+
+WAITING on owner: ${waiting}
+`;
+
+/** The id the server gives a plan: 64 lowercase hex characters (the client refuses any other). */
+const teamPlanIdOf = (rel: string): string => new Bun.CryptoHasher("sha256").update(rel).digest("hex");
+
+/** One team view plan row, as the server sends it. */
+const teamPlanRow = (rel: string, title: string, waiting: string): TeamView["plans"][number] => ({
+	id: teamPlanIdOf(rel),
+	remote: "https://gitlab.com/acme/pm.git",
+	rel_path: rel,
+	sha: `sha-${rel}`,
+	text: TEAM_TEXT(title, waiting),
+	updated_by: OWNER,
+	updated_at: nowSec(),
+});
+
+/** One already-read team view (P4): two plans, the first held by another member on the server. */
+const teamViewFixture = (): TeamView => ({
+	plans: [teamPlanRow("docs/plans/a.md", "Team plan one", "approve the migration?"), teamPlanRow("docs/plans/b.md", "Team plan two", "pick a window")],
+	claims: [{ plan: teamPlanIdOf("docs/plans/a.md"), main: "main", host: "laptop", pid: 4242, since: nowSec(), beat: nowSec(), login: "teammate@example.com", mine: false }],
+	approvals: [],
+	votes: [],
+	override: null,
+	paused: [],
+	answers: [],
+	first: [],
+	me_paused: false,
+});
+
+/** The loopback URL a test team points at (a port nothing listens on unless a recorder answers). */
+const teamUrl = (port: number): string => `http://${[127, 0, 0, 1].join(".")}:${port}`;
+
+test("the queue tab puts each team's plans under its own card, with no claim handle and no reorder form", () => {
+	const cfgTeam: Config = { ...CFG, teams: [{ name: "acme", server: teamUrl(9), repos: ["gitlab.com/acme/*"] }] };
+	const sections = teamSections(cfgTeam, new Map([["acme", teamViewFixture()]]));
+	const queues: QueueRow[] = [{ repo: "toy", file: PLAN_W, title: "Personal plan", status: "open", waiting: false, summary: "mine", state: "no open phases", holder: null }];
+	const html = renderPage(cfgTeam, { ...EMPTY_DATA, queue: queues, teams: sections }, new URLSearchParams("tab=queue"), "n");
+	expect(html).toContain("Personal plan");
+	expect(html).toContain('class="qhandle"');
+	expect(html).toContain('action="/reorder"');
+	expect(html).toContain("<h2>Team acme</h2>");
+	const card = html.slice(html.indexOf("<h2>Team acme</h2>"), html.indexOf("<script"));
+	expect(card).toContain("docs/plans/a.md");
+	expect(card).toContain("docs/plans/b.md");
+	// The view's claim reaches the team row, so a render never asks the server for it again.
+	expect(card).toContain("main (teammate@example.com)");
+	// The server owns these plans: no drag handle, no move buttons, no reorder form.
+	expect(card).not.toContain('class="qhandle"');
+	expect(card).not.toContain('class="qmove"');
+	expect(card).not.toContain('action="/reorder"');
+	// The open WAITING line is a question card whose form carries the team, so the answer routes.
+	expect(card).toContain("approve the migration?");
+	expect(card).toContain('name="team" value="acme"');
+});
+
+test("one page build sends one GET /view per team and no GET /claims", async () => {
+	// buildPageData has no send seam, so the count is read where the requests land: a recorder
+	// in another process logs every path and answers the view (the client sends in a child).
+	const log = join(TMP, "page-view.log");
+	const child = join(TMP, "page-view-recorder.ts");
+	writeFileSync(
+		child,
+		`import { appendFileSync } from "node:fs";
+const [logFile, viewJson] = process.argv.slice(2);
+const view = JSON.parse(viewJson!);
+const svc = Bun.serve({
+	hostname: ${JSON.stringify([127, 0, 0, 1].join("."))},
+	port: 0,
+	fetch: (req) => {
+		appendFileSync(logFile!, req.method + " " + new URL(req.url).pathname + "\\n");
+		return Response.json(view);
+	},
+});
+console.log(svc.port);
+`,
+	);
+	const proc = Bun.spawn([process.execPath, child, log, JSON.stringify(teamViewFixture())], { stdout: "pipe", stderr: "pipe" });
+	const reader = proc.stdout.getReader();
+	const first = await reader.read();
+	await reader.cancel();
+	const recCfg: Config = { ...CFG, teams: [{ name: "acme", server: teamUrl(Number(new TextDecoder().decode(first.value).trim())), repos: ["gitlab.com/acme/*"] }] };
+	applyQueueEnv(recCfg);
+	const data = buildPageData(recCfg, RUNS, "queue");
+	expect(data.teams?.[0]?.rows.map((r) => r.repo)).toEqual(["docs/plans/a.md", "docs/plans/b.md"]);
+	expect(data.teams?.[0]?.rows[0]?.holder).toBe("main (teammate@example.com)");
+	expect(readFileSync(log, "utf8").trim().split("\n")).toEqual(["GET /view"]);
+	proc.kill();
+});
 
 function resultsPage(params: string, results: ResultsData | null = RESULTS): string {
 	return renderPage(CFG, { ...EMPTY_DATA, results: results && { data: results, at: nowSec(), building: false } }, new URLSearchParams(params), "results-nonce");

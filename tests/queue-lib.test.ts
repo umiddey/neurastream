@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parsePlan, queueSummary, splitWaiting } from "../src/core/queue/lib";
+import { parsePlan, queueProblems, queueSummary, splitWaiting } from "../src/core/queue/lib";
 
 const CHECK = " — still true if: ";
 
@@ -55,6 +55,55 @@ test("parsePlan carries the check as waitingCheck, and null when the line has no
 	expect(without.waitingCheck).toBeNull();
 	const none = parsePlan("/repo", "c.md", "## Progress\nStatus: open\n");
 	expect(none.waitingCheck).toBeNull();
+});
+
+function planText(queue: string | null): string {
+	const header = queue === null ? "" : `${queue}\n`;
+	return `# t
+${header}
+## Goal
+- g
+
+## Forbidden
+- f
+
+## Blockers
+- no-push
+
+## Phases
+- [ ] P1 x — verify: \`true\`
+
+## Done check
+\`true\`
+
+## Code read by Main
+- \`src/a.ts\`
+
+## Progress
+Status: open
+`;
+}
+
+test("Queue: other than team or personal is a queue problem; team, personal and absent are not", () => {
+	const dir = mkdtempSync(join(tmpdir(), "queue-hdr-"));
+	try {
+		const bogus = join(dir, "20261110_0600_bogus.md");
+		const team = join(dir, "20261110_0601_team.md");
+		const personal = join(dir, "20261110_0602_personal.md");
+		const absent = join(dir, "20261110_0603_absent.md");
+		writeFileSync(bogus, planText("Queue: bogus"));
+		writeFileSync(team, planText("Queue: team"));
+		writeFileSync(personal, planText("Queue: personal"));
+		writeFileSync(absent, planText(null));
+		const index = join(dir, "INDEX.md");
+		writeFileSync(index, [bogus, team, personal, absent].join("\n") + "\n");
+		const probs = queueProblems(index, dir, []);
+		const of = (file: string) => probs.filter(p => p.where === file).map(p => p.problem);
+		expect(of(bogus).some(p => p.includes('Queue: header must be "team" or "personal"'))).toBe(true);
+		for (const file of [team, personal, absent]) expect(of(file).some(p => p.startsWith("Queue:"))).toBe(false);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
 });
 
 test("queueSummary labels a stale hold [STALE?] instead of WAITING on owner", () => {

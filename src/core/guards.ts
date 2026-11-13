@@ -25,7 +25,7 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import type { Decision, InjectEvent, PlanEditEvent, SpawnEvent, StopEvent, ToolEvent } from "./adapter.ts";
+import type { Decision, InjectEvent, PlanEditEvent, RunSource, SpawnEvent, StopEvent, ToolEvent } from "./adapter.ts";
 import { currentPlanner, currentTier, takeGo } from "./autonomy.ts";
 import { approvalProblem, MAIN_ONLY_LINE, reviewHash } from "./plan-approval.ts";
 export { reviewHash };
@@ -38,7 +38,8 @@ import { unlandedRows } from "./wip-check.ts";
 import * as q from "./queue/lib.ts";
 import type { Plan } from "./queue/lib.ts";
 
-import { fileClaimStore, type Claim, type ClaimStore } from "./claims.ts";
+import { heldByOther, type Claim, type ClaimStore, type Unreachable } from "./claims.ts";
+import { claimStoreFor, pathId, routeTeam, summaryHolder, teamDir, teamSummaryLines, teamViews, type TeamEntry } from "./team-client.ts";
 import { nowSec, strftime } from "./clock.ts";
 import { outUntil, pinModel, providerOfModel, readOut } from "./provider-state.ts";
 import { lint } from "./brief-lint.ts";
@@ -1211,11 +1212,12 @@ function shellText(input: Record<string, unknown>): string {
 	return out.join("\n");
 }
 
-// True when a command segment starts the owner page (plan 20261024_2230 P3c): `neurastream ui`
-// serves it and `systemctl --user start/restart/enable` of neurastream-ui relaunches it — the
-// owner's systemd moves, never an agent's, unlocked or not. P5g: the text is shellText's — only
-// real shell commands, never prose. Segment splitting and launcher skipping match runsCloser, so
-// `sh -c "neurastream ui"` and `sudo systemctl --user ...` are seen.
+// True when a command segment starts the owner page (plan 20261024_2230 P3c): `neurastream
+// workspace` serves it and `systemctl --user start/restart/enable` of neurastream-workspace
+// relaunches it — the owner's systemd moves, never an agent's, unlocked or not. P5g: the text is
+// shellText's — only real shell commands, never prose. Segment splitting and launcher skipping
+// match runsCloser, so `sh -c "neurastream workspace"` and `sudo systemctl --user ...` are seen.
+// (The command and unit were `ui` before the workspace rename; that name is gone, no alias.)
 function startsOwnerUi(input: Record<string, unknown>): boolean {
 	const text = shellText(input);
 	return text.split(/&&|\|\||;|\||\n|\$\(|`/).some(seg => {
@@ -1223,12 +1225,12 @@ function startsOwnerUi(input: Record<string, unknown>): boolean {
 		let i = 0;
 		while (i < words.length && (LAUNCHERS[words[i] ?? ""] === true || /^\w+=/.test(words[i] ?? "") || /(^|\/)main\.ts$/.test(words[i] ?? ""))) i++;
 		const cmd = bin(words[i]);
-		if ((cmd === "ui" && bin(words[i - 1]) === "neurastream") || (cmd === "neurastream" && bin(words[i + 1]) === "ui")) return true;
+		if ((cmd === "workspace" && bin(words[i - 1]) === "neurastream") || (cmd === "neurastream" && bin(words[i + 1]) === "workspace")) return true;
 		return (
 			cmd === "systemctl" &&
 			words.some(w => w === "--user") &&
 			words.some(w => w === "start" || w === "restart" || w === "enable") &&
-			words.some(w => bin(w) === "neurastream-ui" || w.startsWith("neurastream-ui."))
+			words.some(w => bin(w) === "neurastream-workspace" || w.startsWith("neurastream-workspace."))
 		);
 	});
 }
@@ -1486,7 +1488,7 @@ function incidentSpawnProblem(label: string, brief: string, namedPlans: string[]
  * A `task` launch: the cancel check, the spawn gates, then the records. Main's and a sub's launch
  * both come through here (plan 20261028_1600 P4i). Returns the refusal, or null.
  */
-function taskLaunch(input: Record<string, unknown>, cfg: Config, runningJobs: string[] | undefined, spawner: Spawner): string | null {
+function taskLaunch(input: Record<string, unknown>, cfg: Config, runningJobs: string[] | undefined, spawner: Spawner, runs?: RunSource): string | null {
 	const pending = q.cancelPending();
 	if (pending) {
 		log(cfg.paths.guard_log, `BLOCK spawn: cancel pending (${pending.words})`);
@@ -1504,7 +1506,13 @@ function taskLaunch(input: Record<string, unknown>, cfg: Config, runningJobs: st
 	}
 	const inc = incidentSpawnProblem("spawn", JSON.stringify(input), files, cfg);
 	if (inc) return inc;
-	const held = claimGate(files, cfg);
+	const spawned: unknown[] = Array.isArray(input.tasks) ? input.tasks : [];
+	const names = spawned.map((t) => (t as { name?: unknown } | null)?.name);
+	const held = claimGate(files, cfg, {
+		agentIds: names.filter((n): n is string => typeof n === "string" && n !== ""),
+		unnamed: names.some((n) => typeof n !== "string" || n === ""),
+		runs,
+	});
 	if (held) {
 		log(cfg.paths.guard_log, `BLOCK spawn: ${held}`);
 		return held;
@@ -1518,7 +1526,7 @@ function taskLaunch(input: Record<string, unknown>, cfg: Config, runningJobs: st
  * A shell launch of a bypass_spawn agent: the cancel check, the plan gate, the review PASS, the
  * incidents, then the record. Main's and a sub's launch both come through here (plan 20261028_1600 P4i).
  */
-function bypassLaunch(command: string, cfg: Config, spawner: Spawner): string | null {
+function bypassLaunch(command: string, cfg: Config, spawner: Spawner, runs?: RunSource): string | null {
 	for (const entry of cfg.guards.bypass_spawn) {
 		if (!bypassRegExp(entry).test(command)) continue;
 		const pending = q.cancelPending();
@@ -1540,7 +1548,7 @@ function bypassLaunch(command: string, cfg: Config, spawner: Spawner): string | 
 		if (inc) return inc;
 		// I-20261031-280: a bypass launch takes the claims like every other spawn, as its last
 		// refusal before the record.
-		const held = claimGate(named, cfg);
+		const held = claimGate(named, cfg, { agentIds: [], unnamed: true, runs });
 		if (held) {
 			log(cfg.paths.guard_log, `BLOCK bypass launch: ${held}`);
 			return held;
@@ -1550,9 +1558,9 @@ function bypassLaunch(command: string, cfg: Config, spawner: Spawner): string | 
 	return null;
 }
 
-function mainTool(e: ToolEvent, input: Record<string, unknown>, cfg: Config): Decision {
+function mainTool(e: ToolEvent, input: Record<string, unknown>, cfg: Config, runs?: RunSource): Decision {
 	if (e.tool === "task") {
-		const why = taskLaunch(input, cfg, e.runningJobs, "main");
+		const why = taskLaunch(input, cfg, e.runningJobs, "main", runs);
 		return why ? deny(`main-guard: ${why}`) : ALLOW;
 	}
 	if (cfg.guards.shell_tools.includes(e.tool)) {
@@ -1565,7 +1573,7 @@ function mainTool(e: ToolEvent, input: Record<string, unknown>, cfg: Config): De
 			return deny(`main-guard: tier strict — type "${cfg.autonomy.go_phrase}" to approve one push/merge`);
 		}
 		const command = String(input?.command ?? input?.code ?? "");
-		const why = bypassLaunch(command, cfg, "main");
+		const why = bypassLaunch(command, cfg, "main", runs);
 		if (why) return deny(`main-guard: ${why}`);
 	}
 	return editWindow(e, input, cfg);
@@ -1634,7 +1642,7 @@ export const MAIN_PLAN_FILE = /\/docs\/plans\/(?!archive\/)(?:[^/]+\/)*[^/]+\.md
  * pre-tool: plan-guard checkCall for subs (protected files, budget, plan-edit rules, blockers)
  * plus, for Main, the spawn gates and the project-file edit window.
  */
-export function checkTool(e: ToolEvent, cfg: Config): Decision {
+export function checkTool(e: ToolEvent, cfg: Config, runs?: RunSource): Decision {
 	const lock = e.agent === "sub" ? reviewLockProblem(e, cfg) : null;
 	if (lock) {
 		log(cfg.paths.plan_guard_log, `BLOCK ${e.agent}:${e.agentId} tool=${e.tool} review lock: ${lock}`);
@@ -1647,7 +1655,7 @@ export function checkTool(e: ToolEvent, cfg: Config): Decision {
 	if (cfg.guards.shell_tools.includes(e.tool) && startsOwnerUi(input)) {
 		log(cfg.paths.plan_guard_log, `BLOCK ${e.agent}:${e.agentId} tool=${e.tool} ui-start: ${String(input.command ?? "")}`);
 		return deny(
-			"plan-guard: starting the owner page (neurastream ui, or systemctl --user start/restart/enable of neurastream-ui) is the owner's move, not an agent's.",
+			"plan-guard: starting the owner page (neurastream workspace, or systemctl --user start/restart/enable of neurastream-workspace) is the owner's move, not an agent's.",
 		);
 	}
 	// claim release --force frees another Main's claim (plan 20261027_1300 P4): the owner's
@@ -1716,7 +1724,7 @@ export function checkTool(e: ToolEvent, cfg: Config): Decision {
 			log(cfg.paths.guard_log, `BLOCK tool=${e.tool} after ${readWindow().mainCalls} calls this turn`);
 			return deny(stop);
 		}
-		const d = mainTool(e, input, cfg);
+		const d = mainTool(e, input, cfg, runs);
 		if (!d.allow) return d;
 		const warn = mainCallWarn(e, cfg);
 		// A task brief names paths it does not read; only the other tools' paths count as reads.
@@ -1731,8 +1739,8 @@ export function checkTool(e: ToolEvent, cfg: Config): Decision {
 	}
 	// A sub's own launch passes the same spawn gates as Main's (plan 20261028_1600 P4i).
 	let launch: string | null = null;
-	if (e.tool === "task") launch = taskLaunch(input, cfg, e.runningJobs, "sub");
-	else if (cfg.guards.shell_tools.includes(e.tool)) launch = bypassLaunch(String(input?.command ?? input?.code ?? ""), cfg, "sub");
+	if (e.tool === "task") launch = taskLaunch(input, cfg, e.runningJobs, "sub", runs);
+	else if (cfg.guards.shell_tools.includes(e.tool)) launch = bypassLaunch(String(input?.command ?? input?.code ?? ""), cfg, "sub", runs);
 	if (launch) {
 		log(cfg.paths.plan_guard_log, `BLOCK ${e.agent}:${e.agentId} tool=${e.tool} ${launch}`);
 		return deny(`plan-guard: ${launch}`);
@@ -1832,16 +1840,10 @@ export function planReadNote(tool: string, input: Record<string, unknown>, cwd: 
 	return `plan-guard: before you edit this plan, re-read: ${stale.join(", ")}`;
 }
 
-/**
- * P3 (plan 20261027_1300): the claim store behind the spawn and Main edit gates. Claims live under
- * `<queue_state>/claims/`; the free-after TTL is queue.claim_ttl_min (never the store's default).
- */
-function claims(cfg: Config): ClaimStore {
-	return fileClaimStore(cfg.paths.queue_state, nowSec, cfg.queue.claim_ttl_min);
-}
-
-/** The held refusal (plan 20261027_1300 P3): "plan X is held by Main B since HH:MM" (HH:MM local). */
-function heldProblem(file: string, held: Claim): string {
+/** The held refusal (plan 20261027_1300 P3, widened 20261027_1305 P3): a down team server, another member's row, or today's "plan X is held by Main B since HH:MM" (HH:MM local). */
+function heldProblem(file: string, held: Claim | Unreachable): string {
+	if ("unreachable" in held) return `team server ${held.unreachable} unreachable; plan ${file} is refused until it answers`;
+	if (held.mine === false) return `plan ${file} is held by another member's Main ${held.main} since ${strftime(held.since, "%H:%M")}`;
 	return `plan ${file} is held by Main ${held.main} since ${strftime(held.since, "%H:%M")}`;
 }
 
@@ -1850,29 +1852,142 @@ function heldProblem(file: string, held: Claim): string {
  * another Main's live claim refuses the launch — a sub's launch too, once its Main no longer
  * holds the claim. Returns the refusal, or null.
  */
-function claimGate(files: string[], cfg: Config): string | null {
-	const store = claims(cfg);
+function claimGate(files: string[], cfg: Config, spawn: SpawnIdent): string | null {
+	const teams = routedTeams(files, cfg);
+	const uncountable = teams.find(({ team }) => team.max_share !== undefined);
+	if (spawn.unnamed && uncountable) {
+		return `team ${uncountable.team.name} sets max_share: name this agent (tasks[].name) so its calls count against the team cap`;
+	}
 	const mine = mainId();
-	const fresh: string[] = [];
+	// With the chooser each file has its own store; `fresh` carries the store beside each file,
+	// so a fresh claim is released through the store that took it (a team claim released through
+	// the file store would be a silent no-op that outlives the refusal until the TTL).
+	const fresh: { file: string; store: ClaimStore }[] = [];
+	// A refusal leaves the store as it found it: claims this call newly created are released
+	// again through the store that took each one; a claim this Main already held before the
+	// call stays.
+	const releaseFresh = (): void => {
+		for (const g of fresh) g.store.release(g.file, mine);
+	};
 	for (const f of files) {
-		const heldBefore = store.holder(f)?.main === mine;
+		const store = claimStoreFor(f, cfg);
+		const h = store.holder(f);
+		// Fail closed: an unreachable server refuses the spawn and leaves no claim this call took.
+		if (h !== null && "unreachable" in h) {
+			releaseFresh();
+			return heldProblem(f, h);
+		}
+		const heldBefore = h !== null && !heldByOther(h, mine);
 		const c = store.claim(f, mine);
+		if ("unreachable" in c) {
+			// The outage started between holder() and claim(): release what this call took.
+			releaseFresh();
+			return heldProblem(f, c);
+		}
 		if ("heldBy" in c) {
-			// A refusal leaves the store as it found it (P3 review finding 2): claims this call
-			// newly created are released again; a claim this Main already held before the call stays.
-			for (const g of fresh) store.release(g, mine);
+			releaseFresh();
 			return heldProblem(f, c.heldBy);
 		}
-		if (!heldBefore) fresh.push(f);
+		if (!heldBefore) fresh.push({ file: f, store });
+	}
+	const capped = teamCapProblem(teams, spawn, cfg);
+	if (capped) {
+		releaseFresh();
+		return capped;
+	}
+	recordTeamSpawns(teams, spawn.agentIds, cfg);
+	return null;
+}
+
+/** A spawn's identity for the team cap: its named agents, and whether any spawned agent has no name (the cap cannot count it). */
+export interface SpawnIdent {
+	agentIds: string[];
+	unnamed: boolean;
+	runs?: RunSource;
+}
+
+/** A plan file and the team it routes to. */
+export interface RoutedTeam {
+	team: TeamEntry;
+	file: string;
+}
+
+function routedTeams(files: string[], cfg: Config): RoutedTeam[] {
+	const out: RoutedTeam[] = [];
+	for (const file of files) {
+		const team = routeTeam(file, cfg, undefined, defaultRunner);
+		if (team) out.push({ team, file });
+	}
+	return out;
+}
+
+/** Epoch seconds at local midnight: the start of the cap's day. */
+function dayStartSec(): number {
+	const d = new Date(nowSec() * 1000);
+	d.setHours(0, 0, 0, 0);
+	return d.getTime() / 1000;
+}
+
+/** Agent ids recorded against a team's plans since `since`, from its spawns.jsonl rows; a corrupt row counts for nothing. */
+function teamAgentsSince(cfg: Config, team: TeamEntry, since: number): Set<string> {
+	const ids = new Set<string>();
+	let text: string;
+	try {
+		text = readFileSync(path.join(teamDir(cfg, team), "spawns.jsonl"), "utf8");
+	} catch {
+		return ids;
+	}
+	for (const line of text.split("\n")) {
+		if (!line) continue;
+		try {
+			const row = JSON.parse(line) as { agentId?: unknown; at?: unknown };
+			if (typeof row.agentId === "string" && typeof row.at === "number" && row.at >= since) ids.add(row.agentId);
+		} catch {}
+	}
+	return ids;
+}
+
+/** The team token cap (plan P6b2 d): a refusal when a capped team's calls today reach its max_share of all calls today. Null when no team is capped or it is under. */
+export function teamCapProblem(teams: RoutedTeam[], spawn: SpawnIdent, cfg: Config): string | null {
+	const capped = teams.flatMap(({ team }) => (team.max_share === undefined ? [] : [{ team, cap: team.max_share }]));
+	const [first] = capped;
+	if (first === undefined) return null;
+	if (!spawn.runs) return `team ${first.team.name} sets max_share: the cap cannot be computed without a run source`;
+	const since = dayStartSec();
+	const runs = spawn.runs.listRuns(since);
+	const total = runs.reduce((sum, r) => sum + r.calls, 0);
+	if (total === 0) return null;
+	for (const { team, cap } of capped) {
+		const ids = teamAgentsSince(cfg, team, since);
+		const mine = runs.filter((r) => ids.has(r.id)).reduce((sum, r) => sum + r.calls, 0);
+		if (mine / total >= cap) return `team ${team.name} cap reached: ${mine} of ${total} calls today (max_share ${cap}); team plans wait until local midnight`;
 	}
 	return null;
+}
+
+/** Records each named agent against each team plan it spawned on, one spawns.jsonl row each, so the cap counts its calls. Rows are written only for team plans. */
+function recordTeamSpawns(teams: RoutedTeam[], agentIds: string[], cfg: Config): void {
+	if (agentIds.length === 0) return;
+	for (const { team, file } of teams) {
+		const planId = pathId(team, cfg, file, defaultRunner);
+		if (planId === null) continue;
+		const dir = teamDir(cfg, team);
+		const at = nowSec();
+		const rows = agentIds.map((agentId) => `${JSON.stringify({ planId, agentId, at })}\n`).join("");
+		try {
+			mkdirSync(dir, { recursive: true });
+			appendFileSync(path.join(dir, "spawns.jsonl"), rows);
+		} catch (err) {
+			log(cfg.paths.guard_log, `cannot record team spawn for ${team.name}: ${err}`);
+		}
+	}
 }
 
 /**
  * spawn: the allow-list, task-only and open-plan gates for one implementer launch. Covers both
  * original paths (the extension spawn event and a `task` tool call); the brief names the plan.
  */
-export function checkSpawn(e: SpawnEvent, cfg: Config, runner: CommandRunner = defaultRunner): Decision {
+export function checkSpawn(e: SpawnEvent, cfg: Config, runner: CommandRunner = defaultRunner, runs?: RunSource): Decision {
 	const pending = q.cancelPending();
 	if (pending) {
 		log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: cancel pending (${pending.words})`);
@@ -1920,7 +2035,7 @@ export function checkSpawn(e: SpawnEvent, cfg: Config, runner: CommandRunner = d
 		}
 		return deny(`main-guard: ${verdict}`);
 	}
-	const held = claimGate(named, cfg);
+	const held = claimGate(named, cfg, { agentIds: e.name ? [e.name] : [], unnamed: !e.name, runs });
 	if (held) {
 		log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${held}`);
 		return deny(`main-guard: ${held}`);
@@ -1969,7 +2084,12 @@ export function checkInject(e: InjectEvent, cfg: Config): Decision {
 	recordOwnerMessage(e.inject, cfg);
 	let summary: string;
 	try {
-		summary = q.queueSummary(undefined, cfg.review.agents, claims(cfg));
+		// P4 (20261027_1305): one GET /view per team, read once and handed to the holder and the
+		// team lines, so the summary costs one request per team and never a second GET /claims.
+		const views = teamViews(cfg);
+		summary = q.queueSummary(undefined, cfg.review.agents, summaryHolder(cfg, {}, views));
+		const teamLines = teamSummaryLines(cfg, views, q.SUMMARY_CAP);
+		if (teamLines.length) summary += `\n${teamLines.join("\n")}`;
 	} catch (err) {
 		summary = `Queue unreadable (${q.INDEX}): ${err}`;
 	}
@@ -2150,9 +2270,19 @@ function checkMainPlan(e: PlanEditEvent, cfg: Config): PlanEditDecision {
 		};
 	}
 	// P3 (plan 20261027_1300): another Main's live claim on this plan refuses the edit, restored
-	// like any refused plan edit. No claim — or this Main's own — edits freely.
-	const holder = claims(cfg).holder(e.path);
-	if (holder && holder.main !== mainId()) {
+	// like any refused plan edit. No claim — or this Main's own — edits freely. The chooser gets
+	// `e.before` (the file on disk already holds the edit, so a team plan stays guarded while an
+	// edit removes its header; the record rule covers it too).
+	const holder = claimStoreFor(e.path, cfg, e.before).holder(e.path);
+	if (holder !== null && "unreachable" in holder) {
+		log(cfg.paths.plan_guard_log, `RESTORE ${e.path} (team server ${holder.unreachable} unreachable)`);
+		return {
+			allow: false,
+			reason: `plan-guard: ${heldProblem(e.path, holder)}; the file was restored.`,
+			restore: { path: e.path, text: e.before || null },
+		};
+	}
+	if (holder && heldByOther(holder, mainId())) {
 		log(cfg.paths.plan_guard_log, `RESTORE ${e.path} (held by Main ${holder.main})`);
 		return {
 			allow: false,

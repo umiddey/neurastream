@@ -228,13 +228,13 @@ import { checkTool } from "../src/core/guards.ts";
 test("P5g: a bare `$` template tag imported from bun (static and dynamic) starts the owner page and is refused", () => {
 	const base = loadConfig({ home: HOME });
 	const cfg: Config = { ...base, guards: { ...base.guards, shell_tools: ["eval"] } };
-	// Static import: `import { $ } from "bun"; $`neurastream ui``
-	expect(checkTool(toolEvent("eval", { code: 'import { $ } from "bun"; $`neurastream ui`' }, "sub"), cfg).allow).toBe(false);
-	// Dynamic import: `const { $ } = await import("bun"); $`neurastream ui``
-	expect(checkTool(toolEvent("eval", { code: "const { $ } = await import(\"bun\"); $`neurastream ui`" }, "sub"), cfg).allow).toBe(false);
+	// Static import: `import { $ } from "bun"; $`neurastream workspace``
+	expect(checkTool(toolEvent("eval", { code: 'import { $ } from "bun"; $`neurastream workspace`' }, "sub"), cfg).allow).toBe(false);
+	// Dynamic import: `const { $ } = await import("bun"); $`neurastream workspace``
+	expect(checkTool(toolEvent("eval", { code: "const { $ } = await import(\"bun\"); $`neurastream workspace`" }, "sub"), cfg).allow).toBe(false);
 	// The existing Bun.$ case still refuses (no regression).
-	expect(checkTool(toolEvent("eval", { code: "await Bun.$`neurastream ui`.nothrow()" }, "sub"), cfg).allow).toBe(false);
+	expect(checkTool(toolEvent("eval", { code: "await Bun.$`neurastream workspace`.nothrow()" }, "sub"), cfg).allow).toBe(false);
 	// Prose stays allowed: a backticked mention with no preceding `$` is not shell text.
-	expect(checkTool(toolEvent("eval", { code: 'edit(plan, { old: "x", new: "the card runs `neurastream ui` to serve the page" })' }, "sub"), cfg).allow).toBe(true);
-	expect(checkTool(toolEvent("eval", { code: "const forbidden = `\nneurastream ui stays the owner's move\n`;" }, "sub"), cfg).allow).toBe(true);
+	expect(checkTool(toolEvent("eval", { code: 'edit(plan, { old: "x", new: "the card runs `neurastream workspace` to serve the page" })' }, "sub"), cfg).allow).toBe(true);
+	expect(checkTool(toolEvent("eval", { code: "const forbidden = `\nneurastream workspace stays the owner's move\n`;" }, "sub"), cfg).allow).toBe(true);
 });

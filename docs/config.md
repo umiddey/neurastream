@@ -204,15 +204,21 @@ guards:
   protected: []
   ledger_command: "agent-ledger --hours 12"
 
-ui:
-  enabled: false        # the owner's phone page (neurastream ui); binds the tailnet address only;
-                        # `neurastream ui on` sets it true, `neurastream ui off` back to false
-  port: 7787            # `neurastream ui on --port N` writes it here
+workspace:
+  enabled: false        # the owner's phone page (neurastream workspace); binds the tailnet address only;
+                        # `neurastream workspace on` sets it true, `neurastream workspace off` back to false
+  port: 7787            # `neurastream workspace on --port N` writes it here
   owner_login: ""       # the tailscale login that may open the page; empty = the page refuses to start;
-                        # `neurastream ui on --login <email>` sets it (kept on `ui off`)
+                        # `neurastream workspace on --login <email>` sets it (kept on `workspace off`)
   allow_this_machine: false   # admit this machine (loopback and its own tailnet IP) as the owner,
                         # GET and POST; any local process can then press the buttons
 
+teams: []                  # a repo whose origin (ssh, scp or https, normalised to host/path without .git)
+                           # matches a repos glob may share plans that carry `Queue: team`.
+                           # Empty = every repo is personal. Two teams must not match the same remote.
+  # - name: acme
+  #   server: http://team.example:7787
+  #   repos: ["gitlab.com/acme/*"]
 
 pages:
   enabled: false
@@ -408,7 +414,7 @@ The loader rejects:
 - a `paths.*` value that is not a string
 - `metrics.report_days` below 1, or a `metrics.correction_patterns` entry that does not compile as a case-insensitive regex
 - a `metrics.product_cmds` that is not `{<repo path>: {<name>: non-empty shell command}}`
-- `ui.port` outside 1..65535
+- `workspace.port` outside 1..65535
 - `pages.keep_days` below 1, or not an integer
 - `approval.since` that is not `""` or a `YYYYMMDD_HHMM` stamp
 - `knowledge.roots` that is not a non-empty list of non-empty paths, or `knowledge.max_age_s` below 1 or not an integer

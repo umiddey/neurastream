@@ -169,11 +169,13 @@ review:                    # plan review gate (plan 20261028_1600): reuse lines 
 approval:                  # plan approval hard gate (plan 20261029_1455 P3): docs/config.md
   since: ""                # a plan stamped at or after this (YYYYMMDD_HHMM) needs a page and an approval record; "" = off
 
-ui:
-  enabled: false        # the owner's phone page (neurastream ui); binds the tailnet address only
-  port: 7787   # owner page port (neurastream ui)
+workspace:
+  enabled: false        # the owner's phone page (neurastream workspace); binds the tailnet address only
+  port: 7787   # owner page port (neurastream workspace)
   owner_login: ""       # the tailscale login that may open the page; empty = the page refuses to start
   allow_this_machine: false   # admit this machine (loopback and its own tailnet IP) as the owner; any local process can then press the buttons
+
+teams: []                # [{name, server, repos: ["host/group/*"]}] origin globs (host/path, no .git; * does not cross /) that may share plans carrying Queue: team. Empty = every repo is personal. Two teams must not match the same remote.
 
 
 pages:

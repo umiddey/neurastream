@@ -141,7 +141,7 @@ export function blockLoop(blocks: GuardBlock[], now: number, repeat: number, win
 const GUARD_BLOCK = /^(main|plan)-guard:/;
 
 /** Token-set Jaccard similarity in [0, 1]. */
-function jaccard(a: Set<string>, b: Set<string>): number {
+export function jaccard(a: Set<string>, b: Set<string>): number {
 	let shared = 0;
 	for (const t of a) if (b.has(t)) shared++;
 	const union = a.size + b.size - shared;

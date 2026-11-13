@@ -97,7 +97,7 @@ test("publish --plan: an incomplete diagram keeps Approve disabled and the serve
 	cfg.pages.enabled = true;
 	cfg.pages.dir = join(dir, "public");
 	cfg.pages.port = 0;
-	cfg.ui.owner_login = "owner@example.test";
+	cfg.workspace.owner_login = "owner@example.test";
 	const plan = join(dir, "plan.md");
 	writeFileSync(plan, PLAN);
 	const src = join(dir, "toy-architecture.html");

@@ -145,12 +145,12 @@ test("without a terminal and without --yes setup refuses with exit 2", async () 
 	expect(existsSync(cfg(home))).toBe(false);
 });
 
-test("phone page on with Tailscale stopped prints the message and keeps ui.enabled false", async () => {
+test("phone page on with Tailscale stopped prints the message and keeps workspace.enabled false", async () => {
 	const home = fixtureHome();
-	const result = await run([], home, { state: "stopped", answers: { "ui.enabled": ["y"] } });
+	const result = await run([], home, { state: "stopped", answers: { "workspace.enabled": ["y"] } });
 	expect(result.code).toBe(0);
 	expect(result.out).toMatch(/Tailscale/);
-	expect(result.asked.some((q) => q.startsWith("ui.owner_login:"))).toBe(false);
+	expect(result.asked.some((q) => q.startsWith("workspace.owner_login:"))).toBe(false);
 	expect(readFileSync(cfg(home), "utf8")).toMatch(/^  enabled: false/m);
 });
 

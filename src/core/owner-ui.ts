@@ -13,7 +13,8 @@ import os from "node:os";
 import { basename, resolve } from "node:path";
 import type { RunSource } from "./adapter.ts";
 import { chatTier, currentTier, type Tier } from "./autonomy.ts";
-import { fileClaimStore } from "./claims.ts";
+import { summaryHolder, postTeamAnswer, teamPlans, teamViews, type TeamEarlier, type TeamPlanRow, type TeamView } from "./team-client.ts";
+import type { Unreachable } from "./claims.ts";
 import type { Config } from "./config.ts";
 import { nowSec, strftime } from "./clock.ts";
 import { cpuCount } from "./host.ts";
@@ -28,7 +29,7 @@ import { featuresReport, gatherTags, loadPlans, releasesReport, type FeaturesRep
 import type { Tailscale } from "./tailscale.ts";
 import { recheckHolds, staleFiles, type HoldRunner } from "./waiting-check.ts";
 
-const ANSWER_MAX = 2000;
+export const ANSWER_MAX = 2000;
 const MESSAGE_MAX = 4000;
 const MESSAGE_IMAGES_MAX = 4;
 const MESSAGE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
@@ -58,7 +59,7 @@ export interface OwnerUiOptions {
 	source: RunSource;
 	/** Bind address. Default: the tailnet address from `tailscale ip -4`. Tests bind 127.0.0.1. */
 	hostname?: string;
-	/** Bind port. Default: ui.port; 0 picks a free port (tests). */
+	/** Bind port. Default: workspace.port; 0 picks a free port (tests). */
 	port?: number;
 	/** The peer address of a request. Default: the socket address. Tests inject fixture peers. */
 	peerOf?: (req: Request, server: UiHttpServer) => string;
@@ -83,16 +84,16 @@ export function isTailnet(peer: string): boolean {
 	return TAILNET6.test(peer);
 }
 
-/** Serve only the owner's phone: a tailnet peer that is not this machine and not loopback, whose tailscale whois login equals ui.owner_login. Everything else is a 403. With `ui.allow_this_machine`, this machine itself (loopback and its own tailnet IP) is served as the owner too — any local process can then press the buttons. */
+/** Serve only the owner's phone: a tailnet peer that is not this machine and not loopback, whose tailscale whois login equals workspace.owner_login. Everything else is a 403. With `workspace.allow_this_machine`, this machine itself (loopback and its own tailnet IP) is served as the owner too — any local process can then press the buttons. */
 export function authenticate(cfg: Config, tailscale: Tailscale, peer: string): Auth {
-	if (!cfg.ui.owner_login) return { ok: false, why: "ui.owner_login is empty" };
-	if (cfg.ui.allow_this_machine && (isLoopback(peer) || peer === tailscale.ip4())) return { ok: true, login: cfg.ui.owner_login };
+	if (!cfg.workspace.owner_login) return { ok: false, why: "workspace.owner_login is empty" };
+	if (cfg.workspace.allow_this_machine && (isLoopback(peer) || peer === tailscale.ip4())) return { ok: true, login: cfg.workspace.owner_login };
 	if (isLoopback(peer)) return { ok: false, why: "loopback peer" };
 	if (!isTailnet(peer)) return { ok: false, why: "peer is not a tailnet address" };
 	if (peer === tailscale.ip4()) return { ok: false, why: "this machine's own tailnet address" };
 	const login = tailscale.whois(peer);
 	if (!login) return { ok: false, why: "tailscale whois failed" };
-	if (login !== cfg.ui.owner_login) return { ok: false, why: "not the owner's login" };
+	if (login !== cfg.workspace.owner_login) return { ok: false, why: "not the owner's login" };
 	return { ok: true, login };
 }
 
@@ -119,8 +120,10 @@ export interface QuestionRow {
 	unblocks: string[];
 	goal: string[];
 	waitingMin: number;
-	/** The last answer this plan already got (from the owner inbox), so the card can say so. */
-	answered: { answer: string; at: number } | null;
+	/** The last answer this plan already got (from the owner inbox, so the card can say so; for a team plan, the newest server answer). */
+	answered: { answer: string; at: number; login?: string } | null;
+	/** The team this card belongs to; `plan` is then the server plan id, not a local path (P4). */
+	team?: string;
 }
 
 /** The newest inbox record that carries an answer for this plan, if any. A missing or torn inbox is simply "no answer". */
@@ -258,11 +261,11 @@ function queueState(p: Plan, plans: Plan[]): string {
 	return `phase ${Math.min(done + 1, total)} of ${total}`;
 }
 
-export function queueRows(cfg: Config): QueueRow[] {
+export function queueRows(cfg: Config, views?: Map<string, TeamView | Unreachable>): QueueRow[] {
 	const plans = activePlans(cfg.paths.queue_index).filter(p => p.status === "open");
-	const claims = fileClaimStore(cfg.paths.queue_state, nowSec, cfg.queue.claim_ttl_min);
+	const claims = summaryHolder(cfg, {}, views);
 	return plans.map(p => {
-		const holder = claims.holder(p.file)?.main ?? null;
+		const holder = claims.holder(p.file);
 		return {
 			repo: basename(p.repo),
 			file: p.file,
@@ -271,9 +274,69 @@ export function queueRows(cfg: Config): QueueRow[] {
 			waiting: p.waiting,
 			summary: p.summary ?? (goalSummary(p.goal[0] ?? "") || null),
 			state: queueState(p, plans),
-			holder,
+			holder: holder === null ? null : "unreachable" in holder ? "team server unreachable" : holder.main,
 		};
 	});
+}
+
+/** One team's card on the phone page: its plans as queue rows and its open WAITING lines. */
+export interface TeamSection {
+	name: string;
+	server: string;
+	/** False when the team server did not answer: the card says so instead of listing plans. */
+	reachable: boolean;
+	rows: QueueRow[];
+	questions: QuestionRow[];
+}
+
+/**
+ * The team half of the phone page (P4): each team's already-read view mapped to the page's own
+ * row types, so the render stays one shape. A plan is a QueueRow whose `file` is the server id
+ * (team order is not INDEX order, so no drag and no /reorder) and whose state is queueState over
+ * the team's own parsed plans; each open plan with a WAITING line is a QuestionRow whose newest
+ * server answer fills `answered`. Sends nothing.
+ */
+export function teamSections(cfg: Config, views: Map<string, TeamView | Unreachable>): TeamSection[] {
+	return cfg.teams.map(team => {
+		const view = views.get(team.name);
+		if (view === undefined || "unreachable" in view) return { name: team.name, server: team.server, reachable: false, rows: [], questions: [] };
+		return teamSection(team.name, team.server, teamPlans(cfg, team, view));
+	});
+}
+
+/** One reachable team's card from its parsed plans: the phone page and the team page both build it here. */
+export function teamSection(name: string, server: string, plans: TeamPlanRow[]): TeamSection {
+	const parsed = plans.map(p => p.plan);
+	const rows: QueueRow[] = plans.map(p => ({
+		repo: p.relPath,
+		file: p.id,
+		title: p.plan.title,
+		status: p.plan.status ?? "?",
+		waiting: p.plan.waiting,
+		summary: p.plan.summary ?? (goalSummary(p.plan.goal[0] ?? "") || null),
+		holder: p.holder ? `${p.holder.main} (${p.holder.login})` : null,
+		state: queueState(p.plan, parsed),
+	}));
+	const questions: QuestionRow[] = plans
+		.filter(p => p.plan.status === "open" && p.plan.waiting && p.plan.waitingLine)
+		.map(p => {
+			const first = p.answered;
+			return {
+				plan: p.id,
+				team: name,
+				title: p.plan.title,
+				repo: p.relPath,
+				waitingLine: p.plan.waitingLine ?? "",
+				waitingAsk: p.plan.waitingAsk ?? p.plan.waitingLine ?? "",
+				waitingBlocked: p.plan.waitingBlocked,
+				waitingWhy: p.plan.waitingWhy,
+				unblocks: [],
+				goal: p.plan.goal,
+				waitingMin: 0,
+				answered: first ? { answer: first.answer, at: first.time, login: first.login } : null,
+			};
+		});
+	return { name, server, reachable: true, rows, questions };
 }
 
 export function ciRows(cfg: Config): CiRow[] {
@@ -381,7 +444,9 @@ export function nowStats(cfg: Config, source: RunSource, now: number): NowStats 
 		models.set(short, m);
 	}
 	const byModel = [...models.entries()].map(([model, v]) => ({ model, spend: v.spend, runs: v.runs })).sort((a, b) => b.spend - a.spend);
-	return { spend24, mainSpend, agentSpend, runs24, running, died, spendByHour, runsByHour, byModel, openPlans: queueRows(cfg).length };
+	// The tile counts the open plans the queue card renders; a holder read here would ask every
+	// team server a second time on a page that already read one view per team (P4).
+	return { spend24, mainSpend, agentSpend, runs24, running, died, spendByHour, runsByHour, byModel, openPlans: activePlans(cfg.paths.queue_index).filter(p => p.status === "open").length };
 }
 
 // ---- owner messages (plan P13): a one-way note plus images, kept for 12 h ----
@@ -540,7 +605,7 @@ function needCard(row: QuestionRow, i: number, tab: string): string {
 		const text = row.answered.answer;
 		const quote = text.length > 80 ? `${text.slice(0, 80)}…` : text;
 		const verb = text.toLowerCase() === "yes" || text.toLowerCase() === "no" ? "answered" : "replied";
-		said = `<p class="answered">You ${verb} "${esc(quote)}" · ${esc(strftime(row.answered.at, "%H:%M"))} — Main is on it</p>
+		said = `<p class="answered">${row.answered.login ? esc(row.answered.login) : "You"} ${verb} "${esc(quote)}" · ${esc(strftime(row.answered.at, "%H:%M"))} — Main is on it</p>
 <button type="button" class="replybtn link">change answer</button>`;
 	}
 	const question = ask.endsWith("?");
@@ -563,7 +628,7 @@ ${parts.join("\n")}
 ${bg}
 <form method="post" action="/answer">
 <input type="hidden" name="plan" value="${esc(row.plan)}">
-<input type="hidden" name="tab" value="${esc(tab)}">
+${row.team ? `<input type="hidden" name="team" value="${esc(row.team)}">\n` : ""}<input type="hidden" name="tab" value="${esc(tab)}">
 ${acts}
 <div class="reply" hidden>
 <textarea name="answer_text" maxlength="${ANSWER_MAX}" rows="3" placeholder="Type your reply"></textarea>
@@ -579,30 +644,34 @@ function agentRowHtml(r: AgentRow): string {
 	return `<li class="agent"><span class="dot ${dot}" aria-hidden="true"></span><span class="aid">${esc(r.id)}</span><span class="model">${esc(r.model)}</span><span class="detail">${esc(r.detail)}${mins}</span></li>`;
 }
 
-function queueHtml(rows: QueueRow[], tab: string): string {
+/** The queue list. `reorder` false is a team card (P4): no drag handle, no ↑/↓ buttons and no /reorder form — team order is the server's, not INDEX order. */
+function queueHtml(rows: QueueRow[], tab: string, reorder = true): string {
+	const handle = (r: QueueRow): string => `<span class="qhandle" title="Drag to reorder" aria-label="Drag ${esc(r.title)}">≡</span>
+`;
+	const btns = `<span class="qbtns"><button type="button" class="qmove" data-move="top">↑ top</button><button type="button" class="qmove" data-move="up">↑</button><button type="button" class="qmove" data-move="down">↓</button></span>`;
 	const cards = rows
 		.map(
 			(r, i) => `<li class="qcard" data-plan="${esc(r.file)}">
-<span class="qhandle" title="Drag to reorder" aria-label="Drag ${esc(r.title)}">≡</span>
-<span class="qrank">${i + 1}</span>
+${reorder ? handle(r) : ""}<span class="qrank">${i + 1}</span>
 <span class="qtitle">${esc(r.title)}${r.summary ? `<span class="qsum">${esc(r.summary)}</span>` : ""}</span>
-${r.holder ? `<span class="chip c-held">Main ${esc(r.holder)}</span>` : ""}<span class="chip ${r.state.startsWith("waits") ? "c-wait" : "c-ready"}">${esc(r.state)}</span>
-<span class="qbtns"><button type="button" class="qmove" data-move="top">↑ top</button><button type="button" class="qmove" data-move="up">↑</button><button type="button" class="qmove" data-move="down">↓</button></span>
+${r.holder ? `<span class="chip c-held">${r.holder === "team server unreachable" ? esc(r.holder) : `Main ${esc(r.holder)}`}</span>` : ""}<span class="chip ${r.state.startsWith("waits") ? "c-wait" : "c-ready"}">${esc(r.state)}</span>
+${reorder ? btns : ""}
 </li>`,
 		)
 		.join("\n");
 	// before = the order this page was rendered with; the server refuses the move when the real
 	// order has drifted (409), so a stale page can never reorder on a guess.
 	const before = rows.map(r => r.file).join("\n");
-	return `<ul class="qlist" id="qlist">
-${cards}
-</ul>
-<form id="reorder-form" method="post" action="/reorder" hidden>
+	const form = `<form id="reorder-form" method="post" action="/reorder" hidden>
 <input type="hidden" name="before" value="${esc(before)}">
 <input type="hidden" name="order" value="">
 <input type="hidden" name="moved" value="">
 <input type="hidden" name="tab" value="${esc(tab)}">
 </form>`;
+	return `<ul class="qlist"${reorder ? ` id="qlist"` : ""}>
+${cards}
+</ul>
+${reorder ? form : ""}`;
 }
 
 function ciHtml(rows: CiRow[]): string {
@@ -708,6 +777,25 @@ function queueCard(rows: QueueRow[] | null, full: boolean, tab: string): string 
 	return `${head}<div class="card">${body}${more}</div>`;
 }
 
+/**
+ * Each team as its own card under the queue card (P4): its plans through queueHtml with
+ * `reorder` off, then one question card per open WAITING line. A team the server did not answer
+ * says so instead of showing a stale list. Nothing here counts in the "Needs you" tile.
+ */
+function teamCardsHtml(sections: TeamSection[] | null, tab: string): string {
+	if (sections === null) return `<h2>Team queue</h2><div class="card">${na("Team queue")}</div>`;
+	return sections
+		.map(s => {
+			const body = s.reachable ? (s.rows.length ? queueHtml(s.rows, tab, false) : `<p class="empty">No team plans</p>`) : `<p class="empty">team server ${esc(s.server)} unreachable</p>`;
+			const asks = s.questions.map((row, i) => needCard(row, i, tab)).join("\n");
+			return `<h2>Team ${esc(s.name)}</h2>
+<div class="card">
+${body}${asks ? `\n${asks}` : ""}
+</div>`;
+		})
+		.join("\n");
+}
+
 function modelSpendTable(stats: NowStats | null): string {
 	if (stats === null) return na("Spend");
 	if (!stats.byModel.length) return `<p class="empty">No spend recorded in the last 24 hours</p>`;
@@ -726,6 +814,11 @@ function receiptText(sent: string, params: URLSearchParams): string | null {
 		case "message":
 			text = `Sent to Main · ${strftime(nowSec(), "%H:%M")}`;
 			break;
+		case "team-answer": {
+			const team = params.get("team") ?? "";
+			text = `Sent to team ${team} · ${strftime(nowSec(), "%H:%M")}`;
+			break;
+		}
 		case "incident-closed":
 			text = `Marked as a false alarm · ${strftime(nowSec(), "%H:%M")}`;
 			break;
@@ -765,11 +858,11 @@ function receiptHtml(sent: string | null, params: URLSearchParams): string {
 }
 
 /** The JSON POST replies (P11b): the receipt text rides along so the page script never re-derives it. */
-function jsonSent(sent: string, receipt?: string | null): Response {
+export function jsonSent(sent: string, receipt?: string | null): Response {
 	return Response.json(receipt ? { ok: true, sent, receipt } : { ok: true, sent });
 }
 
-function jsonFail(error: string, status: number): Response {
+export function jsonFail(error: string, status: number): Response {
 	return Response.json({ ok: false, error }, { status });
 }
 
@@ -792,6 +885,8 @@ export interface PageData {
 	pages: PublishedPageRow[] | null;
 	/** The 24 h tile numbers; null when the run source is unreadable. */
 	stats: NowStats | null;
+	/** Each team's card, built from one already-read view per team (P4); absent or null when the views could not be read. */
+	teams?: TeamSection[] | null;
 	/** The Results tab's saved numbers and build state; absent on every other tab. The numbers come from a background process (computeResults), never from the request. */
 	results?: ResultsView | null;
 	/** The owner's messages newer than the keep window, newest first; null when unreadable. */
@@ -824,10 +919,13 @@ function lockMinutesLeft(cfg: Config): number | null {
 }
 
 export function buildPageData(cfg: Config, source: RunSource, tab: string, build: ResultsBuild = spawnResultsBuild, pagesHost = "tailnet"): PageData {
+	// P4: one GET /view per team, read once and handed to the queue rows' holder and the team
+	// cards, so a render makes no second request per team.
+	const views = safe(() => teamViews(cfg));
 	return {
 		questions: safe(() => questionRows(cfg)),
 		agents: safe(() => agentRows(cfg, source)),
-		queue: safe(() => queueRows(cfg)),
+		queue: safe(() => queueRows(cfg, views ?? undefined)),
 		ci: safe(() => ciRows(cfg)),
 		incidents: safe(() => incidentRows(cfg)),
 		scores: safe(() => scoresData(cfg)),
@@ -835,6 +933,7 @@ export function buildPageData(cfg: Config, source: RunSource, tab: string, build
 		knowledge: safe(() => knowledgeManifest(cfg)),
 		pages: safe(() => publishedRows(cfg, pagesHost)),
 		stats: safe(() => nowStats(cfg, source, nowSec())),
+		teams: views === null ? null : safe(() => teamSections(cfg, views)),
 		results: tab === "results" ? safe(() => resultsView(nowSec(), build)) : undefined,
 		messages: safe(() => recentOwnerMessages(nowSec())),
 		lockMinutesLeft: lockMinutesLeft(cfg),
@@ -1269,85 +1368,8 @@ ${resultsTable(d.releases, all)}
 <p class="sub">${RESULTS_CAVEAT}</p>`;
 }
 
-/** The whole page as one HTML string. Exported for scripts/ui-preview.ts (no server). */
-export function renderPage(cfg: Config, data: PageData, params: URLSearchParams, nonce: string): string {
-	const req = params.get("tab") ?? "";
-	// Server-rendered tabs: the pill links carry ?tab=; anything unknown renders Now.
-	const tab = TAB_IDS.includes(req) ? req : "now";
-	const needsBody =
-		data.questions === null
-			? na("Waiting on you")
-			: data.questions.length
-				? data.questions.map((row, i) => needCard(row, i, tab)).join("\n")
-				: `<p class="empty">Nothing needs you right now</p>`;
-	const working =
-		data.agents === null ? na("Working now") : data.agents.length ? `<ul class="agents">${data.agents.map(agentRowHtml).join("")}</ul>` : `<p class="empty">No agents running</p>`;
-	const scores = data.scores === null ? na("Agent scores") : scoresHtml(data.scores);
-	const incidents = data.incidents === null ? na("Incidents") : data.incidents.length ? incidentsHtml(data.incidents, tab) : `<p class="empty">No open incidents</p>`;
-	const merges = data.ci === null ? na("Merges") : data.ci.length ? ciHtml(data.ci) : `<p class="empty">No CI runs recorded</p>`;
-	const machine = data.machine === null ? na("Machine") : machineHtml(cfg, data.machine);
-	const body =
-		tab === "now"
-			? `${messageCard(data.messages, runningMains(cfg))}
-<h1>Today</h1>
-<p class="sub">What your agents did in the last 24 hours.</p>
-<div class="card">
-${tilesHtml(data)}
-</div>
-<h2>Needs you</h2>
-<div class="card">
-${needsBody}
-</div>
-${queueCard(data.queue, false, tab)}`
-			: tab === "queue"
-				? `<h1>Queue</h1>
-<p class="sub">Drag ≡ to sort — Main works by the new order on its next turn.</p>
-${queueCard(data.queue, true, tab)}`
-				: tab === "agents"
-					? `<h1>Agents</h1>
-<p class="sub">Who is working right now, how they score, and what went wrong.</p>
-<h2>Working now</h2>
-<div class="card">
-${working}
-</div>
-<h2>Agent scores</h2>
-<div class="card">
-${scores}
-</div>
-<h2>Incidents</h2>
-<div class="card">
-${incidents}
-</div>
-<h2>Merges</h2>
-<div class="card">
-${merges}
-</div>
-<h2>Machine</h2>
-<div class="card">
-${machine}
-</div>`
-					: tab === "knowledge"
-						? `${data.knowledge === null ? na("Base") : knowledgeHtml(data.knowledge, params.get("repo") ?? "", params.get("topic") ?? "", data.pages ?? [])}`
-						: tab === "spend"
-							? `<h1>Spend</h1
-<p class="sub">List price over the last 24 hours.</p>
-<div class="card">
-${spendTileHtml(data)}
-</div>
-<h2>By model</h2>
-<div class="card">
-${modelSpendTable(data.stats)}
-</div>`
-							: resultsTabHtml(data.results, params);
-	return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="light dark">
-<title>neurastream</title>
-<link rel="icon" href="${FAVICON}">
-<style>
+/** The owner page's stylesheet (P5 lift): one string shared by the phone page (renderPage) and the team page (renderTeamPage). */
+const PAGE_CSS = `
 :root{--bg:#f4f4f6;--card:#fff;--fg:#111;--mut:#6b6b76;--bd:#e4e4ea;--acc:#c026d3;--teal:#0d9488;--warn:#d97706;--ok:#16a34a;--red:#dc2626}
 @media(prefers-color-scheme:dark){:root{--bg:#0e0e11;--card:#18181c;--fg:#f2f2f4;--mut:#9a9aa6;--bd:#2a2a31}}
 *{box-sizing:border-box}
@@ -1453,7 +1475,89 @@ span.badv{color:var(--red);font-weight:600}
 .empty{color:var(--mut);padding:14px 16px;margin:0}
 .knowframe{display:block;width:100%;height:calc(100vh - 220px);min-height:360px;border:0;background:#fff}
 .na{color:var(--mut);font-style:italic;padding:14px 16px;margin:0}
-</style>
+`;
+
+/** The whole page as one HTML string. Exported for scripts/ui-preview.ts (no server). */
+export function renderPage(cfg: Config, data: PageData, params: URLSearchParams, nonce: string): string {
+	const req = params.get("tab") ?? "";
+	// Server-rendered tabs: the pill links carry ?tab=; anything unknown renders Now.
+	const tab = TAB_IDS.includes(req) ? req : "now";
+	const needsBody =
+		data.questions === null
+			? na("Waiting on you")
+			: data.questions.length
+				? data.questions.map((row, i) => needCard(row, i, tab)).join("\n")
+				: `<p class="empty">Nothing needs you right now</p>`;
+	const working =
+		data.agents === null ? na("Working now") : data.agents.length ? `<ul class="agents">${data.agents.map(agentRowHtml).join("")}</ul>` : `<p class="empty">No agents running</p>`;
+	const scores = data.scores === null ? na("Agent scores") : scoresHtml(data.scores);
+	const incidents = data.incidents === null ? na("Incidents") : data.incidents.length ? incidentsHtml(data.incidents, tab) : `<p class="empty">No open incidents</p>`;
+	const merges = data.ci === null ? na("Merges") : data.ci.length ? ciHtml(data.ci) : `<p class="empty">No CI runs recorded</p>`;
+	const machine = data.machine === null ? na("Machine") : machineHtml(cfg, data.machine);
+	// P4: one card per team, under the queue card on the two tabs that show the queue.
+	const teams = tab === "now" || tab === "queue" ? teamCardsHtml(data.teams ?? null, tab) : "";
+	const body =
+		tab === "now"
+			? `${messageCard(data.messages, runningMains(cfg))}
+<h1>Today</h1>
+<p class="sub">What your agents did in the last 24 hours.</p>
+<div class="card">
+${tilesHtml(data)}
+</div>
+<h2>Needs you</h2>
+<div class="card">
+${needsBody}
+</div>
+${queueCard(data.queue, false, tab)}${teams ? `\n${teams}` : ""}`
+			: tab === "queue"
+				? `<h1>Queue</h1>
+<p class="sub">Drag ≡ to sort — Main works by the new order on its next turn.</p>
+${queueCard(data.queue, true, tab)}${teams ? `\n${teams}` : ""}`
+				: tab === "agents"
+					? `<h1>Agents</h1>
+<p class="sub">Who is working right now, how they score, and what went wrong.</p>
+<h2>Working now</h2>
+<div class="card">
+${working}
+</div>
+<h2>Agent scores</h2>
+<div class="card">
+${scores}
+</div>
+<h2>Incidents</h2>
+<div class="card">
+${incidents}
+</div>
+<h2>Merges</h2>
+<div class="card">
+${merges}
+</div>
+<h2>Machine</h2>
+<div class="card">
+${machine}
+</div>`
+					: tab === "knowledge"
+						? `${data.knowledge === null ? na("Base") : knowledgeHtml(data.knowledge, params.get("repo") ?? "", params.get("topic") ?? "", data.pages ?? [])}`
+						: tab === "spend"
+							? `<h1>Spend</h1
+<p class="sub">List price over the last 24 hours.</p>
+<div class="card">
+${spendTileHtml(data)}
+</div>
+<h2>By model</h2>
+<div class="card">
+${modelSpendTable(data.stats)}
+</div>`
+							: resultsTabHtml(data.results, params);
+	return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>neurastream</title>
+<link rel="icon" href="${FAVICON}">
+<style>${PAGE_CSS}</style>
 </head>
 <body>
 ${topBarHtml(tab, data.lockMinutesLeft, cfg)}
@@ -1468,7 +1572,7 @@ ${body}
 
 // ---- request plumbing ----
 
-async function fieldsOf(req: Request): Promise<Record<string, string>> {
+export async function fieldsOf(req: Request): Promise<Record<string, string>> {
 	const ct = req.headers.get("content-type") ?? "";
 	if (ct.includes("application/json")) {
 		const raw: unknown = await req.json();
@@ -1479,7 +1583,7 @@ async function fieldsOf(req: Request): Promise<Record<string, string>> {
 	return Object.fromEntries([...form.entries()].map(([k, v]) => [k, typeof v === "string" ? v : ""]));
 }
 
-function textRes(body: string, status: number): Response {
+export function textRes(body: string, status: number): Response {
 	return new Response(`${body}\n`, { status, headers: { "content-type": "text/plain; charset=utf-8" } });
 }
 
@@ -1493,6 +1597,11 @@ function sentTo(tab: string, sent: string): string {
 	return t === "now" ? `/?${sent}` : `/?tab=${t}&${sent}`;
 }
 
+/** The owner pages' CSP: the one inline script takes this response's nonce; the team page shares it. */
+export function pageCsp(nonce: string): string {
+	return `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src 'self' data:; connect-src 'self'; frame-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`;
+}
+
 /** The normal page (the GET layout) as a POST reply; the stale-answer reply is this with sent=stale. */
 function pageRes(cfg: Config, source: RunSource, params: URLSearchParams, build: ResultsBuild = spawnResultsBuild, pagesHost = "tailnet"): Response {
 	const nonce = randomUUID().replaceAll("-", "");
@@ -1500,9 +1609,77 @@ function pageRes(cfg: Config, source: RunSource, params: URLSearchParams, build:
 		status: 200,
 		headers: {
 			"content-type": "text/html; charset=utf-8",
-			"content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; img-src 'self' data:; connect-src 'self'; frame-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'`,
+			"content-security-policy": pageCsp(nonce),
 		},
 	});
+}
+
+/** What the team page shows: one team's section (shared with the phone page), its plans' approvals, members, and audit. */
+export interface TeamPageData {
+	team: string;
+	login: string;
+	admin: boolean;
+	leader: boolean;
+	adminLogin: string;
+	section: TeamSection;
+	plans: { id: string; relPath: string; title: string; approvals: string[] }[];
+	members: string[];
+	/** Newest first, already formatted; null for a viewer who may not read the audit. */
+	audit: { at: string; login: string; route: string }[] | null;
+}
+
+/** The team page (P5): plain forms that POST to the team server's routes; no script, so no nonce. */
+export function renderTeamPage(data: TeamPageData): string {
+	const waiting = data.section.questions.length
+		? data.section.questions.map(row => `<div class="ask"><b>${esc(row.title)}</b><p class="q">${esc(row.waitingAsk || row.waitingLine || "")}</p>${row.answered ? `<p class="answered">${row.answered.login ? esc(row.answered.login) : "You"} answered "${esc(row.answered.answer)}"</p>` : ""}<form method="post" action="/answer"><input type="hidden" name="plan" value="${esc(row.plan)}"><textarea name="answer_text" rows="2" required maxlength="2000"></textarea><div class="acts"><button class="btn pri" type="submit">Send</button></div></form></div>`).join("")
+		: `<p class="empty">Nothing waiting</p>`;
+	const approve = data.plans.length
+		? data.plans.map(p => {
+				const chip = p.approvals.length ? ` <span class="chip c-ready">approved by ${p.approvals.map(a => esc(a)).join(", ")}</span>` : "";
+				const form = p.approvals.includes(data.login) ? "" : `<form method="post" action="/approve"><input type="hidden" name="plan" value="${esc(p.id)}"><button class="btn pri" type="submit">Approve</button></form>`;
+				return `<div class="ask"><b>${esc(p.title)}</b><p>${esc(p.relPath)}${chip}</p>${form}</div>`;
+			}).join("")
+		: `<p class="empty">No team plans to approve</p>`;
+	const ranking = data.plans.length
+		? `<form method="post" action="/vote">${data.plans.map(p => `<div class="mrow"><span>${esc(p.title)}</span><input name="rank:${esc(p.id)}" inputmode="numeric" size="4" placeholder="rank"></div>`).join("")}<div class="acts"><button class="btn pri" type="submit">Save ranks</button></div></form>`
+		: `<p class="empty">No team plans to rank</p>`;
+	const override = data.leader && data.plans.length
+		? `<h2>Override<small>leader: this order wins over the ranks</small></h2><div class="card"><form method="post" action="/override">${data.plans.map((p, i) => `<div class="mrow"><span>${esc(p.title)}</span><input name="pos:${esc(p.id)}" inputmode="numeric" size="4" value="${i + 1}"></div>`).join("")}<div class="acts"><button class="btn pri" type="submit">Save override</button></div></form></div>`
+		: "";
+	const members = data.members.map(m => {
+		const remove = data.admin && m !== data.adminLogin ? `<form method="post" action="/member"><input type="hidden" name="op" value="remove"><input type="hidden" name="login" value="${esc(m)}"><button class="btn" type="submit">Remove</button></form>` : "";
+		return `<div class="tile"><span>${esc(m)}</span>${remove}</div>`;
+	}).join("");
+	const addMember = data.admin ? `<form class="msgform" method="post" action="/member"><input type="hidden" name="op" value="add"><input name="login" required placeholder="login"><div class="acts"><button class="btn pri" type="submit">Add member</button></div></form>` : "";
+	const audit = data.audit === null ? "" : `<h2>Audit<small>newest 20</small></h2><div class="card">${data.audit.slice(0, 20).map(a => `<div class="mrow"><span>${esc(a.at)} ${esc(a.login)}</span><span class="mono">${esc(a.route)}</span></div>`).join("") || `<p class="empty">No audit rows</p>`}</div>`;
+	return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>neurastream · team ${esc(data.team)}</title>
+<link rel="icon" href="${FAVICON}">
+<style>${PAGE_CSS}</style>
+</head>
+<body>
+<div class="top"><span class="logo">ns</span><span class="sub">Team ${esc(data.team)} · ${esc(data.login)}</span></div>
+<main>
+<h2>Queue<small>team order</small></h2>
+<div class="card">${data.section.rows.length ? queueHtml(data.section.rows, "now", false) : `<p class="empty">No team plans</p>`}</div>
+<h2>Rank<small>your order for the team</small></h2>
+<div class="card">${ranking}</div>
+${override}
+<h2>Waiting</h2>
+<div class="card">${waiting}</div>
+<h2>Approve</h2>
+<div class="card">${approve}</div>
+<h2>Members</h2>
+<div class="card">${members}${addMember}</div>
+${audit}
+</main>
+</body>
+</html>
+`;
 }
 
 /** The last answer appended per plan, for the double-press guard (P8c): memory only, no file. */
@@ -1524,6 +1701,9 @@ function handleAnswer(cfg: Config, source: RunSource, fields: Record<string, str
 	const answer = (fields.answer_text ?? "").trim() || (fields.answer ?? "").trim();
 	if (!planFile || !answer) return wantsJson ? jsonFail("plan and answer are required", 400) : textRes("plan and answer are required", 400);
 	if (answer.length > ANSWER_MAX) return wantsJson ? jsonFail(`answer is longer than ${ANSWER_MAX} chars`, 400) : textRes(`answer is longer than ${ANSWER_MAX} chars`, 400);
+	// P4: a team plan is answered on its server, never in this machine's inbox; the branch sits
+	// before the INDEX lookup, which knows only this machine's own plans.
+	if ((fields.team ?? "").trim()) return handleTeamAnswer(cfg, fields, planFile, answer, wantsJson);
 	const plan = activePlans(cfg.paths.queue_index).find(p => p.file === planFile);
 	if (!plan) return wantsJson ? jsonFail("plan is not open and waiting", 409) : textRes("plan is not open and waiting", 409);
 	if (plan.status !== "open" || !plan.waiting || !plan.waitingLine) {
@@ -1537,8 +1717,38 @@ function handleAnswer(cfg: Config, source: RunSource, fields: Record<string, str
 	return redirect(sentTo(fields.tab ?? "", "sent=answer"));
 }
 
-// ---- POST /incident (plan P3): the owner's tap on a finding: "false alarm" closes it, "bug" plans it ----
+/**
+ * An answer to a team plan (P4): `POST /answer/<id>` on that team's server with the answer
+ * alone — the server stores the whois login — and nothing is written to this machine's inbox,
+ * which belongs to its own Main. The double-press guard is the page's own memory, keyed
+ * `<team>/<id>`; a repeated press within 10 s sends nothing again.
+ */
+function handleTeamAnswer(cfg: Config, fields: Record<string, string>, planId: string, answer: string, wantsJson: boolean): Response {
+	const name = (fields.team ?? "").trim();
+	const team = cfg.teams.find(t => t.name === name);
+	if (!team) return wantsJson ? jsonFail("unknown team", 400) : textRes("unknown team", 400);
+	const key = `${team.name}/${planId}`;
+	const now = nowSec();
+	const last = lastAnswerByPlan.get(key);
+	const repeat = last !== undefined && last.answer === answer && now - last.ts < DOUBLE_PRESS_SEC;
+	let earlier: TeamEarlier | null = null;
+	if (!repeat) {
+		const out = postTeamAnswer(team, planId, answer);
+		if ("unreachable" in out) return wantsJson ? jsonFail(`team server ${out.unreachable} unreachable`, 503) : textRes(`team server ${out.unreachable} unreachable`, 503);
+		if (!out.ok) {
+			const error = out.status === 404 ? "plan is not on the team server" : out.error;
+			return wantsJson ? jsonFail(error, out.status === 404 ? 409 : out.status) : textRes(error, out.status === 404 ? 409 : out.status);
+		}
+		lastAnswerByPlan.set(key, { answer, ts: now });
+		earlier = out.earlier;
+	}
+	const note = earlier ? `answer kept; an earlier answer by ${earlier.login} at ${strftime(earlier.time, "%H:%M")} won: "${earlier.answer}"` : null;
+	if (wantsJson) return jsonSent("team-answer", note ?? receiptText("team-answer", new URLSearchParams({ team: team.name })));
+	if (note) return textRes(note, 200);
+	return redirect(sentTo(fields.tab ?? "", `sent=team-answer&team=${encodeURIComponent(team.name)}`));
+}
 
+// ---- POST /incident (plan P3): the owner's tap on a finding: "false alarm" closes it, "bug" plans it ----
 function handleIncident(cfg: Config, fields: Record<string, string>, login: string, wantsJson: boolean): Response {
 	const id = (fields.id ?? "").trim();
 	const choice = (fields.choice ?? "").trim();
@@ -1782,27 +1992,16 @@ function handleReorder(cfg: Config, fields: Record<string, string>, login: strin
 	return redirect(sentTo(fields.tab ?? "", `sent=reorder&to=${to + 1}`));
 }
 
-/** Starts the page. Refuses to start when ui.enabled is false or ui.owner_login is empty, and on the default hostname when tailscale does not answer. */
-export function startOwnerUi(opts: OwnerUiOptions): OwnerUiServer {
-	const { cfg, tailscale, source } = opts;
-	const resultsBuild = opts.resultsBuild ?? spawnResultsBuild;
-	// The Base tab links to the pages server by its MagicDNS name, the same URL `pages publish` prints.
-	const pagesHost = tailscale.dnsName() ?? "tailnet";
-	// The double-press guard (P8c) is per-server memory: a fresh server starts empty, which also
-	// keeps the tests (one server per test) hermetic.
-	lastAnswerByPlan.clear();
-	if (!cfg.ui.enabled) throw new Error("owner ui: ui.enabled is false — set it in the config first");
-	if (!cfg.ui.owner_login) throw new Error("owner ui: ui.owner_login is empty — set the tailscale login that may open the page");
-	const hostname = opts.hostname ?? tailscale.ip4();
-	if (!hostname) throw new Error("owner ui: tailscale ip -4 did not answer — is tailscale up?");
-	const peerOf = opts.peerOf ?? ((req: Request, server: UiHttpServer) => server.requestIP(req)?.address ?? "");
-	// Host allowlist (plan P3a): a DNS-rebinding page sends evil.example's Host with a matching
-	// Origin from the owner's own phone, so the peer and Origin checks alone pass it. On every
-	// request, before whois, the Host header must name this page — the tailnet address or the
-	// MagicDNS name (dnsName(), trailing dot stripped) — with the served port. Anything else is a
-	// 403 no matter whose peer it is. Built once, against the bound port (tests bind 0).
+/**
+ * DNS-rebinding guard, built once per server. A page on another host sends that Host with a
+ * matching Origin, so the peer and Origin checks alone would pass it. The Host header must
+ * name this server — the tailnet address or the MagicDNS name (dnsName(), trailing dot already
+ * stripped) — with the served port. No bound port: nothing is allowed. The phone page and the
+ * team server both call this.
+ */
+export function hostAllowlist(tailscale: { ip4(): string | null; dnsName(): string | null }): (hostHeader: string, port: number | undefined) => boolean {
 	let allowedHosts: string[] | null = null;
-	const hostAllowed = (hostHeader: string, port: number | undefined): boolean => {
+	return (hostHeader, port) => {
 		// No bound port (never expected): nothing is allowed — fail closed.
 		if (port === undefined) return false;
 		if (allowedHosts === null) {
@@ -1811,9 +2010,31 @@ export function startOwnerUi(opts: OwnerUiOptions): OwnerUiServer {
 		}
 		return allowedHosts.includes(hostHeader);
 	};
+}
+
+/** True when Origin is exactly `http://` plus the Host header. Callers apply it to the methods they write. */
+export function originIsHost(origin: string | null, hostHeader: string): boolean {
+	return origin === `http://${hostHeader}`;
+}
+
+/** Starts the page. Refuses to start when workspace.enabled is false or workspace.owner_login is empty, and on the default hostname when tailscale does not answer. */
+export function startOwnerUi(opts: OwnerUiOptions): OwnerUiServer {
+	const { cfg, tailscale, source } = opts;
+	const resultsBuild = opts.resultsBuild ?? spawnResultsBuild;
+	// The Base tab links to the pages server by its MagicDNS name, the same URL `pages publish` prints.
+	const pagesHost = tailscale.dnsName() ?? "tailnet";
+	// The double-press guard (P8c) is per-server memory: a fresh server starts empty, which also
+	// keeps the tests (one server per test) hermetic.
+	lastAnswerByPlan.clear();
+	if (!cfg.workspace.enabled) throw new Error("owner ui: workspace.enabled is false — set it in the config first");
+	if (!cfg.workspace.owner_login) throw new Error("owner ui: workspace.owner_login is empty — set the tailscale login that may open the page");
+	const hostname = opts.hostname ?? tailscale.ip4();
+	if (!hostname) throw new Error("owner ui: tailscale ip -4 did not answer — is tailscale up?");
+	const peerOf = opts.peerOf ?? ((req: Request, server: UiHttpServer) => server.requestIP(req)?.address ?? "");
+	const hostAllowed = hostAllowlist(tailscale);
 	const server = Bun.serve({
 		hostname,
-		port: opts.port ?? cfg.ui.port,
+		port: opts.port ?? cfg.workspace.port,
 		fetch: async (req, srv) => {
 			const url = new URL(req.url);
 			let code = 500;
@@ -1831,7 +2052,7 @@ export function startOwnerUi(opts: OwnerUiOptions): OwnerUiServer {
 						code = 403;
 					} else {
 						login = auth.login;
-						if (req.method === "POST" && req.headers.get("origin") !== `http://${hostHeader}`) {
+						if (req.method === "POST" && !originIsHost(req.headers.get("origin"), hostHeader)) {
 							res = textRes("forbidden: origin is not this page", 403);
 							code = 403;
 						} else if (req.method === "GET" && url.pathname === "/") {

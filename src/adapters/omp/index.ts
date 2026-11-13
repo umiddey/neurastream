@@ -27,7 +27,8 @@ import { configFile, loadConfig, reloadingConfig, type Config } from "../../core
 import { checkWrite, deferSteer, type WriteCheckConfig } from "../../core/write-check.ts";
 import { nowSec, strftime } from "../../core/clock.ts";
 import { runDetectors, type DetectorInput } from "../../core/incident-detectors.ts";
-import { fileClaimStore } from "../../core/claims.ts";
+import { fileClaimStore, type ClaimStore } from "../../core/claims.ts";
+import { remoteStoreFor } from "../../core/team-client.ts";
 import { appendOwnerAnswer, readOwnerAnswers, readOwnerMessages } from "../../core/incidents.ts";
 import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, mainId, mainStateDir, newProgressEntries, planReadNote, plannerSpawnPlan, recordMainResult, resetMainCalls, revertMainEdit, rekeySpawnFile, reviewSpawnEnd, STOP_PLAN_OFFER_REFUSAL } from "../../core/guards.ts";
 import { rateLimited } from "../../core/rate-limit.ts";
@@ -857,10 +858,10 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 	// computed at most once per process (tailscale status is a subprocess call).
 	let phonePageSuffix: string | null = null;
 	const phonePage = (): string => {
-		if (!cfg.ui.enabled) return "";
+		if (!cfg.workspace.enabled) return "";
 		if (phonePageSuffix === null) {
 			const dns = realTailscale.dnsName();
-			phonePageSuffix = dns ? ` Answer on the phone page: http://${dns}:${cfg.ui.port}` : "";
+			phonePageSuffix = dns ? ` Answer on the phone page: http://${dns}:${cfg.workspace.port}` : "";
 		}
 		return phonePageSuffix;
 	};
@@ -959,9 +960,23 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		// so a live Main never loses a plan to queue.claim_ttl_min. session_shutdown releases
 		// nothing: the TTL frees a crashed or restarted Main's claims the same way.
 		const beat = (): void => {
-			const store = fileClaimStore(cfg.paths.queue_state, nowSec, cfg.queue.claim_ttl_min);
 			const id = mainId();
-			for (const claim of store.list()) if (claim.main === id) store.heartbeat(claim.plan, id);
+			// P3 (plan 20261027_1305): the file store lists only personal claims (the chooser
+			// never sends a team plan to it); each team's remote store lists that team's claims
+			// with ids mapped to local paths. Every claim is beaten through the store that
+			// listed it; a team whose list() is Unreachable is skipped for this tick (its
+			// claims lapse at the TTL) and the file beats still run.
+			const stores: ClaimStore[] = [
+				fileClaimStore(cfg.paths.queue_state, nowSec, cfg.queue.claim_ttl_min),
+				...(cfg.teams ?? []).map(team => remoteStoreFor(team, cfg)),
+			];
+			for (const store of stores) {
+				const rows = store.list();
+				if (!Array.isArray(rows)) continue;
+				// `mine !== false`: never beat another login's row that happens to share the
+				// main string; the server would answer 403 (P2b (7c)).
+				for (const claim of rows) if (claim.main === id && claim.mine !== false) store.heartbeat(claim.plan, id);
+			}
 		};
 		const hb: unknown = c.setInterval ? c.setInterval(beat, CLAIM_BEAT_MS) : setInterval(beat, CLAIM_BEAT_MS);
 		if (hb && typeof hb === "object" && "unref" in hb && typeof hb.unref === "function") hb.unref();
@@ -1111,6 +1126,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		const d = checkTool(
 			{ tool, input, cwd, agent, agentId: id, calls: n - 1, paths: [], writes: [], command: asString(input.command), runningJobs },
 			cfg,
+			defaultRunSource(cfg),
 		);
 		if (!d.allow) {
 			// P3b: Main refused on a protected guard file sits blocked until the owner unlocks.

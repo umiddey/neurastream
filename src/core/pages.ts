@@ -23,7 +23,7 @@ export function startPagesServer(opts: PagesOptions): PagesServer {
   if (req.method !== "GET" && req.method !== "HEAD" && req.method !== "POST") return plain("method not allowed", 405);
   const peer = peerOf(req, srv);
   const login = isLoopback(peer) ? null : isTailnet(peer) ? opts.tailscale.whois(peer) : null;
-  if (!isLoopback(peer) && (!login || login !== opts.cfg.ui.owner_login)) return plain("forbidden", 403);
+  if (!isLoopback(peer) && (!login || login !== opts.cfg.workspace.owner_login)) return plain("forbidden", 403);
   const url = new URL(req.url);
   // The one POST a page may make (plan 20261026 P6): the notes its script collected become owner-inbox
   // rows Main delivers. Same origin only, so another site's tab cannot write to the inbox; nothing here
