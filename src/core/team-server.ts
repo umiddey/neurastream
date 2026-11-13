@@ -131,7 +131,7 @@ interface ApprovalRow {
 	time: number;
 }
 
-type ClaimOutcome = { status: 200; claim: ClaimRow } | { status: 404 } | { status: 409; held: ClaimRow };
+type ClaimOutcome = { status: 200; claim: ClaimRow } | { status: 404 } | { status: 403 } | { status: 409; held: ClaimRow };
 type BeatOutcome = { status: 200; claim: ClaimRow } | { status: 404 } | { status: 403 };
 type ReleaseOutcome = { status: 200 } | { status: 404 } | { status: 403 };
 
@@ -250,6 +250,13 @@ function removeMemberTx(db: Database, config: TeamServerConfig, login: string, a
 	}).immediate();
 }
 
+/** Adds one column to a table when it is absent. CREATE TABLE IF NOT EXISTS never alters a table an earlier start made, so new columns arrive this way. */
+function addColumn(db: Database, table: string, column: string, decl: string): void {
+	const have = db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all();
+	if (have.some(row => row.name === column)) return;
+	db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
+}
+
 /** Opens the team database and creates its tables. busy_timeout makes a second writer wait for the lock instead of failing with SQLITE_BUSY. */
 export function openTeamDb(dbPath: string): Database {
 	mkdirSync(dirname(dbPath), { recursive: true });
@@ -314,6 +321,7 @@ export function openTeamDb(dbPath: string): Database {
 			answer TEXT NOT NULL
 		);
 	`);
+	addColumn(db, "answers", "waiting_key", "TEXT");
 	return db;
 }
 
@@ -429,6 +437,7 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 	});
 	const planExists = db.query<{ ok: number }, [string, string]>("SELECT 1 AS ok FROM plans WHERE id = ? AND team = ?");
 	const selectClaim = db.query<ClaimRow, [string]>("SELECT id, team, main, host, pid, since, beat, login FROM claims WHERE id = ?");
+	const pausedOf = db.query<{ ok: number }, [string]>("SELECT 1 AS ok FROM paused WHERE login = ?");
 	const listClaims = db.query<ClaimRow, [string]>("SELECT id, team, main, host, pid, since, beat, login FROM claims WHERE team = ? ORDER BY id");
 	const replaceClaim = db.prepare("INSERT OR REPLACE INTO claims (id, team, main, host, pid, since, beat, login) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
 	const beatClaim = db.prepare("UPDATE claims SET beat = ? WHERE id = ?");
@@ -436,6 +445,10 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 	// Claim writes run with .immediate (BEGIN IMMEDIATE): the read and the write take the write lock together. Refusals return a status instead of throwing, so their audit row still commits.
 	const claimOf = db.transaction((args: { id: string; main: string; host: string; pid: number; login: string; now: number; route: string }): ClaimOutcome => {
 		if (!planExists.get(args.id, config.team)) return { status: 404 };
+		if (pausedOf.get(args.login)) {
+			insertAudit.run(args.login, args.now, `refused ${args.route}`, args.id);
+			return { status: 403 };
+		}
 		const cur = selectClaim.get(args.id);
 		if (cur && isOwn(cur, args.login, args.main)) {
 			beatClaim.run(args.now, args.id);
@@ -706,6 +719,7 @@ export function startTeamServer(opts: TeamServerOptions): TeamServer {
 			if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return json({ error: "pid must be a positive integer" }, 400);
 			const out = claimOf.immediate({ id, main, host, pid, login, now, route: `POST /claims/${id}` });
 			if (out.status === 404) return json({ error: "no such plan" }, 404);
+			if (out.status === 403) return json({ error: "paused: this member takes no claims on this team" }, 403);
 			if (out.status === 409) return json({ heldBy: wireClaim(out.held, login) }, 409);
 			return json({ claim: wireClaim(out.claim, login) }, 200);
 		}
