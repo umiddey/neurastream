@@ -16,7 +16,7 @@
 // Harness payloads are untyped at the boundary: every field read goes through a runtime check.
 
 import { execFileSync, spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import type { Decision, TraceEvent } from "../../core/adapter.ts";
 import { AGENTS_TEMPLATE, renderBlock } from "../../core/agents-md.ts";
@@ -30,8 +30,8 @@ import { runDetectors, type DetectorInput } from "../../core/incident-detectors.
 import { fileClaimStore, type ClaimStore } from "../../core/claims.ts";
 import { remoteStoreFor } from "../../core/team-client.ts";
 import { appendOwnerAnswer, readOwnerAnswers, readOwnerMessages } from "../../core/incidents.ts";
-import { appendedSinceSpawn, markTopicsSpawned, recordOwnerLog } from "../../core/owner-log.ts";
-import { topicsDue } from "../../core/owner-topics.ts";
+import { appendedSinceSpawn, markTopicsSpawned, ownerLogDir, recordOwnerLog } from "../../core/owner-log.ts";
+import { topicsDue, topicsLogFile } from "../../core/owner-topics.ts";
 import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, mainId, mainStateDir, newProgressEntries, planReadNote, plannerSpawnPlan, recordMainResult, resetMainCalls, revertMainEdit, rekeySpawnFile, reviewSpawnEnd, STOP_PLAN_OFFER_REFUSAL } from "../../core/guards.ts";
 import { rateLimited } from "../../core/rate-limit.ts";
 import { backPost, clearLimitState, limitMetric, limitedPost, onLimited, readLimitState, timingOf, writeLimitState } from "../../core/limit-probe.ts";
@@ -457,7 +457,8 @@ function isMain(ctx: unknown): boolean {
 }
 
 // Owner topics (plan P8): one detached, niced `recall` child, as the limit probe is. The child env drops
-// MAIN_ENV so the child is not Main. A context that injects `spawnTopics` (tests) gets the call instead.
+// MAIN_ENV so the child is not Main. Its stdout and stderr append to owner-topics.log (stats and `topics: fail`
+// lines only). A context that injects `spawnTopics` (tests) gets the call instead.
 function spawnTopics(cfg: Config, ctx: unknown, args: string[]): void {
 	const env: NodeJS.ProcessEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== MAIN_ENV));
 	const injected = asRecord(ctx).spawnTopics;
@@ -465,9 +466,18 @@ function spawnTopics(cfg: Config, ctx: unknown, args: string[]): void {
 		(injected as (a: string[], e: NodeJS.ProcessEnv) => void).call(ctx, args, env);
 		return;
 	}
-	const child = spawn("nice", ["-n", "19", "bun", join(import.meta.dir, "../../cli/main.ts"), ...args], { detached: true, stdio: "ignore", env });
-	child.on("error", err => adapterLog(cfg, `OWNER-TOPICS: could not start: ${err.message}`));
-	child.unref();
+	let out: number | undefined;
+	try {
+		mkdirSync(ownerLogDir(), { recursive: true, mode: 0o700 });
+		out = openSync(topicsLogFile(), "a", 0o600);
+		const child = spawn("nice", ["-n", "19", "bun", join(import.meta.dir, "../../cli/main.ts"), ...args], { detached: true, stdio: ["ignore", out, out], env });
+		child.on("error", err => adapterLog(cfg, `OWNER-TOPICS: could not start: ${err.message}`));
+		child.unref();
+	} catch (err) {
+		adapterLog(cfg, `OWNER-TOPICS: could not start: ${err instanceof Error ? err.message : String(err)}`);
+	} finally {
+		if (out !== undefined) closeSync(out);
+	}
 }
 
 function mtimeOf(path: string): number | null {

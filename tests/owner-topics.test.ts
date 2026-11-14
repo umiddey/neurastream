@@ -552,7 +552,7 @@ describe("trigger and isolation", () => {
 		expect(appendedSinceSpawn()).toBe(0);
 	});
 
-	test("below topics_every, with topics_model empty, or in a sub session: nothing spawns", async () => {
+	test("below topics_every: a turn end spawns nothing and keeps the count", async () => {
 		sandboxConfig(MODEL, 5);
 		resetAdapter();
 		markTopicsSpawned();
@@ -562,16 +562,57 @@ describe("trigger and isolation", () => {
 		for (let k = 0; k < 4; k++) appendOwnerLog("main", `main line ${k}`);
 		await f.emit("agent_end", turnEndPayload("done"), mainCtx(spawns));
 		expect(spawns).toHaveLength(0);
+		expect(appendedSinceSpawn()).toBe(4);
 	});
 
-	test("a Main session_shutdown spawns recall topics --close", async () => {
+	test("topics_model empty: a due turn end and a shutdown spawn nothing and keep the count", async () => {
+		sandboxConfig("", 5);
+		resetAdapter();
+		markTopicsSpawned();
+		const f = fakeHost();
+		createOmpAdapter(f.host, loadConfig({ home: HOME, env: {} }));
+		const spawns: Spawn[] = [];
+		for (let k = 0; k < 5; k++) appendOwnerLog("main", `main line ${k}`);
+		await f.emit("agent_end", turnEndPayload("done"), mainCtx(spawns));
+		await f.emit("session_shutdown", {}, mainCtx(spawns));
+		expect(spawns).toHaveLength(0);
+		expect(appendedSinceSpawn()).toBe(5);
+	});
+
+	test("a sub session spawns nothing, due or not, on turn end or shutdown", async () => {
+		sandboxConfig(MODEL, 5);
+		resetAdapter();
+		markTopicsSpawned();
+		const f = fakeHost();
+		createOmpAdapter(f.host, loadConfig({ home: HOME, env: {} }));
+		const spawns: Spawn[] = [];
+		const sub = {
+			agent: { kind: "sub", id: "sub-1" },
+			spawnTopics(args: string[], env: NodeJS.ProcessEnv) {
+				spawns.push({ args, env });
+			},
+		};
+		for (let k = 0; k < 5; k++) appendOwnerLog("main", `main line ${k}`);
+		await f.emit("agent_end", turnEndPayload("done"), sub);
+		await f.emit("session_shutdown", {}, sub);
+		expect(spawns).toHaveLength(0);
+		expect(appendedSinceSpawn()).toBe(5);
+	});
+
+	test("a Main session_shutdown spawns recall topics --close with MAIN_ENV dropped", async () => {
 		sandboxConfig(MODEL, 5);
 		resetAdapter();
 		const f = fakeHost();
 		createOmpAdapter(f.host, loadConfig({ home: HOME, env: {} }));
 		const spawns: Spawn[] = [];
-		await f.emit("session_shutdown", {}, mainCtx(spawns));
+		process.env[MAIN_ENV] = "1";
+		try {
+			await f.emit("session_shutdown", {}, mainCtx(spawns));
+		} finally {
+			delete process.env[MAIN_ENV];
+		}
 		expect(spawns.map((s) => s.args)).toEqual([["recall", "topics", "--close"]]);
+		expect(spawns[0]!.env[MAIN_ENV]).toBeUndefined();
 	});
 
 	test("a distinctive topic title never reaches Main's rules or any injected text", async () => {

@@ -1,4 +1,8 @@
 # Changelog
+## Unreleased
+### Added
+- Topic index (off by default; `recall.topics_model`): `neurastream recall topics` and a background run after every `recall.topics_every` Main entries group the owner log into topic segments; `recall <words>` shows matching topics and `recall --show a..b` shows an id range.
+
 ## 0.3.4
 ### Added
 - `neurastream recall <words>` finds something the owner said, or Main answered, in any past session and prints it as it was said; `recall --show <id>` shows an entry with the entry it pairs with; `recall backfill` fills the log from the session files on disk. Main's rules tell it to run `recall` when the owner refers to something not in its context.

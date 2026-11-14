@@ -82,6 +82,7 @@ type Attempt =
 	| { kind: "error"; reason: string; in: number };
 
 const TOPICS_FILE = "owner-topics.jsonl";
+const TOPICS_LOG_FILE = "owner-topics.log";
 const LOCK_FILE = "owner-topics.lock";
 const WINDOW = 120;
 const MAX_TOKENS = 4000;
@@ -101,6 +102,11 @@ const SYSTEM = [
 
 export function topicsFile(): string {
 	return join(ownerLogDir(), TOPICS_FILE);
+}
+
+// stdout and stderr of the background `recall topics` run: stats and `topics: fail` lines only.
+export function topicsLogFile(): string {
+	return join(ownerLogDir(), TOPICS_LOG_FILE);
 }
 
 export function topicsDue(count: number, every: number): boolean {
