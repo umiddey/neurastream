@@ -1,5 +1,5 @@
 # Changelog
-## Unreleased
+## 0.3.5
 ### Added
 - Topic index (off by default; `recall.topics_model`): `neurastream recall topics` and a background run after every `recall.topics_every` Main entries group the owner log into topic segments; `recall <words>` shows matching topics and `recall --show a..b` shows an id range.
 
