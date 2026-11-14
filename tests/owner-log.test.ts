@@ -17,6 +17,7 @@ import { getAdapter } from "../src/adapters/index.ts";
 import {
 	appendOwnerLog,
 	newEntryId,
+	entryIdSec,
 	ownerLogDir,
 	ownerLogFile,
 	readLines,
@@ -183,6 +184,12 @@ test("(a) 1,000 appends under one frozen millisecond give 1,000 distinct ids", (
 	for (let i = 0; i < 1000; i++) ids.add(appendOwnerLog("owner", `message ${i}`, { atMs: NOW_MS, rand }));
 	expect(ids.size).toBe(1000);
 	expect(lines(ownerLogFile()).length).toBe(1000);
+});
+
+test("(a) entryIdSec gives the second an id was minted at, and undefined for a foreign id", () => {
+	expect(entryIdSec(newEntryId(NOW_MS + 999, fixedBytes))).toBe(NOW_SEC);
+	expect(entryIdSec("not-an-id")).toBeUndefined();
+	expect(entryIdSec(`${newEntryId(NOW_MS)}0`)).toBeUndefined();
 });
 
 test("(a) one append to a 10,000-line log adds exactly one line and leaves the earlier bytes identical", () => {
