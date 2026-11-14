@@ -259,6 +259,6 @@ describe("recall topics config", () => {
 		["topics_every as a string", "recall:\n  topics_every: \"30\"\n"],
 		["topics_model as a number", "recall:\n  topics_model: 5\n"],
 	])("%s is rejected", (_name, yaml) => {
-		expect(() => loadConfig({ file: withFile(yaml), home, env: {} })).toThrow(ConfigError);
+		expect(() => loadConfig({ file: withFile(yaml), home, env: {} })).toThrow(/recall\.topics_(every|model)/);
 	});
 });
