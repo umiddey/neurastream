@@ -10,6 +10,7 @@ import type { Episode } from "../core/episodes.ts";
 import type { DumpParts, DumpTokens } from "../core/trace-bloat.ts";
 import type { SpawnBrief } from "../core/trace-briefs.ts";
 import { ompAdapter } from "./omp/adapter.ts";
+export { ompComplete } from "./omp/launch.ts";
 
 export interface HarnessAdapter {
 	name: string;

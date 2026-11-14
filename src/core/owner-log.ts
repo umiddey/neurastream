@@ -42,12 +42,23 @@ export function newEntryId(atMs: number, rand: (n: number) => Uint8Array = rando
 }
 
 // The one writer: the recall dir is 0700 and the file 0600, also when they pre-exist looser.
-function appendLogLine(file: string, entry: LogEntry): void {
+export function appendJsonLines(file: string, rows: readonly object[]): void {
 	const dir = dirname(file);
 	mkdirSync(dir, { recursive: true, mode: 0o700 });
 	chmodSync(dir, 0o700);
-	appendFileSync(file, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
+	appendFileSync(file, rows.map((row) => `${JSON.stringify(row)}\n`).join(""), { mode: 0o600 });
 	chmodSync(file, 0o600);
+}
+
+// Entries appended in this process since the last topics spawn. The turn-end trigger reads it.
+let appendedCount = 0;
+
+export function appendedSinceSpawn(): number {
+	return appendedCount;
+}
+
+export function markTopicsSpawned(): void {
+	appendedCount = 0;
 }
 
 export function appendOwnerLog(
@@ -57,7 +68,8 @@ export function appendOwnerLog(
 ): string {
 	const atMs = opts.atMs ?? nowSec() * 1000;
 	const entry: LogEntry = { id: newEntryId(atMs, opts.rand), at: Math.floor(atMs / 1000), role, text };
-	appendLogLine(ownerLogFile(), entry);
+	appendJsonLines(ownerLogFile(), [entry]);
+	appendedCount++;
 	return entry.id;
 }
 
@@ -98,15 +110,15 @@ export function backfillOwnerLog(cfg: Config, turns: Iterable<OwnerTurn>): numbe
 	const newest = logEdge(ownerBackfillFile(), true);
 	const oldest = logEdge(ownerLogFile(), false);
 	const known = loadKnownSecrets(cfg);
-	let written = 0;
+	const rows: LogEntry[] = [];
 	for (const turn of kept) {
 		if (newest !== undefined && turn.at <= newest.at) continue;
 		if (oldest !== undefined && turn.at >= oldest.at) continue;
 		const clean = redactSecrets(turn.text, known, cfg.secrets.extra_patterns).text;
-		appendLogLine(ownerBackfillFile(), { id: newEntryId(turn.at * 1000), at: turn.at, role: turn.role, text: clean });
-		written++;
+		rows.push({ id: newEntryId(turn.at * 1000), at: turn.at, role: turn.role, text: clean });
 	}
-	return written;
+	if (rows.length > 0) appendJsonLines(ownerBackfillFile(), rows);
+	return rows.length;
 }
 
 const BLOCK = 64 * 1024;

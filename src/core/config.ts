@@ -283,6 +283,8 @@ export interface Config {
 		/** A second net on the wire: wrap the harness in `secretgate wrap --` at launch. */
 		proxy: "none" | "secretgate";
 	};
+	/** Owner topics (src/core/owner-topics.ts, plan P8): `topics_model` writes the owner-log topic index through the gateway ("" = off); a run starts every `topics_every` Main entries. */
+	recall: { topics_model: string; topics_every: number };
 	/** Write-time lint checks (src/core/write-check.ts, plan 20261028_1228): an edit that adds a lint finding or a suppression comment is refused. */
 	write_check: WriteCheckConfig;
 	priority: { sleep_sec: number };
@@ -802,6 +804,8 @@ function check(cfg: Config): void {
 			throw new ConfigError(`secrets.extra_patterns.${pattern.type}: not a valid regex: ${pattern.regex}`);
 		}
 	}
+	if (typeof cfg.recall.topics_model !== "string") throw new ConfigError('recall.topics_model must be a string ("" = off)');
+	if (!Number.isInteger(cfg.recall.topics_every) || cfg.recall.topics_every < 1) throw new ConfigError("recall.topics_every must be an integer >= 1");
 	for (const [key, value] of Object.entries(cfg.paths)) {
 		if (key === "work_roots") {
 			if (!Array.isArray(value) || value.some(v => typeof v !== "string")) {

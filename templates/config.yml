@@ -268,6 +268,10 @@ secrets:                     # content redaction (src/core/secret-redact.ts); a 
   extra_patterns: []         # your own shapes, e.g. [{type: "my-token", regex: "myapp_[A-Za-z0-9]{32}"}]
   proxy: "none"              # "none" | "secretgate": launch the harness as `secretgate wrap -- omp` (README: Secrets)
 
+recall:                      # owner topics (src/core/owner-topics.ts, plan P8): a topic index over the owner log
+  topics_model: ""           # gateway model that writes the topics; "" = off, e.g. "anthropic/claude-haiku-5-5"
+  topics_every: 30           # a topics run starts after this many Main owner-log entries
+
 write_check:                 # write-time lint checks (src/core/write-check.ts): an edit that adds a lint finding or suppression comment is undone and the agent is told why
   enabled: false             # on = check every edit; off in the shipped template
   applies_to: sub            # "sub" = subagents only; "all" = Main too

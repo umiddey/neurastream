@@ -30,7 +30,8 @@ import { runDetectors, type DetectorInput } from "../../core/incident-detectors.
 import { fileClaimStore, type ClaimStore } from "../../core/claims.ts";
 import { remoteStoreFor } from "../../core/team-client.ts";
 import { appendOwnerAnswer, readOwnerAnswers, readOwnerMessages } from "../../core/incidents.ts";
-import { recordOwnerLog } from "../../core/owner-log.ts";
+import { appendedSinceSpawn, markTopicsSpawned, recordOwnerLog } from "../../core/owner-log.ts";
+import { topicsDue } from "../../core/owner-topics.ts";
 import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, mainId, mainStateDir, newProgressEntries, planReadNote, plannerSpawnPlan, recordMainResult, resetMainCalls, revertMainEdit, rekeySpawnFile, reviewSpawnEnd, STOP_PLAN_OFFER_REFUSAL } from "../../core/guards.ts";
 import { rateLimited } from "../../core/rate-limit.ts";
 import { backPost, clearLimitState, limitMetric, limitedPost, onLimited, readLimitState, timingOf, writeLimitState } from "../../core/limit-probe.ts";
@@ -453,6 +454,20 @@ function asRolloverCtx(v: unknown): RolloverCtx | null {
 function isMain(ctx: unknown): boolean {
 	const c = asCtx(ctx);
 	return !c.hasAgent || c.kind === "main";
+}
+
+// Owner topics (plan P8): one detached, niced `recall` child, as the limit probe is. The child env drops
+// MAIN_ENV so the child is not Main. A context that injects `spawnTopics` (tests) gets the call instead.
+function spawnTopics(cfg: Config, ctx: unknown, args: string[]): void {
+	const env: NodeJS.ProcessEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== MAIN_ENV));
+	const injected = asRecord(ctx).spawnTopics;
+	if (typeof injected === "function") {
+		(injected as (a: string[], e: NodeJS.ProcessEnv) => void).call(ctx, args, env);
+		return;
+	}
+	const child = spawn("nice", ["-n", "19", "bun", join(import.meta.dir, "../../cli/main.ts"), ...args], { detached: true, stdio: "ignore", env });
+	child.on("error", err => adapterLog(cfg, `OWNER-TOPICS: could not start: ${err.message}`));
+	child.unref();
 }
 
 function mtimeOf(path: string): number | null {
@@ -1662,6 +1677,17 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		if (c.kind !== "sub" || !c.id) return;
 		const note = reviewSpawnEnd(c.id, cfg);
 		if (note) pendingReviewNotes.push(note);
+	});
+
+	pi.on("agent_end", (_e, ctx) => {
+		if (!isMain(ctx) || cfg.recall.topics_model === "") return;
+		if (!topicsDue(appendedSinceSpawn(), cfg.recall.topics_every)) return;
+		markTopicsSpawned();
+		spawnTopics(cfg, ctx, ["recall", "topics"]);
+	});
+	pi.on("session_shutdown", (_e, ctx) => {
+		if (!isMain(ctx) || cfg.recall.topics_model === "") return;
+		spawnTopics(cfg, ctx, ["recall", "topics", "--close"]);
 	});
 
 	// omp is really shutting down: the exit-grace fallback must not fire. A clean shutdown is also

@@ -4,13 +4,15 @@
 // flags (carriedArgs) and the handoff as its message. Plain `omp` never gets the flag, so it never relaunches.
 
 import { spawn } from "node:child_process";
-import { appendFileSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { LaunchOptions } from "../../core/adapter.ts";
 import type { Config } from "../../core/config.ts";
 import { readOwnerAnswers, readOwnerMessages } from "../../core/incidents.ts";
 import { mainStartText } from "../../core/main-start.ts";
 import { appendMetric } from "../../core/metrics.ts";
+import type { CompleteRequest, CompleteResult } from "../../core/owner-topics.ts";
 import { applyQueueEnv } from "../../core/queue/env.ts";
 import { tryLock } from "../../core/file-lock.ts";
 import { MAIN_ID_RE, mainId, mainStateDir } from "../../core/guards.ts";
@@ -268,6 +270,114 @@ function runChild(cmd: string, args: string[], env: NodeJS.ProcessEnv): Promise<
 	});
 	child.on("close", code => resolve(code ?? 1));
 	return promise;
+}
+
+/** A gateway call's wall-clock limit: a stalled omp is a TimeoutError, and the caller appends nothing. */
+const GATEWAY_TIMEOUT_MS = 120_000;
+
+/** What a gateway spawn gets: an empty temp cwd, the child env (no MAIN_ENV), and the one request line. */
+export interface GatewayOpts {
+	cwd: string;
+	env: NodeJS.ProcessEnv;
+	stdin: string;
+}
+
+export interface GatewayResult {
+	exitCode: number | null;
+	stdout: string;
+}
+
+export type GatewaySpawn = (argv: string[], opts: GatewayOpts) => Promise<GatewayResult>;
+
+/** Runs `omp auth-gateway stdio` with the request on stdin; resolves to its exit code and stdout. */
+function runGateway(argv: string[], opts: GatewayOpts): Promise<GatewayResult> {
+	const { promise, resolve, reject } = Promise.withResolvers<GatewayResult>();
+	const child = spawn(argv[0]!, argv.slice(1), { cwd: opts.cwd, env: opts.env, stdio: ["pipe", "pipe", "ignore"] });
+	let stdout = "";
+	const timer = setTimeout(() => {
+		child.kill();
+		reject(Object.assign(new Error(`omp auth-gateway did not answer within ${GATEWAY_TIMEOUT_MS} ms`), { name: "TimeoutError" }));
+	}, GATEWAY_TIMEOUT_MS);
+	child.stdout.setEncoding("utf8");
+	child.stdout.on("data", (chunk: string) => {
+		stdout += chunk;
+	});
+	child.on("error", err => {
+		clearTimeout(timer);
+		reject(err);
+	});
+	child.on("close", code => {
+		clearTimeout(timer);
+		resolve({ exitCode: code, stdout });
+	});
+	child.stdin.end(opts.stdin);
+	return promise;
+}
+
+/** The reply line as the gateway writes it; only the fields read below are named. */
+interface GatewayReply {
+	id?: number;
+	status?: number;
+	body?: {
+		choices?: { message?: { content?: unknown; tool_calls?: unknown }; finish_reason?: unknown }[];
+		usage?: { prompt_tokens?: number; completion_tokens?: number };
+	};
+}
+
+function gatewayError(reason: string, detail: string): Error {
+	return Object.assign(new Error(`omp complete: ${detail}`), { reason });
+}
+
+/**
+ * One completion through the owner's omp gateway (plan P7 k): a fresh empty cwd, no MAIN_ENV, no tools,
+ * one request line. A reply that is not a 200 `stop` with plain text, or a non-zero exit, is an error that
+ * carries a `reason`. The temp cwd is removed on every path.
+ */
+export async function ompComplete(req: CompleteRequest, opts: { spawn?: GatewaySpawn } = {}): Promise<CompleteResult> {
+	const run = opts.spawn ?? runGateway;
+	const cwd = mkdtempSync(join(tmpdir(), "omp-complete-"));
+	const env: NodeJS.ProcessEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => k !== MAIN_ENV));
+	const request = {
+		id: 1,
+		path: "/v1/chat/completions",
+		body: {
+			model: req.model,
+			max_tokens: req.maxTokens,
+			messages: [
+				{ role: "system", content: req.system },
+				{ role: "user", content: req.prompt },
+			],
+		},
+	};
+	try {
+		const result = await run([OMP_BIN, "auth-gateway", "stdio"], { cwd, env, stdin: `${JSON.stringify(request)}\n` });
+		if (result.exitCode !== 0) throw gatewayError("exit-code", `exit ${result.exitCode}`);
+		const reply = result.stdout
+			.split("\n")
+			.flatMap(line => {
+				try {
+					return [JSON.parse(line) as GatewayReply];
+				} catch {
+					return [];
+				}
+			})
+			.find(r => r.id === 1);
+		if (reply === undefined) throw gatewayError("no-reply", "no reply with id 1");
+		if (reply.status !== 200) throw gatewayError(`status-${reply.status}`, `status ${reply.status}`);
+		const choice = reply.body?.choices?.[0];
+		if (choice?.finish_reason !== "stop") throw gatewayError("finish-reason", "reply did not finish with stop");
+		const calls = choice.message?.tool_calls;
+		if (Array.isArray(calls) && calls.length > 0) throw gatewayError("tool-calls", "reply asked for tool calls");
+		const text = choice.message?.content;
+		if (typeof text !== "string") throw gatewayError("no-text", "reply has no text");
+		const usage = reply.body?.usage;
+		return {
+			text,
+			usage: { prompt_tokens: usage?.prompt_tokens ?? 0, completion_tokens: usage?.completion_tokens ?? 0 },
+		};
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
+	}
 }
 
 /** Pre-multi-main relaunch request location; only read when mainId is `main`. */

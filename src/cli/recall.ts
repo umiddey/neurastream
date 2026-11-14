@@ -1,15 +1,17 @@
 // `neurastream recall`: searches the owner's messages and Main's answers (the recall log, see
 // core/owner-log.ts) and shows an entry with the entry it pairs with. Read-only.
 
-import { getAdapter } from "../adapters/index.ts";
+import { getAdapter, ompComplete } from "../adapters/index.ts";
 import { nowSec } from "../core/clock.ts";
 import { ConfigError, loadConfig, type Config } from "../core/config.ts";
 import { helpDoc, printText } from "../core/help.ts";
 import { backfillOwnerLog, type LogEntry, searchEntries, showEntries } from "../core/owner-log.ts";
+import { rangeEntries, runTopics, searchTopics, type Segment, type TopicsRun } from "../core/owner-topics.ts";
 import { applyQueueEnv } from "../core/queue/env.ts";
 
 const USAGE = "usage: neurastream recall <words>... [--since 7d|12h|YYYY-MM-DD] [--limit N] [--json]\n       neurastream recall --show <id> [--json]";
 const BACKFILL_USAGE = "usage: neurastream recall backfill [--since 7d|12h|YYYY-MM-DD]";
+const TOPICS_USAGE = "usage: neurastream recall topics [--close]";
 const DEFAULT_LIMIT = 20;
 const PREVIEW_CHARS = 160;
 const HOUR = 3600;
@@ -74,8 +76,15 @@ function preview(text: string): string {
 	return flat.length > PREVIEW_CHARS ? `${flat.slice(0, PREVIEW_CHARS - 1)}…` : flat;
 }
 
-function jsonLine(e: LogEntry): string {
-	return JSON.stringify({ at: e.at, id: e.id, role: e.role, text: e.text });
+// `mixed` adds `kind` to the entry row: it is set only when the output also holds topic rows, so a
+// search with no topic rows keeps its plain four-key shape.
+function jsonLine(e: LogEntry, mixed = false): string {
+	const row = { at: e.at, id: e.id, role: e.role, text: e.text };
+	return JSON.stringify(mixed ? { kind: "entry", ...row } : row);
+}
+
+function topicJson(s: Segment): string {
+	return JSON.stringify({ kind: "topic", at: s.at, from: s.from, to: s.to, open: s.open, title: s.title });
 }
 
 // `recall backfill [--since ...]`: writes the session files' owner prompts and Main replies to the backfill
@@ -100,7 +109,25 @@ function backfillCli(args: string[], cfg: Config): number {
 	return 0;
 }
 
-export function recallCli(args: string[], cfg: Config): number {
+// `recall topics [--close]`: runs the topic layer over the owner log (one model call per window) and prints
+// its lines. `--close` closes the open segment with no model call. Exit 0 unless a window failed.
+async function topicsCli(args: string[], cfg: Config): Promise<number> {
+	if (args.some((a) => a !== "--close")) {
+		console.error(TOPICS_USAGE);
+		return 2;
+	}
+	try {
+		const run: TopicsRun = await runTopics(cfg, ompComplete, { close: args.includes("--close") });
+		for (const line of run.lines) console.log(line);
+		return run.failures === 0 ? 0 : 1;
+	} catch {
+		// The reason stays out of the output: an error message can carry the log's path.
+		console.log("topics: fail internal");
+		return 1;
+	}
+}
+
+export function recallCli(args: string[], cfg: Config): number | Promise<number> {
 	if (args.includes("--help") || args.includes("-h")) {
 		printText(helpDoc("recall"));
 		return 0;
@@ -108,14 +135,16 @@ export function recallCli(args: string[], cfg: Config): number {
 	// The log paths follow the queue state directory, so the config's queue env is applied first.
 	applyQueueEnv(cfg);
 	if (args[0] === "backfill") return backfillCli(args.slice(1), cfg);
+	if (args[0] === "topics") return topicsCli(args.slice(1), cfg);
 	const parsed = parseArgs(args);
 	if (typeof parsed === "string") {
 		console.error(`${parsed}\n${USAGE}`);
 		return 2;
 	}
 	if (parsed.show !== undefined) {
-		const pair = showEntries(parsed.show);
-		if (pair === undefined) {
+		const parts = parsed.show.split("..");
+		const pair = parts.length === 2 ? rangeEntries(parts[0]!, parts[1]!) : showEntries(parsed.show);
+		if (pair === undefined || pair.length === 0) {
 			console.error(`no entry with id ${parsed.show}`);
 			return 2;
 		}
@@ -128,18 +157,25 @@ export function recallCli(args: string[], cfg: Config): number {
 		console.error(USAGE);
 		return 2;
 	}
-	const hits = searchEntries({ words: parsed.words, sinceSec: parsed.sinceSec, limit: parsed.limit });
-	if (hits.length === 0) {
+	const topics = searchTopics(parsed.words)
+		.filter((s) => parsed.sinceSec === undefined || s.at >= parsed.sinceSec)
+		.slice(0, parsed.limit);
+	const left = parsed.limit - topics.length;
+	const hits = left > 0 ? searchEntries({ words: parsed.words, sinceSec: parsed.sinceSec, limit: left }) : [];
+	if (topics.length === 0 && hits.length === 0) {
 		console.log("no match");
 		return 1;
 	}
+	for (const s of topics) {
+		console.log(parsed.json ? topicJson(s) : `${s.from}..${s.to}  ${stamp(s.at)}  topic  ${s.title}`);
+	}
 	for (const e of hits) {
-		console.log(parsed.json ? jsonLine(e) : `${e.id}  ${stamp(e.at)}  ${e.role}  ${preview(e.text)}`);
+		console.log(parsed.json ? jsonLine(e, topics.length > 0) : `${e.id}  ${stamp(e.at)}  ${e.role}  ${preview(e.text)}`);
 	}
 	return 0;
 }
 
-export function runRecall(args: string[]): number {
+export function runRecall(args: string[]): number | Promise<number> {
 	let cfg: Config;
 	try {
 		cfg = loadConfig();
