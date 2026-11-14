@@ -2,6 +2,7 @@
 ## Unreleased
 ### Fixed
 - Topic index: the model now sees entry numbers (`[1]`, `[2]`, ...) and the run maps them back to entry ids, because it copied the long ids wrongly. A window is 60 entries and the answer cap 8000 tokens (a 120-entry window ran into the 4000 cap). A segment under 3 entries folds into the next one, and a decision or question whose id points outside its segment (or a question not on an owner entry) is dropped instead of skipping the whole window. A reply that stops for another reason than `stop` names it in the failure line (`finish-reason:length`).
+- New `recall.topics_effort` (default `xhigh`, `""` = none): sent as `reasoning_effort` with each topics call, so the model thinks before it segments. Without it about half the windows were skipped for rule violations; with it none of the first five were. The answer cap is 16000 tokens because thinking counts against it.
 
 ## 0.3.5
 ### Added

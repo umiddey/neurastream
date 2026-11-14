@@ -59,6 +59,7 @@ rollover:
 
 recall:
   topics_model: ""           # gateway model that writes the topic index; "" = off
+  topics_effort: "xhigh"     # reasoning effort sent with each topics call; "" = none
   topics_every: 30           # Main entries between background topic runs; provisional until measured on the backfill
 
 notify:
@@ -425,7 +426,7 @@ The loader rejects:
 - a `brief.repo_rules` entry whose `match`, `require`, `first` or `unless` does not compile as a case-insensitive regex, or whose `message` is empty
 - `secrets.proxy` that is not `none` or `secretgate`, a `secrets.known_value_files` entry that is not a non-empty path, or a `secrets.extra_patterns` entry without a non-empty `type` and a `regex` that compiles
 - `write_check.applies_to` that is not `sub` or `all`, `write_check.timeout_ms` that is not above 0, a `write_check.suppress` that is empty or does not compile, a `write_check.defer_rules` that is not a list of non-empty rule names, or a `write_check.linters` entry whose `ext` is not a list of dotted extensions, whose `argv` lacks `{file}`, or whose `pattern` lacks a `(?<rule>` group or does not compile, or whose `only_with_config`, if present, is not a list of non-empty file names
-- `recall.topics_model` that is not a string, or `recall.topics_every` that is not an integer >= 1
+- `recall.topics_model` or `recall.topics_effort` that is not a string, or `recall.topics_every` that is not an integer >= 1
 - YAML that does not parse
 
 Missing keys are filled from the defaults above. A present key replaces the default. Objects merge one level (`score.penalties` merges per kind; an omitted kind keeps the default). Arrays replace.

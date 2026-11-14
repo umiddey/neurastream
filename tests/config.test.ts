@@ -248,6 +248,11 @@ describe("recall topics config", () => {
 		expect(loadConfig({ file: withFile("{}\n"), home, env: {} }).recall.topics_model).toBe("");
 	});
 
+	test("recall.topics_effort defaults to xhigh and takes any string", () => {
+		expect(loadConfig({ file: withFile("{}\n"), home, env: {} }).recall.topics_effort).toBe("xhigh");
+		expect(loadConfig({ file: withFile("recall:\n  topics_effort: \"\"\n"), home, env: {} }).recall.topics_effort).toBe("");
+	});
+
 	test("recall.topics_every defaults to 30 and accepts an integer >= 1", () => {
 		expect(loadConfig({ file: withFile("{}\n"), home, env: {} }).recall.topics_every).toBe(30);
 		expect(loadConfig({ file: withFile("recall:\n  topics_every: 5\n"), home, env: {} }).recall.topics_every).toBe(5);

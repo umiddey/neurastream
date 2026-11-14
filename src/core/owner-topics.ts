@@ -15,6 +15,8 @@ export interface CompleteRequest {
 	system: string;
 	prompt: string;
 	maxTokens: number;
+	/** Reasoning effort for the model ("" or absent = none). */
+	effort?: string;
 }
 
 export interface CompleteResult {
@@ -85,7 +87,7 @@ const TOPICS_FILE = "owner-topics.jsonl";
 const TOPICS_LOG_FILE = "owner-topics.log";
 const LOCK_FILE = "owner-topics.lock";
 const WINDOW = 60;
-const MAX_TOKENS = 8000;
+const MAX_TOKENS = 16000;
 
 const SYSTEM = [
 	"You split a chronological log of an owner's messages and the assistant's replies into topic segments.",
@@ -402,7 +404,13 @@ async function attemptOnce(
 	tally.calls++;
 	let answer: CompleteResult;
 	try {
-		answer = await complete({ model: cfg.recall.topics_model, system: SYSTEM, prompt: request, maxTokens: MAX_TOKENS });
+		answer = await complete({
+			model: cfg.recall.topics_model,
+			system: SYSTEM,
+			prompt: request,
+			maxTokens: MAX_TOKENS,
+			effort: cfg.recall.topics_effort,
+		});
 	} catch (err) {
 		return { kind: "error", reason: failureReason(err), in: Buffer.byteLength(request) };
 	}

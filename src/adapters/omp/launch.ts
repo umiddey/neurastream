@@ -343,6 +343,7 @@ export async function ompComplete(req: CompleteRequest, opts: { spawn?: GatewayS
 		body: {
 			model: req.model,
 			max_tokens: req.maxTokens,
+			...(req.effort ? { reasoning_effort: req.effort } : {}),
 			messages: [
 				{ role: "system", content: req.system },
 				{ role: "user", content: req.prompt },
