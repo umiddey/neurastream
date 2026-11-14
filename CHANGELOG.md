@@ -1,5 +1,5 @@
 # Changelog
-## Unreleased
+## 0.3.8
 ### Fixed
 - Topic index: a topic's date is the date of its first entry (read from the entry id), not the day the index line was written. Before, `recall` showed every backfilled topic as the backfill day and `--since` filtered topics wrongly.
 
