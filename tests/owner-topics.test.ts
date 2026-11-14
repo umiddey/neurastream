@@ -401,6 +401,15 @@ describe("re-cut and close", () => {
 		]);
 	});
 
+	test("a run with nothing newer than the open segment makes no model call", async () => {
+		const cfg = sandboxConfig(MODEL);
+		await runTopics(cfg, fakeComplete([answer(goodSegments())]).complete, { close: false });
+		const fc = fakeComplete([answer(goodSegments())]);
+		const run = await runTopics(cfg, fc.complete, { close: false });
+		expect(fc.calls).toHaveLength(0);
+		expect(run.failures).toBe(0);
+	});
+
 	test("close appends a closed copy of the open line with no model call, and the next run does not re-send it", async () => {
 		const cfg = sandboxConfig(MODEL);
 		await runTopics(cfg, fakeComplete([answer(goodSegments())]).complete, { close: false });

@@ -562,6 +562,8 @@ export async function runTopics(cfg: Config, complete: Complete, opts: { close: 
 		const rows = effectiveRows();
 		const window = newEntries(afterClosed(rows)).slice(0, WINDOW);
 		if (window.length === 0) return { lines: [statsLine(tally)], failures: 0 };
+		const last = rows.at(-1);
+		if (last !== undefined && isSegment(last) && last.open && window.at(-1)!.id === last.to) return { lines: [statsLine(tally)], failures: 0 };
 		const failed = await segmentWindow(cfg, complete, window, rows, tally);
 		const lines = failed
 			? [`topics: fail ${window[0]!.id}..${window.at(-1)!.id} ${failed.reason} in=${failed.in} out=${failed.out}`]
