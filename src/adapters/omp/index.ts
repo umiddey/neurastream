@@ -276,6 +276,7 @@ export function autoClose(cfg: Config): string[] {
 			const [bin, args] = closeChildArgs(p.file, p.status === "open");
 			const child = spawn(bin, args, { detached: true, stdio: ["ignore", out, out], env: process.env });
 			child.unref();
+			closeSync(out);
 			started.push(p.file);
 		} catch (err) {
 			adapterLog(cfg, `auto-close: could not start for ${p.file}: ${err}`);

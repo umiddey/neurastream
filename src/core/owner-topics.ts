@@ -551,6 +551,7 @@ export async function runTopics(cfg: Config, complete: Complete, opts: { close: 
 	mkdirSync(dir, { recursive: true, mode: 0o700 });
 	chmodSync(dir, 0o700);
 	const lock = tryLock(join(dir, LOCK_FILE));
+	chmodSync(join(dir, LOCK_FILE), 0o600);
 	if (lock === null) return { lines: ["topics: another run holds the lock"], failures: 0 };
 	try {
 		const tally: Tally = { calls: 0, tokensIn: 0, tokensOut: 0 };
