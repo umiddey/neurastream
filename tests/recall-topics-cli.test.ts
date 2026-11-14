@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
+import { refreshQueuePaths } from "../src/core/queue/lib.ts";
 import { ownerBackfillFile, ownerLogDir, ownerLogFile, type LogEntry } from "../src/core/owner-log.ts";
 import { topicsFile } from "../src/core/owner-topics.ts";
 import { tryLock } from "../src/core/file-lock.ts";
@@ -63,7 +64,15 @@ afterAll(() => {
 	else process.env.HOME = homeBefore;
 	if (nowBefore === undefined) delete process.env.NEURASTREAM_NOW;
 	else process.env.NEURASTREAM_NOW = nowBefore;
+	refreshQueuePaths();
 });
+
+/** Points the recall dir at this file's sandbox, then throws if it is still elsewhere: a live path is never touched. */
+function sandboxed(): void {
+	process.env.QUEUE_STATE = QUEUE;
+	refreshQueuePaths();
+	if (!ownerLogDir().startsWith(TMP)) throw new Error(`refusing to touch ${ownerLogDir()} outside ${TMP}`);
+}
 
 // ---- fixtures ------------------------------------------------------------------------------
 
@@ -84,12 +93,15 @@ function entryAt(i: number, text?: string): LogEntry {
 const ENTRIES = Array.from({ length: 70 }, (_, i) => entryAt(i));
 
 function writeLines(file: string, entries: LogEntry[]): void {
+	sandboxed();
 	mkdirSync(join(file, ".."), { recursive: true, mode: 0o700 });
 	writeFileSync(file, entries.map((e) => `${JSON.stringify(e)}\n`).join(""), { mode: 0o600 });
 }
 
 /** Backfill 0..19, live log 20..44 (45 entries), unless `entries` is given. */
 function seedLog(entries: LogEntry[] = ENTRIES.slice(0, 45)): void {
+	cfgWith(MODEL);
+	sandboxed();
 	rmSync(ownerLogDir(), { recursive: true, force: true });
 	writeLines(ownerBackfillFile(), entries.slice(0, 20));
 	writeLines(ownerLogFile(), entries.slice(20));
@@ -131,6 +143,14 @@ interface SegOut {
 	continues: string | null;
 }
 
+interface SkippedOut {
+	from: string;
+	to: string;
+	at: number;
+	skipped: true;
+	why: string;
+}
+
 function topicLine(from: number, to: number, over: Partial<SegOut> = {}): SegOut {
 	return {
 		from: idOf(from),
@@ -139,7 +159,7 @@ function topicLine(from: number, to: number, over: Partial<SegOut> = {}): SegOut
 		open: false,
 		title: "Traces series ship order",
 		keywords: ["traces series"],
-		decisions: [{ id: idOf(3), text: "ship the traces series first" }],
+		decisions: [{ id: idOf(from), text: "ship the traces series first" }],
 		questions: [],
 		names: [],
 		continues: null,
@@ -147,7 +167,8 @@ function topicLine(from: number, to: number, over: Partial<SegOut> = {}): SegOut
 	};
 }
 
-function writeTopics(lines: (SegOut | string)[]): void {
+function writeTopics(lines: (SegOut | SkippedOut | string)[]): void {
+	sandboxed();
 	mkdirSync(ownerLogDir(), { recursive: true, mode: 0o700 });
 	writeFileSync(topicsFile(), lines.map((l) => (typeof l === "string" ? `${l}\n` : `${JSON.stringify(l)}\n`)).join(""), { mode: 0o600 });
 }
@@ -234,6 +255,7 @@ test("topics_model empty: topics exits 0 with `topics: off` and calls nothing", 
 test("with no topics file, and with a file holding only one broken line, search output is byte-identical", async () => {
 	seedLog();
 	const cfg = cfgWith(MODEL);
+	sandboxed();
 	rmSync(topicsFile(), { force: true });
 	const none = await runAsync(["traces"], cfg);
 	writeTopics(["this is not json {"]);
@@ -254,7 +276,8 @@ test("one valid topic lists its segment first, with the range and the title", as
 test("a skipped stretch is still found by its raw words", async () => {
 	seedLog();
 	writeTopics([topicLine(0, 14), { from: idOf(15), to: idOf(29), at: NOW_SEC, skipped: true, why: "two failures" }]);
-	const r = await runAsync(["zoom"], cfgWith(MODEL));
+	// "zoom" matches all 45 seeded entries and the default 20-hit cap would cut entry 16; "note 16" matches only it.
+	const r = await runAsync(["note", "16"], cfgWith(MODEL));
 	expect(r.out).toContain("owner note 16");
 });
 
@@ -328,6 +351,7 @@ test("a run whose answers fail writes only `topics: fail` lines, with no marker,
 });
 
 test("a run on a fresh machine (no recall dir, no log) exits 0 with no ENOENT and makes a 0700 dir", async () => {
+	sandboxed();
 	rmSync(ownerLogDir(), { recursive: true, force: true });
 	rmSync(ownerBackfillFile(), { force: true });
 	rmSync(ownerLogFile(), { force: true });
@@ -338,6 +362,7 @@ test("a run on a fresh machine (no recall dir, no log) exits 0 with no ENOENT an
 });
 
 test("a topics path that is a directory reports the reason code `internal` and not the message", async () => {
+	sandboxed();
 	seedLog();
 	rmSync(topicsFile(), { force: true });
 	mkdirSync(topicsFile(), { recursive: true });

@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
+import { refreshQueuePaths } from "../src/core/queue/lib.ts";
 import { ownerBackfillFile, ownerLogDir, ownerLogFile } from "../src/core/owner-log.ts";
 import { recallCli } from "../src/cli/recall.ts";
 
@@ -32,7 +33,15 @@ afterAll(() => {
 	else process.env.HOME = homeBefore;
 	if (nowBefore === undefined) delete process.env.NEURASTREAM_NOW;
 	else process.env.NEURASTREAM_NOW = nowBefore;
+	refreshQueuePaths();
 });
+
+/** Points the recall dir at this file's sandbox, then throws if it is still elsewhere: a live path is never touched. */
+function sandboxed(): void {
+	process.env.QUEUE_STATE = QUEUE;
+	refreshQueuePaths();
+	if (!ownerLogDir().startsWith(TMP)) throw new Error(`refusing to touch ${ownerLogDir()} outside ${TMP}`);
+}
 
 /** Sandbox config: queue state under TMP, guard logs under TMP, rollover off. */
 function sandboxConfig(): Config {
@@ -73,6 +82,7 @@ const BACKFILL: Row[] = [
 
 /** Replace the live log and the backfill with these rows, oldest first. */
 function seed(live: Row[], backfill: Row[]): void {
+	sandboxed();
 	rmSync(ownerLogDir(), { recursive: true, force: true });
 	mkdirSync(ownerLogDir(), { recursive: true });
 	writeFileSync(ownerLogFile(), `${live.map(r => JSON.stringify(r)).join("\n")}\n`);
@@ -80,7 +90,7 @@ function seed(live: Row[], backfill: Row[]): void {
 }
 
 /** Run the CLI and capture what it prints to stdout and stderr. */
-function run(args: string[]): { code: number; out: string } {
+async function run(args: string[]): Promise<{ code: number; out: string }> {
 	const seen: string[] = [];
 	const sink = (...parts: unknown[]): void => {
 		seen.push(parts.map(String).join(" "));
@@ -90,7 +100,7 @@ function run(args: string[]): { code: number; out: string } {
 	console.log = sink;
 	console.error = sink;
 	try {
-		const code = recallCli(args, CFG);
+		const code = await recallCli(args, CFG);
 		return { code, out: seen.join("\n") };
 	} finally {
 		console.log = log;
@@ -100,9 +110,9 @@ function run(args: string[]): { code: number; out: string } {
 
 // ---- (f) search ----
 
-test("(f) search matches every word, case-insensitive, in any order, across live and backfill", () => {
+test("(f) search matches every word, case-insensitive, in any order, across live and backfill", async () => {
 	seed(LIVE, BACKFILL);
-	const found = run(["Series", "TRACES"]);
+	const found = await run(["Series", "TRACES"]);
 	expect(found.code).toBe(0);
 	expect(found.out).toContain("ship the traces series");
 	expect(found.out).toContain("Shipped the traces series");
@@ -111,31 +121,31 @@ test("(f) search matches every word, case-insensitive, in any order, across live
 	expect(found.out).not.toContain("answer to the newer note");
 });
 
-test("(f) a search where no entry has every word prints no match and exits 1", () => {
+test("(f) a search where no entry has every word prints no match and exits 1", async () => {
 	seed(LIVE, BACKFILL);
-	const missed = run(["traces", "lunch"]);
+	const missed = await run(["traces", "lunch"]);
 	expect(missed.code).toBe(1);
 	expect(missed.out).toContain("no match");
 });
 
-test("(f) --since 7d keeps only entries from the last 7 days", () => {
+test("(f) --since 7d keeps only entries from the last 7 days", async () => {
 	seed(LIVE, BACKFILL);
-	const recent = run(["traces", "--since", "7d"]);
+	const recent = await run(["traces", "--since", "7d"]);
 	expect(recent.out).toContain("newer traces note");
 	expect(recent.out).not.toContain("ship the traces series");
 	expect(recent.out).not.toContain("series traces backfill old");
 });
 
-test("(f) --limit 1 shows only the newest match", () => {
+test("(f) --limit 1 shows only the newest match", async () => {
 	seed(LIVE, BACKFILL);
-	const one = run(["traces", "--limit", "1"]);
+	const one = await run(["traces", "--limit", "1"]);
 	expect(one.out).toContain("newer traces note");
 	expect(one.out).not.toContain("Shipped the traces series");
 });
 
-test("(f) matches print newest first, live before backfill", () => {
+test("(f) matches print newest first, live before backfill", async () => {
 	seed(LIVE, BACKFILL);
-	const all = run(["traces"]).out;
+	const all = (await run(["traces"])).out;
 	const newest = all.indexOf("newer traces note");
 	const middle = all.indexOf("Shipped the traces series");
 	const oldest = all.indexOf("series traces backfill old");
@@ -146,35 +156,35 @@ test("(f) matches print newest first, live before backfill", () => {
 
 // ---- (g) --show ----
 
-test("(g) --show on an owner entry prints it and the next Main entry, not the owner entry after", () => {
+test("(g) --show on an owner entry prints it and the next Main entry, not the owner entry after", async () => {
 	seed(LIVE, BACKFILL);
-	const shown = run(["--show", "00000000a00000001"]).out;
+	const shown = (await run(["--show", "00000000a00000001"])).out;
 	expect(shown).toContain("ship the traces series");
 	expect(shown).toContain("Shipped the traces series");
 	expect(shown).not.toContain("unrelated lunch order");
 	expect(shown.indexOf("ship the traces series")).toBeLessThan(shown.indexOf("Shipped the traces series"));
 });
 
-test("(g) --show on a Main entry prints the owner entry before it, then the answer", () => {
+test("(g) --show on a Main entry prints the owner entry before it, then the answer", async () => {
 	seed(LIVE, BACKFILL);
-	const shown = run(["--show", "00000000b00000002"]).out;
+	const shown = (await run(["--show", "00000000b00000002"])).out;
 	expect(shown).toContain("ship the traces series");
 	expect(shown).toContain("Shipped the traces series");
 	expect(shown).not.toContain("unrelated lunch order");
 	expect(shown.indexOf("ship the traces series")).toBeLessThan(shown.indexOf("Shipped the traces series"));
 });
 
-test("(g) --show with an unknown id exits 2", () => {
+test("(g) --show with an unknown id exits 2", async () => {
 	seed(LIVE, BACKFILL);
-	expect(run(["--show", "zzzzzzzzzzzzzzzzz"]).code).toBe(2);
+	expect((await run(["--show", "zzzzzzzzzzzzzzzzz"])).code).toBe(2);
 });
 
 // ---- (h) --json ----
 
-test("(h) --json prints the same rows as objects with id, at, role and text", () => {
+test("(h) --json prints the same rows as objects with id, at, role and text", async () => {
 	seed(LIVE, BACKFILL);
-	const human = run(["traces"]).out;
-	const json = run(["traces", "--json"]).out;
+	const human = (await run(["traces"])).out;
+	const json = (await run(["traces", "--json"])).out;
 	const rows = json
 		.split("\n")
 		.filter(line => line !== "")

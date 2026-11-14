@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
+import { refreshQueuePaths } from "../src/core/queue/lib.ts";
 import {
 	appendOwnerLog,
 	appendedSinceSpawn,
@@ -52,7 +53,15 @@ afterAll(() => {
 	else process.env.HOME = homeBefore;
 	if (nowBefore === undefined) delete process.env.NEURASTREAM_NOW;
 	else process.env.NEURASTREAM_NOW = nowBefore;
+	refreshQueuePaths();
 });
+
+/** Points the recall dir at this file's sandbox, then throws if it is still elsewhere: a live path is never touched. */
+function sandboxed(): void {
+	process.env.QUEUE_STATE = QUEUE;
+	refreshQueuePaths();
+	if (!ownerLogDir().startsWith(TMP)) throw new Error(`refusing to touch ${ownerLogDir()} outside ${TMP}`);
+}
 
 // ---- fixtures -------------------------------------------------------------------------------
 
@@ -79,6 +88,7 @@ function invented(n: number): string {
 }
 
 function writeLines(file: string, entries: LogEntry[]): void {
+	sandboxed();
 	mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
 	writeFileSync(file, entries.map((e) => `${JSON.stringify(e)}\n`).join(""), { mode: 0o600 });
 }
@@ -114,6 +124,8 @@ recall:
 }
 
 beforeEach(() => {
+	sandboxed();
+	sandboxConfig(MODEL);
 	rmSync(ownerLogDir(), { recursive: true, force: true });
 	markTopicsSpawned();
 	seedLog();
@@ -412,6 +424,7 @@ describe("planted secrets", () => {
 
 describe("modes", () => {
 	test("after a run the recall dir is 0700 and the topics file is 0600, also when they pre-existed looser", async () => {
+		sandboxed();
 		const cfg = sandboxConfig(MODEL);
 		mkdirSync(ownerLogDir(), { recursive: true });
 		chmodSync(ownerLogDir(), 0o755);
@@ -448,6 +461,7 @@ describe("ranges and windows", () => {
 
 describe("fresh machine", () => {
 	test("no recall dir and no log: the run creates the dir at 0700 and does not throw", async () => {
+		sandboxed();
 		const cfg = sandboxConfig(MODEL);
 		rmSync(ownerLogDir(), { recursive: true, force: true });
 		const fc = fakeComplete([answer(goodSegments())]);

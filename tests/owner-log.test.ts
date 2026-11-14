@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
+import { refreshQueuePaths } from "../src/core/queue/lib.ts";
 import { checkInject } from "../src/core/guards.ts";
 import { ownerMessagesFile } from "../src/core/incidents.ts";
 import { createOmpAdapter, reset as resetAdapter, type ExtensionHost } from "../src/adapters/omp/index.ts";
@@ -53,7 +54,15 @@ afterAll(() => {
 	else process.env.HOME = homeBefore;
 	if (nowBefore === undefined) delete process.env.NEURASTREAM_NOW;
 	else process.env.NEURASTREAM_NOW = nowBefore;
+	refreshQueuePaths();
 });
+
+/** Points the recall dir at this file's sandbox, then throws if it is still elsewhere: a live path is never touched. */
+function sandboxed(): void {
+	process.env.QUEUE_STATE = QUEUE;
+	refreshQueuePaths();
+	if (!ownerLogDir().startsWith(TMP)) throw new Error(`refusing to touch ${ownerLogDir()} outside ${TMP}`);
+}
 
 /** A clean sandbox: empty queue state and sessions root, a config written to HOME, queue env applied. */
 function freshSandbox(extra = ""): Config {
@@ -112,6 +121,7 @@ function seededBytes(seed: number): (n: number) => Uint8Array {
 
 /** Fill the live log with n owner lines (the 10,000-line case). */
 function fillLog(n: number): void {
+	sandboxed();
 	mkdirSync(ownerLogDir(), { recursive: true });
 	const body = Array.from({ length: n }, (_, i) =>
 		JSON.stringify({ id: newEntryId(NOW_MS + i), at: NOW_SEC + i, role: "owner", text: `line ${i}` }),
@@ -189,6 +199,7 @@ test("(a) one append to a 10,000-line log adds exactly one line and leaves the e
 test("(a) the same frozen clock and stubbed bytes give the same id whether the log is empty or has 10,000 lines", () => {
 	freshSandbox();
 	const empty = appendOwnerLog("owner", "first", { atMs: NOW_MS, rand: fixedBytes });
+	sandboxed();
 	rmSync(ownerLogFile(), { force: true });
 	fillLog(10000);
 	const full = appendOwnerLog("owner", "first", { atMs: NOW_MS, rand: fixedBytes });
@@ -267,6 +278,7 @@ test("(d) planted secrets never reach the log, with secrets.redact on or off", (
 
 test("(e) an unwritable log dir does not throw from the inject or the turn end", () => {
 	const cfg = freshSandbox();
+	sandboxed();
 	// A regular file where the recall dir should be: every mkdir/append under it fails.
 	writeFileSync(ownerLogDir(), "not a directory");
 	expect(() => checkInject({ agent: "main", inject: "owner text" }, cfg)).not.toThrow();
@@ -275,6 +287,7 @@ test("(e) an unwritable log dir does not throw from the inject or the turn end",
 
 test("(e) an unwritable owner-messages.jsonl still lets the owner and Main entries reach the log", () => {
 	const cfg = freshSandbox();
+	sandboxed();
 	// A directory where the store file should be: the store write fails, the log must not.
 	mkdirSync(ownerMessagesFile(), { recursive: true });
 	expect(() => checkInject({ agent: "main", inject: "owner text kept" }, cfg)).not.toThrow();
@@ -289,6 +302,7 @@ test("(e) an unwritable owner-messages.jsonl still lets the owner and Main entri
 
 test("(f) readLines yields lines newest first across the 64 KiB buffer, a longer-than-buffer line, and an unterminated last line", () => {
 	freshSandbox();
+	sandboxed();
 	mkdirSync(ownerLogDir(), { recursive: true });
 	const file = join(ownerLogDir(), "reader.jsonl");
 	const many = Array.from({ length: 3000 }, (_, i) => `row ${i} ${"p".repeat(40)}`);
@@ -339,6 +353,7 @@ test("(i) backfill keeps owner prose and final replies of Main, in time order, a
 		[turn("2025-10-01T10:07:00Z", "user", "sub task"), turn("2025-10-01T10:07:05Z", "assistant", "sub answer")].join("\n") + "\n",
 	);
 	// The live log's first entry is at 10:10: backfill takes only what is before it.
+	sandboxed();
 	mkdirSync(ownerLogDir(), { recursive: true });
 	const LIVE_AT = Date.parse("2025-10-01T10:10:00Z") / 1000;
 	writeFileSync(ownerLogFile(), `${JSON.stringify({ id: "00000000a00000001", at: LIVE_AT, role: "owner", text: "live" })}\n`);
@@ -395,6 +410,7 @@ test("(k) a tool-call-only assistant message between two texts is skipped: the r
 
 test("(j) the recall dir is 0700 and both log files are 0600, also when they pre-exist looser", () => {
 	const cfg = freshSandbox();
+	sandboxed();
 	mkdirSync(ownerLogDir(), { recursive: true });
 	chmodSync(ownerLogDir(), 0o755);
 	writeFileSync(ownerLogFile(), "");
