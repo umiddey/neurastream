@@ -1,5 +1,5 @@
 # Changelog
-## Unreleased
+## 0.3.7
 ### Fixed
 - Topic index: a run with nothing newer than the open segment makes no model call.
 
