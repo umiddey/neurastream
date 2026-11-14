@@ -365,7 +365,10 @@ export async function ompComplete(req: CompleteRequest, opts: { spawn?: GatewayS
 		if (reply === undefined) throw gatewayError("no-reply", "no reply with id 1");
 		if (reply.status !== 200) throw gatewayError(`status-${reply.status}`, `status ${reply.status}`);
 		const choice = reply.body?.choices?.[0];
-		if (choice?.finish_reason !== "stop") throw gatewayError("finish-reason", "reply did not finish with stop");
+		if (choice?.finish_reason !== "stop") {
+			const code = typeof choice?.finish_reason === "string" ? choice.finish_reason.slice(0, 20) : "none";
+			throw gatewayError(`finish-reason:${code}`, "reply did not finish with stop");
+		}
 		const calls = choice.message?.tool_calls;
 		if (Array.isArray(calls) && calls.length > 0) throw gatewayError("tool-calls", "reply asked for tool calls");
 		const text = choice.message?.content;

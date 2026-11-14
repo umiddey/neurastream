@@ -84,20 +84,20 @@ type Attempt =
 const TOPICS_FILE = "owner-topics.jsonl";
 const TOPICS_LOG_FILE = "owner-topics.log";
 const LOCK_FILE = "owner-topics.lock";
-const WINDOW = 120;
-const MAX_TOKENS = 4000;
+const WINDOW = 60;
+const MAX_TOKENS = 8000;
 
 const SYSTEM = [
 	"You split a chronological log of an owner's messages and the assistant's replies into topic segments.",
-	"Answer with one JSON object and nothing else:",
-	'{"segments":[{"from":"<entry id>","to":"<entry id>","title":"...","keywords":["..."],"decisions":[{"id":"<entry id>","text":"..."}],"questions":[{"id":"<owner entry id>","text":"..."}],"names":["..."],"continues":null}]}',
+	"Answer with one JSON object and nothing else. Entries are numbered [1], [2], ...; every id below is an entry number as a string:",
+	'{"segments":[{"from":"<entry number>","to":"<entry number>","title":"...","keywords":["..."],"decisions":[{"id":"<entry number>","text":"..."}],"questions":[{"id":"<owner entry number>","text":"..."}],"names":["..."],"continues":null}]}',
 	"Rules:",
 	"- The segments cover the log in order with no gaps and no overlaps; the last one ends at the last entry.",
-	"- from and to are entry ids from the log. A segment that is not the last has 3 to 60 entries.",
+	"- from and to are entry numbers from the log. A segment that is not the last has 3 to 60 entries.",
 	"- title: at most 10 words. keywords: at most 6 words each. decision text: at most 60 words, and its id is an entry in the segment.",
 	"- questions: the owner's open questions, each with the id of an owner entry in the segment.",
 	"- Write in your own words. Never copy 8 or more words in a row from the log.",
-	"- continues: the from id of an earlier closed segment this one directly continues; null when unsure.",
+	"- continues: always null.",
 ].join("\n");
 
 export function topicsFile(): string {
@@ -313,10 +313,50 @@ function parseAnswer(text: string, window: readonly LogEntry[], earlier: readonl
 	} catch {
 		return { reason: "bad-json" };
 	}
-	const segments = shape(value);
-	if (segments === undefined) return { reason: "check:shape" };
-	const err = checkSegments(segments, window, earlier);
-	return err === null ? { segments } : { reason: `check:${err.slice(0, err.indexOf(":"))}` };
+	const shaped = shape(value);
+	if (shaped === undefined) return { reason: "check:shape" };
+	// The model sees entry numbers; a number the window has becomes its stored id, anything else is checked as is.
+	const idOf = (label: string): string => (/^[1-9]\d*$/.test(label) ? (window[Number(label) - 1]?.id ?? label) : label);
+	const segments = shaped.map(s => ({
+		...s,
+		from: idOf(s.from),
+		to: idOf(s.to),
+		decisions: s.decisions.map(d => ({ ...d, id: idOf(d.id) })),
+		questions: s.questions.map(q => ({ ...q, id: idOf(q.id) })),
+	}));
+	// The model cuts short greeting stretches that the 3-entry rule forbids: a short non-last segment folds into the next.
+	const pos = new Map(window.map((e, i) => [e.id, i]));
+	const folded: AnswerSegment[] = [];
+	let carry: AnswerSegment | undefined;
+	for (const [i, s] of segments.entries()) {
+		const cur = carry
+			? {
+					...s,
+					from: carry.from,
+					keywords: [...carry.keywords, ...s.keywords],
+					decisions: [...carry.decisions, ...s.decisions],
+					questions: [...carry.questions, ...s.questions],
+					names: [...carry.names, ...s.names],
+				}
+			: s;
+		const a = pos.get(cur.from);
+		const b = pos.get(cur.to);
+		carry = i < segments.length - 1 && a !== undefined && b !== undefined && b >= a && b - a + 1 < 3 ? cur : undefined;
+		if (carry === undefined) folded.push(cur);
+	}
+	// A note whose id points outside its segment (or a question not on an owner entry) is dropped, not the window.
+	const clean = folded.map(s => {
+		const a = pos.get(s.from) ?? -1;
+		const b = pos.get(s.to) ?? -1;
+		const inside = (id: string): boolean => (pos.get(id) ?? -1) >= a && (pos.get(id) ?? -1) <= b && pos.has(id);
+		return {
+			...s,
+			decisions: s.decisions.filter(d => inside(d.id)),
+			questions: s.questions.filter(q => inside(q.id) && window[pos.get(q.id)!]!.role === "owner"),
+		};
+	});
+	const err = checkSegments(clean, window, earlier);
+	return err === null ? { segments: clean } : { reason: `check:${err.slice(0, err.indexOf(":"))}` };
 }
 
 // A model error keeps its reason code; a timeout is named TimeoutError by the caller's spawn.
@@ -327,7 +367,7 @@ function failureReason(err: unknown): string {
 }
 
 function windowPrompt(window: readonly LogEntry[]): string {
-	return ["Log entries, oldest first:", ...window.map(e => `[${e.id}] (${e.role}) ${e.text}`)].join("\n");
+	return ["Log entries, oldest first:", ...window.map((e, i) => `[${i + 1}] (${e.role}) ${e.text}`)].join("\n");
 }
 
 // Redacts the model's text before it is written: the configured known secrets and extra patterns.

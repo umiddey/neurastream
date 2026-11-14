@@ -1,4 +1,8 @@
 # Changelog
+## Unreleased
+### Fixed
+- Topic index: the model now sees entry numbers (`[1]`, `[2]`, ...) and the run maps them back to entry ids, because it copied the long ids wrongly. A window is 60 entries and the answer cap 8000 tokens (a 120-entry window ran into the 4000 cap). A segment under 3 entries folds into the next one, and a decision or question whose id points outside its segment (or a question not on an owner entry) is dropped instead of skipping the whole window. A reply that stops for another reason than `stop` names it in the failure line (`finish-reason:length`).
+
 ## 0.3.5
 ### Added
 - Topic index (off by default; `recall.topics_model`): `neurastream recall topics` and a background run after every `recall.topics_every` Main entries group the owner log into topic segments; `recall <words>` shows matching topics and `recall --show a..b` shows an id range.

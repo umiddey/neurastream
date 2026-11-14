@@ -298,12 +298,30 @@ describe("a failed check gets one retry, then a skipped line", () => {
 	const bad: [string, SegIn[]][] = [
 		["a gap", [seg(0, 4), seg(6, 14), seg(15, 29), seg(30, 44)]],
 		["an overlap", [seg(0, 15), seg(15, 29), seg(30, 44)]],
-		["a segment under 3 entries that is not last", [seg(0, 1), seg(2, 29), seg(30, 44)]],
-		[
-			"a question id on a main entry",
-			[seg(0, 14, { questions: [{ id: idOf(3), text: "why" }] }), seg(15, 29), seg(30, 44)],
-		],
 	];
+
+	test("a segment under 3 entries that is not last folds into the next, with one call", async () => {
+		const cfg = sandboxConfig(MODEL);
+		const fc = fakeComplete([answer([seg(0, 1), seg(2, 29), seg(30, 44)])]);
+		await runTopics(cfg, fc.complete, { close: false });
+		expect(fc.calls).toHaveLength(1);
+		expect(readTopics().map((t) => [t.from, t.to])).toEqual([
+			[idOf(0), idOf(29)],
+			[idOf(30), idOf(44)],
+		]);
+	});
+
+	test("a question id on a main entry is dropped, the segment is kept, with one call", async () => {
+		const cfg = sandboxConfig(MODEL);
+		const fc = fakeComplete([
+			answer([seg(0, 14, { questions: [{ id: idOf(3), text: "why" }] }), seg(15, 29), seg(30, 44)]),
+		]);
+		await runTopics(cfg, fc.complete, { close: false });
+		expect(fc.calls).toHaveLength(1);
+		const topics = readTopics();
+		expect(topics).toHaveLength(3);
+		expect(topics[0]!.questions).toEqual([]);
+	});
 
 	test.each(bad)("%s: retry carries the error, the good retry is appended", async (_name, segments) => {
 		const cfg = sandboxConfig(MODEL);
@@ -337,8 +355,27 @@ describe("a failed check gets one retry, then a skipped line", () => {
 		const next = fakeComplete([answer([seg(45, 49)])]);
 		await runTopics(cfg, next.complete, { close: false });
 		expect(next.calls).toHaveLength(1);
-		expect(next.calls[0]!.prompt).toContain(`[${idOf(45)}]`);
-		expect(next.calls[0]!.prompt).not.toContain(`[${idOf(44)}]`);
+		expect(next.calls[0]!.prompt).toContain("[1] (");
+		expect(next.calls[0]!.prompt).toContain("[5] (");
+		expect(next.calls[0]!.prompt).not.toContain("[6] (");
+	});
+
+	test("a model that answers with the prompt's entry numbers gets them stored as entry ids", async () => {
+		const cfg = sandboxConfig(MODEL);
+		const numbered = [
+			seg(0, 14, { from: "1", to: "15", decisions: [{ id: "4", text: "ship the traces series first" }] }),
+			seg(15, 29, { from: "16", to: "30", questions: [{ id: "17", text: "is the zoom index ready" }] }),
+			seg(30, 44, { from: "31", to: "45" }),
+		];
+		await runTopics(cfg, fakeComplete([answer(numbered)]).complete, { close: false });
+		const topics = readTopics();
+		expect(topics.map((t) => [t.from, t.to])).toEqual([
+			[idOf(0), idOf(14)],
+			[idOf(15), idOf(29)],
+			[idOf(30), idOf(44)],
+		]);
+		expect(topics[0]!.decisions[0]!.id).toBe(idOf(3));
+		expect(topics[1]!.questions[0]!.id).toBe(idOf(16));
 	});
 });
 
@@ -352,8 +389,9 @@ describe("re-cut and close", () => {
 		const fc = fakeComplete([answer([seg(30, 40), seg(41, 54)])]);
 		await runTopics(cfg, fc.complete, { close: false });
 		expect(fc.calls).toHaveLength(1);
-		expect(fc.calls[0]!.prompt).toContain(`[${idOf(30)}]`);
-		expect(fc.calls[0]!.prompt).toContain(`[${idOf(45)}]`);
+		expect(fc.calls[0]!.prompt).toContain("[1] (");
+		expect(fc.calls[0]!.prompt).toContain("[25] (");
+		expect(fc.calls[0]!.prompt).not.toContain("[26] (");
 		const topics = readTopics();
 		expect(topics.map((t) => [t.from, t.to])).toEqual([
 			[idOf(0), idOf(14)],
@@ -375,8 +413,8 @@ describe("re-cut and close", () => {
 		writeLines(ownerLogFile(), ENTRIES.slice(20, 50));
 		const next = fakeComplete([answer([seg(45, 49)])]);
 		await runTopics(cfg, next.complete, { close: false });
-		expect(next.calls[0]!.prompt).not.toContain(`[${idOf(30)}]`);
-		expect(next.calls[0]!.prompt).toContain(`[${idOf(45)}]`);
+		expect(next.calls[0]!.prompt).toContain("[5] (");
+		expect(next.calls[0]!.prompt).not.toContain("[6] (");
 	});
 });
 
