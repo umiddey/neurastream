@@ -1,4 +1,8 @@
 # Changelog
+## Unreleased
+### Fixed
+- Topic index: a run with nothing newer than the open segment makes no model call.
+
 ## 0.3.6
 ### Fixed
 - Topic index: the model now sees entry numbers (`[1]`, `[2]`, ...) and the run maps them back to entry ids, because it copied the long ids wrongly. A window is 60 entries and the answer cap 8000 tokens (a 120-entry window ran into the 4000 cap). A segment under 3 entries folds into the next one, and a decision or question whose id points outside its segment (or a question not on an owner entry) is dropped instead of skipping the whole window. A reply that stops for another reason than `stop` names it in the failure line (`finish-reason:length`).
