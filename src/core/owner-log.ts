@@ -41,6 +41,12 @@ export function newEntryId(atMs: number, rand: (n: number) => Uint8Array = rando
 	return atMs.toString(36).padStart(9, "0") + Buffer.from(rand(4)).toString("hex");
 }
 
+// The second an entry id was minted at; undefined for an id that is not in newEntryId's form.
+export function entryIdSec(id: string): number | undefined {
+	if (!/^[0-9a-z]{9}[0-9a-f]{8}$/.test(id)) return undefined;
+	return Math.floor(Number.parseInt(id.slice(0, 9), 36) / 1000);
+}
+
 // The one writer: the recall dir is 0700 and the file 0600, also when they pre-exist looser.
 export function appendJsonLines(file: string, rows: readonly object[]): void {
 	const dir = dirname(file);

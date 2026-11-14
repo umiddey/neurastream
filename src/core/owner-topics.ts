@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { nowSec } from "./clock.ts";
 import type { Config } from "./config.ts";
 import { tryLock } from "./file-lock.ts";
-import { appendJsonLines, type LogEntry, ownerLogDir, ownerLogFile, readEntries, readLines } from "./owner-log.ts";
+import { appendJsonLines, entryIdSec, type LogEntry, ownerLogDir, ownerLogFile, readEntries, readLines } from "./owner-log.ts";
 import { loadKnownSecrets, redactSecrets } from "./secret-redact.ts";
 
 export interface CompleteRequest {
@@ -143,7 +143,7 @@ function parseRow(line: string): TopicRow | undefined {
 	if (v === null || typeof v !== "object" || typeof v.from !== "string" || typeof v.to !== "string") return undefined;
 	if (typeof v.at !== "number") return undefined;
 	if (v.skipped === true) {
-		return { from: v.from, to: v.to, at: v.at, skipped: true, why: typeof v.why === "string" ? v.why : "" };
+		return { from: v.from, to: v.to, at: entryIdSec(v.from) ?? v.at, skipped: true, why: typeof v.why === "string" ? v.why : "" };
 	}
 	if (
 		typeof v.title !== "string" ||
@@ -159,7 +159,7 @@ function parseRow(line: string): TopicRow | undefined {
 	return {
 		from: v.from,
 		to: v.to,
-		at: v.at,
+		at: entryIdSec(v.from) ?? v.at,
 		open: v.open,
 		title: v.title,
 		keywords: v.keywords,
