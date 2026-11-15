@@ -33,6 +33,23 @@ export interface RuleLevels {
 /** Kinds the tuner must never drop: watcher liveness and the undo's own evidence. */
 export const PINNED = ["release-regression", "beat-failed", "beat-stale"] as const;
 
+/** Detector and watcher kinds the tuner may step. Everything else is never scored. */
+export const TUNABLE = [
+	"ledger-contradiction",
+	"tool-crash",
+	"block-loop",
+	"owner-correction",
+	"claim-unbacked",
+	"suspicious-action",
+	"block-then-bypass",
+	"unreported-finding",
+	"beat-failed",
+	"beat-stale",
+	"unit-failed",
+	"ci-red-main",
+	"ci-red-mr",
+] as const;
+
 const LEVELS: readonly Level[] = ["block", "tell", "off"];
 
 function isObj(value: unknown): value is Record<string, unknown> {

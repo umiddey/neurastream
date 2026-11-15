@@ -20,7 +20,7 @@ import type { RunSource } from "./adapter.ts";
 import { readEvents } from "./agent-score.ts";
 import { strftime } from "./clock.ts";
 import { readBeats, type Heartbeat } from "./heartbeat.ts";
-import { runDetectorsGated, type GatedInputs } from "./incident-detectors.ts";
+import { runDetectorsGated, suppressedByLevel, type GatedInputs } from "./incident-detectors.ts";
 import { log, readStaffingEntries } from "./guards.ts";
 import { appendMetric, inWindow, readBlocks, readMetricEvents, reasonKey, type Window } from "./metrics.ts";
 import { notifyProviders, waitingOwnerMessages } from "./notify.ts";
@@ -235,6 +235,7 @@ export function watchOnce(cfg: Config, deps: WatchDeps): WatchReport {
 	const deduped: IncidentView[] = [];
 	const posts: string[] = [];
 	for (const p of problems) {
+		if (suppressedByLevel(cfg, p.kind, p.summary)) continue;
 		const { incident, deduped: seen } = addIncident(
 			cfg,
 			{ source: "watch", kind: p.kind, summary: p.summary, evidence: p.evidence, fingerprint: p.fingerprint },

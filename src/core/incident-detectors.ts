@@ -27,6 +27,7 @@ import type { Run, TraceEvent } from "./adapter.ts";
 import type { Config } from "./config.ts";
 import { nowSec, strftime } from "./clock.ts";
 import { log } from "./guards.ts";
+import { levelFor, readLevels, TUNABLE } from "./rule-levels.ts";
 import { addIncident, type IncidentView } from "./incidents.ts";
 import type { GuardBlock } from "./metrics.ts";
 import { maskEvidence, verifyClaims, type Claim, type RelatedRun } from "./trace-claims.ts";
@@ -273,6 +274,18 @@ export interface DetectorInput {
 }
 
 /**
+ * Tell and off for a tunable kind: one guard-log tally line, no incident. Block, a corrupt
+ * file, and every non-tunable kind fall through so the fold opens the incident as today.
+ */
+export function suppressedByLevel(cfg: Config, kind: string, summary: string): boolean {
+	if (!(TUNABLE as readonly string[]).includes(kind)) return false;
+	const level = levelFor(readLevels(cfg), kind);
+	if (level === "block") return false;
+	log(cfg.paths.guard_log, `rule ${kind} ${level}: ${summary}`);
+	return true;
+}
+
+/**
  * Runs every detector that has its inputs, folds findings into the incident store and logs each
  * one. Detector failures are logged, never thrown. Returns the incidents (new or deduped).
  */
@@ -281,6 +294,7 @@ export function runDetectors(cfg: Config, input: DetectorInput, now = nowSec()):
 	const attempt = (name: string, findings: () => Finding[]): void => {
 		try {
 			for (const f of findings()) {
+				if (suppressedByLevel(cfg, f.kind, f.summary)) continue;
 				const { incident, deduped } = addIncident(
 					cfg,
 					{ source: "realtime", kind: f.kind, summary: f.summary, evidence: f.evidence, fingerprint: f.fingerprint },
@@ -326,6 +340,7 @@ export function runDetectors(cfg: Config, input: DetectorInput, now = nowSec()):
 	if (input.unreported) {
 		for (const f of input.unreported!) {
 			try {
+				if (suppressedByLevel(cfg, "unreported-finding", f.summary)) continue;
 				const { incident, deduped } = addIncident(
 					cfg,
 					{ source: "traces", kind: "unreported-finding", summary: f.summary, evidence: f.evidence, fingerprint: `unreported-finding:${f.agent}:${f.target}` },
