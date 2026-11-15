@@ -27,6 +27,8 @@ export interface IncidentRec {
 	ts: number;
 	count: number;
 	lastSeen: number;
+	/** The guard rule id a block-then-bypass finding refused; guard scoring reads it (P9a). */
+	rule?: string;
 }
 
 export type ResolutionRec =
@@ -57,6 +59,8 @@ export interface IncidentInput {
 	evidence?: string;
 	/** Stable identity of the problem; detectors pass one, `incident add` derives it from the text. */
 	fingerprint?: string;
+	/** The guard rule id a block-then-bypass finding refused (P9a). */
+	rule?: string;
 }
 
 export function incidentsFile(cfg: Config): string {
@@ -106,6 +110,7 @@ function parseLine(line: string): IncidentRec | ResolutionRec | ProposalRec | nu
 		ts: rec.ts,
 		count: typeof rec.count === "number" && rec.count >= 1 ? rec.count : 1,
 		lastSeen: typeof rec.lastSeen === "number" ? rec.lastSeen : rec.ts,
+		rule: typeof rec.rule === "string" ? rec.rule : undefined,
 	};
 }
 
@@ -185,6 +190,7 @@ export function addIncident(cfg: Config, input: IncidentInput, now = nowSec()): 
 		ts: now,
 		count: 1,
 		lastSeen: now,
+		rule: input.rule,
 	};
 	mkdirSync(dirname(file), { recursive: true });
 	appendFileSync(file, `${JSON.stringify(rec)}\n`);

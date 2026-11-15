@@ -2,9 +2,9 @@
 // guard-log text the caller injects: no clock, no files, no home. The daily step applies
 // `tuning`; this function only counts.
 import type { Config } from "./config.ts";
-import type { IncidentView } from "./incidents.ts";
-import { inWindow, type Ev, type Window } from "./metrics.ts";
-import { PINNED, TUNABLE, levelFor, type Level, type RuleEntry, type RuleLevels } from "./rule-levels.ts";
+import { readIncidents, type IncidentView } from "./incidents.ts";
+import { inWindow, readBlocks, windows, type Ev, type Window } from "./metrics.ts";
+import { PINNED, TUNABLE, levelFor, readLevels, type Level, type RuleEntry, type RuleLevels } from "./rule-levels.ts";
 
 export type Tuning = Config["tuning"];
 
@@ -20,6 +20,9 @@ export interface KindScore {
 	/** The tuner row only: rule-undo events over demotions, both in the window. */
 	undoRate?: number;
 }
+
+/** What the daily step reads from a score row: a kind's or a guard id's window score. */
+export type Scored = Pick<KindScore, "kind" | "fires" | "usefulShare">;
 
 const TALLY = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z) \[[^\]]*\] rule (\S+) (tell|off): /;
 /** The tuner's own scorecard row (plan 20261110_1746 P6). Not a rule: decideStep never moves it. */
@@ -65,6 +68,28 @@ export function scoreKinds(incidents: IncidentView[], logText: string, w: Window
 	return [...rows, { kind: TUNER, fires: demotions, planned: 0, fixed: 0, dismissed: 0, usefulShare: 0, undoRate: undos / Math.max(1, demotions) }];
 }
 
+/** Per guard id (plan 20261110_1746 P9a): fires are the window's BLOCK lines naming the id; usefulShare is (fires - bypassed) / fires, where bypassed counts the window's block-then-bypass incidents naming it (clamped at 0). Pinned ids are never scored. */
+export function scoreGuards(cfg: Config, now: number): Scored[] {
+	const w = windows(now, cfg.tuning.window_days).cur;
+	const fires = new Map<string, number>();
+	for (const b of readBlocks(cfg)) {
+		if (b.rule === undefined || !inWindow(b.ts, w)) continue;
+		fires.set(b.rule, (fires.get(b.rule) ?? 0) + 1);
+	}
+	const bypassed = new Map<string, number>();
+	for (const i of readIncidents(cfg)) {
+		if (i.kind !== "block-then-bypass" || i.rule === undefined || !inWindow(i.ts, w)) continue;
+		bypassed.set(i.rule, (bypassed.get(i.rule) ?? 0) + 1);
+	}
+	const ids = new Set([...fires.keys(), ...Object.keys(readLevels(cfg).rules)]);
+	return [...ids]
+		.filter(id => !(PINNED as readonly string[]).includes(id))
+		.map(id => {
+			const n = fires.get(id) ?? 0;
+			return { kind: id, fires: n, usefulShare: n === 0 ? 0 : Math.max(0, n - (bypassed.get(id) ?? 0)) / n };
+		});
+}
+
 const DAY_MS = 86_400_000;
 
 /** One level move the daily step made; `probe` marks a probation raise (off -> tell). */
@@ -86,7 +111,7 @@ export interface StepResult {
  * rules under `held_until` never move; a probation ends after `window_days` and is judged then;
  * a `keep_off` rule is never probation-raised. `checked` is always today; `date` only on a move. A `bar` above min_fires raises the down-step threshold for every rule; the tuner row never moves.
  */
-export function decideStep(levels: RuleLevels, scores: KindScore[], now: number, today: string, tuning: Tuning, bar = 0): StepResult {
+export function decideStep(levels: RuleLevels, scores: Scored[], now: number, today: string, tuning: Tuning, bar = 0): StepResult {
 	const rules: Record<string, RuleEntry> = { ...levels.rules };
 	const moves: RuleMove[] = [];
 	const move = (rule: string, from: Level, to: Level, entry: RuleEntry, probe = false) => {

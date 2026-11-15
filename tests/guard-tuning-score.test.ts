@@ -51,7 +51,7 @@ function blocks(c: Config, rule: string | null, n: number, at: number): void {
 	const tail = rule === null ? "" : ` rule=${rule}`;
 	const lines = Array.from(
 		{ length: n },
-		(_, i) => `${new Date((at + i) * 1000).toISOString()} [test] BLOCK main tool=write refused: x${tail}`,
+		(_, i) => `${new Date((at + i) * 1000).toISOString()} BLOCK refused: x${tail}`,
 	);
 	appendFileSync(c.paths.guard_log, `${lines.join("\n")}\n`);
 }
