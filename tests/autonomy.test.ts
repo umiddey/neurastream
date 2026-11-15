@@ -314,7 +314,7 @@ test("tier strict refuses Main's push/merge without the approve phrase", () => {
 	setTier("strict");
 	const d = checkTool(mainEvent("bash", { command: PUSH }), cfg);
 	expect(d.allow).toBe(false);
-	expect(d.reason).toBe('main-guard: tier strict — type "go push" to approve one push/merge');
+	expect(d.reason).toBe('main-guard: tier strict — type "go push" to approve one push/merge [rule main.push-merge]');
 	const m = checkTool(mainEvent("bash", { command: "glab mr merge 141" }), cfg);
 	expect(m.allow).toBe(false);
 	const h = checkTool(mainEvent("bash", { command: "gh pr merge 12 --squash" }), cfg);

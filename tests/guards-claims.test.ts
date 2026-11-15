@@ -342,7 +342,7 @@ ledger:
 	const d = checkSpawn({ ...spawnEv(), agent: "glm" }, cfg);
 	expect(d.allow).toBe(false);
 	expect(d.reason).toBe(
-		`main-guard: glm: 1 problem:\n1. glm: ahead is ahead of glm in ledger.prefer and free (under its provider cap) — spawn ahead, or add "Pick note: <why>" to the brief.`,
+		`main-guard: glm: 1 problem:\n1. glm: ahead is ahead of glm in ledger.prefer and free (under its provider cap) — spawn ahead, or add "Pick note: <why>" to the brief. [rule spawn.verdict]`,
 	);
 });
 
@@ -396,5 +396,5 @@ test("a bypass launch refuses a plan another Main holds, with the held text (I-2
 	claims().claim(PLAN, "b");
 	const d = checkTool(bashEv(`opencode run "Work ${PLAN} on P1"`), cfg);
 	expect(d.allow).toBe(false);
-	expect(d.reason).toBe(`main-guard: plan ${PLAN} is held by Main b since ${SINCE}`);
+	expect(d.reason).toBe(`main-guard: plan ${PLAN} is held by Main b since ${SINCE} [rule main.bypass-launch]`);
 });

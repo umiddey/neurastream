@@ -30,8 +30,9 @@ export interface RuleLevels {
 	corrupt?: true;
 }
 
-/** Kinds the tuner must never drop: watcher liveness and the undo's own evidence. */
-export const PINNED = ["release-regression", "beat-failed", "beat-stale"] as const;
+/** Kinds the tuner must never drop: watcher liveness, the undo's own evidence, and the guard rules
+ * that guard the owner's own surfaces (landing, notify secrets, protected files, claims, UI start). */
+export const PINNED = ["release-regression", "beat-failed", "beat-stale", "main.push-merge", "tool.notify-secret", "tool.protected", "tool.claim-force", "tool.ui-start", "tool.review-lock"] as const;
 
 /** Detector and watcher kinds the tuner may step. Everything else is never scored. */
 export const TUNABLE = [

@@ -429,7 +429,7 @@ test("call budget: warn at 90, refusal at 100 unless reading or editing the plan
 const mod = await import(${JSON.stringify(join(ORIG_EXT, "plan-guard.ts"))});
 console.log(JSON.stringify(mod.checkCall("read", { path: ${JSON.stringify(join(TOY, "src/a.ts"))} }, ${JSON.stringify(TOY)}, "sub", 100, undefined)));
 `) as string;
-	expect(spent.d.reason).toBe(`plan-guard: ${orig}`);
+	expect(spent.d.reason).toBe(`plan-guard: ${orig} [rule sub.rule]`);
 	expect(ev("read", { path: PLAN }, 100).code).toBe(0);
 	expect(ev("edit", { input: `[${PLAN}#abe4]\n+more progress` }, 100).code).toBe(0);
 });
@@ -443,13 +443,13 @@ test("protected guard files: refused until the owner unlocks; subs never close o
 const mod = await import(${JSON.stringify(join(ORIG_EXT, "plan-guard.ts"))});
 console.log(JSON.stringify(mod.checkCall("write", { path: ${JSON.stringify(target)}, content: "x" }, ${JSON.stringify(TOY)}, "sub", 0, undefined)));
 `) as string;
-	expect(refused.d.reason).toBe(`plan-guard: ${orig}`);
+	expect(refused.d.reason).toBe(`plan-guard: ${orig} [rule tool.protected]`);
 	expect(orig).toContain("is a protected guard file");
 	writeFileSync(UNLOCK, new Date().toISOString()); // owner touched the unlock file
 	expect(guardCli("pre-tool", toolEvent("write", { path: target, content: "x" }, "sub")).code).toBe(0);
 	const closer = guardCli("pre-tool", toolEvent("bash", { command: "bun run queue-close docs/plans/x.md" }, "sub"));
 	expect(closer.code).toBe(2);
-	expect(closer.d.reason).toBe(`plan-guard: queue-close and queue-cancel are Main's; report in your plan's "## Progress" instead.`);
+	expect(closer.d.reason).toBe(`plan-guard: queue-close and queue-cancel are Main's; report in your plan's "## Progress" instead. [rule sub.rule]`);
 });
 
 // I-20261027-158/160: an agent copied the read tool's stand-in for a hidden value into
@@ -463,12 +463,12 @@ test("redaction placeholder: copying the read tool's stand-in into a file is ref
 	const edit = guardCli("pre-tool", toolEvent("edit", { path: shipped, old_string: "a: 1", new_string: `a: ${mark}` }, "sub"));
 	expect(edit.code).toBe(2);
 	expect(edit.d.allow).toBe(false);
-	expect(edit.d.reason).toBe(refusal);
+	expect(edit.d.reason).toBe(`${refusal} [rule sub.rule]`);
 	for (const call of [
 		toolEvent("write", { path: shipped, content: `a: ${mark}\n` }, "sub"),
 		toolEvent("ast_edit", { path: shipped, instructions: `set a to ${mark}` }, "sub"),
 	]) {
-		expect(guardCli("pre-tool", call).d.reason).toBe(refusal);
+		expect(guardCli("pre-tool", call).d.reason).toBe(`${refusal} [rule sub.rule]`);
 	}
 	// Removing one (the replaced text only) is the fix, not a copy.
 	expect(guardCli("pre-tool", toolEvent("edit", { path: shipped, old_string: mark, new_string: "a: 1" }, "sub")).code).toBe(0);
@@ -549,7 +549,7 @@ console.log(JSON.stringify(mod.flagCancel("please cancel that plan")));
 	expect(orig).toContain('Flagged: "please cancel that plan"');
 	const spawn = guardCli("spawn", { agent: "toy-worker", invocationKind: "task", brief: `Work ${PLAN}.` });
 	expect(spawn.code).toBe(2);
-	expect(spawn.d.reason).toBe(`main-guard: ${CANCEL_TODO} Flagged: "please cancel that plan"`);
+	expect(spawn.d.reason).toBe(`main-guard: ${CANCEL_TODO} Flagged: "please cancel that plan" [rule spawn.cancel-pending]`);
 });
 
 test("inject: the guard's own stop continuation keeps the idle streak (no endless re-prompt)", () => {

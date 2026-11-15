@@ -219,6 +219,8 @@ export function m4(runs: Run[], w: Window, patterns: RegExp[]): M4 {
 export interface GuardBlock {
 	ts: number;
 	reason: string;
+	/** The guard rule id from the line's ` rule=<id>` tail; undefined for lines written before P8a. */
+	rule?: string;
 }
 
 /** Groups reasons by shape: paths cut to 40 chars, digit runs collapsed to N, and every
@@ -238,7 +240,8 @@ export function parseBlocks(text: string): GuardBlock[] {
 		if (!m) continue;
 		const ts = Date.parse(m[1] ?? "") / 1000;
 		if (Number.isNaN(ts)) continue;
-		out.push({ ts, reason: reasonKey(m[2] ?? "") });
+		const rule = /\srule=(\S+)$/.exec(m[2] ?? "")?.[1];
+		out.push({ ts, reason: reasonKey(m[2] ?? ""), rule });
 	}
 	return out;
 }

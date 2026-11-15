@@ -59,8 +59,9 @@ export interface PlanEditDecision extends Decision {
 	note?: string;
 }
 
-function deny(reason: string): Decision {
-	return { allow: false, reason };
+/** Every refusal names its guard rule id (plan 20261110_1746 P8a); the id ends the text as ` [rule <id>]`. */
+function deny(reason: string, rule: string): Decision {
+	return { allow: false, reason: `${reason} [rule ${rule}]` };
 }
 
 /** A raw target that names a plan: under a docs/plans/ directory, or a plan file name (YYYYMMDD_HHMM_*.md). */
@@ -1429,11 +1430,12 @@ function editWindow(e: ToolEvent, input: Record<string, unknown>, cfg: Config): 
 	if (w.used.length && now - w.windowStart >= cfg.guards.main_window_min * 60_000) w.used = [];
 	if (w.used.length >= limit) {
 		const mins = Math.ceil((w.windowStart + cfg.guards.main_window_min * 60_000 - now) / 60_000);
-		log(cfg.paths.guard_log, `BLOCK tool=${e.tool} after ${w.used.length} edits (tier ${tier}): ${files.join(",")}`);
+		log(cfg.paths.guard_log, `BLOCK tool=${e.tool} after ${w.used.length} edits (tier ${tier}): ${files.join(",")} rule=main.edit-window`);
 		return deny(
 			`main-guard: tier ${tier} — Main already changed project files ${w.used.length} times in this ${cfg.guards.main_window_min}-minute window ` +
 				`(${limitName} ${limit}; resets in ${mins} min). Main writes plans, not code: put the work in a plan ` +
 				`(listed in ${q.INDEX}, phase-0 blockers first) and spawn an implementer. Changes so far: ${w.used.join(", ")}`,
+			"main.edit-window",
 		);
 	}
 	if (!w.used.length) w.windowStart = now;
@@ -1571,7 +1573,7 @@ function bypassLaunch(command: string, cfg: Config, spawner: Spawner, runs?: Run
 function mainTool(e: ToolEvent, input: Record<string, unknown>, cfg: Config, runs?: RunSource): Decision {
 	if (e.tool === "task") {
 		const why = taskLaunch(input, cfg, e.runningJobs, "main", runs);
-		return why ? deny(`main-guard: ${why}`) : ALLOW;
+		return why ? deny(`main-guard: ${why}`, "main.task-launch") : ALLOW;
 	}
 	if (cfg.guards.shell_tools.includes(e.tool)) {
 		// Strict landing gate (20261025_1940 P2, P5): in tier strict every push/merge waits for the
@@ -1579,12 +1581,12 @@ function mainTool(e: ToolEvent, input: Record<string, unknown>, cfg: Config, run
 		// it goes through. Opinionated and full keep today's allowance. Owner-only rules above are
 		// untouched.
 		if (landingCommand(input) && currentTier(cfg) === "strict" && !takeGo(cfg)) {
-			log(cfg.paths.guard_log, "BLOCK landing: tier strict, no approve phrase");
-			return deny(`main-guard: tier strict — type "${cfg.autonomy.go_phrase}" to approve one push/merge`);
+			log(cfg.paths.guard_log, "BLOCK landing: tier strict, no approve phrase rule=main.push-merge");
+			return deny(`main-guard: tier strict — type "${cfg.autonomy.go_phrase}" to approve one push/merge`, "main.push-merge");
 		}
 		const command = String(input?.command ?? input?.code ?? "");
 		const why = bypassLaunch(command, cfg, "main", runs);
-		if (why) return deny(`main-guard: ${why}`);
+		if (why) return deny(`main-guard: ${why}`, "main.bypass-launch");
 	}
 	return editWindow(e, input, cfg);
 }
@@ -1655,24 +1657,25 @@ export const MAIN_PLAN_FILE = /\/docs\/plans\/(?!archive\/)(?:[^/]+\/)*[^/]+\.md
 export function checkTool(e: ToolEvent, cfg: Config, runs?: RunSource): Decision {
 	const lock = e.agent === "sub" ? reviewLockProblem(e, cfg) : null;
 	if (lock) {
-		log(cfg.paths.plan_guard_log, `BLOCK ${e.agent}:${e.agentId} tool=${e.tool} review lock: ${lock}`);
-		return deny(`plan-guard: ${lock}`);
+		log(cfg.paths.plan_guard_log, `BLOCK ${e.agent}:${e.agentId} tool=${e.tool} review lock: ${lock} rule=tool.review-lock`);
+		return deny(`plan-guard: ${lock}`, "tool.review-lock");
 	}
 	if (cfg.guards.skip_tools.includes(e.tool)) return ALLOW;
 	const input = e.input ?? {};
 	// Starting the owner page (plan 20261024_2230 P3c) is the owner's systemd move, never an
 	// agent's, unlocked or not: refused plan-guard style like a protected-file write.
 	if (cfg.guards.shell_tools.includes(e.tool) && startsOwnerUi(input)) {
-		log(cfg.paths.plan_guard_log, `BLOCK ${e.agent}:${e.agentId} tool=${e.tool} ui-start: ${String(input.command ?? "")}`);
+		log(cfg.paths.plan_guard_log, `BLOCK ${e.agent}:${e.agentId} tool=${e.tool} ui-start: ${String(input.command ?? "")} rule=tool.ui-start`);
 		return deny(
 			"plan-guard: starting the owner page (neurastream workspace, or systemctl --user start/restart/enable of neurastream-workspace) is the owner's move, not an agent's.",
+			"tool.ui-start",
 		);
 	}
 	// claim release --force frees another Main's claim (plan 20261027_1300 P4): the owner's
 	// terminal move, refused for every agent like the ui-start, plan-guard style.
 	if (cfg.guards.shell_tools.includes(e.tool) && forceClaimRelease(input)) {
-		log(cfg.paths.plan_guard_log, `BLOCK ${e.agent}:${e.agentId} tool=${e.tool} claim-force: ${String(input.command ?? "")}`);
-		return deny("plan-guard: claim release --force frees another Main's claim; that is the owner's move, in a terminal.");
+		log(cfg.paths.plan_guard_log, `BLOCK ${e.agent}:${e.agentId} tool=${e.tool} claim-force: ${String(input.command ?? "")} rule=tool.claim-force`);
+		return deny("plan-guard: claim release --force frees another Main's claim; that is the owner's move, in a terminal.", "tool.claim-force");
 	}
 	// The caller may know paths the text search cannot see (structured edits); union, never shrink.
 	const paths: string[] = [];
@@ -1684,8 +1687,8 @@ export function checkTool(e: ToolEvent, cfg: Config, runs?: RunSource): Decision
 	// sees the edit (plan 20261028_1600 P4j). A plan is named by its absolute path, for every agent.
 	const relPlan = PLAN_WRITE_TOOLS[e.tool] ? relative.find(isPlanName) : undefined;
 	if (relPlan) {
-		log(cfg.paths.plan_guard_log, `BLOCK ${e.agent}:${e.agentId} tool=${e.tool} relative plan path: ${relPlan}`);
-		return deny(`plan-guard: use the absolute plan path, not ${relPlan}. The plan gate cannot see a relative one.`);
+		log(cfg.paths.plan_guard_log, `BLOCK ${e.agent}:${e.agentId} tool=${e.tool} relative plan path: ${relPlan} rule=tool.relative-plan`);
+		return deny(`plan-guard: use the absolute plan path, not ${relPlan}. The plan gate cannot see a relative one.`, "tool.relative-plan");
 	}
 	// Notify secrets: no agent, main or sub, reads a webhook URL — with or without the unlock.
 	// A call that changes a secret is not a read: its target goes through the protected-write
@@ -1698,8 +1701,8 @@ export function checkTool(e: ToolEvent, cfg: Config, runs?: RunSource): Decision
 		if (!secretPaths.includes(p)) secretPaths.push(p);
 	const secretHit = notifySecretReadHit(secretPaths.filter(p => !writes.includes(p)), cfg);
 	if (secretHit) {
-		log(cfg.paths.plan_guard_log, `BLOCK ${e.agent}:${e.agentId} tool=${e.tool} notify secret: ${secretHit}`);
-		return deny(`plan-guard: ${secretHit} is a notify secret path. Only the owner touches the webhook files, in a terminal.`);
+		log(cfg.paths.plan_guard_log, `BLOCK ${e.agent}:${e.agentId} tool=${e.tool} notify secret: ${secretHit} rule=tool.notify-secret`);
+		return deny(`plan-guard: ${secretHit} is a notify secret path. Only the owner touches the webhook files, in a terminal.`, "tool.notify-secret");
 	}
 	// Main writes its own rollover note unattended (the note turn has nobody to ask). Only a Write
 	// of a .md directly in <state>/rollover/ is exempt; shell writes, subagents and relaunch.json stay refused.
@@ -1710,7 +1713,7 @@ export function checkTool(e: ToolEvent, cfg: Config, runs?: RunSource): Decision
 			: writes;
 	const hit = protectedHit(openWrites, cfg);
 	if (hit && !unlocked(cfg)) {
-		log(cfg.paths.plan_guard_log, `BLOCK ${e.agent}:${e.agentId} tool=${e.tool} protected: ${hit}`);
+		log(cfg.paths.plan_guard_log, `BLOCK ${e.agent}:${e.agentId} tool=${e.tool} protected: ${hit} rule=tool.protected`);
 		// The plan index (plan 20261031_0911 P2) is guard surface like the rest, but unlike the
 		// others an agent has a sanctioned way to change it: the queue add/move CLI through
 		// writeIndex. Name it, so the refusal says what to do instead of naming the unlock.
@@ -1719,6 +1722,7 @@ export function checkTool(e: ToolEvent, cfg: Config, runs?: RunSource): Decision
 			`plan-guard: ${hit} is a protected guard file. Only the owner changes it (unlock: \`touch ${q.UNLOCK}\` in a terminal${
 				cfg.guards.chat_unlock ? `, or type \`unlock ${cfg.guards.unlock_minutes}\` in chat` : ""
 			}, valid ${cfg.guards.unlock_minutes} min).${viaQueue}`,
+			"tool.protected",
 		);
 	}
 	if (e.agent === "main") {
@@ -1726,13 +1730,13 @@ export function checkTool(e: ToolEvent, cfg: Config, runs?: RunSource): Decision
 		// sed -i or heredoc into a plan would skip them, so plans change through edit/write only.
 		const shellPlan = e.tool !== "write" && e.tool !== "edit" ? writes.find(p => MAIN_PLAN_FILE.test(p)) : undefined;
 		if (shellPlan) {
-			log(cfg.paths.plan_guard_log, `BLOCK main tool=${e.tool} shell write to plan ${shellPlan}`);
-			return deny(`plan-guard: ${shellPlan} is a plan file: change it with the edit or write tool (close or cancel it with queue-close / queue-cancel).`);
+			log(cfg.paths.plan_guard_log, `BLOCK main tool=${e.tool} shell write to plan ${shellPlan} rule=tool.shell-plan`);
+			return deny(`plan-guard: ${shellPlan} is a plan file: change it with the edit or write tool (close or cancel it with queue-close / queue-cancel).`, "tool.shell-plan");
 		}
 		const stop = mainCallStop(e, cfg);
 		if (stop) {
-			log(cfg.paths.guard_log, `BLOCK tool=${e.tool} after ${readWindow().mainCalls} calls this turn`);
-			return deny(stop);
+			log(cfg.paths.guard_log, `BLOCK tool=${e.tool} after ${readWindow().mainCalls} calls this turn rule=main.call-budget`);
+			return deny(stop, "main.call-budget");
 		}
 		const d = mainTool(e, input, cfg, runs);
 		if (!d.allow) return d;
@@ -1744,16 +1748,16 @@ export function checkTool(e: ToolEvent, cfg: Config, runs?: RunSource): Decision
 	const cap = subCallCap(e.agentId, cfg);
 	const why = subRules(e, input, paths, writes, cfg, cap);
 	if (why) {
-		log(cfg.paths.plan_guard_log, `BLOCK sub:${e.agentId} tool=${e.tool} ${why}`);
-		return deny(`plan-guard: ${why}`);
+		log(cfg.paths.plan_guard_log, `BLOCK sub:${e.agentId} tool=${e.tool} ${why} rule=sub.rule`);
+		return deny(`plan-guard: ${why}`, "sub.rule");
 	}
 	// A sub's own launch passes the same spawn gates as Main's (plan 20261028_1600 P4i).
 	let launch: string | null = null;
 	if (e.tool === "task") launch = taskLaunch(input, cfg, e.runningJobs, "sub", runs);
 	else if (cfg.guards.shell_tools.includes(e.tool)) launch = bypassLaunch(String(input?.command ?? input?.code ?? ""), cfg, "sub", runs);
 	if (launch) {
-		log(cfg.paths.plan_guard_log, `BLOCK ${e.agent}:${e.agentId} tool=${e.tool} ${launch}`);
-		return deny(`plan-guard: ${launch}`);
+		log(cfg.paths.plan_guard_log, `BLOCK ${e.agent}:${e.agentId} tool=${e.tool} ${launch} rule=sub.launch`);
+		return deny(`plan-guard: ${launch}`, "sub.launch");
 	}
 	const n = e.calls + 1;
 	// The warn band has the global width (sub_max_calls - sub_warn_calls) ending at the cap;
@@ -2000,14 +2004,14 @@ function recordTeamSpawns(teams: RoutedTeam[], agentIds: string[], cfg: Config):
 export function checkSpawn(e: SpawnEvent, cfg: Config, runner: CommandRunner = defaultRunner, runs?: RunSource): Decision {
 	const pending = q.cancelPending();
 	if (pending) {
-		log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: cancel pending (${pending.words})`);
-		return deny(`main-guard: ${CANCEL_TODO} Flagged: "${pending.words}"`);
+		log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: cancel pending (${pending.words}) rule=spawn.cancel-pending`);
+		return deny(`main-guard: ${CANCEL_TODO} Flagged: "${pending.words}"`, "spawn.cancel-pending");
 	}
 	const allowed = q.allowedAgents();
 	if (!allowed.has(e.agent))
-		return deny(`main-guard: ${e.agent}: agent "${e.agent}" is not in "## Allowed" of ${q.SUBAGENTS_MD} (no expensive or unpinned models).`);
+		return deny(`main-guard: ${e.agent}: agent "${e.agent}" is not in "## Allowed" of ${q.SUBAGENTS_MD} (no expensive or unpinned models).`, "spawn.agent-allowed");
 	if (e.invocationKind !== "task")
-		return deny("main-guard: spawn implementers with the task tool (the plan gate checks its brief).");
+		return deny("main-guard: spawn implementers with the task tool (the plan gate checks its brief).", "spawn.task-tool");
 	// P4 (plan 20261031_1207): every gate's refusal lands in one numbered verdict; nothing
 	// short-circuits, so Main sees all the problems in one round trip.
 	const problems: string[] = [];
@@ -2040,15 +2044,15 @@ export function checkSpawn(e: SpawnEvent, cfg: Config, runner: CommandRunner = d
 	const verdict = spawnVerdict(e.agent, problems, named.length ? named : briefPlans(e.brief, cfg).map(p => p.file), e.runningJobs, cfg);
 	if (verdict) {
 		for (const p of problems) {
-			if (p === role.problem) log(cfg.paths.plan_guard_log, `BLOCK ${e.agent} ${e.name ?? "(unnamed)"} review spawn: ${p}`);
-			else log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${p}`);
+			if (p === role.problem) log(cfg.paths.plan_guard_log, `BLOCK ${e.agent} ${e.name ?? "(unnamed)"} review spawn: ${p} rule=spawn.verdict`);
+			else log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${p} rule=spawn.verdict`);
 		}
-		return deny(`main-guard: ${verdict}`);
+		return deny(`main-guard: ${verdict}`, "spawn.verdict");
 	}
 	const held = claimGate(named, cfg, { agentIds: e.name ? [e.name] : [], unnamed: !e.name, runs });
 	if (held) {
-		log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${held}`);
-		return deny(`main-guard: ${held}`);
+		log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: ${held} rule=spawn.claim-held`);
+		return deny(`main-guard: ${held}`, "spawn.claim-held");
 	}
 	// The owner's pick order and live provider state (plan 20261025_1700 P3), before the spawn records.
 	const staffing: Record<string, string[]> = {};

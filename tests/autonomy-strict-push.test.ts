@@ -70,5 +70,5 @@ function mainEvent(tool: string, input: Record<string, unknown>): ToolEvent {
 test("tier strict refuses Main's git push without the approve phrase", () => {
 	const d = checkTool(mainEvent("bash", { command: "git push origin feat/toy" }), cfg);
 	expect(d.allow).toBe(false);
-	expect(d.reason).toBe('main-guard: tier strict — type "go push" to approve one push/merge');
+	expect(d.reason).toBe('main-guard: tier strict — type "go push" to approve one push/merge [rule main.push-merge]');
 });

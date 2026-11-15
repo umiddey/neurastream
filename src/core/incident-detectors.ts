@@ -42,6 +42,8 @@ export interface Finding {
 	evidence?: string;
 	/** Stable identity of the problem; an open incident with it dedupes (count + last seen). */
 	fingerprint?: string;
+	/** The guard rule id the refused call's text names (` [rule <id>]`); the tuner keys its level on it. */
+	rule?: string;
 }
 
 function iso(t: number): string {
@@ -173,6 +175,7 @@ export function blockThenBypass(events: TraceEvent[], windowSec: number, similar
 		});
 		if (!bypass) continue;
 		const head = (refused.text ?? "").replace(/\s+/g, " ").trim();
+		const rule = /\[rule ([\w.-]+)\]/.exec(refused.text ?? "")?.[1];
 		const sha = createHash("sha256").update(head).digest("hex").slice(0, 16);
 		const blockedArgs = maskEvidence(JSON.stringify(block.args).slice(0, 200));
 		const allowedArgs = maskEvidence(JSON.stringify(bypass.args).slice(0, 200));
@@ -181,6 +184,7 @@ export function blockThenBypass(events: TraceEvent[], windowSec: number, similar
 			summary: `possible guard false positive: ${head.slice(0, 120)}`,
 			evidence: `blocked ${block.tool} at ${iso(block.ts)}: ${blockedArgs}; same tool allowed at ${iso(bypass.ts)}: ${allowedArgs}`,
 			fingerprint: `block-then-bypass:${block.tool}:${sha}`,
+			rule,
 		});
 	}
 	return out;
