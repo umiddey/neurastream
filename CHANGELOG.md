@@ -1,4 +1,8 @@
 # Changelog
+## 0.3.11
+### Changed
+- Rule tuning undo is per change: a WORSE verdict on a rule-level change restores only that change's own rule (to its previous level, held for `window_days`), and only when the rule still sits at the level that change set. Before, it restored every rule of the most recent step. 0.3.10 never reached npm either (two more tests leaked `QUEUE_*` env; `guard-tuning-read` and `guard-tuning-step` now restore it); 0.3.11 carries the 0.3.9 content below.
+
 ## 0.3.10
 ### Fixed
 - 0.3.9 never reached npm: the publish run failed on a test that leaked `QUEUE_*` env into the next test file (`tests/guard-rule-ids.test.ts` now restores it). 0.3.10 carries the whole 0.3.9 content below.
