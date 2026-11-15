@@ -41,7 +41,7 @@ function protectedWrite(): ToolEvent {
 		paths: [],
 		writes: [path],
 		command: "",
-		runningJobs: 0,
+		runningJobs: [],
 	};
 }
 

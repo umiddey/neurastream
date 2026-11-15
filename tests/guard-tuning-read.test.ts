@@ -41,7 +41,7 @@ function relativePlanWrite(): ToolEvent {
 		paths: [],
 		writes: [],
 		command: "",
-		runningJobs: 0,
+		runningJobs: [],
 	};
 }
 
