@@ -1,4 +1,8 @@
 # Changelog
+## 0.3.10
+### Fixed
+- 0.3.9 never reached npm: the publish run failed on a test that leaked `QUEUE_*` env into the next test file (`tests/guard-rule-ids.test.ts` now restores it). 0.3.10 carries the whole 0.3.9 content below.
+
 ## 0.3.9
 ### Added
 - Rule tuning (plan 20261110_1746): `rule-levels.json` in the queue state dir holds `block | tell | off` per rule. A detector or watcher kind at `tell` logs one line and opens no incident; `off` logs a tally line and drops the finding. `tuning:` (on by default, `guards` off) and `scoreKinds` count fires and useful share. A daily step in the watch run moves one useless rule one level down per UTC day (`block` → `tell` → `off`, one notify line), and a WORSE verdict on that change in the next window undoes the most recent step and holds it (`held_until`). The tuner scores itself (rule id `tuner`) and doubles its bar when over half its steps are undone. `neurastream rules` prints every rule's level.
