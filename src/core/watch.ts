@@ -30,7 +30,7 @@ import { loadKnownSecrets, redactSecrets } from "./secret-redact.ts";
 import { ciScan } from "./ci.ts";
 import type { CommandRunner } from "./mr-sweep.ts";
 import type { ReleaseTag } from "./results.ts";
-import { readLevels, writeLevels } from "./rule-levels.ts";
+import { readLevels, writeLevels, type RuleLevels } from "./rule-levels.ts";
 import { decideStep, scoreKinds } from "./rule-tuning.ts";
 
 /** One failed user unit, as the lister reports it. */
@@ -291,15 +291,19 @@ export function watchOnce(cfg: Config, deps: WatchDeps): WatchReport {
 
 // ---- P4: the daily rule-tuning step (plan 20261110_1746): the levels move by the scores.
 
+/** The one guard line for a corrupt levels file, true when the file is corrupt. The daily step and `neurastream rules` each call it once per run; readLevels never logs. */
+export function noteCorruptLevels(cfg: Config, levels: RuleLevels): boolean {
+	if (!levels.corrupt) return false;
+	log(cfg.paths.guard_log, `rule-levels: ${join(cfg.paths.queue_state, "rule-levels.json")} is corrupt; every rule reads as block`);
+	return true;
+}
+
 /** One tuner step per UTC day (the `checked` gate). A corrupt levels file is skipped with one
  * guard line and nothing written; each move is one ledger metric and one notify line. */
 export function tuneRules(cfg: Config, now: number, notify: (text: string) => void): void {
 	if (!cfg.tuning.enabled) return;
 	const levels = readLevels(cfg);
-	if (levels.corrupt) {
-		log(cfg.paths.guard_log, `rule-levels: ${join(cfg.paths.queue_state, "rule-levels.json")} is corrupt; tuner step skipped`);
-		return;
-	}
+	if (noteCorruptLevels(cfg, levels)) return;
 	const today = new Date(now * 1000).toISOString().slice(0, 10);
 	if (levels.checked === today) return;
 	const logText = existsSync(cfg.paths.guard_log) ? readFileSync(cfg.paths.guard_log, "utf8") : "";

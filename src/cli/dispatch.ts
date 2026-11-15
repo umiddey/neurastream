@@ -36,6 +36,7 @@ import { activePlans, allowedAgents, enforceReadOnlyIndex, gitTop, indexPath, re
 import { defaultRunner } from "../core/mr-sweep.ts";
 import { allowAgents, denyAgents, invalidSlugs } from "../core/subagents.ts";
 import { runLabels } from "./labels.ts";
+import { runRules } from "./rules.ts";
 import { runDiffCheck } from "./diff-check.ts";
 
 const BINS = [
@@ -119,6 +120,7 @@ export function helpText(): string {
 		"                                trace step indexes",
 		"  neurastream labels assign <episode> --party plan|implementer|both --why <text>",
 		"                                append a party override; the last ledger line wins",
+		"  neurastream rules             one line per rule: level, previous level, date, held_until when set; then the tuner bar",
 		"  neurastream diff-check [--staged | <rev>]",
 		"                                the removal check (labels.removal_*): prints flagged",
 		"                                file:line: text, exit 1 on hits",
@@ -180,6 +182,7 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 	if (cmd === "incident") return runIncident(args);
 	if (cmd === "traces") return runTraces(args);
 	if (cmd === "labels") return runLabels(args);
+	if (cmd === "rules") return runRules(args);
 	if (cmd === "diff-check") return runDiffCheck(args);
 	if (cmd === "workspace") return runWorkspace(args);
 	if (cmd === "team") return runTeam(args);
