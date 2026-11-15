@@ -43,7 +43,7 @@ test("a missing file reads as empty rules and every level is block", () => {
 });
 
 test("pinned kinds always read as block, even when the file says off", () => {
-	expect([...PINNED]).toEqual(["release-regression", "beat-failed", "beat-stale"]);
+	expect([...PINNED]).toEqual(["release-regression", "beat-failed", "beat-stale", "main.push-merge", "tool.notify-secret", "tool.protected", "tool.claim-force", "tool.ui-start", "tool.review-lock"]);
 	const c = cfg();
 	writeLevels(c, {
 		rules: {
