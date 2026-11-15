@@ -428,13 +428,21 @@ export function releaseVerdicts(cfg: Config, deps: ReleaseVerdictDeps): ReleaseV
 	return out;
 }
 
-/** Judges one closed after-window against the same-length before window; null reads "not enough data yet". */
-function judgeRelease(cfg: Config, tag: string, before: Window, after: Window, deps: ReleaseVerdictDeps): ReleaseVerdict | null {
+/** What one pair of windows reads: the verdict, its post, and the number a WORSE verdict rests on. */
+export interface WindowJudgement {
+	verdict: VerdictWord;
+	post: string;
+	/** The number behind a WORSE verdict (null otherwise); `dailyKey` is the daily-check metric it may fold into. */
+	worst: { name: string; vals: string; dailyKey: string | null } | null;
+}
+
+/** Judges two windows: the verdict and its post, no write and no incident. Null reads "not enough data yet". */
+export function judgeWindows(cfg: Config, label: string, before: Window, after: Window, deps: { source: RunSource }): WindowJudgement | null {
 	const incidents = readIncidents(cfg);
 	// Watcher gap: a not-running incident open at any time in either window means that window's
 	// watcher-fed numbers read ~0 for want of a watcher — no verdict is possible.
 	if (incidents.some(i => i.fingerprint === "watch:not-running" && (overlapsWindow(i, before) || overlapsWindow(i, after)))) {
-		return { tag, verdict: "watcher-off", post: `${tag}: watcher off, no verdict` };
+		return { verdict: "watcher-off", post: `${label}: watcher off, no verdict`, worst: null };
 	}
 	const callsOf = (w: Window) => deps.source.listRuns(w.from).filter(r => r.kind === "main" && inWindow(r.lastWriteAt, w)).reduce((s, r) => s + r.calls, 0);
 	const bc = callsOf(before);
@@ -520,18 +528,25 @@ function judgeRelease(cfg: Config, tag: string, before: Window, after: Window, d
 	const fresh = nums.filter(n => n.beforeCount === 0 && pctOf(n) === null).map(n => n.name);
 	const freshLine = fresh.length === 0 ? "" : `${(fresh.length > 4 ? [...fresh.slice(0, 4), `+${fresh.length - 4} more`] : fresh).join(", ")} new, not compared`;
 	const thinLine = thin.length === 0 ? "" : `${thin.join(", ")} thin, not compared`;
-	const post = `${tag}: ${verdict} — ${[...parts, freshLine, thinLine].filter(p => p !== "").join(", ")}`;
+	const post = `${label}: ${verdict} — ${[...parts, freshLine, thinLine].filter(p => p !== "").join(", ")}`;
 
-	if (verdict === "WORSE") {
-		const top = worseOnes.toSorted((p, q) => Math.abs(q.pct) - Math.abs(p.pct))[0];
-		const name = top ? top.n.name : "downgrade";
-		const vals = top ? `${fmtNum(top.n.before!)}→${fmtNum(top.n.after!)}` : `${downgrade!.from}→${downgrade!.to}`;
-		// The daily/weekly check may already hold today's open incident on this metric: the shared
-		// fingerprint dedups into it instead of doubling the story.
-		const fingerprint = top?.n.dailyKey !== undefined ? `daily:${top.n.dailyKey}:${strftime(deps.now, "%Y-%m-%d")}` : `release:${tag}:${name}`;
-		addIncident(cfg, { source: "watch", kind: "release-regression", summary: `release ${tag} worse: ${name} ${vals}`, evidence: post, fingerprint }, deps.now);
+	if (verdict !== "WORSE") return { verdict, post, worst: null };
+	const top = worseOnes.toSorted((p, q) => Math.abs(q.pct) - Math.abs(p.pct))[0];
+	const worst = top
+		? { name: top.n.name, vals: `${fmtNum(top.n.before!)}→${fmtNum(top.n.after!)}`, dailyKey: top.n.dailyKey ?? null }
+		: { name: "downgrade", vals: `${downgrade!.from}→${downgrade!.to}`, dailyKey: null };
+	return { verdict, post, worst };
+}
+
+/** Judges one closed after-window against the same-length before window; null reads "not enough data yet". A WORSE verdict opens its one incident; the daily/weekly check's open incident on the same metric is folded into, not doubled. */
+function judgeRelease(cfg: Config, tag: string, before: Window, after: Window, deps: ReleaseVerdictDeps): ReleaseVerdict | null {
+	const j = judgeWindows(cfg, tag, before, after, deps);
+	if (j === null) return null;
+	if (j.worst !== null) {
+		const fingerprint = j.worst.dailyKey !== null ? `daily:${j.worst.dailyKey}:${strftime(deps.now, "%Y-%m-%d")}` : `release:${tag}:${j.worst.name}`;
+		addIncident(cfg, { source: "watch", kind: "release-regression", summary: `release ${tag} worse: ${j.worst.name} ${j.worst.vals}`, evidence: j.post, fingerprint }, deps.now);
 	}
-	return { tag, verdict, post };
+	return { tag, verdict: j.verdict, post: j.post };
 }
 
 /** The plan files a timer run treats as staffed: a plan whose newest spawn (staffing.json) names tasks and is newer than `ciRedHours` before `now`. An older spawn's agent is gone, so its red MR is not held back (I-20261031-265). A timer run has no live job list, so the spawn record is the only signal it has. */
