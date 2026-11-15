@@ -31,7 +31,7 @@ import { ciScan } from "./ci.ts";
 import type { CommandRunner } from "./mr-sweep.ts";
 import type { ReleaseTag } from "./results.ts";
 import { readLevels, writeLevels, type RuleLevels } from "./rule-levels.ts";
-import { decideStep, nextBar, scoreKinds, TUNER } from "./rule-tuning.ts";
+import { decideStep, nextBar, scoreGuards, scoreKinds, TUNER } from "./rule-tuning.ts";
 
 /** One failed user unit, as the lister reports it. */
 export interface FailedUnit {
@@ -313,9 +313,10 @@ export function tuneRules(cfg: Config, now: number, notify: (text: string) => vo
 	const logText = existsSync(cfg.paths.guard_log) ? readFileSync(cfg.paths.guard_log, "utf8") : "";
 	const w = windows(now, cfg.tuning.window_days).cur;
 	const scores = scoreKinds(readIncidents(cfg), logText, w, cfg.tuning, readMetricEvents(cfg));
+	const guards = cfg.tuning.guards ? scoreGuards(cfg, now) : [];
 	const oldBar = levels.tuner?.bar ?? cfg.tuning.min_fires;
 	const bar = nextBar(oldBar, scores.find(s => s.kind === TUNER)?.undoRate ?? 0);
-	const step = decideStep(levels, scores, now, today, cfg.tuning, bar);
+	const step = decideStep(levels, [...scores, ...guards], now, today, cfg.tuning, bar);
 	writeLevels(cfg, bar === oldBar ? step.levels : { ...step.levels, tuner: { bar } });
 	for (const m of step.moves) appendMetric(cfg, { type: m.probe ? "rule-probe" : "rule-level", rule: m.rule, from: m.from, to: m.to, ts: now });
 	const parts = step.moves.map(m => `${m.rule} ${m.from}→${m.to}`);

@@ -10,6 +10,7 @@ import { join } from "node:path";
 import type { Run, RunSource, ToolEvent } from "../src/core/adapter.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { checkTool } from "../src/core/guards.ts";
+import { addIncident } from "../src/core/incidents.ts";
 import { appendMetric, readMetricEvents } from "../src/core/metrics.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { readLevels, writeLevels } from "../src/core/rule-levels.ts";
@@ -56,9 +57,16 @@ tuning:
 function blocks(c: Config, rule: string, n: number, at: number): void {
 	const lines = Array.from(
 		{ length: n },
-		(_, i) => `${new Date((at + i) * 1000).toISOString()} [test] BLOCK main tool=write refused: x rule=${rule}`,
+		(_, i) => `${new Date((at + i) * 1000).toISOString()} BLOCK refused: x rule=${rule}`,
 	);
 	appendFileSync(c.paths.guard_log, `${lines.join("\n")}\n`);
+}
+
+/** `n` block-then-bypass incidents opened at `at`, each naming `rule`: the refusals were overridden. */
+function bypass(c: Config, n: number, at: number, rule: string): void {
+	for (let i = 0; i < n; i++) {
+		addIncident(c, { source: "realtime", kind: "block-then-bypass", summary: `bypass ${i}`, fingerprint: `bp:${at}:${i}`, rule }, at);
+	}
 }
 
 // A main write to a plan by a relative path: refused under tool.relative-plan, a non-pinned id.
@@ -88,30 +96,34 @@ function mainRun(calls: number, at: number): Run {
 	};
 }
 
-test("tuning.guards off: a noisy, useless guard id does not move and sends nothing", () => {
+test("tuning.guards off: a noisy, useless guard id does not move and is never named in a notify line", () => {
 	const c = cfg(false);
 	blocks(c, RELATIVE, 4, NOW - DAY);
+	bypass(c, 4, NOW - DAY, RELATIVE);
 	const sent: string[] = [];
 	tuneRules(c, NOW, t => sent.push(t));
-	expect(readLevels(c).rules).toEqual({});
-	expect(readMetricEvents(c).some(e => e.type === "rule-level")).toBe(false);
-	expect(sent).toEqual([]);
+	expect(readLevels(c).rules[RELATIVE]).toBeUndefined();
+	expect(readMetricEvents(c).some(e => e.type === "rule-level" && e.rule === RELATIVE)).toBe(false);
+	expect(sent.some(t => t.includes(RELATIVE))).toBe(false);
 });
 
 test("tuning.guards on: a noisy, useless guard id steps block to tell, logs one move, sends one notify line", () => {
 	const c = cfg(true);
 	blocks(c, RELATIVE, 4, NOW - DAY);
+	bypass(c, 4, NOW - DAY, RELATIVE);
 	const sent: string[] = [];
 	tuneRules(c, NOW, t => sent.push(t));
 	expect(readLevels(c).rules[RELATIVE]).toEqual({ level: "tell", prev: "block", date: TODAY });
-	expect(readMetricEvents(c).filter(e => e.type === "rule-level").map(e => [e.rule, e.from, e.to])).toEqual([[RELATIVE, "block", "tell"]]);
-	expect(sent).toEqual([`rule tuning: ${RELATIVE} block→tell`]);
+	expect(readMetricEvents(c).filter(e => e.type === "rule-level" && e.rule === RELATIVE).map(e => [e.rule, e.from, e.to])).toEqual([[RELATIVE, "block", "tell"]]);
+	expect(sent).toHaveLength(1);
+	expect(sent[0]).toContain(`${RELATIVE} block→tell`);
 });
 
 test("tuning.guards on: after the step, a refusal of that id is allowed with its reason kept", () => {
 	const c = cfg(true);
 	applyQueueEnv(c);
 	blocks(c, RELATIVE, 4, NOW - DAY);
+	bypass(c, 4, NOW - DAY, RELATIVE);
 	tuneRules(c, NOW, () => {});
 	const d = checkTool(relativePlanWrite(c), c);
 	expect(d.allow).toBe(true);
