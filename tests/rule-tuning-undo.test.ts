@@ -146,7 +146,7 @@ test("two rules moved by one step: each is restored by its own WORSE verdict", (
 	appendMetric(cfg, { type: "rule-level", rule: "ci-red-main", from: "block", to: "tell", ts: T1 });
 	downgradeAt(cfg, T1 + 3600);
 	ruleLevelVerdicts(cfg, deps(runs()));
-	const undone = { level: "block", prev: "tell", date: TODAY, held_until: heldUntil(cfg) };
+	const undone = { level: "block" as const, prev: "tell" as const, date: TODAY, held_until: heldUntil(cfg) };
 	expect(readLevels(cfg).rules).toEqual({ "ci-red-main": undone, "ci-flaky": undone });
 	expect(undoPairs(cfg).toSorted()).toEqual([["ci-flaky", "tell", "block"], ["ci-red-main", "tell", "block"]]);
 });
