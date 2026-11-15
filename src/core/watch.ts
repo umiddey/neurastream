@@ -12,7 +12,7 @@
 // `ci-flaky` metric when a commit goes red then green.
 
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Glob } from "bun";
 import type { Config } from "./config.ts";
@@ -22,7 +22,7 @@ import { strftime } from "./clock.ts";
 import { readBeats, type Heartbeat } from "./heartbeat.ts";
 import { runDetectorsGated, suppressedByLevel, type GatedInputs } from "./incident-detectors.ts";
 import { log, readStaffingEntries } from "./guards.ts";
-import { appendMetric, inWindow, readBlocks, readMetricEvents, reasonKey, type Window } from "./metrics.ts";
+import { appendMetric, inWindow, readBlocks, readMetricEvents, reasonKey, windows, type Window } from "./metrics.ts";
 import { notifyProviders, waitingOwnerMessages } from "./notify.ts";
 import { addIncident, dismissIncident, openIncidents, readIncidents, type IncidentView } from "./incidents.ts";
 import { m7, rowsOf, silentFailures, snap } from "./report.ts";
@@ -30,6 +30,8 @@ import { loadKnownSecrets, redactSecrets } from "./secret-redact.ts";
 import { ciScan } from "./ci.ts";
 import type { CommandRunner } from "./mr-sweep.ts";
 import type { ReleaseTag } from "./results.ts";
+import { readLevels, writeLevels } from "./rule-levels.ts";
+import { decideStep, scoreKinds } from "./rule-tuning.ts";
 
 /** One failed user unit, as the lister reports it. */
 export interface FailedUnit {
@@ -272,6 +274,8 @@ export function watchOnce(cfg: Config, deps: WatchDeps): WatchReport {
 			notify: text => deps.notify(cfg.secrets.redact ? redactSecrets(text, loadKnownSecrets(cfg), cfg.secrets.extra_patterns).text : text),
 		});
 	}
+	// (e2) P4: the daily rule-tuning step, once per UTC day (the `checked` gate).
+	tuneRules(cfg, now, text => deps.notify(cfg.secrets.redact ? redactSecrets(text, loadKnownSecrets(cfg), cfg.secrets.extra_patterns).text : text));
 	// (f) P9: an owner message that crossed notify.answer_within_min with no hand-back counts M8,
 	// one metric per message — the ledger is the once-only marker, not per-pass state.
 	let ownerWaits = 0;
@@ -283,6 +287,27 @@ export function watchOnce(cfg: Config, deps: WatchDeps): WatchReport {
 	}
 	if (ownerWaits > 0) log(cfg.paths.guard_log, `watch: M8 ${ownerWaits} owner wait(s) past notify.answer_within_min`);
 	return { opened, deduped, closed, detectors, ownerWaits };
+}
+
+// ---- P4: the daily rule-tuning step (plan 20261110_1746): the levels move by the scores.
+
+/** One tuner step per UTC day (the `checked` gate). A corrupt levels file is skipped with one
+ * guard line and nothing written; each move is one ledger metric and one notify line. */
+export function tuneRules(cfg: Config, now: number, notify: (text: string) => void): void {
+	if (!cfg.tuning.enabled) return;
+	const levels = readLevels(cfg);
+	if (levels.corrupt) {
+		log(cfg.paths.guard_log, `rule-levels: ${join(cfg.paths.queue_state, "rule-levels.json")} is corrupt; tuner step skipped`);
+		return;
+	}
+	const today = new Date(now * 1000).toISOString().slice(0, 10);
+	if (levels.checked === today) return;
+	const logText = existsSync(cfg.paths.guard_log) ? readFileSync(cfg.paths.guard_log, "utf8") : "";
+	const scores = scoreKinds(readIncidents(cfg), logText, windows(now, cfg.tuning.window_days).cur, cfg.tuning);
+	const step = decideStep(levels, scores, now, today, cfg.tuning);
+	writeLevels(cfg, step.levels);
+	for (const m of step.moves) appendMetric(cfg, { type: m.probe ? "rule-probe" : "rule-level", rule: m.rule, from: m.from, to: m.to, ts: now });
+	if (step.moves.length > 0) notify(`rule tuning: ${step.moves.map(m => `${m.rule} ${m.from}→${m.to}`).join("; ")}`);
 }
 
 // ---- P11: the release verdict — is the new version better or worse? ----
