@@ -33,6 +33,7 @@ import type { Config } from "./config.ts";
 import { openIncidents, ownerMessagesFile, ownerSaid, readOwnerAnswers, readOwnerMessages, type IncidentView, type OwnerMessage, writeOwnerStore } from "./incidents.ts";
 import { ownerText, UNANSWERED_PREFIX } from "./rollover.ts";
 import { ownerLogFile, recordOwnerLog } from "./owner-log.ts";
+import { levelFor, readLevels } from "./rule-levels.ts";
 import { notifyProtectedPaths, notifySecretReadHit } from "./notify.ts";
 import { defaultRunner, listOpenMrs, mentioned, type CommandRunner, type OpenMr } from "./mr-sweep.ts";
 import { unlandedRows } from "./wip-check.ts";
@@ -1655,6 +1656,20 @@ export const MAIN_PLAN_FILE = /\/docs\/plans\/(?!archive\/)(?:[^/]+\/)*[^/]+\.md
  * plus, for Main, the spawn gates and the project-file edit window.
  */
 export function checkTool(e: ToolEvent, cfg: Config, runs?: RunSource): Decision {
+	return tuned(checkToolRules(e, cfg, runs), cfg);
+}
+
+/** Applies the owner's rule level to a refusal. Only with `tuning.guards` on; a refusal with no `[rule <id>]` suffix, or a pinned, unset or corrupt id, stays `block`. */
+function tuned(d: Decision, cfg: Config): Decision {
+	if (d.allow || !cfg.tuning.guards) return d;
+	const id = /\[rule ([\w.-]+)\]$/.exec(d.reason)?.[1];
+	if (!id) return d;
+	const level = levelFor(readLevels(cfg), id);
+	if (level === "block") return d;
+	return { allow: true, reason: level === "tell" ? d.reason : "" };
+}
+
+function checkToolRules(e: ToolEvent, cfg: Config, runs?: RunSource): Decision {
 	const lock = e.agent === "sub" ? reviewLockProblem(e, cfg) : null;
 	if (lock) {
 		log(cfg.paths.plan_guard_log, `BLOCK ${e.agent}:${e.agentId} tool=${e.tool} review lock: ${lock} rule=tool.review-lock`);
@@ -2002,6 +2017,10 @@ function recordTeamSpawns(teams: RoutedTeam[], agentIds: string[], cfg: Config):
  * original paths (the extension spawn event and a `task` tool call); the brief names the plan.
  */
 export function checkSpawn(e: SpawnEvent, cfg: Config, runner: CommandRunner = defaultRunner, runs?: RunSource): Decision {
+	return tuned(checkSpawnRules(e, cfg, runner, runs), cfg);
+}
+
+function checkSpawnRules(e: SpawnEvent, cfg: Config, runner: CommandRunner = defaultRunner, runs?: RunSource): Decision {
 	const pending = q.cancelPending();
 	if (pending) {
 		log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: cancel pending (${pending.words}) rule=spawn.cancel-pending`);
