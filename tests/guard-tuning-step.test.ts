@@ -16,8 +16,12 @@ import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { readLevels, writeLevels } from "../src/core/rule-levels.ts";
 import { ruleLevelVerdicts, tuneRules } from "../src/core/watch.ts";
 
+const QUEUE_ENV_BEFORE = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("QUEUE_")));
 const DIRS: string[] = [];
 afterAll(() => {
+	// applyQueueEnv writes process.env; later test files in this process must not see it.
+	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
+	Object.assign(process.env, QUEUE_ENV_BEFORE);
 	for (const d of DIRS) rmSync(d, { recursive: true, force: true });
 });
 

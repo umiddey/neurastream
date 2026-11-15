@@ -17,6 +17,7 @@ const ROOT = join(dirname(REPO), "guard-tuning-read-scratch");
 const HOME = join(ROOT, "home");
 let cfg: Config;
 let on: Config;
+const QUEUE_ENV_BEFORE = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("QUEUE_")));
 
 beforeAll(() => {
 	mkdirSync(HOME, { recursive: true });
@@ -26,6 +27,9 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+	// applyQueueEnv writes process.env; later test files in this process must not see it.
+	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
+	Object.assign(process.env, QUEUE_ENV_BEFORE);
 	rmSync(ROOT, { recursive: true, force: true });
 });
 
