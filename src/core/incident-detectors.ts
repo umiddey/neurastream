@@ -301,7 +301,7 @@ export function runDetectors(cfg: Config, input: DetectorInput, now = nowSec()):
 				if (suppressedByLevel(cfg, f.kind, f.summary)) continue;
 				const { incident, deduped } = addIncident(
 					cfg,
-					{ source: "realtime", kind: f.kind, summary: f.summary, evidence: f.evidence, fingerprint: f.fingerprint },
+					{ source: "realtime", kind: f.kind, summary: f.summary, evidence: f.evidence, fingerprint: f.fingerprint, rule: f.rule },
 					now,
 				);
 				log(
