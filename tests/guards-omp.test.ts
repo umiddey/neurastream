@@ -449,7 +449,7 @@ console.log(JSON.stringify(out));
 	expect(reasonOf(out[0])).toBe(cli.d.reason);
 	expect(cli.d.reason).toContain("is a protected guard file");
 	expect(reasonOf(out[1])).toBe(
-		`plan-guard: queue-close and queue-cancel are Main's; report in your plan's "## Progress" instead.`,
+		`plan-guard: queue-close and queue-cancel are Main's; report in your plan's "## Progress" instead. [rule sub.rule]`,
 	);
 	writeFileSync(UNLOCK, new Date().toISOString());
 	const after = adapterRun(`${REGISTER}
@@ -476,7 +476,7 @@ console.log(JSON.stringify(out));
 	expect(content).toContain(`main-guard: ${CANCEL_TODO} Flagged: "please cancel that plan"`);
 	expect(out[1]).toBeUndefined();
 	expect(isBlocked(out[2])).toBe(true);
-	expect(reasonOf(out[2])).toBe(`main-guard: ${CANCEL_TODO} Flagged: "please cancel that plan"`);
+	expect(reasonOf(out[2])).toBe(`main-guard: ${CANCEL_TODO} Flagged: "please cancel that plan" [rule main.task-launch]`);
 });
 
 test("auto-close: session_start and a main push each start a queue-close for a complete plan", async () => {

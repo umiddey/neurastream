@@ -1,7 +1,9 @@
 # Changelog
-## Unreleased
+## 0.3.9
 ### Added
-- Rule tuning (plan 20261110_1746, P1–P3): `rule-levels.json` in the queue state dir holds `block | tell | off` per rule. A detector or watcher kind at `tell` logs one line and opens no incident; `off` logs a tally line and drops the finding. `tuning:` (on by default, `guards` off) and `scoreKinds` count fires, including those tally lines, and useful share. The tuner does not step rules yet.
+- Rule tuning (plan 20261110_1746): `rule-levels.json` in the queue state dir holds `block | tell | off` per rule. A detector or watcher kind at `tell` logs one line and opens no incident; `off` logs a tally line and drops the finding. `tuning:` (on by default, `guards` off) and `scoreKinds` count fires and useful share. A daily step in the watch run moves one useless rule one level down per UTC day (`block` → `tell` → `off`, one notify line), and a WORSE verdict on that change in the next window undoes the most recent step and holds it (`held_until`). The tuner scores itself (rule id `tuner`) and doubles its bar when over half its steps are undone. `neurastream rules` prints every rule's level.
+- Guard ids: every guard refusal carries a stable dotted id. With `tuning.guards: true` the same daily step tunes guards (`tell` turns a refusal into an allow with the text, `off` drops it); guard blocks that were later bypassed count as useless. Realtime incidents carry the rule id.
+- The quality number `m9` (adjusted merges per dollar) in the metrics report.
 
 ## 0.3.8
 ### Fixed
