@@ -108,6 +108,7 @@ export interface KindStat {
 	kind: string;
 	opened: number;
 	planned: number;
+	fixed: number;
 	dismissed: number;
 	dismissRate: number;
 }
@@ -126,6 +127,7 @@ export function kindStats(incidents: IncidentView[], w: Window): KindStat[] {
 				kind,
 				opened: list.length,
 				planned: list.filter((i) => i.resolution?.type === "plan").length,
+				fixed: list.filter((i) => i.resolution?.type === "fixed").length,
 				dismissed,
 				dismissRate: dismissed / list.length,
 			};
@@ -378,8 +380,8 @@ export function buildReport(cfg: Config, source: RunSource, days: number, now: n
 		...(limitEvents.length > 0
 			? [`Main limited: ${limitMinutes >= 60 ? `${Math.round(limitMinutes / 6) / 10} h` : `${limitMinutes} min`} over ${limitEvents.length} episodes`]
 			: []),
-		"Dismiss rate by kind (opened, planned, dismissed):",
-		...kindStats(incidents, cur).map((k) => `- ${k.kind}: ${k.opened}, ${k.planned}, ${k.dismissed} (${Math.round(k.dismissRate * 100)}% dismissed)`),
+		"Dismiss rate by kind (opened, planned, fixed, dismissed):",
+		...kindStats(incidents, cur).map((k) => `- ${k.kind}: ${k.opened}, ${k.planned}, ${k.fixed}, ${k.dismissed} (${Math.round(k.dismissRate * 100)}% dismissed)`),
 	];
 	// P5b: the label ledger's flips in the report. An empty ledger adds no lines at all, so
 	// byte-identical output on a machine that never ran labels.

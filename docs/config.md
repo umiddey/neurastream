@@ -112,6 +112,15 @@ watch:                         # the watcher (src/core/watch.ts): `neurastream w
   release_regress_pct: 25      # release verdict: one vote when a metric is worse by this percent; WORSE needs two floor-passing metrics or a downgrade
   release_min_calls: 300       # release verdict: fewer Main tool calls on either side reads "not enough data yet", no verdict; WORSE still needs two floor-passing metrics or a downgrade
 
+tuning:                        # the tuner steps existing rules down and back up; it never writes a rule
+  enabled: true                # the daily step runs
+  min_fires: 20                # fires in the window before a rule can step down
+  max_useful: 0.10             # useful share below this, with enough fires, steps down one level
+  window_days: 7               # days a level change is judged over, and how long an undo holds
+  probation_days: 7            # days an off rule stays off before a raise to tell
+  guards: false                # guard ids are scored and stepped only when this is true
+  keep_off: []                 # rule ids probation never raises
+
 ledger:
   default_hours: 24
   idle_show_min: 5

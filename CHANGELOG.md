@@ -1,4 +1,8 @@
 # Changelog
+## Unreleased
+### Added
+- Rule tuning (plan 20261110_1746, P1–P3): `rule-levels.json` in the queue state dir holds `block | tell | off` per rule. A detector or watcher kind at `tell` logs one line and opens no incident; `off` logs a tally line and drops the finding. `tuning:` (on by default, `guards` off) and `scoreKinds` count fires, including those tally lines, and useful share. The tuner does not step rules yet.
+
 ## 0.3.8
 ### Fixed
 - Topic index: a topic's date is the date of its first entry (read from the entry id), not the day the index line was written. Before, `recall` showed every backfilled topic as the backfill day and `--since` filtered topics wrongly.

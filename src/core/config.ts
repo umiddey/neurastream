@@ -245,6 +245,23 @@ export interface Config {
 		/** Release verdict: fewer Main tool calls than this on either side reads "not enough data yet" — no verdict. */
 		release_min_calls: number;
 	};
+	/** Self-pruning (plan 20261110_1746): the tuner steps existing rules down and back up. */
+	tuning: {
+		/** The daily step runs when this is true. */
+		enabled: boolean;
+		/** A rule with at least this many fires in the window can step down. */
+		min_fires: number;
+		/** Useful share below this, with enough fires, steps the rule down one level. */
+		max_useful: number;
+		/** Days a level change is judged over, and how long an undo holds a rule. */
+		window_days: number;
+		/** Days an off rule stays off before a probation raise to tell. */
+		probation_days: number;
+		/** Guard ids are scored and stepped only when this is true. Default false. */
+		guards: boolean;
+		/** Rule ids probation never raises. */
+		keep_off: string[];
+	};
 	machine: {
 		load_over_cores: number;
 		load_max: number;
@@ -684,6 +701,23 @@ function check(cfg: Config): void {
 	}
 	if (!Number.isInteger(cfg.watch.release_min_calls) || cfg.watch.release_min_calls < 1) {
 		throw new ConfigError("watch.release_min_calls must be an integer >= 1");
+	}
+	if (typeof cfg.tuning.enabled !== "boolean") throw new ConfigError("tuning.enabled must be a boolean");
+	if (!Number.isInteger(cfg.tuning.min_fires) || cfg.tuning.min_fires < 1) {
+		throw new ConfigError("tuning.min_fires must be an integer >= 1");
+	}
+	if (typeof cfg.tuning.max_useful !== "number" || !(cfg.tuning.max_useful > 0 && cfg.tuning.max_useful <= 1)) {
+		throw new ConfigError("tuning.max_useful must be a number in (0, 1]");
+	}
+	if (!Number.isInteger(cfg.tuning.window_days) || cfg.tuning.window_days < 1) {
+		throw new ConfigError("tuning.window_days must be an integer >= 1");
+	}
+	if (!Number.isInteger(cfg.tuning.probation_days) || cfg.tuning.probation_days < 1) {
+		throw new ConfigError("tuning.probation_days must be an integer >= 1");
+	}
+	if (typeof cfg.tuning.guards !== "boolean") throw new ConfigError("tuning.guards must be a boolean");
+	if (!Array.isArray(cfg.tuning.keep_off) || cfg.tuning.keep_off.some((id) => typeof id !== "string")) {
+		throw new ConfigError("tuning.keep_off must be a list of strings");
 	}
 	for (const p of cfg.metrics.correction_patterns) {
 		try {

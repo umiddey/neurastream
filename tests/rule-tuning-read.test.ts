@@ -1,8 +1,8 @@
 // Detector read side (plan 20261110_1746 P2): tell and off never open an incident. Temp dir
 // through cfg paths only.
 
+import { afterAll, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, type Config } from "../src/core/config.ts";

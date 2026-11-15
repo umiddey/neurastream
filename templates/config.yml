@@ -231,6 +231,15 @@ watch:                       # the watcher (src/core/watch.ts): heartbeats, fail
   release_regress_pct: 25  # release verdict: any group but owner pain worse by this percent over the before window reads WORSE
   release_min_calls: 300   # release verdict: fewer Main tool calls on either side reads "not enough data yet", no verdict
 
+tuning:                      # the tuner steps existing rules down and back up (src/core/rule-tuning.ts)
+  enabled: true              # the daily step runs
+  min_fires: 20              # fires in the window before a rule can step down
+  max_useful: 0.10           # useful share below this, with enough fires, steps down one level
+  window_days: 7             # days a level change is judged over, and how long an undo holds
+  probation_days: 7          # days an off rule stays off before a raise to tell
+  guards: false              # guard ids are scored and stepped only when this is true
+  keep_off: []               # rule ids probation never raises
+
 machine:
   load_over_cores: 4   # load above the core count that draws a warning (used when load_max is 0)
   load_max: 0   # load ceiling; 0 = core count + load_over_cores
