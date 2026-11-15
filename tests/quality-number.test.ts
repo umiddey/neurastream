@@ -42,7 +42,7 @@ function cfg() {
 const SOURCE = {
 	listRuns: () => [
 		{ id: "s", kind: "sub", cost: 1, lastWriteAt: IN },
-		{ id: "m", kind: "main", cost: 1, lastWriteAt: IN },
+		{ id: "m", kind: "main", cost: 1, lastWriteAt: IN, messages: [] },
 	],
 	mainSession: () => null,
 } as unknown as RunSource;

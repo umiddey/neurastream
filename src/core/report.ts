@@ -40,6 +40,7 @@ interface Snap {
 	m4: M4;
 	m5: M5;
 	m6: M6;
+	m9: number | null;
 }
 
 function day(t: number): string {
@@ -50,14 +51,23 @@ function day(t: number): string {
 export function snap(cfg: Config, source: RunSource, events: Ev[], blocks: GuardBlock[], incidents: IncidentView[], w: Window): Snap {
 	const runs = source.listRuns(w.from);
 	const patterns = cfg.metrics.correction_patterns.map((p) => new RegExp(p, "i"));
+	const m1v = m1({ runs, events }, w);
+	const flips = flipRecords(cfg.paths.score_state).filter((f) => inWindow(f.ts, w)).length;
 	return {
-		m1: m1({ runs, events }, w),
+		m1: m1v,
 		m2: m2({ runs, events }, w),
 		m3: m3(events, w),
 		m4: m4(runs, w, patterns),
 		m5: m5(blocks, events, w),
 		m6: m6(incidents, w),
+		m9: adjustedPerDollar(m1v.accepts, flips, m1v.worker + m1v.main),
 	};
+}
+
+/** M9 (plan P7): adjusted merges per dollar. Each flip cancels one accepted merge, so a net-bad
+ * window reads negative. Null when nothing was spent in the window. */
+export function adjustedPerDollar(accepts: number, flips: number, dollars: number): number | null {
+	return dollars > 0 ? (accepts - flips) / dollars : null;
 }
 
 export interface M6 {
@@ -257,6 +267,8 @@ export function rowsOf(c: Snap, p: Snap): Row[] {
 		{ key: "m4_questions", name: "M4 Main questions", cur: c.m4.questions, prev: p.m4.questions, fmt: num, rank: true },
 		{ key: "m4_users", name: "M4 owner messages", cur: c.m4.users, prev: p.m4.users, fmt: num, rank: false },
 		{ key: "m5", name: "M5 guard blocks", cur: c.m5.blocks, prev: p.m5.blocks, fmt: num, rank: true },
+		// M9 is higher-better, so it is shown in the table but never ranked as the worst change.
+		{ key: "m9", name: "M9 adjusted merges per $", cur: c.m9, prev: p.m9, fmt: (v: number | null) => (v === null ? "n/a" : v.toFixed(3)), rank: false },
 	];
 }
 
@@ -282,6 +294,7 @@ function detail(c: Snap): string[] {
 		`M4 owner messages ${c.m4.users}, corrections ${c.m4.corrections}, Main questions ${c.m4.questions}`,
 		`M5 guard blocks ${c.m5.blocks}, false alarms ${c.m5.falseAlarms}; top reasons: ${reasons}`,
 		`M6 incidents ${c.m6.opened} opened, ${c.m6.planned} planned, ${c.m6.dismissed} dismissed, ${c.m6.fixed} fixed; median open→fixed ${median}`,
+		`M9 adjusted merges per $ ${c.m9 === null ? "n/a" : c.m9.toFixed(3)}`,
 	];
 }
 
