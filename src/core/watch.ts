@@ -274,6 +274,10 @@ export function watchOnce(cfg: Config, deps: WatchDeps): WatchReport {
 			notify: text => deps.notify(cfg.secrets.redact ? redactSecrets(text, loadKnownSecrets(cfg), cfg.secrets.extra_patterns).text : text),
 		});
 	}
+	// (e1) P5b: a WORSE rule-level verdict puts back the rules the most recent step moved (before the daily step).
+	if (deps.source) {
+		ruleLevelVerdicts(cfg, { now, source: deps.source, notify: text => deps.notify(cfg.secrets.redact ? redactSecrets(text, loadKnownSecrets(cfg), cfg.secrets.extra_patterns).text : text) });
+	}
 	// (e2) P4: the daily rule-tuning step, once per UTC day (the `checked` gate).
 	tuneRules(cfg, now, text => deps.notify(cfg.secrets.redact ? redactSecrets(text, loadKnownSecrets(cfg), cfg.secrets.extra_patterns).text : text));
 	// (f) P9: an owner message that crossed notify.answer_within_min with no hand-back counts M8,
@@ -312,6 +316,63 @@ export function tuneRules(cfg: Config, now: number, notify: (text: string) => vo
 	writeLevels(cfg, step.levels);
 	for (const m of step.moves) appendMetric(cfg, { type: m.probe ? "rule-probe" : "rule-level", rule: m.rule, from: m.from, to: m.to, ts: now });
 	if (step.moves.length > 0) notify(`rule tuning: ${step.moves.map(m => `${m.rule} ${m.from}→${m.to}`).join("; ")}`);
+}
+
+// ---- P5b: an undo on WORSE — a rule-level step that reads WORSE puts back the most recent step's rules.
+
+const UNDO_DAY_SEC = 86_400;
+const UNDO_CHANGE_TYPES = new Set(["rule-level", "rule-probe", "rule-undo"]);
+
+/** One rule put back to the level it had before the most recent step. */
+export interface RuleUndo {
+	rule: string;
+	from: string;
+	to: string;
+}
+
+/** Judges each rule-level change once, after its window closes (the `rule-undo-check` marker is the once-only record). On WORSE the rules the most recent step moved go back to their previous level, held for window_days. Corrupt levels are skipped. */
+export function ruleLevelVerdicts(cfg: Config, deps: Pick<ReleaseVerdictDeps, "now" | "source" | "notify">): RuleUndo[] {
+	const levels = readLevels(cfg);
+	if (levels.corrupt) return [];
+	const { now } = deps;
+	const holdSec = cfg.tuning.window_days * UNDO_DAY_SEC;
+	const metrics = readMetricEvents(cfg);
+	const changes = metrics
+		.filter(e => UNDO_CHANGE_TYPES.has(String(e.type)))
+		.map(e => ({ type: String(e.type), rule: String(e.rule), ts: Number(e.ts) }));
+	const judged = new Set(metrics.filter(e => e.type === "rule-undo-check").map(e => `${e.rule}@${e.change}`));
+	const due = changes
+		.filter(c => c.type === "rule-level" && !judged.has(`${c.rule}@${c.ts}`))
+		.map(c => {
+			const later = changes.filter(o => o.rule === c.rule && o.ts > c.ts).map(o => o.ts);
+			return { c, end: Math.min(c.ts + holdSec, ...later) };
+		})
+		.filter(({ end }) => now >= end)
+		.toSorted((a, b) => a.c.ts - b.c.ts);
+	const rules: RuleLevels["rules"] = { ...levels.rules };
+	const undos: RuleUndo[] = [];
+	const today = new Date(now * 1000).toISOString().slice(0, 10);
+	for (const { c, end } of due.slice(-VERDICT_MAX_PER_RUN)) {
+		const before: Window = { from: c.ts - (end - c.ts), to: c.ts };
+		const after: Window = { from: c.ts, to: end };
+		// A change of the same rule inside the before-window makes the before reading mixed: no judgment.
+		const contaminated = changes.some(o => o.rule === c.rule && o.ts >= before.from && o.ts < c.ts);
+		const verdict = contaminated ? "no-before" : (judgeWindows(cfg, `rule ${c.rule}`, before, after, { source: deps.source })?.verdict ?? "no-data");
+		appendMetric(cfg, { type: "rule-undo-check", rule: c.rule, change: c.ts, verdict, ts: now });
+		if (verdict !== "WORSE") continue;
+		for (const [rule, e] of Object.entries(rules)) {
+			if (e.date !== levels.date || e.prev === undefined) continue;
+			if (e.held_until !== undefined && e.held_until > now) continue;
+			rules[rule] = { level: e.prev, prev: e.level, date: today, held_until: now + holdSec };
+			undos.push({ rule, from: e.level, to: e.prev });
+			appendMetric(cfg, { type: "rule-undo", rule, from: e.level, to: e.prev, ts: now });
+		}
+	}
+	if (undos.length > 0) {
+		writeLevels(cfg, { ...levels, rules });
+		deps.notify(`rule undo (WORSE): ${undos.map(u => `${u.rule} ${u.from}→${u.to}`).join("; ")}`);
+	}
+	return undos;
 }
 
 // ---- P11: the release verdict — is the new version better or worse? ----
