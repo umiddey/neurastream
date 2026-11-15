@@ -31,7 +31,7 @@ import { ciScan } from "./ci.ts";
 import type { CommandRunner } from "./mr-sweep.ts";
 import type { ReleaseTag } from "./results.ts";
 import { readLevels, writeLevels, type RuleLevels } from "./rule-levels.ts";
-import { decideStep, scoreKinds } from "./rule-tuning.ts";
+import { decideStep, nextBar, scoreKinds, TUNER } from "./rule-tuning.ts";
 
 /** One failed user unit, as the lister reports it. */
 export interface FailedUnit {
@@ -311,11 +311,16 @@ export function tuneRules(cfg: Config, now: number, notify: (text: string) => vo
 	const today = new Date(now * 1000).toISOString().slice(0, 10);
 	if (levels.checked === today) return;
 	const logText = existsSync(cfg.paths.guard_log) ? readFileSync(cfg.paths.guard_log, "utf8") : "";
-	const scores = scoreKinds(readIncidents(cfg), logText, windows(now, cfg.tuning.window_days).cur, cfg.tuning);
-	const step = decideStep(levels, scores, now, today, cfg.tuning);
-	writeLevels(cfg, step.levels);
+	const w = windows(now, cfg.tuning.window_days).cur;
+	const scores = scoreKinds(readIncidents(cfg), logText, w, cfg.tuning, readMetricEvents(cfg));
+	const oldBar = levels.tuner?.bar ?? cfg.tuning.min_fires;
+	const bar = nextBar(oldBar, scores.find(s => s.kind === TUNER)?.undoRate ?? 0);
+	const step = decideStep(levels, scores, now, today, cfg.tuning, bar);
+	writeLevels(cfg, bar === oldBar ? step.levels : { ...step.levels, tuner: { bar } });
 	for (const m of step.moves) appendMetric(cfg, { type: m.probe ? "rule-probe" : "rule-level", rule: m.rule, from: m.from, to: m.to, ts: now });
-	if (step.moves.length > 0) notify(`rule tuning: ${step.moves.map(m => `${m.rule} ${m.from}→${m.to}`).join("; ")}`);
+	const parts = step.moves.map(m => `${m.rule} ${m.from}→${m.to}`);
+	if (bar !== oldBar) parts.push(`tuner bar ${oldBar}->${bar}`);
+	if (parts.length > 0) notify(`rule tuning: ${parts.join("; ")}`);
 }
 
 // ---- P5b: an undo on WORSE — a rule-level step that reads WORSE puts back the most recent step's rules.

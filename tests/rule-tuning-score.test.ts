@@ -50,7 +50,7 @@ test("fires are opened incidents plus tell and off lines in the window", () => {
 		tally(900, "tool-crash", "tell"),
 		tally(1700, "unit-failed", "off"),
 	].join("\n");
-	const rows = scoreKinds(incidents, logText, W, TUNING);
+	const rows = scoreKinds(incidents, logText, W, TUNING, []);
 	const crash = rows.find((r) => r.kind === "tool-crash");
 	expect(crash).toEqual({ kind: "tool-crash", fires: 5, planned: 1, fixed: 1, dismissed: 1, usefulShare: 2 / 5 });
 	const unit = rows.find((r) => r.kind === "unit-failed");
