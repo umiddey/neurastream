@@ -53,7 +53,17 @@ test("per-kind rates count opened, planned and dismissed inside the window only"
 		inc("old", "owner-correction", 500, { type: "dismiss", id: "old", why: "x" }),
 	];
 	const [s] = kindStats(incidents, W);
-	expect(s).toMatchObject({ kind: "owner-correction", opened: 4, planned: 1, dismissed: 2, dismissRate: 0.5 });
+	expect(s).toMatchObject({ kind: "owner-correction", opened: 4, planned: 1, fixed: 0, dismissed: 2, dismissRate: 0.5 });
+});
+
+test("per-kind fixed counts a fixed resolution the same way M6 does", () => {
+	const incidents = [
+		inc("a", "tool-crash", 1100, { type: "fixed", id: "a", plan: "p", ts: 1500 }),
+		inc("b", "tool-crash", 1200, { type: "plan", id: "b", plan: "p" }),
+		inc("c", "tool-crash", 1300, { type: "dismiss", id: "c", why: "no" }),
+		inc("old", "tool-crash", 500, { type: "fixed", id: "old", plan: "p", ts: 600 }),
+	];
+	expect(kindStats(incidents, W)[0]).toMatchObject({ kind: "tool-crash", opened: 3, planned: 1, fixed: 1, dismissed: 1 });
 });
 
 test("noisy detector fires at the threshold and stays off below it", () => {

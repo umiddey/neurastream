@@ -267,3 +267,31 @@ describe("recall topics config", () => {
 		expect(() => loadConfig({ file: withFile(yaml), home, env: {} })).toThrow(/recall\.topics_(every|model)/);
 	});
 });
+
+describe("tuning config", () => {
+	test("defaults load when the block is absent, and keep_off defaults to []", () => {
+		const cfg = loadConfig({ file: withFile("wip:\n  limit: 3\n"), home, env: {} });
+		expect(cfg.tuning).toEqual({
+			enabled: true,
+			min_fires: 20,
+			max_useful: 0.1,
+			window_days: 7,
+			probation_days: 7,
+			guards: false,
+			keep_off: [],
+		});
+	});
+
+	test("a keep_off list round-trips", () => {
+		const cfg = loadConfig({ file: withFile("tuning:\n  keep_off: [ci-red-mr, tool-crash]\n"), home, env: {} });
+		expect(cfg.tuning.keep_off).toEqual(["ci-red-mr", "tool-crash"]);
+	});
+
+	test("a non-array keep_off is rejected", () => {
+		expect(() => loadConfig({ file: withFile("tuning:\n  keep_off: tool-crash\n"), home, env: {} })).toThrow(/tuning\.keep_off/);
+	});
+
+	test("a keep_off entry that is not a string is rejected", () => {
+		expect(() => loadConfig({ file: withFile("tuning:\n  keep_off: [1]\n"), home, env: {} })).toThrow(/tuning\.keep_off/);
+	});
+});
