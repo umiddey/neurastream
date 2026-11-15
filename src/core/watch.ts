@@ -30,7 +30,7 @@ import { loadKnownSecrets, redactSecrets } from "./secret-redact.ts";
 import { ciScan } from "./ci.ts";
 import type { CommandRunner } from "./mr-sweep.ts";
 import type { ReleaseTag } from "./results.ts";
-import { readLevels, writeLevels, type RuleLevels } from "./rule-levels.ts";
+import { levelFor, readLevels, writeLevels, type Level, type RuleLevels } from "./rule-levels.ts";
 import { decideStep, nextBar, scoreGuards, scoreKinds, TUNER } from "./rule-tuning.ts";
 
 /** One failed user unit, as the lister reports it. */
@@ -274,7 +274,7 @@ export function watchOnce(cfg: Config, deps: WatchDeps): WatchReport {
 			notify: text => deps.notify(cfg.secrets.redact ? redactSecrets(text, loadKnownSecrets(cfg), cfg.secrets.extra_patterns).text : text),
 		});
 	}
-	// (e1) P5b: a WORSE rule-level verdict puts back the rules the most recent step moved (before the daily step).
+	// (e1) P5b: a WORSE rule-level verdict puts back the rule that change moved (before the daily step).
 	if (deps.source) {
 		ruleLevelVerdicts(cfg, { now, source: deps.source, notify: text => deps.notify(cfg.secrets.redact ? redactSecrets(text, loadKnownSecrets(cfg), cfg.secrets.extra_patterns).text : text) });
 	}
@@ -324,19 +324,19 @@ export function tuneRules(cfg: Config, now: number, notify: (text: string) => vo
 	if (parts.length > 0) notify(`rule tuning: ${parts.join("; ")}`);
 }
 
-// ---- P5b: an undo on WORSE — a rule-level step that reads WORSE puts back the most recent step's rules.
+// ---- P5b: an undo on WORSE — a rule-level change that reads WORSE puts back the rule it moved.
 
 const UNDO_DAY_SEC = 86_400;
 const UNDO_CHANGE_TYPES = new Set(["rule-level", "rule-probe", "rule-undo"]);
 
-/** One rule put back to the level it had before the most recent step. */
+/** One rule put back to the level it had before the change that moved it. */
 export interface RuleUndo {
 	rule: string;
 	from: string;
 	to: string;
 }
 
-/** Judges each rule-level change once, after its window closes (the `rule-undo-check` marker is the once-only record). On WORSE the rules the most recent step moved go back to their previous level, held for window_days. Corrupt levels are skipped. */
+/** Judges each rule-level change once, after its window closes (the `rule-undo-check` marker is the once-only record). On WORSE the rule that change moved goes back to the level it had before, held for window_days, if no later step has moved it and no hold is in force. Corrupt levels are skipped. */
 export function ruleLevelVerdicts(cfg: Config, deps: Pick<ReleaseVerdictDeps, "now" | "source" | "notify">): RuleUndo[] {
 	const levels = readLevels(cfg);
 	if (levels.corrupt) return [];
@@ -345,7 +345,7 @@ export function ruleLevelVerdicts(cfg: Config, deps: Pick<ReleaseVerdictDeps, "n
 	const metrics = readMetricEvents(cfg);
 	const changes = metrics
 		.filter(e => UNDO_CHANGE_TYPES.has(String(e.type)))
-		.map(e => ({ type: String(e.type), rule: String(e.rule), ts: Number(e.ts) }));
+		.map(e => ({ type: String(e.type), rule: String(e.rule), ts: Number(e.ts), from: e.from as Level, to: e.to as Level }));
 	const judged = new Set(metrics.filter(e => e.type === "rule-undo-check").map(e => `${e.rule}@${e.change}`));
 	const due = changes
 		.filter(c => c.type === "rule-level" && !judged.has(`${c.rule}@${c.ts}`))
@@ -366,13 +366,14 @@ export function ruleLevelVerdicts(cfg: Config, deps: Pick<ReleaseVerdictDeps, "n
 		const verdict = contaminated ? "no-before" : (judgeWindows(cfg, `rule ${c.rule}`, before, after, { source: deps.source })?.verdict ?? "no-data");
 		appendMetric(cfg, { type: "rule-undo-check", rule: c.rule, change: c.ts, verdict, ts: now });
 		if (verdict !== "WORSE") continue;
-		for (const [rule, e] of Object.entries(rules)) {
-			if (e.date !== levels.date || e.prev === undefined) continue;
-			if (e.held_until !== undefined && e.held_until > now) continue;
-			rules[rule] = { level: e.prev, prev: e.level, date: today, held_until: now + holdSec };
-			undos.push({ rule, from: e.level, to: e.prev });
-			appendMetric(cfg, { type: "rule-undo", rule, from: e.level, to: e.prev, ts: now });
-		}
+		// Only this change's own rule goes back, and only if no later step has moved it (its level is
+		// still the one this change left) and no hold is in force.
+		if (levelFor({ ...levels, rules }, c.rule) !== c.to) continue;
+		const held = rules[c.rule]?.held_until;
+		if (held !== undefined && held > now) continue;
+		rules[c.rule] = { level: c.from, prev: c.to, date: today, held_until: now + holdSec };
+		undos.push({ rule: c.rule, from: c.to, to: c.from });
+		appendMetric(cfg, { type: "rule-undo", rule: c.rule, from: c.to, to: c.from, ts: now });
 	}
 	if (undos.length > 0) {
 		writeLevels(cfg, { ...levels, rules });
