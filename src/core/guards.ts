@@ -678,6 +678,14 @@ function unlockUntilMs(cfg: Config): number | null {
 	}
 }
 
+/** The unlock window end Main was last told about (prompt line or mid-turn note). */
+let announcedUnlockUntil: number | null = null;
+
+function unlockText(until: number): string {
+	const hhmm = new Date(until).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+	return `guards: UNLOCKED until ${hhmm} — guard files are open; do the step that waited on the unlock now.`;
+}
+
 /**
  * One line for Main's prompt while the owner's unlock is open. A chat "unlock" is swallowed by the
  * input handler (the model never sees the message), so without this line Main only learns of it
@@ -685,9 +693,19 @@ function unlockUntilMs(cfg: Config): number | null {
  */
 function unlockLine(cfg: Config): string {
 	const until = unlockUntilMs(cfg);
-	if (until === null) return "";
-	const hhmm = new Date(until).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
-	return `\nguards: UNLOCKED until ${hhmm} — guard files are open; do the step that waited on the unlock now.`;
+	announcedUnlockUntil = until;
+	return until === null ? "" : `\n${unlockText(until)}`;
+}
+
+/**
+ * The same line for an unlock typed while Main's turn is running: the prompt line was built before
+ * it, so the adapter appends this to a tool result. Once per unlock; null when nothing new.
+ */
+export function unlockMidTurnNote(cfg: Config): string | null {
+	const until = unlockUntilMs(cfg);
+	if (until === null || until === announcedUnlockUntil) return null;
+	announcedUnlockUntil = until;
+	return unlockText(until);
 }
 
 function protectedHit(paths: string[], cfg: Config): string | null {

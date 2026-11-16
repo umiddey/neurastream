@@ -13,7 +13,7 @@ import { createOmpAdapter, reset as resetAdapter } from "../src/adapters/omp/ind
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { relaunchPath } from "../src/core/rollover.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
-import { checkInject } from "../src/core/guards.ts";
+import { checkInject, unlockMidTurnNote } from "../src/core/guards.ts";
 import { chatUnlock, unlockPath, unlocked } from "../src/core/queue/lib.ts";
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
@@ -185,6 +185,20 @@ test("an open unlock shows as a guards line in Main's prompt; locked shows none"
 	expect(open.includes(`until ${hhmm}`) || open.includes(`until ${hhmmPrev}`)).toBe(true);
 	chatUnlock("lock", CFG, "interactive");
 	expect(checkInject({ inject: "hello", agent: "main" }, CFG).inject ?? "").not.toContain("guards: UNLOCKED");
+});
+
+test("an unlock typed mid-turn is announced once, to the next tool result; the prompt line then covers it", () => {
+	reset();
+	checkInject({ inject: "hello", agent: "main" }, CFG);
+	expect(unlockMidTurnNote(CFG)).toBeNull();
+	chatUnlock("unlock 10", CFG, "interactive");
+	expect(unlockMidTurnNote(CFG) ?? "").toContain("guards: UNLOCKED until");
+	expect(unlockMidTurnNote(CFG)).toBeNull();
+	chatUnlock("lock", CFG, "interactive");
+	expect(unlockMidTurnNote(CFG)).toBeNull();
+	chatUnlock("unlock 10", CFG, "interactive");
+	checkInject({ inject: "next", agent: "main" }, CFG);
+	expect(unlockMidTurnNote(CFG)).toBeNull();
 });
 
 test("unlock N: unlocked for exactly N minutes (mtime backdated)", () => {

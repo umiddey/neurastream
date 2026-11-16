@@ -32,7 +32,7 @@ import { remoteStoreFor } from "../../core/team-client.ts";
 import { appendOwnerAnswer, readOwnerAnswers, readOwnerMessages } from "../../core/incidents.ts";
 import { appendedSinceSpawn, markTopicsSpawned, ownerLogDir, recordOwnerLog } from "../../core/owner-log.ts";
 import { topicsDue, topicsLogFile } from "../../core/owner-topics.ts";
-import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, mainId, mainStateDir, newProgressEntries, planReadNote, plannerSpawnPlan, recordMainResult, resetMainCalls, revertMainEdit, rekeySpawnFile, reviewSpawnEnd, STOP_PLAN_OFFER_REFUSAL } from "../../core/guards.ts";
+import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, mainId, mainStateDir, newProgressEntries, planReadNote, plannerSpawnPlan, recordMainResult, resetMainCalls, revertMainEdit, rekeySpawnFile, reviewSpawnEnd, STOP_PLAN_OFFER_REFUSAL, unlockMidTurnNote } from "../../core/guards.ts";
 import { rateLimited } from "../../core/rate-limit.ts";
 import { backPost, clearLimitState, limitMetric, limitedPost, onLimited, readLimitState, timingOf, writeLimitState } from "../../core/limit-probe.ts";
 import { appendMetric } from "../../core/metrics.ts";
@@ -1301,6 +1301,10 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 			mainDetectors(cfg, { runSource: defaultRunSource, completedResults: defaultCompletedResults, mainEvents: defaultMainEvents }, {
 				bash: { command: asString(asRecord(e.input).command), output: content.map(p => asString(asRecord(p).text)).join("\n") },
 			});
+		}
+		if (!c.hasAgent || c.kind === "main") {
+			const unlockNote = unlockMidTurnNote(cfg);
+			if (unlockNote) notes.push(unlockNote);
 		}
 		if (notes.length) return { content: [...content, ...notes.map(text => ({ type: "text", text }))] };
 		return undefined;
