@@ -1,4 +1,8 @@
 # Changelog
+## 0.3.12
+### Added
+- Main's prompt now carries `guards: UNLOCKED until HH:MM` while the owner's unlock is open. A chat `unlock` is swallowed by the input handler, so Main never saw it and had to be told in the next message.
+
 ## 0.3.11
 ### Changed
 - Rule tuning undo is per change: a WORSE verdict on a rule-level change restores only that change's own rule (to its previous level, held for `window_days`), and only when the rule still sits at the level that change set. Before, it restored every rule of the most recent step. 0.3.10 never reached npm either (two more tests leaked `QUEUE_*` env; `guard-tuning-read` and `guard-tuning-step` now restore it); 0.3.11 carries the 0.3.9 content below.

@@ -668,12 +668,26 @@ export function subCallCap(agentId: string, cfg: Config): number {
 
 // --- shared pieces ---
 
-function unlocked(cfg: Config): boolean {
+/** Epoch ms when the owner's open unlock window closes, or null when the guard is locked. */
+function unlockUntilMs(cfg: Config): number | null {
 	try {
-		return Date.now() - statSync(q.UNLOCK).mtimeMs < cfg.guards.unlock_minutes * 60_000;
+		const until = statSync(q.UNLOCK).mtimeMs + cfg.guards.unlock_minutes * 60_000;
+		return Date.now() < until ? until : null;
 	} catch {
-		return false;
+		return null;
 	}
+}
+
+/**
+ * One line for Main's prompt while the owner's unlock is open. A chat "unlock" is swallowed by the
+ * input handler (the model never sees the message), so without this line Main only learns of it
+ * when the owner says so in the next message.
+ */
+function unlockLine(cfg: Config): string {
+	const until = unlockUntilMs(cfg);
+	if (until === null) return "";
+	const hhmm = new Date(until).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+	return `\nguards: UNLOCKED until ${hhmm} — guard files are open; do the step that waited on the unlock now.`;
 }
 
 function protectedHit(paths: string[], cfg: Config): string | null {
@@ -1727,7 +1741,7 @@ function checkToolRules(e: ToolEvent, cfg: Config, runs?: RunSource): Decision {
 			? writes.filter(p => !(path.extname(p) === ".md" && path.dirname(path.resolve(p)) === rolloverDir))
 			: writes;
 	const hit = protectedHit(openWrites, cfg);
-	if (hit && !unlocked(cfg)) {
+	if (hit && unlockUntilMs(cfg) === null) {
 		log(cfg.paths.plan_guard_log, `BLOCK ${e.agent}:${e.agentId} tool=${e.tool} protected: ${hit} rule=tool.protected`);
 		// The plan index (plan 20261031_0911 P2) is guard surface like the rest, but unlike the
 		// others an agent has a sanctioned way to change it: the queue add/move CLI through
@@ -2141,7 +2155,8 @@ export function checkInject(e: InjectEvent, cfg: Config): Decision {
 			: tier === "full"
 				? `Main works unattended: no edit cap, its own "Priority skip: <plan> — Main: \\"<reason>\\"" skips pass, pushes and merges go through. Owner-only moves (guard files, the phone page, notify secrets, the unlock) stay locked.`
 				: `Main changes at most ${cfg.guards.main_edit_limit} project files per ${cfg.guards.main_window_min} min; pushes and merges go through.`;
-	const editLimit = continuation ? "" : `\nautonomy: ${tier} — ${tierNote}`;
+	const unlockNote = continuation ? "" : unlockLine(cfg);
+	const editLimit = continuation ? "" : `\nautonomy: ${tier} — ${tierNote}${unlockNote}`;
 	return {
 		allow: true,
 		reason: "",

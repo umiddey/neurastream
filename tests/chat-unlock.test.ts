@@ -13,6 +13,7 @@ import { createOmpAdapter, reset as resetAdapter } from "../src/adapters/omp/ind
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { relaunchPath } from "../src/core/rollover.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
+import { checkInject } from "../src/core/guards.ts";
 import { chatUnlock, unlockPath, unlocked } from "../src/core/queue/lib.ts";
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
@@ -172,6 +173,18 @@ test("unlock: fresh file, unlocked now, logged with the source", () => {
 	expect(unlocked()).toBe(true);
 	expect(Date.now() - mtimeMs()).toBeLessThan(5_000);
 	expect(logLines()).toContain(`UNLOCK chat source=interactive minutes=${CFG.guards.unlock_minutes}`);
+});
+
+test("an open unlock shows as a guards line in Main's prompt; locked shows none", () => {
+	reset();
+	chatUnlock("unlock 10", CFG, "interactive");
+	const open = checkInject({ inject: "hello", agent: "main" }, CFG).inject ?? "";
+	expect(open).toContain("guards: UNLOCKED until");
+	const hhmm = new Date(Date.now() + 10 * 60_000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+	const hhmmPrev = new Date(Date.now() + 9 * 60_000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+	expect(open.includes(`until ${hhmm}`) || open.includes(`until ${hhmmPrev}`)).toBe(true);
+	chatUnlock("lock", CFG, "interactive");
+	expect(checkInject({ inject: "hello", agent: "main" }, CFG).inject ?? "").not.toContain("guards: UNLOCKED");
 });
 
 test("unlock N: unlocked for exactly N minutes (mtime backdated)", () => {
