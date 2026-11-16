@@ -1,4 +1,8 @@
 # Changelog
+## 0.3.13
+### Fixed
+- An unlock typed while Main's turn is running now reaches Main: the next tool result carries `guards: UNLOCKED until HH:MM` once. Before, the line only showed in the prompt of the next owner message.
+
 ## 0.3.12
 ### Added
 - Main's prompt now carries `guards: UNLOCKED until HH:MM` while the owner's unlock is open. A chat `unlock` is swallowed by the input handler, so Main never saw it and had to be told in the next message.
