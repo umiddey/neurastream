@@ -1,4 +1,8 @@
 # Changelog
+## 0.3.14
+### Changed
+- The per-message `autonomy:` line now says which plan lines Main may edit (Status, WAITING on owner, Waits on, Cancelled by owner, False positive), what delegated mode refuses, and "Test before saying cannot".
+
 ## 0.3.13
 ### Fixed
 - An unlock typed while Main's turn is running now reaches Main: the next tool result carries `guards: UNLOCKED until HH:MM` once. Before, the line only showed in the prompt of the next owner message.

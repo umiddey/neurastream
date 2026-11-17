@@ -2174,7 +2174,8 @@ export function checkInject(e: InjectEvent, cfg: Config): Decision {
 				? `Main works unattended: no edit cap, its own "Priority skip: <plan> — Main: \\"<reason>\\"" skips pass, pushes and merges go through. Owner-only moves (guard files, the phone page, notify secrets, the unlock) stay locked.`
 				: `Main changes at most ${cfg.guards.main_edit_limit} project files per ${cfg.guards.main_window_min} min; pushes and merges go through.`;
 	const unlockNote = continuation ? "" : unlockLine(cfg);
-	const editLimit = continuation ? "" : `\nautonomy: ${tier} — ${tierNote}${unlockNote}`;
+	const mayNote = ` Main may edit the lines Status/WAITING on owner/Waits on/Cancelled by owner/False positive and add Progress entries${currentPlanner(cfg) === "delegated" ? "; planner delegated: plan body and CANCELLED.md are refused (clear a ban with a False positive line)" : ""}. Test before saying "cannot".`;
+	const editLimit = continuation ? "" : `\nautonomy: ${tier} — ${tierNote}${mayNote}${unlockNote}`;
 	return {
 		allow: true,
 		reason: "",

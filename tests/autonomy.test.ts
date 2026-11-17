@@ -306,6 +306,13 @@ test("checkInject names the tier instead of the bare edit-limit line", () => {
 	expect(f.inject).toContain("no edit cap");
 });
 
+test("checkInject tells Main which plan lines it may edit", () => {
+	setTier("opinionated");
+	const d = checkInject({ agent: "main", inject: "what is next" }, cfg);
+	expect(d.inject).toContain("Main may edit the lines Status/WAITING on owner/Waits on");
+	expect(d.inject).toContain("False positive");
+});
+
 // --- P2: the strict landing gate ---
 
 const PUSH = "git push origin feat/toy";
