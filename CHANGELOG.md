@@ -1,4 +1,9 @@
 # Changelog
+## 0.3.18
+### Fixed
+- A reviewer's `PLAN REVIEW:` / `CODE REVIEW:` line with a `~` before the time or a note after its name (`- 2026-11-17 ~17:55 Rev (re-verify, read-only): PLAN REVIEW: PASS`) was neither recorded nor restored, so the spawn gate kept saying "no current reviewer PASS". Such lines now record; the name still comes from the spawn.
+- Test: the corrupt-levels `rules` test pins `MAIN_GUARD_LOG`/`QUEUE_STATE`, so env left by other test files no longer fails it on macOS CI.
+
 ## 0.3.17
 ### Fixed
 - In `planner delegated` mode Main can now add or delete a `Waits on:` / `Status:` / `WAITING on owner:` line (and Done check lines): `plannerBody` blanked those lines instead of dropping them, so a line-count change looked like a planner edit and was refused.
