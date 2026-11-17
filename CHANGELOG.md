@@ -1,4 +1,8 @@
 # Changelog
+## 0.3.16
+### Fixed
+- A chat `unlock` now wakes Main with a message (`Owner unlocked the guards in chat for N min (until HH:MM)…`), idle or mid-turn, like the phone-page unlock. The 0.3.13 tool-result note is removed: it never reached an idle Main.
+
 ## 0.3.15
 ### Changed
 - The `autonomy:` note shrinks to one short sentence (Main may edit Status/WAITING/Waits on/False positive lines; test before saying "cannot") to save prompt tokens.

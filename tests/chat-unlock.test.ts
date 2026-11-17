@@ -13,7 +13,7 @@ import { createOmpAdapter, reset as resetAdapter } from "../src/adapters/omp/ind
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { relaunchPath } from "../src/core/rollover.ts";
 import { applyQueueEnv } from "../src/core/queue/env.ts";
-import { checkInject, unlockMidTurnNote } from "../src/core/guards.ts";
+import { checkInject } from "../src/core/guards.ts";
 import { chatUnlock, unlockPath, unlocked } from "../src/core/queue/lib.ts";
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
@@ -187,20 +187,6 @@ test("an open unlock shows as a guards line in Main's prompt; locked shows none"
 	expect(checkInject({ inject: "hello", agent: "main" }, CFG).inject ?? "").not.toContain("guards: UNLOCKED");
 });
 
-test("an unlock typed mid-turn is announced once, to the next tool result; the prompt line then covers it", () => {
-	reset();
-	checkInject({ inject: "hello", agent: "main" }, CFG);
-	expect(unlockMidTurnNote(CFG)).toBeNull();
-	chatUnlock("unlock 10", CFG, "interactive");
-	expect(unlockMidTurnNote(CFG) ?? "").toContain("guards: UNLOCKED until");
-	expect(unlockMidTurnNote(CFG)).toBeNull();
-	chatUnlock("lock", CFG, "interactive");
-	expect(unlockMidTurnNote(CFG)).toBeNull();
-	chatUnlock("unlock 10", CFG, "interactive");
-	checkInject({ inject: "next", agent: "main" }, CFG);
-	expect(unlockMidTurnNote(CFG)).toBeNull();
-});
-
 test("unlock N: unlocked for exactly N minutes (mtime backdated)", () => {
 	reset();
 	const r = chatUnlock("unlock 10", CFG, "interactive");
@@ -269,7 +255,7 @@ test("guards.chat_unlock false: even a real command changes nothing", () => {
 
 // --- adapter: input event (local terminal) ---
 
-test("input interactive unlock 30: handled, unlocked, owner notified", async () => {
+test("input interactive unlock 30: handled, unlocked, owner notified, Main woken once; lock wakes nobody", async () => {
 	reset();
 	const host = fakeHost();
 	createOmpAdapter(host, CFG);
@@ -278,6 +264,11 @@ test("input interactive unlock 30: handled, unlocked, owner notified", async () 
 	expect(results).toEqual([{ handled: true }]);
 	expect(unlocked()).toBe(true);
 	expect(notes.length).toBe(1);
+	expect(host.sent.length).toBe(1);
+	expect(host.sent[0]).toMatch(/^Owner unlocked the guards in chat for 30 min \(until \d\d:\d\d\)\. Do the step that waited on the unlock now\.$/);
+	await host.emit("input", { text: "lock", source: "interactive" }, ctx);
+	expect(unlocked()).toBe(false);
+	expect(host.sent.length).toBe(1);
 });
 
 test("input with the config off, a machine source, or a subagent context is not handled", async () => {

@@ -32,7 +32,7 @@ import { remoteStoreFor } from "../../core/team-client.ts";
 import { appendOwnerAnswer, readOwnerAnswers, readOwnerMessages } from "../../core/incidents.ts";
 import { appendedSinceSpawn, markTopicsSpawned, ownerLogDir, recordOwnerLog } from "../../core/owner-log.ts";
 import { topicsDue, topicsLogFile } from "../../core/owner-topics.ts";
-import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, mainId, mainStateDir, newProgressEntries, planReadNote, plannerSpawnPlan, recordMainResult, resetMainCalls, revertMainEdit, rekeySpawnFile, reviewSpawnEnd, STOP_PLAN_OFFER_REFUSAL, unlockMidTurnNote } from "../../core/guards.ts";
+import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, mainId, mainStateDir, newProgressEntries, planReadNote, plannerSpawnPlan, recordMainResult, resetMainCalls, revertMainEdit, rekeySpawnFile, reviewSpawnEnd, STOP_PLAN_OFFER_REFUSAL } from "../../core/guards.ts";
 import { rateLimited } from "../../core/rate-limit.ts";
 import { backPost, clearLimitState, limitMetric, limitedPost, onLimited, readLimitState, timingOf, writeLimitState } from "../../core/limit-probe.ts";
 import { appendMetric } from "../../core/metrics.ts";
@@ -1302,10 +1302,6 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 				bash: { command: asString(asRecord(e.input).command), output: content.map(p => asString(asRecord(p).text)).join("\n") },
 			});
 		}
-		if (!c.hasAgent || c.kind === "main") {
-			const unlockNote = unlockMidTurnNote(cfg);
-			if (unlockNote) notes.push(unlockNote);
-		}
 		if (notes.length) return { content: [...content, ...notes.map(text => ({ type: "text", text }))] };
 		return undefined;
 	});
@@ -1746,14 +1742,16 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 	// count: the local terminal (input event, source "interactive") and collab guest prompts from
 	// write peers. This handler is registered BEFORE the rollover input handler below, so the unlock
 	// wins while a rollover is ready or in flight (emitInput short-circuits on { handled: true }).
-	const notifyUnlock = (ctx: unknown, r: { command?: "unlock" | "lock"; minutes?: number }): void => {
+	// An applied unlock also wakes Main (sendUserMessage: idle → a new turn, mid-turn → the steer
+	// queue), the same message the phone-page unlock sends through the owner inbox.
+	const notifyUnlock = (ctx: unknown, r: { command?: "unlock" | "lock"; minutes?: number; until?: number }): void => {
 		const c = asRolloverCtx(ctx);
-		if (!c) return;
-		if (r.command === "unlock" && r.minutes !== undefined) {
-			const until = new Date(Date.now() + r.minutes * 60_000).toLocaleTimeString();
-			c.notify(`guard unlocked for ${r.minutes} min (until ${until})`);
+		if (r.command === "unlock" && r.minutes !== undefined && r.until !== undefined) {
+			const hhmm = strftime(r.until, "%H:%M");
+			c?.notify(`guard unlocked for ${r.minutes} min (until ${hhmm})`);
+			pi.sendUserMessage(`Owner unlocked the guards in chat for ${r.minutes} min (until ${hhmm}). Do the step that waited on the unlock now.`);
 		} else if (r.command === "lock") {
-			c.notify("guard locked again");
+			c?.notify("guard locked again");
 		}
 	};
 	// The tier switch and the one-shot `go` travel the same two owner paths and answer the same way.
