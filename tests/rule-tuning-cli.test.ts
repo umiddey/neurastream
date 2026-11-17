@@ -50,7 +50,18 @@ test("a corrupt levels file reads as block, and the run logs exactly one guard l
 	mkdirSync(c.paths.queue_state, { recursive: true });
 	writeFileSync(join(c.paths.queue_state, "rule-levels.json"), "{");
 	expect(rulesLines(c).find(l => l.startsWith("block-loop"))).toContain("block");
-	expect(runRules([], { home: dir })).toBe(0);
+	// runRules reads process.env; another file's applyQueueEnv may have left MAIN_GUARD_LOG/QUEUE_STATE set.
+	const saved = { MAIN_GUARD_LOG: process.env.MAIN_GUARD_LOG, QUEUE_STATE: process.env.QUEUE_STATE };
+	process.env.MAIN_GUARD_LOG = c.paths.guard_log;
+	process.env.QUEUE_STATE = c.paths.queue_state;
+	try {
+		expect(runRules([], { home: dir })).toBe(0);
+	} finally {
+		for (const [k, v] of Object.entries(saved)) {
+			if (v === undefined) delete process.env[k];
+			else process.env[k] = v;
+		}
+	}
 	const logged = readFileSync(c.paths.guard_log, "utf8").split("\n").filter(l => l.includes("rule-levels"));
 	expect(logged).toHaveLength(1);
 });
