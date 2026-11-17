@@ -1,4 +1,8 @@
 # Changelog
+## 0.3.17
+### Fixed
+- In `planner delegated` mode Main can now add or delete a `Waits on:` / `Status:` / `WAITING on owner:` line (and Done check lines): `plannerBody` blanked those lines instead of dropping them, so a line-count change looked like a planner edit and was refused.
+
 ## 0.3.16
 ### Fixed
 - A chat `unlock` now wakes Main with a message (`Owner unlocked the guards in chat for N min (until HH:MM)…`), idle or mid-turn, like the phone-page unlock. The 0.3.13 tool-result note is removed: it never reached an idle Main.

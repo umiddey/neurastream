@@ -275,6 +275,12 @@ test("delegated: a Done check command and a phase verify command are not the pla
 	expect(prose.reason).toContain("planner is delegated");
 });
 
+test("delegated: adding or deleting a Main-only line or a Done check line leaves the planner's text unchanged", () => {
+	const waits = PUNCH_BODY.replace("Planner: glm\n", "Planner: glm\nWaits on: /x/plan.md\n");
+	expect(plannerBody(waits)).toBe(plannerBody(PUNCH_BODY));
+	expect(plannerBody(PUNCH_BODY.replace("git log --grep=x -1", "git log --grep=x -1\ngit status"))).toBe(plannerBody(PUNCH_BODY));
+});
+
 test("delegated: a spawn may head its plan with its agent, not only its instance id", () => {
 	writePlannerFile("delegated");
 	const plan = planPath("immediate/20261102_1901_family.md");

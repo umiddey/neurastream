@@ -2292,12 +2292,13 @@ function codeReviewProblem(file: string, after: string, ids: string[]): string |
 export function plannerBody(text: string): string {
 	const body = q.outsideProgress(text).split("\n");
 	let section = "";
+	// Dropped lines are removed, not blanked: adding or deleting a Main-only line must not change the body.
 	return body
-		.map((l) => {
+		.flatMap((l) => {
 			if (l.startsWith("## ")) section = l;
-			if (/^## +Done check\b/i.test(section)) return "";
-			if (/^## +Phases\b/i.test(section) && /^- \[[ x]\]/.test(l)) l = l.replace(/`verify:[^`]*`/g, "`verify:`");
-			return MAIN_ONLY_LINE.test(l) ? "" : l;
+			if (/^## +Done check\b/i.test(section) || MAIN_ONLY_LINE.test(l)) return [];
+			if (/^## +Phases\b/i.test(section) && /^- \[[ x]\]/.test(l)) return [l.replace(/`verify:[^`]*`/g, "`verify:`")];
+			return [l];
 		})
 		.join("\n");
 }
