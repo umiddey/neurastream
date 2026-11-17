@@ -1,7 +1,11 @@
 # Changelog
+## 0.3.15
+### Changed
+- The `autonomy:` note shrinks to one short sentence (Main may edit Status/WAITING/Waits on/False positive lines; test before saying "cannot") to save prompt tokens.
+
 ## 0.3.14
 ### Changed
-- The per-message `autonomy:` line now says which plan lines Main may edit (Status, WAITING on owner, Waits on, Cancelled by owner, False positive), what delegated mode refuses, and "Test before saying cannot".
+- The per-message `autonomy:` line says which plan lines Main may edit and "Test before saying cannot".
 
 ## 0.3.13
 ### Fixed
