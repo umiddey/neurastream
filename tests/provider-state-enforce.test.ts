@@ -16,7 +16,6 @@ import type { Config } from "../src/core/config.ts";
 import { loadConfig } from "../src/core/config.ts";
 import { checkSpawn, preferProblem, providerClaimProblem, spawnProblem } from "../src/core/guards.ts";
 import { recordOut } from "../src/core/provider-state.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "pstate-enforce-"));
 // Inherited QUEUE_* (the caller's live session) beats the sandbox config; save, delete, restore.
@@ -91,7 +90,6 @@ ${prefer ? 'ledger:\n  prefer:\n    - glm\n    - deepseek\n    - haiku\n' : ""}`
 
 const cfg = sandbox(true);
 const cfgPlain = sandbox(false);
-applyQueueEnv(cfg);
 // The plan both sandboxes index; denial and Pick-note briefs must name it (the plan gate runs first).
 const PLAN = join(TMP, "home-prefer/projects/toy/docs/plans/20261020_0100_toy.md");
 
@@ -162,7 +160,8 @@ test("checkSpawn denies the haiku spawn without a Pick note and allows it with o
 	// exactly what the plan gate demands between runs.
 	appendFileSync(PLAN, "\n- 2026-10-27 ProviderStateP3cGlm: pick-order gate verified.\n");
 	// Empty prefer = no change from the old gate.
-	expect(checkSpawn({ agent: "haiku", invocationKind: "task", brief: `Work ${PLAN} on P1.`, runningJobs: [] }, cfgPlain).allow).toBe(true);
+	const planPlain = join(TMP, "home-plain/projects/toy/docs/plans/20261020_0100_toy.md");
+	expect(checkSpawn({ agent: "haiku", invocationKind: "task", brief: `Work ${planPlain} on P1.`, runningJobs: [] }, cfgPlain).allow).toBe(true);
 });
 
 // --- agent-score gate ranks inside prefer ---

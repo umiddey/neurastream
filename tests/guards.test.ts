@@ -16,7 +16,6 @@ import { autoClose } from "../src/adapters/omp/index.ts";
 import { lastCloseResult, touchedPaths } from "../src/core/queue/lib.ts";
 import { loadConfig } from "../src/core/config.ts";
 import { recordPagePlan } from "../src/core/plan-approval.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
 
 const REPO = dirname(dirname(import.meta.path));
 const ORIG = "/tmp/neurastream-originals";
@@ -588,7 +587,6 @@ test("stop: keep working while the queue is open; live sub or idle stops allow; 
 test("stop valve: the landed lock lets Main out after idle_stops empty stops; a stop with calls resets it", () => {
 	fresh();
 	const cfg = loadConfig({ home: HOME, env: {} });
-	applyQueueEnv(cfg);
 	// Branchless, every phase ticked, done check fails: the auto-close records a failed close, so
 	// the landed lock (not the open-queue valve) is what holds the stop.
 	writeFileSync(PLAN, [
@@ -622,7 +620,7 @@ test("stop valve: the landed lock lets Main out after idle_stops empty stops; a 
 	process.env.QUEUE_CLOSE_BIN = stub;
 	try {
 		autoClose(cfg);
-		expect(waitFor(() => lastCloseResult(PLAN) !== null, 20_000)).toBe(true);
+		expect(waitFor(() => lastCloseResult(PLAN, cfg.paths) !== null, 20_000)).toBe(true);
 		const stop = (calls: number, idle: number) => guardCli("stop", { agent: "main", callsSinceStop: calls, idleStops: idle, ledgerText: "" });
 		const first = stop(0, 0);
 		expect(first.code).toBe(2);
@@ -744,7 +742,6 @@ describe("plan approval hard gate (planGate, 20261029_1455 P3)", () => {
 		cfg.paths.cancelled = cancelled;
 		cfg.pages.dir = pages;
 		cfg.approval.since = since;
-		applyQueueEnv(cfg);
 		return planGate(`Plan: ${plan}\nP1 do the thing.`, "toy-worker", cfg);
 	};
 	test("after approval.since a plan with no page is refused; with since empty or a later since it passes", () => {

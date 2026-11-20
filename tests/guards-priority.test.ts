@@ -15,8 +15,7 @@ import type { Config } from "../src/core/config.ts";
 import { loadConfig } from "../src/core/config.ts";
 import { checkInject, checkPlanEdit, checkSpawn, checkTool, priorityProblem, readStaffing, recordSpawns, staffedPlans } from "../src/core/guards.ts";
 import { ownerSaid } from "../src/core/incidents.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
-import { activePlans, closeLog, stateDirPath, type Plan } from "../src/core/queue/lib.ts";
+import { activePlans, closeLog, type Plan } from "../src/core/queue/lib.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "nsar-guard-priority-"));
 const HOME = join(TMP, "home");
@@ -105,7 +104,6 @@ review:
 	return loadConfig({ home: HOME, env: {} });
 })();
 
-applyQueueEnv(baseCfg);
 const cfg = baseCfg;
 
 afterAll(() => {
@@ -150,21 +148,21 @@ test("staffedPlans: exact name and its uniqueness suffix match; other names and 
 
 test("an allowed task spawn records the task names per plan in staffing.json; the newest spawn wins", () => {
 	expect(checkTool(taskSpawn("w1", `Work ${LOW} on P1`), cfg)).toMatchObject({ allow: true });
-	expect(readStaffing()).toEqual({ [LOW]: ["w1"] });
+	expect(readStaffing(cfg.paths)).toEqual({ [LOW]: ["w1"] });
 	// spawns.json keeps its old job (progress hash per plan)
-	const spawns = JSON.parse(readFileSync(join(stateDirPath(), "spawns.json"), "utf8")) as Record<string, string>;
+	const spawns = JSON.parse(readFileSync(join(STATE, "spawns.json"), "utf8")) as Record<string, string>;
 	expect(typeof spawns[LOW]).toBe("string");
 	refresh(LOW);
 	expect(checkTool(taskSpawn("w2", `Work ${LOW} on P1`), cfg)).toMatchObject({ allow: true });
-	expect(readStaffing()[LOW]).toEqual(["w2"]);
+	expect(readStaffing(cfg.paths)[LOW]).toEqual(["w2"]);
 });
 
 test("a spawn event records the agent name per plan; a nameless recordSpawns leaves staffing alone", () => {
 	writeFileSync(STAFFING, JSON.stringify({ [MID]: ["keeper"] }));
 	expect(checkSpawn({ agent: "toy-worker", invocationKind: "task", brief: `Work ${HIGH} on P1` }, cfg)).toMatchObject({ allow: true });
-	expect(readStaffing()).toEqual({ [MID]: ["keeper"], [HIGH]: ["toy-worker"] });
-	recordSpawns([MID]);
-	expect(readStaffing()).toEqual({ [MID]: ["keeper"], [HIGH]: ["toy-worker"] });
+	expect(readStaffing(cfg.paths)).toEqual({ [MID]: ["keeper"], [HIGH]: ["toy-worker"] });
+	recordSpawns([MID], cfg.paths);
+	expect(readStaffing(cfg.paths)).toEqual({ [MID]: ["keeper"], [HIGH]: ["toy-worker"] });
 	refresh(HIGH);
 });
 
@@ -188,7 +186,7 @@ function resetHigh(extra = ""): void {
 }
 
 test("priorityProblem: pure ranks, staffing and the unknown-jobs pass", () => {
-	const plans = activePlans();
+	const plans = activePlans(cfg.paths);
 	expect(plans.map(p => p.file)).toEqual([HIGH, MID, LOW]);
 	// nothing higher than rank 1
 	expect(priorityProblem(plans, [HIGH], [], "")).toBeNull();
@@ -234,7 +232,7 @@ test("a higher plan that is WAITING, awaiting merge, fully ticked or staffed doe
 	expect(checkSpawn(spawnEv(`Work ${LOW} on P1`, jobs), cfg)).toMatchObject({ allow: true });
 	// awaiting merge
 	writeFileSync(HIGH, planText().replace("Status: open", "Status: complete"));
-	appendFileSync(closeLog(HIGH), "queue-close: AWAITING merge: done check green; branch feat/high is not merged yet\n");
+	appendFileSync(closeLog(HIGH, cfg.paths), "queue-close: AWAITING merge: done check green; branch feat/high is not merged yet\n");
 	refresh(LOW);
 	expect(checkSpawn(spawnEv(`Work ${LOW} on P1`, jobs), cfg)).toMatchObject({ allow: true });
 	// no unticked phase
@@ -274,7 +272,7 @@ test("a plain-reason skip is refused while the higher plan is idle; so is a quot
 	const d = checkSpawn(spawnEv(`Work ${LOW} on P1\nPriority skip: ${HIGH} — busy\n`, []), cfg);
 	expect(d.allow).toBe(false);
 	expect(d.reason).toContain(refusal);
-	const plans = activePlans();
+	const plans = activePlans(cfg.paths);
 	// an owner-form quote nobody recorded says
 	expect(priorityProblem(plans, [LOW], [], `Priority skip: ${HIGH} — owner: "words that nobody ever recorded"`, [], NOW)?.problem).toBe(refusal);
 	// a recorded quote older than 24 h
@@ -398,12 +396,12 @@ test("one batch naming HIGH and LOW needs no skip for its own higher plan; only 
 /** HIGH rewritten with the branch the cache's MR carries; activePlans() re-reads it fresh. */
 function plansWithHighMr(): Plan[] {
 	writeFileSync(HIGH, planText().replace("Branch: feat/toy", "Branch: feat/high"));
-	return activePlans();
+	return activePlans(cfg.paths);
 }
 
 /** Seed the open-MR cache the main-start sweep and pendingWorkProblem maintain, keyed by the plan's repo. */
 function writeMrCacheFile(at: number, mrs: object[] = [{ forge: "github", number: 7, token: "#7", branch: "feat/high" }]): void {
-	const repo = activePlans().find(p => p.file === HIGH)!.repo;
+	const repo = activePlans(cfg.paths).find(p => p.file === HIGH)!.repo;
 	writeFileSync(join(STATE, "mr-cache.json"), JSON.stringify({ at, repos: { [repo]: mrs } }));
 }
 

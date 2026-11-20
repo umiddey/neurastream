@@ -2,7 +2,19 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parsePlan, queueProblems, queueSummary, splitWaiting } from "../src/core/queue/lib";
+import { parsePlan, queueProblems, queueSummary, splitWaiting, type QueuePaths } from "../src/core/queue/lib";
+
+function queuePaths(dir: string, index: string): QueuePaths {
+	return {
+		agent_dir: dir,
+		queue_index: index,
+		blockers: dir,
+		queue_state: join(dir, "state"),
+		subagents: join(dir, "subagents.md"),
+		cancelled: join(dir, "CANCELLED.md"),
+		unlock: join(dir, ".guard-unlock"),
+	};
+}
 
 const CHECK = " — still true if: ";
 
@@ -97,7 +109,7 @@ test("Queue: other than team or personal is a queue problem; team, personal and 
 		writeFileSync(absent, planText(null));
 		const index = join(dir, "INDEX.md");
 		writeFileSync(index, [bogus, team, personal, absent].join("\n") + "\n");
-		const probs = queueProblems(index, dir, []);
+		const probs = queueProblems(queuePaths(dir, index), []);
 		const of = (file: string) => probs.filter(p => p.where === file).map(p => p.problem);
 		expect(of(bogus).some(p => p.includes('Queue: header must be "team" or "personal"'))).toBe(true);
 		for (const file of [team, personal, absent]) expect(of(file).some(p => p.startsWith("Queue:"))).toBe(false);
@@ -114,9 +126,10 @@ test("queueSummary labels a stale hold [STALE?] instead of WAITING on owner", ()
 		writeFileSync(file, `# Stale\n\n## Progress\nStatus: open\nWAITING on owner: ${ask}\n`);
 		const index = join(dir, "INDEX.md");
 		writeFileSync(index, `${file}\n`);
-		expect(queueSummary(index, [], new Set([file]))).toContain(`[open, [STALE?] ${ask}]`);
-		expect(queueSummary(index, [], new Set([file]))).not.toContain("WAITING on owner");
-		expect(queueSummary(index)).toContain(`WAITING on owner: ${ask}`);
+		const paths = queuePaths(dir, index);
+		expect(queueSummary(paths, [], new Set([file]))).toContain(`[open, [STALE?] ${ask}]`);
+		expect(queueSummary(paths, [], new Set([file]))).not.toContain("WAITING on owner");
+		expect(queueSummary(paths)).toContain(`WAITING on owner: ${ask}`);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}

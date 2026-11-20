@@ -9,8 +9,6 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, st
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, type Config } from "../src/core/config.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
-import { refreshQueuePaths } from "../src/core/queue/lib.ts";
 import { ownerBackfillFile, ownerLogDir, ownerLogFile, type LogEntry } from "../src/core/owner-log.ts";
 import { topicsFile } from "../src/core/owner-topics.ts";
 import { tryLock } from "../src/core/file-lock.ts";
@@ -19,6 +17,7 @@ import { recallCli } from "../src/cli/recall.ts";
 const TMP = mkdtempSync(join(tmpdir(), "recall-topics-cli-"));
 const HOME = join(TMP, "home");
 const QUEUE = join(TMP, "queue-state");
+const STATE = { queue_state: QUEUE };
 const BIN = join(TMP, "bin");
 const NOW_SEC = 1_795_000_000;
 const MODEL = "fake/topic-model";
@@ -64,14 +63,11 @@ afterAll(() => {
 	else process.env.HOME = homeBefore;
 	if (nowBefore === undefined) delete process.env.NEURASTREAM_NOW;
 	else process.env.NEURASTREAM_NOW = nowBefore;
-	refreshQueuePaths();
 });
 
-/** Points the recall dir at this file's sandbox, then throws if it is still elsewhere: a live path is never touched. */
+/** Verifies the recall dir is inside this file's sandbox: a live path is never touched. */
 function sandboxed(): void {
-	process.env.QUEUE_STATE = QUEUE;
-	refreshQueuePaths();
-	if (!ownerLogDir().startsWith(TMP)) throw new Error(`refusing to touch ${ownerLogDir()} outside ${TMP}`);
+	if (!ownerLogDir(STATE).startsWith(TMP)) throw new Error(`refusing to touch ${ownerLogDir(STATE)} outside ${TMP}`);
 }
 
 // ---- fixtures ------------------------------------------------------------------------------
@@ -102,9 +98,9 @@ function writeLines(file: string, entries: LogEntry[]): void {
 function seedLog(entries: LogEntry[] = ENTRIES.slice(0, 45)): void {
 	cfgWith(MODEL);
 	sandboxed();
-	rmSync(ownerLogDir(), { recursive: true, force: true });
-	writeLines(ownerBackfillFile(), entries.slice(0, 20));
-	writeLines(ownerLogFile(), entries.slice(20));
+	rmSync(ownerLogDir(STATE), { recursive: true, force: true });
+	writeLines(ownerBackfillFile(STATE), entries.slice(0, 20));
+	writeLines(ownerLogFile(STATE), entries.slice(20));
 }
 
 function cfgWith(topicsModel: string, topicsEvery = 30): Config {
@@ -126,7 +122,6 @@ recall:
 `,
 	);
 	const cfg = loadConfig({ home: HOME, env: {} });
-	applyQueueEnv(cfg);
 	return cfg;
 }
 
@@ -169,8 +164,8 @@ function topicLine(from: number, to: number, over: Partial<SegOut> = {}): SegOut
 
 function writeTopics(lines: (SegOut | SkippedOut | string)[]): void {
 	sandboxed();
-	mkdirSync(ownerLogDir(), { recursive: true, mode: 0o700 });
-	writeFileSync(topicsFile(), lines.map((l) => (typeof l === "string" ? `${l}\n` : `${JSON.stringify(l)}\n`)).join(""), { mode: 0o600 });
+	mkdirSync(ownerLogDir(STATE), { recursive: true, mode: 0o700 });
+	writeFileSync(topicsFile(STATE), lines.map((l) => (typeof l === "string" ? `${l}\n` : `${JSON.stringify(l)}\n`)).join(""), { mode: 0o600 });
 }
 
 // ---- running the CLI in-process, with console output captured -------------------------------
@@ -207,7 +202,7 @@ test("a held lock: topics exits 0 with the lock message and calls nothing", asyn
 	const calls = join(TMP, "calls-lock.txt");
 	process.env.FAKE_OMP_CALLS = calls;
 	process.env.FAKE_OMP_ANSWER = JSON.stringify({ segments: [topicLine(0, 44)] });
-	const held = tryLock(join(ownerLogDir(), "owner-topics.lock"));
+	const held = tryLock(join(ownerLogDir(STATE), "owner-topics.lock"));
 	expect(held).not.toBeNull();
 	try {
 		const r = await runAsync(["topics"], cfg);
@@ -224,13 +219,13 @@ test("a held lock: topics exits 0 with the lock message and calls nothing", asyn
 test("a --close that finds the lock held exits 0 and changes nothing", async () => {
 	seedLog();
 	writeTopics([topicLine(0, 44, { open: true })]);
-	const before = readFileSync(topicsFile(), "utf8");
-	const held = tryLock(join(ownerLogDir(), "owner-topics.lock"));
+	const before = readFileSync(topicsFile(STATE), "utf8");
+	const held = tryLock(join(ownerLogDir(STATE), "owner-topics.lock"));
 	expect(held).not.toBeNull();
 	try {
 		const r = await runAsync(["topics", "--close"], cfgWith(MODEL));
 		expect(r.code).toBe(0);
-		expect(readFileSync(topicsFile(), "utf8")).toBe(before);
+		expect(readFileSync(topicsFile(STATE), "utf8")).toBe(before);
 	} finally {
 		held!.release();
 	}
@@ -256,7 +251,7 @@ test("with no topics file, and with a file holding only one broken line, search 
 	seedLog();
 	const cfg = cfgWith(MODEL);
 	sandboxed();
-	rmSync(topicsFile(), { force: true });
+	rmSync(topicsFile(STATE), { force: true });
 	const none = await runAsync(["traces"], cfg);
 	writeTopics(["this is not json {"]);
 	const broken = await runAsync(["traces"], cfg);
@@ -352,20 +347,20 @@ test("a run whose answers fail writes only `topics: fail` lines, with no marker,
 
 test("a run on a fresh machine (no recall dir, no log) exits 0 with no ENOENT and makes a 0700 dir", async () => {
 	sandboxed();
-	rmSync(ownerLogDir(), { recursive: true, force: true });
-	rmSync(ownerBackfillFile(), { force: true });
-	rmSync(ownerLogFile(), { force: true });
+	rmSync(ownerLogDir(STATE), { recursive: true, force: true });
+	rmSync(ownerBackfillFile(STATE), { force: true });
+	rmSync(ownerLogFile(STATE), { force: true });
 	const r = await runAsync(["topics"], cfgWith(MODEL));
 	expect(r.code).toBe(0);
 	expect(r.out).not.toContain("ENOENT");
-	expect(statSync(ownerLogDir()).mode & 0o777).toBe(0o700);
+	expect(statSync(ownerLogDir(STATE)).mode & 0o777).toBe(0o700);
 });
 
 test("a topics path that is a directory reports the reason code `internal` and not the message", async () => {
 	sandboxed();
 	seedLog();
-	rmSync(topicsFile(), { force: true });
-	mkdirSync(topicsFile(), { recursive: true });
+	rmSync(topicsFile(STATE), { force: true });
+	mkdirSync(topicsFile(STATE), { recursive: true });
 	process.env.FAKE_OMP_ANSWER = JSON.stringify({ segments: [topicLine(0, 44, { open: true })] });
 	try {
 		const r = await runAsync(["topics"], cfgWith(MODEL));
@@ -374,6 +369,6 @@ test("a topics path that is a directory reports the reason code `internal` and n
 		expect(r.out).not.toContain("owner-topics.jsonl");
 	} finally {
 		delete process.env.FAKE_OMP_ANSWER;
-		rmSync(topicsFile(), { recursive: true, force: true });
+		rmSync(topicsFile(STATE), { recursive: true, force: true });
 	}
 });

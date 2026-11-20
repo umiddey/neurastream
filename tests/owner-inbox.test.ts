@@ -12,22 +12,20 @@ import { join } from "node:path";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { nowSec } from "../src/core/clock.ts";
 import { tryLock } from "../src/core/file-lock.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
-import { stateDirPath } from "../src/core/queue/lib.ts";
 import { inboxPath, ownerMessageTarget, runningMains } from "../src/core/owner-ui.ts";
 import { deliverOwnerInbox, ownerInboxCursorPath, type ExtensionHost } from "../src/adapters/omp/index.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "owner-inbox-"));
 const baseCfg = loadConfig({ home: join(TMP, "home") });
-const CFG: Config = { ...baseCfg, paths: { ...baseCfg.paths, queue_state: join(TMP, "state") } };
+const STATE = join(TMP, "state");
+const CFG: Config = { ...baseCfg, paths: { ...baseCfg.paths, queue_state: STATE } };
 const savedId = process.env.NEURASTREAM_MAIN_ID;
 
 beforeEach(() => {
-	applyQueueEnv(CFG);
 	process.env.NEURASTREAM_MAIN_ID = "main";
-	rmSync(inboxPath(), { force: true });
-	rmSync(join(stateDirPath(), "mains"), { recursive: true, force: true });
-	rmSync(join(stateDirPath(), "owner-messages"), { recursive: true, force: true });
+	rmSync(inboxPath(CFG.paths), { force: true });
+	rmSync(join(STATE, "mains"), { recursive: true, force: true });
+	rmSync(join(STATE, "owner-messages"), { recursive: true, force: true });
 });
 
 afterAll(() => {
@@ -38,12 +36,12 @@ afterAll(() => {
 
 /** Holds <id>'s running lock for the test's body: runningMains sees it, release() frees it. */
 function runMain(id: string): () => void {
-	mkdirSync(join(stateDirPath(), "mains", id), { recursive: true });
-	return tryLock(join(stateDirPath(), "mains", id, "running.lock"))!.release;
+	mkdirSync(join(STATE, "mains", id), { recursive: true });
+	return tryLock(join(STATE, "mains", id, "running.lock"))!.release;
 }
 
 function phoneMessage(id: string, text: string): void {
-	const dir = join(stateDirPath(), "owner-messages", id);
+	const dir = join(STATE, "owner-messages", id);
 	mkdirSync(dir, { recursive: true });
 	writeFileSync(join(dir, "message.json"), `${JSON.stringify({ ts: nowSec(), text, login: "owner", images: [] })}\n`);
 }
@@ -69,9 +67,9 @@ test("a row's to field routes it: a targeted row reaches its Main only, plain te
 	phoneMessage("100-000abc", "old broadcast");
 	phoneMessage("101-aaa001", "for a only");
 	phoneMessage("102-bbb002", "for everyone");
-	appendFileSync(inboxPath(), row(undefined, "100-000abc"));
-	appendFileSync(inboxPath(), row("a", "101-aaa001"));
-	appendFileSync(inboxPath(), row("", "102-bbb002"));
+	appendFileSync(inboxPath(CFG.paths), row(undefined, "100-000abc"));
+	appendFileSync(inboxPath(CFG.paths), row("a", "101-aaa001"));
+	appendFileSync(inboxPath(CFG.paths), row("", "102-bbb002"));
 	expect(deliverMain("a")).toHaveLength(3);
 	const b = deliverMain("b");
 	expect(b).toHaveLength(2);
@@ -84,12 +82,12 @@ test("a row's to field routes it: a targeted row reaches its Main only, plain te
 test("each Main keeps its own read cursor in its mainStateDir; nothing redelivers", () => {
 	const releaseA = runMain("a");
 	phoneMessage("201-ccc003", "first");
-	appendFileSync(inboxPath(), row(undefined, "201-ccc003"));
+	appendFileSync(inboxPath(CFG.paths), row(undefined, "201-ccc003"));
 	expect(deliverMain("a")).toHaveLength(1);
 	expect(readFileSync(ownerInboxCursorPath(CFG), "utf8")).toBe("1\n");
 	expect(deliverMain("a")).toEqual([]);
 	phoneMessage("202-ddd004", "second");
-	appendFileSync(inboxPath(), row("a", "202-ddd004"));
+	appendFileSync(inboxPath(CFG.paths), row("a", "202-ddd004"));
 	expect(deliverMain("a")).toHaveLength(1);
 	expect(readFileSync(ownerInboxCursorPath(CFG), "utf8")).toBe("2\n");
 	// B skips the row that names A but still hears the broadcast, on its own cursor.
@@ -97,7 +95,7 @@ test("each Main keeps its own read cursor in its mainStateDir; nothing redeliver
 	const bGot = deliverMain("b");
 	expect(bGot).toHaveLength(1);
 	expect(bGot[0]).toContain("first");
-	expect(readFileSync(join(stateDirPath(), "mains", "b", "inbox-cursor"), "utf8")).toBe("2\n");
+	expect(readFileSync(join(STATE, "mains", "b", "inbox-cursor"), "utf8")).toBe("2\n");
 	releaseA();
 });
 

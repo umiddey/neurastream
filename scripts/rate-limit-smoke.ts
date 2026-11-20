@@ -22,7 +22,6 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createOmpAdapter, type ExtensionHost } from "../src/adapters/omp/index.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "neurastream-smoke-rl-"));
 const HOME = join(TMP, "home");
@@ -75,10 +74,9 @@ notify:
 writeFileSync(INDEX, "");
 writeFileSync(SESSION_FILE, "");
 
-// The caller's shell may export live QUEUE_* (omp's plugin does); strip, then point at the sandbox.
+// The caller's shell may export live QUEUE_*; strip them before loadConfig reads ENV_MAP.
 for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
 const cfg: Config = loadConfig({ home: HOME });
-applyQueueEnv(cfg);
 
 // The recorded sink for the resume message: a fake extension host that stores the registered
 // handlers so the script can emit the recorded session_stop exactly as omp would; everything

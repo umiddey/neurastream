@@ -11,7 +11,6 @@ import { loadConfig, type Config } from "../src/core/config.ts";
 import { checkPlanEdit, checkStop } from "../src/core/guards.ts";
 import { addIncident, dismissIncident, openIncidents } from "../src/core/incidents.ts";
 import { nowSec } from "../src/core/clock.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
 
 const ROOT = "/tmp/neurastream-home-planfindings/p1";
 const HOME = join(ROOT, "home");
@@ -69,7 +68,6 @@ function fresh(): void {
 `,
 	);
 	cfg = loadConfig({ home: HOME, env: {} });
-	applyQueueEnv(cfg);
 }
 
 // fresh() points QUEUE_* env at the sandbox per test; restore the caller's at the end.

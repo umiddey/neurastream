@@ -15,7 +15,6 @@ import { getAdapter } from "../adapters/index.ts";
 import { ConfigError, loadConfig, type Config } from "../core/config.ts";
 import { beat, errorLine } from "../core/heartbeat.ts";
 import { startOwnerUi, type OwnerUiOptions, type OwnerUiServer } from "../core/owner-ui.ts";
-import { applyQueueEnv } from "../core/queue/env.ts";
 import { realTailscale, type Tailscale, untilIp4Changes } from "../core/tailscale.ts";
 import { TEAM_NAME_HINT, TEAM_NAME_RE } from "../core/team-labels.ts";
 import { addTeamMember, listTeamMembers, removeTeamMember, startTeamServer, type TeamServer, type TeamServerConfig, type TeamServerOptions } from "../core/team-server.ts";
@@ -110,7 +109,6 @@ export async function runWorkspace(args: string[] = [], deps: WorkspaceDeps = {}
 			return 1;
 		}
 	}
-	applyQueueEnv(cfg);
 	if (!cfg.workspace.enabled) {
 		console.error("neurastream workspace: workspace.enabled is false — set it in the config first");
 		return 1;
@@ -171,7 +169,6 @@ async function serveTeam(name: string, deps: WorkspaceDeps): Promise<number> {
 		console.error(state);
 		return 1;
 	}
-	applyQueueEnv(state.cfg);
 	const tailscale = deps.tailscale ?? realTailscale;
 	let server: TeamServer;
 	try {

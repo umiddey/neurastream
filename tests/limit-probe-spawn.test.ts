@@ -12,9 +12,7 @@ import { dirname, join } from "node:path";
 import { createOmpAdapter, limitProbeSpawn, reset as resetAdapter, type ExtensionHost } from "../src/adapters/omp/index.ts";
 import { MAIN_ENV } from "../src/adapters/omp/launch.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
-import { mainId } from "../src/core/guards.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
-import { refreshQueuePaths } from "../src/core/queue/lib.ts";
+import { mainId, mainStateDir } from "../src/core/guards.ts";
 import { notePath } from "../src/core/rollover.ts";
 
 test("limit probe never starts a harness session", () => {
@@ -215,19 +213,17 @@ function otherProcessLock(lock: string): number {
 	return r.status;
 }
 
-/** Point queue reads at the sandbox for this test, and put the caller's env back after. autoClose
+/** Stub QUEUE_CLOSE_BIN for this test and restore the caller's env after. autoClose
  * must not spawn a real queue-close child against whatever index the shell inherited. */
-function pinSandbox(cfg: Config): () => void {
+function pinSandbox(_cfg?: Config): () => void {
 	const queueBefore = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("QUEUE_")));
 	const closeBin = process.env.QUEUE_CLOSE_BIN;
-	applyQueueEnv(cfg);
 	process.env.QUEUE_CLOSE_BIN = "true";
 	return () => {
 		for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
 		Object.assign(process.env, queueBefore);
 		if (closeBin === undefined) delete process.env.QUEUE_CLOSE_BIN;
 		else process.env.QUEUE_CLOSE_BIN = closeBin;
-		refreshQueuePaths();
 	};
 }
 
@@ -268,7 +264,7 @@ test("rollover re-entry keeps the session lock", async () => {
 	const unpin = pinSandbox(cfg);
 	const sessionFile = join(TMP, "p4-session.jsonl");
 	const sessionId = `limit-probe-p4-${process.pid}`;
-	const note = notePath(sessionId);
+	const note = notePath(sessionId, mainStateDir(cfg));
 	try {
 		rmSync(GUARD_LOG, { force: true });
 		const { host, handlers } = recordingHost();

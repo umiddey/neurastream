@@ -9,10 +9,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createOmpAdapter, reset } from "../src/adapters/omp/index.ts";
 import { spawnSync } from "node:child_process";
-import { blockersDirPath, indexPath } from "../src/core/queue/lib.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
+import { mainStateDir } from "../src/core/guards.ts";
 import { notePath, relaunchPath } from "../src/core/rollover.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { addIncident, incidentsFile, ownerMessagesFile } from "../src/core/incidents.ts";
 import { nowSec } from "../src/core/clock.ts";
 
@@ -107,7 +106,6 @@ for (const k of Object.keys(queueEnvBefore)) delete process.env[k];
 // A throwaway home: the real ~/.config/neurastream/config.yml points main-start at the live queue
 // and every live repo, and the note would land in the live queue state dir.
 const baseCfg: Config = loadConfig({ home: join(TMP, "home") });
-applyQueueEnv(baseCfg);
 // autoClose (same run-end handler) must spawn no real `bin/queue-close` child: the detached bun
 // child outlives this file and writes its close log under TMP after the afterAll cleanup (and
 // spills its transpile cache into TMPDIR); "true" is the no-op stub, as in owner-ui.test.ts.
@@ -126,7 +124,7 @@ const stopCfg: Config = {
 };
 const SESSION_FILE = join(TMP, "session.jsonl");
 const SESSION_ID = `rollover-test-${process.pid}-${Date.now()}`;
-const NOTE = notePath(SESSION_ID);
+const NOTE = notePath(SESSION_ID, mainStateDir(baseCfg));
 const BIG = "x".repeat(4096);
 let jobs: Job[] = [];
 let draft = "";
@@ -186,7 +184,7 @@ function resetState(): void {
 	jobs = [];
 	draft = "";
 	shutdowns = 0;
-	rmSync(relaunchPath(), { force: true });
+	rmSync(relaunchPath(mainStateDir(baseCfg)), { force: true });
 }
 
 test("below the threshold: no rollover instruction", async () => {
@@ -315,12 +313,9 @@ test("rollover pending (wait-jobs): the refusal names the running jobs", async (
 test("below and ready: a Main task spawn passes the drain and reaches the plan gate", async () => {
 	resetState();
 	const subagents = sandboxAllowedAgents();
-	const before = process.env.QUEUE_SUBAGENTS;
 	try {
 		const belowHost = fakeHost();
-		createOmpAdapter(belowHost, belowCfg);
-		// createOmpAdapter re-applies the config env, so the sandbox allow-list is set after it.
-		process.env.QUEUE_SUBAGENTS = subagents;
+		createOmpAdapter(belowHost, { ...belowCfg, paths: { ...belowCfg.paths, subagents } });
 		const ctx = mainCtx();
 		writeFileSync(SESSION_FILE, "x"); // small, not stale: below
 		const below = (await belowHost.emit("tool_call", TASK_CALL, ctx)) as Array<{ block?: boolean; reason?: string }>;
@@ -328,15 +323,12 @@ test("below and ready: a Main task spawn passes the drain and reaches the plan g
 		expect(below[0]?.reason ?? "").not.toContain("rollover pending");
 
 		const readyHost = fakeHost();
-		createOmpAdapter(readyHost, overCfg);
-		process.env.QUEUE_SUBAGENTS = subagents;
+		createOmpAdapter(readyHost, { ...overCfg, paths: { ...overCfg.paths, subagents } });
 		await armReady(readyHost, ctx, "## In progress\nstep"); // fresh note, no jobs: ready
 		const ready = (await readyHost.emit("tool_call", TASK_CALL, ctx)) as Array<{ block?: boolean; reason?: string }>;
 		// ready refuses too (e): the rollover follows the next idle, so a spawn now would be aborted.
 		expect(ready[0]?.reason ?? "").toContain("rollover pending (ready)");
 	} finally {
-		if (before === undefined) delete process.env.QUEUE_SUBAGENTS;
-		else process.env.QUEUE_SUBAGENTS = before;
 		rmSync(subagents, { force: true });
 	}
 });
@@ -396,7 +388,7 @@ test("ready: relaunch.json has the three fields, omp shuts down and re-arms at t
 	// omp 18.11.1 re-runs its deferred exit check only when shutdown() is called again: the second
 	// terminal run end re-arms the exit instead of leaving the request to a dead UI.
 	expect(shutdowns).toBe(2);
-	expect(JSON.parse(readFileSync(relaunchPath(), "utf8"))).toEqual({
+	expect(JSON.parse(readFileSync(relaunchPath(mainStateDir(baseCfg)), "utf8"))).toEqual({
 		previousSessionFile: SESSION_FILE,
 		notePath: NOTE,
 		draft: "half-typed",
@@ -412,15 +404,15 @@ test("the relaunch is requested only at a real run end and re-armed at later one
 	// A tool result mid-run (the live incident: a wait result) never requests the relaunch.
 	await host.emit("tool_result", { toolName: "read", toolCallId: "t1" }, ctx);
 	expect(shutdowns).toBe(0);
-	expect(existsSync(relaunchPath())).toBe(false);
+	expect(existsSync(relaunchPath(mainStateDir(baseCfg)))).toBe(false);
 	// A non-terminal run end (omp 18.11.1 sets willContinue) does not either.
 	await host.emit("agent_end", { willContinue: true }, ctx);
 	expect(shutdowns).toBe(0);
-	expect(existsSync(relaunchPath())).toBe(false);
+	expect(existsSync(relaunchPath(mainStateDir(baseCfg)))).toBe(false);
 	// The run's real end requests the relaunch once.
 	await host.emit("agent_end", {}, ctx);
 	expect(shutdowns).toBe(1);
-	expect(existsSync(relaunchPath())).toBe(true);
+	expect(existsSync(relaunchPath(mainStateDir(baseCfg)))).toBe(true);
 	// Every later terminal run end re-arms the exit.
 	await host.emit("agent_end", {}, ctx);
 	expect(shutdowns).toBe(2);
@@ -441,7 +433,7 @@ test("omp still running past exit_grace_s rolls over in-process with the owner's
 	expect(newSessions).toEqual([{ parentSession: SESSION_FILE }]);
 	expect(host.sent.length).toBe(1);
 	expect(host.sent[0]?.endsWith("Owner's message:\na")).toBe(true);
-	expect(existsSync(relaunchPath())).toBe(false);
+	expect(existsSync(relaunchPath(mainStateDir(baseCfg)))).toBe(false);
 	expect(shutdowns).toBe(2);
 	expect(notes.some(n => n.includes("omp did not restart"))).toBe(true);
 }, 60_000);
@@ -464,7 +456,7 @@ test("the in-process fallback without an owner message carries the owner-away te
 
 test("a handoff after an unanswered owner message starts with the unanswered prefix", async () => {
 	resetState();
-	const store = ownerMessagesFile();
+	const store = ownerMessagesFile(baseCfg.paths);
 	mkdirSync(dirname(store), { recursive: true });
 	writeFileSync(store, `${JSON.stringify({ at: nowSec() - 30, text: "Who is ARB?" })}\n`);
 	try {
@@ -502,7 +494,7 @@ test("omp really shutting down (session_shutdown) cancels the in-process fallbac
 	expect(newSessions.length).toBe(0);
 	expect(host.sent.length).toBe(0);
 	// A fired fallback deletes the request synchronously; it must still be there.
-	expect(existsSync(relaunchPath())).toBe(true);
+	expect(existsSync(relaunchPath(mainStateDir(baseCfg)))).toBe(true);
 });
 
 test("the exit-grace fallback still fires after the hook returns: the event loop keeps running", async () => {
@@ -515,14 +507,14 @@ test("the exit-grace fallback still fires after the hook returns: the event loop
 	try {
 		await armReady(host, ctx, "## In progress\nstep");
 		await host.emit("agent_end", {}, ctx); // the hook returns here; the grace timer is now pending
-		expect(existsSync(relaunchPath())).toBe(true);
+		expect(existsSync(relaunchPath(mainStateDir(baseCfg)))).toBe(true);
 		// Nothing in the hook runs the fallback: only the timer loop can fire it after the hook returned.
 		vi.advanceTimersByTime(60_000);
 	} finally {
 		vi.useRealTimers();
 	}
 	// A fired fallback deletes the request synchronously; the rollover then runs to its real end.
-	expect(existsSync(relaunchPath())).toBe(false);
+	expect(existsSync(relaunchPath(mainStateDir(baseCfg)))).toBe(false);
 	await opened;
 	await handedOff;
 	expect(newSessions).toEqual([{ parentSession: SESSION_FILE }]);
@@ -548,7 +540,7 @@ test("a terminal run end during the in-process rollover does not request a new r
 	// rollover, re-arm the grace and loop every exit_grace_s.
 	await host.emit("agent_end", {}, ctx);
 	expect(shutdowns).toBe(1);
-	expect(existsSync(relaunchPath())).toBe(false);
+	expect(existsSync(relaunchPath(mainStateDir(baseCfg)))).toBe(false);
 	releaseIdle();
 	await opened;
 	await handedOff;
@@ -565,11 +557,11 @@ test("own job running: no relaunch; once the job is gone the next turn end relau
 	await armReady(host, ctx, "## In progress\nstep");
 	await host.emit("agent_end", {}, ctx);
 	expect(shutdowns).toBe(0);
-	expect(existsSync(relaunchPath())).toBe(false);
+	expect(existsSync(relaunchPath(mainStateDir(baseCfg)))).toBe(false);
 	jobs = [];
 	await host.emit("agent_end", {}, ctx);
 	expect(shutdowns).toBe(1);
-	expect(existsSync(relaunchPath())).toBe(true);
+	expect(existsSync(relaunchPath(mainStateDir(baseCfg)))).toBe(true);
 });
 
 test("slash commands and non-interactive input are left alone", async () => {
@@ -622,7 +614,7 @@ test("a non-main session never relaunches", async () => {
 	await armReady(host, ctx, "## In progress\nstep");
 	await host.emit("agent_end", {}, ctx);
 	expect(shutdowns).toBe(0);
-	expect(existsSync(relaunchPath())).toBe(false);
+	expect(existsSync(relaunchPath(mainStateDir(baseCfg)))).toBe(false);
 });
 
 /** One open plan in a sandbox repo, listed in the sandbox queue index: session_stop has an open item to block on. */
@@ -633,11 +625,11 @@ function openPlanFixture(): () => void {
 	writeFileSync(plan, OPEN_PLAN);
 	// The plan's repo is the main checkout holding the plan file: the sandbox repo needs .git.
 	spawnSync("git", ["init", "-q", "-b", "main"], { cwd: repo });
-	mkdirSync(blockersDirPath(), { recursive: true });
-	mkdirSync(dirname(indexPath()), { recursive: true });
-	writeFileSync(indexPath(), `${plan}\n`);
+	mkdirSync(baseCfg.paths.blockers, { recursive: true });
+	mkdirSync(dirname(baseCfg.paths.queue_index), { recursive: true });
+	writeFileSync(baseCfg.paths.queue_index, `${plan}\n`);
 	return () => {
-		rmSync(indexPath(), { force: true });
+		rmSync(baseCfg.paths.queue_index, { force: true });
 		rmSync(repo, { recursive: true, force: true });
 	};
 }
@@ -708,7 +700,7 @@ test("ready: session_stop requests the relaunch and allows the stop, with an ope
 		await armReady(host, ctx, "## In progress\nstep");
 		expect(await host.emit("session_stop", {}, ctx)).toEqual([]);
 		expect(shutdowns).toBe(1);
-		expect(existsSync(relaunchPath())).toBe(true);
+		expect(existsSync(relaunchPath(mainStateDir(baseCfg)))).toBe(true);
 		expect(guardLog()).toContain("ALLOW stop: rollover ready");
 	} finally {
 		cleanup();
@@ -777,7 +769,7 @@ test("owner messages during a pending relaunch join its draft, in order", async 
 	expect(shutdowns).toBe(1);
 	expect(await host.emit("input", { text: "first", source: "interactive" }, ctx)).toEqual([{ handled: true }]);
 	expect(await host.emit("input", { text: "second", source: "interactive" }, ctx)).toEqual([{ handled: true }]);
-	expect(JSON.parse(readFileSync(relaunchPath(), "utf8")).draft).toBe("first\nsecond");
+	expect(JSON.parse(readFileSync(relaunchPath(mainStateDir(baseCfg)), "utf8")).draft).toBe("first\nsecond");
 	expect(notes.filter(n => n.includes("rollover in progress")).length).toBe(2);
 });
 
@@ -790,7 +782,7 @@ test("the first owner message in the ready state starts the relaunch, its text i
 	expect(await host.emit("input", { text: "hello", source: "interactive" }, ctx)).toEqual([{ handled: true }]);
 	// The request's shutdown plus the message's re-arm: omp re-checks only when shutdown() is called again.
 	expect(shutdowns).toBe(2);
-	expect(JSON.parse(readFileSync(relaunchPath(), "utf8"))).toEqual({
+	expect(JSON.parse(readFileSync(relaunchPath(mainStateDir(baseCfg)), "utf8"))).toEqual({
 		previousSessionFile: SESSION_FILE,
 		notePath: NOTE,
 		draft: "hello",
@@ -854,7 +846,7 @@ test("reset clears the armed grace timer so a second createOmpAdapter setup star
 		await armReady(host1, ctx, "## In progress\nstep");
 		await host1.emit("agent_end", {}, ctx); // relaunch requested, grace timer armed (fake, 50 ms)
 		expect(shutdowns).toBe(1);
-		expect(existsSync(relaunchPath())).toBe(true);
+		expect(existsSync(relaunchPath(mainStateDir(baseCfg)))).toBe(true);
 		// reset() must clear the armed timer and stale closure state (relaunched, flight, clearGrace).
 		reset();
 		resetState();

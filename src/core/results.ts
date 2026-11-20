@@ -8,7 +8,6 @@ import path from "node:path";
 import type { Run } from "./adapter.ts";
 import type { Config } from "./config.ts";
 import type { Ev } from "./metrics.ts";
-import { applyQueueEnv } from "./queue/env.ts";
 import { gitTop, parsePlan } from "./queue/lib.ts";
 import { repoRoots, walkMd } from "./queue-finished.ts";
 
@@ -65,7 +64,6 @@ function realRepo(p: string): string {
 
 /** Every dated plan under docs/plans/** of each repo the queue knows (work_roots plus one level of children). A git worktree carries a copy of docs/plans and gitTop maps it to the main checkout, so one node per (canonical repo, stem) survives: an archived or closed copy beats an open one, else the newest mtime wins. */
 export function loadPlans(cfg: Config): PlanNode[] {
-	applyQueueEnv(cfg);
 	const best = new Map<string, { node: PlanNode; mtime: number }>();
 	for (const repo of repoRoots(cfg.paths.work_roots)) {
 		const files: string[] = [];

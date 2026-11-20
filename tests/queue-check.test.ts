@@ -7,9 +7,8 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig } from "../src/core/config.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
-import { cancelledMatches, DONE_CLAIM_SINCE, holdWarnings, queueProblems, readPlans, refreshQueuePaths, type Plan } from "../src/core/queue/lib.ts";
+import { loadConfig, type Config } from "../src/core/config.ts";
+import { cancelledMatches, DONE_CLAIM_SINCE, holdWarnings, queueProblems, readPlans, type Plan } from "../src/core/queue/lib.ts";
 
 const BAN = "ban-blocks-guard-noted-recorded-be9d";
 const OTHER = "ban-other-name-not-this-one";
@@ -21,6 +20,8 @@ const REPO = join(TMP, "repo");
 const PLAN = join(REPO, "docs/plans/20261001_1200_fp.md");
 
 const queueEnvBefore = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("QUEUE_")));
+
+let cfg!: Config;
 
 function boot(): void {
 	mkdirSync(join(REPO, "docs/plans"), { recursive: true });
@@ -55,7 +56,7 @@ function boot(): void {
   plan_guard_log: "${join(HOME, "plan-guard.log")}"
 `,
 	);
-	applyQueueEnv(loadConfig({ home: HOME, env: {} }));
+	cfg = loadConfig({ home: HOME, env: {} });
 }
 
 function plan(line: string): Plan {
@@ -68,7 +69,7 @@ function plan(line: string): Plan {
 }
 
 function names(line: string): string[] {
-	return cancelledMatches(plan(line)).map(c => c.name);
+	return cancelledMatches(plan(line), cfg.paths).map(c => c.name);
 }
 
 test("the hyphenated false-positive line clears that ban and not a different one", () => {
@@ -80,7 +81,7 @@ test("the hyphenated false-positive line clears that ban and not a different one
 
 	writeFileSync(PLAN, plan(`False positive: ${BAN} — ${WHY}`).text);
 	writeFileSync(join(AGENT, "INDEX.md"), `${PLAN}\n`);
-	const problems = queueProblems().map(p => p.problem);
+	const problems = queueProblems(cfg.paths).map(p => p.problem);
 	expect(problems.some(p => p.includes(BAN))).toBe(false);
 	expect(problems.some(p => p.includes(OTHER))).toBe(true);
 });
@@ -108,12 +109,12 @@ function donePlanText(progress: string, hold = ""): string {
 function doneProblems(progress: string): string[] {
 	writeFileSync(DONE_PLAN, donePlanText(progress));
 	writeFileSync(join(AGENT, "INDEX.md"), `${DONE_PLAN}\n`);
-	return queueProblems().filter(p => p.where === DONE_PLAN).map(p => p.problem);
+	return queueProblems(cfg.paths).filter(p => p.where === DONE_PLAN).map(p => p.problem);
 }
 
 function holdPlan(hold: string): Plan[] {
 	writeFileSync(DONE_PLAN, donePlanText(`- ${DONE_CLAIM_SINCE} Main: started P2\n  Findings: none`, hold));
-	return readPlans([DONE_PLAN]);
+	return readPlans([DONE_PLAN], cfg.paths.blockers);
 }
 
 test("a dated done claim must quote its phase verify (or the done check) with its result", () => {
@@ -160,12 +161,11 @@ test("a new hold without still true if warns only and never fails queue-check", 
 	// the warning rides queue-check's output while the exit code stays clean.
 	writeFileSync(DONE_PLAN, donePlanText(`- ${DONE_CLAIM_SINCE} Main: started P2\n  Findings: none`, `WAITING on owner: ${DONE_CLAIM_SINCE} unlock gateforge — blocked: P2 stuck — why you: guard file`));
 	writeFileSync(join(AGENT, "INDEX.md"), `${DONE_PLAN}\n`);
-	expect(queueProblems().filter(p => p.where === DONE_PLAN)).toEqual([]);
+	expect(queueProblems(cfg.paths).filter(p => p.where === DONE_PLAN)).toEqual([]);
 });
 
 afterAll(() => {
 	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
 	for (const [k, v] of Object.entries(queueEnvBefore)) if (v !== undefined) process.env[k] = v;
-	refreshQueuePaths();
 	rmSync(TMP, { recursive: true, force: true });
 });

@@ -168,9 +168,7 @@ function rewriteText(text: string, home: string, extra: [string, string][] = [])
 function installQueueLib(home: string): void {
 	const dest = join(home, ".omp/agent/queue/lib.ts");
 	mkdirSync(dirname(dest), { recursive: true });
-	copyFileSync(join(REPO, "src/core/queue/lib.ts"), dest);
-	// lib.ts imports ../clock.ts at runtime (strftime for the claim flag, multi-main P4).
-	copyFileSync(join(REPO, "src/core/clock.ts"), join(home, ".omp/agent/clock.ts"));
+	copyFileSync(join(REPO, "tests/fixtures/originals/agent/queue/lib.ts"), dest);
 }
 
 function installQueueBin(name: string, home: string): string {

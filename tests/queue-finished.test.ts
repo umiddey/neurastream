@@ -7,7 +7,6 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, type Config } from "../src/core/config.ts";
-import { refreshQueuePaths } from "../src/core/queue/lib.ts";
 import { queueFinished } from "../src/core/queue-finished.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "ns-qfinished-"));
@@ -303,6 +302,5 @@ test("same plan basename with different titles keeps both entries", () => {
 afterAll(() => {
 	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
 	for (const [k, v] of Object.entries(queueEnvBefore)) if (v !== undefined) process.env[k] = v;
-	refreshQueuePaths();
 	rmSync(TMP, { recursive: true, force: true });
 });

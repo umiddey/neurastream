@@ -13,7 +13,6 @@ import { readOwnerAnswers, readOwnerMessages } from "../../core/incidents.ts";
 import { mainStartText } from "../../core/main-start.ts";
 import { appendMetric } from "../../core/metrics.ts";
 import type { CompleteRequest, CompleteResult } from "../../core/owner-topics.ts";
-import { applyQueueEnv } from "../../core/queue/env.ts";
 import { tryLock } from "../../core/file-lock.ts";
 import { MAIN_ID_RE, mainId, mainStateDir } from "../../core/guards.ts";
 import * as q from "../../core/queue/lib.ts";
@@ -172,7 +171,6 @@ interface RelaunchRequest {
  * from the package on disk: the handoff is then built with the installed code, not the old code.
  */
 export async function runMainLauncher(args: string[], cfg: Config, opts: LaunchOptions = {}): Promise<number> {
-	applyQueueEnv(cfg);
 	// --name names this launcher's Main and never reaches the harness: stripped before the first
 	// run's args and a relaunch's carriedArgs are built.
 	const { args: harnessArgs, name } = stripNameFlag(args);
@@ -391,7 +389,7 @@ function legacyRelaunchPath(cfg: Config): string {
 
 /** After a successful consume, drop the request on the new path and any legacy copy for id main. */
 function clearRelaunchFiles(cfg: Config): void {
-	rmSync(relaunchPath(), { force: true });
+	rmSync(relaunchPath(mainStateDir(cfg)), { force: true });
 	if (mainId() === "main") rmSync(legacyRelaunchPath(cfg), { force: true });
 }
 
@@ -417,7 +415,7 @@ function parseRelaunchFile(path: string, cfg: Config): RelaunchRequest | null {
  * required fields is removed and logged; an unreadable one is logged and left in place.
  */
 function readRequest(since: number, cfg: Config): RelaunchRequest | null {
-	const newPath = relaunchPath();
+	const newPath = relaunchPath(mainStateDir(cfg));
 	let newMtime: number | undefined;
 	try {
 		newMtime = statSync(newPath).mtimeMs;
@@ -463,7 +461,7 @@ async function nextMessage(req: RelaunchRequest, cfg: Config, mainStart: typeof 
 	try {
 		generated = [
 			await mainStart([], cfg, { inheritStdin: false }, { source: defaultRunSource(cfg), results: defaultCompletedResults(cfg), providers: ompProviders(cfg), episodesFor: cutoff => ompEpisodes(cfg, cutoff) }),
-			holdsBlock(q.ownerHolds()),
+			holdsBlock(q.ownerHolds(cfg.paths)),
 		].join("\n");
 	} catch (err) {
 		// A failing main-start must not cost the owner the note: the handoff says it failed.
@@ -477,7 +475,7 @@ async function nextMessage(req: RelaunchRequest, cfg: Config, mainStart: typeof 
 		note,
 		previousSessionFile: req.previousSessionFile,
 		ownerMessage: `${OWNER_AWAY}${draft}`,
-		unanswered: unansweredOwnerMessages(readOwnerMessages(), readOwnerAnswers()),
+		unanswered: unansweredOwnerMessages(readOwnerMessages(cfg.paths), readOwnerAnswers(cfg.paths)),
 	});
 	const bytes = Buffer.byteLength(handoff);
 	if (bytes <= MAX_INLINE_HANDOFF) {

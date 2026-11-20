@@ -8,8 +8,6 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, st
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, type Config } from "../src/core/config.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
-import { refreshQueuePaths } from "../src/core/queue/lib.ts";
 import { checkInject } from "../src/core/guards.ts";
 import { ownerMessagesFile } from "../src/core/incidents.ts";
 import { createOmpAdapter, reset as resetAdapter, type ExtensionHost } from "../src/adapters/omp/index.ts";
@@ -28,6 +26,7 @@ import {
 const TMP = mkdtempSync(join(tmpdir(), "owner-log-"));
 const HOME = join(TMP, "home");
 const QUEUE = join(TMP, "queue-state");
+const STATE = { queue_state: QUEUE };
 const SESSIONS = join(TMP, "sessions");
 const NOW_SEC = 1762000000;
 const NOW_MS = NOW_SEC * 1000;
@@ -55,14 +54,11 @@ afterAll(() => {
 	else process.env.HOME = homeBefore;
 	if (nowBefore === undefined) delete process.env.NEURASTREAM_NOW;
 	else process.env.NEURASTREAM_NOW = nowBefore;
-	refreshQueuePaths();
 });
 
-/** Points the recall dir at this file's sandbox, then throws if it is still elsewhere: a live path is never touched. */
+/** Verifies the recall dir is inside this file's sandbox: a live path is never touched. */
 function sandboxed(): void {
-	process.env.QUEUE_STATE = QUEUE;
-	refreshQueuePaths();
-	if (!ownerLogDir().startsWith(TMP)) throw new Error(`refusing to touch ${ownerLogDir()} outside ${TMP}`);
+	if (!ownerLogDir(STATE).startsWith(TMP)) throw new Error(`refusing to touch ${ownerLogDir(STATE)} outside ${TMP}`);
 }
 
 /** A clean sandbox: empty queue state and sessions root, a config written to HOME, queue env applied. */
@@ -92,7 +88,6 @@ ${extra}`,
 	);
 	writeFileSync(join(TMP, "INDEX.md"), "");
 	const cfg = loadConfig({ home: HOME, env: {} });
-	applyQueueEnv(cfg);
 	return cfg;
 }
 
@@ -123,11 +118,11 @@ function seededBytes(seed: number): (n: number) => Uint8Array {
 /** Fill the live log with n owner lines (the 10,000-line case). */
 function fillLog(n: number): void {
 	sandboxed();
-	mkdirSync(ownerLogDir(), { recursive: true });
+	mkdirSync(ownerLogDir(STATE), { recursive: true });
 	const body = Array.from({ length: n }, (_, i) =>
 		JSON.stringify({ id: newEntryId(NOW_MS + i), at: NOW_SEC + i, role: "owner", text: `line ${i}` }),
 	).join("\n");
-	writeFileSync(ownerLogFile(), `${body}\n`);
+	writeFileSync(ownerLogFile(STATE), `${body}\n`);
 }
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
@@ -161,7 +156,7 @@ function stopEvent(text: string): unknown {
 test("(a) an owner inject appends one line: id, timestamp, role owner and the text", () => {
 	const cfg = freshSandbox();
 	checkInject({ agent: "main", inject: "The owner wants the traces series first" }, cfg);
-	const rows = lines(ownerLogFile());
+	const rows = lines(ownerLogFile(STATE));
 	expect(rows.length).toBe(1);
 	expect(rows).toMatchObject([{ role: "owner", text: "The owner wants the traces series first" }]);
 	expect(String(rows[0]?.id)).toMatch(ID_RE);
@@ -171,7 +166,7 @@ test("(a) an owner inject appends one line: id, timestamp, role owner and the te
 test("(a) a Main turn end appends one line with role main", () => {
 	const cfg = freshSandbox();
 	ompHost(cfg).fire("session_stop", stopEvent("Done: the traces series ships first."));
-	const rows = lines(ownerLogFile());
+	const rows = lines(ownerLogFile(STATE));
 	expect(rows.length).toBe(1);
 	expect(rows).toMatchObject([{ role: "main", text: "Done: the traces series ships first." }]);
 	expect(String(rows[0]?.id)).toMatch(ID_RE);
@@ -181,9 +176,9 @@ test("(a) 1,000 appends under one frozen millisecond give 1,000 distinct ids", (
 	freshSandbox();
 	const rand = seededBytes(7);
 	const ids = new Set<string>();
-	for (let i = 0; i < 1000; i++) ids.add(appendOwnerLog("owner", `message ${i}`, { atMs: NOW_MS, rand }));
+	for (let i = 0; i < 1000; i++) ids.add(appendOwnerLog("owner", `message ${i}`, STATE, { atMs: NOW_MS, rand }));
 	expect(ids.size).toBe(1000);
-	expect(lines(ownerLogFile()).length).toBe(1000);
+	expect(lines(ownerLogFile(STATE)).length).toBe(1000);
 });
 
 test("(a) entryIdSec gives the second an id was minted at, and undefined for a foreign id", () => {
@@ -195,21 +190,21 @@ test("(a) entryIdSec gives the second an id was minted at, and undefined for a f
 test("(a) one append to a 10,000-line log adds exactly one line and leaves the earlier bytes identical", () => {
 	freshSandbox();
 	fillLog(10000);
-	const before = readFileSync(ownerLogFile());
-	appendOwnerLog("owner", "one more", { atMs: NOW_MS + 100000, rand: seededBytes(9) });
-	const after = readFileSync(ownerLogFile());
+	const before = readFileSync(ownerLogFile(STATE));
+	appendOwnerLog("owner", "one more", STATE, { atMs: NOW_MS + 100000, rand: seededBytes(9) });
+	const after = readFileSync(ownerLogFile(STATE));
 	expect(after.length).toBeGreaterThan(before.length);
 	expect(Buffer.compare(after.subarray(0, before.length), before)).toBe(0);
-	expect(lines(ownerLogFile()).length).toBe(10001);
+	expect(lines(ownerLogFile(STATE)).length).toBe(10001);
 });
 
 test("(a) the same frozen clock and stubbed bytes give the same id whether the log is empty or has 10,000 lines", () => {
 	freshSandbox();
-	const empty = appendOwnerLog("owner", "first", { atMs: NOW_MS, rand: fixedBytes });
+	const empty = appendOwnerLog("owner", "first", STATE, { atMs: NOW_MS, rand: fixedBytes });
 	sandboxed();
-	rmSync(ownerLogFile(), { force: true });
+	rmSync(ownerLogFile(STATE), { force: true });
 	fillLog(10000);
-	const full = appendOwnerLog("owner", "first", { atMs: NOW_MS, rand: fixedBytes });
+	const full = appendOwnerLog("owner", "first", STATE, { atMs: NOW_MS, rand: fixedBytes });
 	expect(full).toBe(empty);
 	expect(full).toMatch(ID_RE);
 });
@@ -223,13 +218,13 @@ test("(a) a rollover handoff logs only the owner's part of the prompt", () => {
 		},
 		cfg,
 	);
-	expect(lines(ownerLogFile())).toMatchObject([{ role: "owner", text: "please ship the traces series" }]);
+	expect(lines(ownerLogFile(STATE))).toMatchObject([{ role: "owner", text: "please ship the traces series" }]);
 });
 
 test("(a) owner text that starts with < is logged as sent", () => {
 	const cfg = freshSandbox();
 	checkInject({ agent: "main", inject: "<b>keep this</b>" }, cfg);
-	expect(lines(ownerLogFile())).toMatchObject([{ role: "owner", text: "<b>keep this</b>" }]);
+	expect(lines(ownerLogFile(STATE))).toMatchObject([{ role: "owner", text: "<b>keep this</b>" }]);
 });
 
 // ---- (b) prompts that are not owner prose ----
@@ -239,7 +234,7 @@ test("(b) main-guard, system-notice and task-result prompts append nothing", () 
 	checkInject({ agent: "main", inject: "main-guard: continue the plan" }, cfg);
 	checkInject({ agent: "main", inject: "<system-notice> harness notice" }, cfg);
 	checkInject({ agent: "main", inject: "<task-result id=1>done</task-result>" }, cfg);
-	expect(lines(ownerLogFile())).toEqual([]);
+	expect(lines(ownerLogFile(STATE))).toEqual([]);
 });
 
 // ---- (c) the owner-messages store is untouched ----
@@ -247,8 +242,8 @@ test("(b) main-guard, system-notice and task-result prompts append nothing", () 
 test("(c) after 60 owner messages the log holds 60 and owner-messages.jsonl holds only the newest 50", () => {
 	const cfg = freshSandbox();
 	for (let i = 0; i < 60; i++) checkInject({ agent: "main", inject: `owner message ${i}` }, cfg);
-	expect(lines(ownerLogFile()).length).toBe(60);
-	const store = lines(ownerMessagesFile());
+	expect(lines(ownerLogFile(STATE)).length).toBe(60);
+	const store = lines(ownerMessagesFile(STATE));
 	expect(store.length).toBe(50);
 	expect(store[0]).toMatchObject({ text: "owner message 10" });
 	expect(store[49]).toMatchObject({ text: "owner message 59" });
@@ -273,8 +268,8 @@ test("(d) planted secrets never reach the log, with secrets.redact on or off", (
 	for (const redact of [true, false]) {
 		const cfg = freshSandbox(extra.replace("secrets:\n", `secrets:\n  redact: ${redact}\n`));
 		checkInject({ agent: "main", inject: `token ${SK} and ${NPM} and SANDBOX-EXTRA-42` }, cfg);
-		const raw = readFileSync(ownerLogFile(), "utf8");
-		expect(lines(ownerLogFile()).length).toBe(1);
+		const raw = readFileSync(ownerLogFile(STATE), "utf8");
+		expect(lines(ownerLogFile(STATE)).length).toBe(1);
 		expect(raw).not.toContain(SK);
 		expect(raw).not.toContain(NPM);
 		expect(raw).not.toContain("SANDBOX-EXTRA-42");
@@ -287,7 +282,7 @@ test("(e) an unwritable log dir does not throw from the inject or the turn end",
 	const cfg = freshSandbox();
 	sandboxed();
 	// A regular file where the recall dir should be: every mkdir/append under it fails.
-	writeFileSync(ownerLogDir(), "not a directory");
+	writeFileSync(ownerLogDir(STATE), "not a directory");
 	expect(() => checkInject({ agent: "main", inject: "owner text" }, cfg)).not.toThrow();
 	expect(() => ompHost(cfg).fire("session_stop", stopEvent("reply text"))).not.toThrow();
 });
@@ -296,10 +291,10 @@ test("(e) an unwritable owner-messages.jsonl still lets the owner and Main entri
 	const cfg = freshSandbox();
 	sandboxed();
 	// A directory where the store file should be: the store write fails, the log must not.
-	mkdirSync(ownerMessagesFile(), { recursive: true });
+	mkdirSync(ownerMessagesFile(STATE), { recursive: true });
 	expect(() => checkInject({ agent: "main", inject: "owner text kept" }, cfg)).not.toThrow();
 	ompHost(cfg).fire("session_stop", stopEvent("main reply kept"));
-	expect(lines(ownerLogFile())).toMatchObject([
+	expect(lines(ownerLogFile(STATE))).toMatchObject([
 		{ role: "owner", text: "owner text kept" },
 		{ role: "main", text: "main reply kept" },
 	]);
@@ -310,13 +305,13 @@ test("(e) an unwritable owner-messages.jsonl still lets the owner and Main entri
 test("(f) readLines yields lines newest first across the 64 KiB buffer, a longer-than-buffer line, and an unterminated last line", () => {
 	freshSandbox();
 	sandboxed();
-	mkdirSync(ownerLogDir(), { recursive: true });
-	const file = join(ownerLogDir(), "reader.jsonl");
+	mkdirSync(ownerLogDir(STATE), { recursive: true });
+	const file = join(ownerLogDir(STATE), "reader.jsonl");
 	const many = Array.from({ length: 3000 }, (_, i) => `row ${i} ${"p".repeat(40)}`);
 	const all = [...many.slice(0, 1500), "b".repeat(70 * 1024), ...many.slice(1500)];
 	writeFileSync(file, `${all.join("\n")}\nlast without newline`);
 	expect([...readLines(file)]).toEqual(["last without newline", ...all.toReversed()]);
-	expect([...readLines(join(ownerLogDir(), "missing.jsonl"))]).toEqual([]);
+	expect([...readLines(join(ownerLogDir(STATE), "missing.jsonl"))]).toEqual([]);
 });
 
 // ---- (i) backfill from the session files ----
@@ -361,12 +356,12 @@ test("(i) backfill keeps owner prose and final replies of Main, in time order, a
 	);
 	// The live log's first entry is at 10:10: backfill takes only what is before it.
 	sandboxed();
-	mkdirSync(ownerLogDir(), { recursive: true });
+	mkdirSync(ownerLogDir(STATE), { recursive: true });
 	const LIVE_AT = Date.parse("2025-10-01T10:10:00Z") / 1000;
-	writeFileSync(ownerLogFile(), `${JSON.stringify({ id: "00000000a00000001", at: LIVE_AT, role: "owner", text: "live" })}\n`);
+	writeFileSync(ownerLogFile(STATE), `${JSON.stringify({ id: "00000000a00000001", at: LIVE_AT, role: "owner", text: "live" })}\n`);
 
 	expect(backfillOwnerLog(cfg, getAdapter(cfg).ownerTurns(cfg, 0))).toBe(6);
-	const rows = lines(ownerBackfillFile());
+	const rows = lines(ownerBackfillFile(STATE));
 	expect(rows.length).toBe(6);
 	expect(rows[0]).toMatchObject({ role: "owner", text: "ship the traces series" });
 	expect(rows[1]).toMatchObject({ role: "main", text: "Shipped the traces series." });
@@ -374,7 +369,7 @@ test("(i) backfill keeps owner prose and final replies of Main, in time order, a
 	expect(rows[3]).toMatchObject({ role: "owner" });
 	expect(rows[4]).toMatchObject({ role: "owner", text: "second session owner" });
 	expect(rows[5]).toMatchObject({ role: "main", text: "second answer" });
-	expect(readFileSync(ownerBackfillFile(), "utf8")).not.toContain(SK);
+	expect(readFileSync(ownerBackfillFile(STATE), "utf8")).not.toContain(SK);
 });
 
 test("(i) a second backfill run adds nothing", () => {
@@ -384,7 +379,7 @@ test("(i) a second backfill run adds nothing", () => {
 	writeFileSync(join(PROJ, "main-a.jsonl"), `${turn("2025-10-01T10:00:00Z", "user", "ship the traces series")}\n`);
 	expect(backfillOwnerLog(cfg, getAdapter(cfg).ownerTurns(cfg, 0))).toBe(1);
 	expect(backfillOwnerLog(cfg, getAdapter(cfg).ownerTurns(cfg, 0))).toBe(0);
-	expect(lines(ownerBackfillFile()).length).toBe(1);
+	expect(lines(ownerBackfillFile(STATE)).length).toBe(1);
 });
 
 // ---- (k) the reply is the last text message before the next user line ----
@@ -408,7 +403,7 @@ test("(k) a tool-call-only assistant message between two texts is skipped: the r
 		].join("\n") + "\n",
 	);
 	expect(backfillOwnerLog(cfg, getAdapter(cfg).ownerTurns(cfg, 0))).toBe(2);
-	const rows = lines(ownerBackfillFile());
+	const rows = lines(ownerBackfillFile(STATE));
 	expect(rows.map(r => r.role)).toEqual(["owner", "main"]);
 	expect(rows[1]).toMatchObject({ text: "final answer" });
 });
@@ -418,17 +413,17 @@ test("(k) a tool-call-only assistant message between two texts is skipped: the r
 test("(j) the recall dir is 0700 and both log files are 0600, also when they pre-exist looser", () => {
 	const cfg = freshSandbox();
 	sandboxed();
-	mkdirSync(ownerLogDir(), { recursive: true });
-	chmodSync(ownerLogDir(), 0o755);
-	writeFileSync(ownerLogFile(), "");
-	chmodSync(ownerLogFile(), 0o644);
-	appendOwnerLog("owner", "mode check", { atMs: NOW_MS, rand: seededBytes(3) });
+	mkdirSync(ownerLogDir(STATE), { recursive: true });
+	chmodSync(ownerLogDir(STATE), 0o755);
+	writeFileSync(ownerLogFile(STATE), "");
+	chmodSync(ownerLogFile(STATE), 0o644);
+	appendOwnerLog("owner", "mode check", STATE, { atMs: NOW_MS, rand: seededBytes(3) });
 	mkdirSync(join(SESSIONS, "-proj"), { recursive: true });
 	writeFileSync(join(SESSIONS, "-proj", "main.jsonl"), `${turn("2025-10-01T10:00:00Z", "user", "mode check backfill")}\n`);
-	writeFileSync(ownerBackfillFile(), "");
-	chmodSync(ownerBackfillFile(), 0o644);
+	writeFileSync(ownerBackfillFile(STATE), "");
+	chmodSync(ownerBackfillFile(STATE), 0o644);
 	expect(backfillOwnerLog(cfg, getAdapter(cfg).ownerTurns(cfg, 0))).toBe(1);
-	expect(mode(ownerLogDir())).toBe(0o700);
-	expect(mode(ownerLogFile())).toBe(0o600);
-	expect(mode(ownerBackfillFile())).toBe(0o600);
+	expect(mode(ownerLogDir(STATE))).toBe(0o700);
+	expect(mode(ownerLogFile(STATE))).toBe(0o600);
+	expect(mode(ownerBackfillFile(STATE))).toBe(0o600);
 });

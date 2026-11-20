@@ -245,22 +245,22 @@ export interface OwnerAnswer {
 	answer: string;
 }
 
-export function ownerMessagesFile(): string {
-	return join(q.STATE_DIR, "owner-messages.jsonl");
+export function ownerMessagesFile(paths: Pick<q.QueuePaths, "queue_state">): string {
+	return join(paths.queue_state, "owner-messages.jsonl");
 }
 
-export function readOwnerMessages(): OwnerMessage[] {
+export function readOwnerMessages(paths: Pick<q.QueuePaths, "queue_state">): OwnerMessage[] {
 	try {
-		return readFileSync(ownerMessagesFile(), "utf8").split("\n").filter(Boolean)
+		return readFileSync(ownerMessagesFile(paths), "utf8").split("\n").filter(Boolean)
 			.map(line => JSON.parse(line) as OwnerMessage).filter(m => typeof m.text === "string");
 	} catch {
 		return [];
 	}
 }
 
-export function readOwnerAnswers(): OwnerAnswer[] {
+export function readOwnerAnswers(paths: Pick<q.QueuePaths, "queue_state">): OwnerAnswer[] {
 	try {
-		return readFileSync(ownerMessagesFile(), "utf8").split("\n").filter(Boolean)
+		return readFileSync(ownerMessagesFile(paths), "utf8").split("\n").filter(Boolean)
 			.map(line => JSON.parse(line) as OwnerAnswer).filter(a => typeof a.answer === "string");
 	} catch {
 		return [];
@@ -268,14 +268,15 @@ export function readOwnerAnswers(): OwnerAnswer[] {
 }
 
 /** Rewrites the store: the newest 50 messages, then the newest 20 answers. */
-export function writeOwnerStore(messages: OwnerMessage[], answers: OwnerAnswer[]): void {
-	mkdirSync(dirname(ownerMessagesFile()), { recursive: true });
-	writeFileSync(ownerMessagesFile(), [...messages.slice(-50).map(m => JSON.stringify(m)), ...answers.slice(-20).map(a => JSON.stringify(a))].join("\n") + "\n");
+export function writeOwnerStore(messages: OwnerMessage[], answers: OwnerAnswer[], paths: Pick<q.QueuePaths, "queue_state">): void {
+	const file = ownerMessagesFile(paths);
+	mkdirSync(dirname(file), { recursive: true });
+	writeFileSync(file, [...messages.slice(-50).map(m => JSON.stringify(m)), ...answers.slice(-20).map(a => JSON.stringify(a))].join("\n") + "\n");
 }
 
 /** Records a real Main turn end as an answer in the same store (P5b); throws so the caller logs the failure. */
-export function appendOwnerAnswer(answer: string, at = nowSec()): void {
-	writeOwnerStore(readOwnerMessages(), [...readOwnerAnswers(), { at, answer }]);
+export function appendOwnerAnswer(answer: string, paths: Pick<q.QueuePaths, "queue_state">, at = nowSec()): void {
+	writeOwnerStore(readOwnerMessages(paths), [...readOwnerAnswers(paths), { at, answer }], paths);
 }
 
 export function ownerSaid(words: string, messages: OwnerMessage[], now: number): boolean {
@@ -318,7 +319,7 @@ export function dismissIncident(cfg: Config, id: string, why: string, owner?: st
 	if (isFindingKind(rec.kind) && tapLogin === undefined) {
 		if (owner === undefined)
 			return `refused: a ${rec.kind} is dismissed only with the owner's words: --owner "<quote>" (part of an owner message of the last 24 h)`;
-		if (!ownerSaid(owner, readOwnerMessages(), nowSec()))
+		if (!ownerSaid(owner, readOwnerMessages(cfg.paths), nowSec()))
 			return "refused: the --owner quote is not part of an owner message of the last 24 h";
 	}
 	mkdirSync(dirname(file), { recursive: true });

@@ -14,7 +14,6 @@ import type { Config } from "../src/core/config.ts";
 import { loadConfig } from "../src/core/config.ts";
 import { checkInject, checkSpawn, checkStop, checkTool } from "../src/core/guards.ts";
 import { addIncident, dismissIncident, planIncident } from "../src/core/incidents.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "nsar-incident-guards-"));
 const HOME = join(TMP, "home");
@@ -104,7 +103,6 @@ function readBlocker(): string {
 	return readFileSync(join(repo, "blockers/no-push"), "utf8").replace("../src/core/blockers.ts", join(repo, "src/core/blockers.ts"));
 }
 
-applyQueueEnv(baseCfg);
 const cfg = baseCfg;
 // agentLedger runs queue-check for the priority check: a stub that reports one priority id.
 const queueCheck = join(HOME, ".local/bin/queue-check");
@@ -198,7 +196,6 @@ test("the spawn event gate refuses open-incident work like the task gate", () =>
 });
 
 test("the stop is refused while an incident is open, even with a live subagent awake", () => {
-	applyQueueEnv(stopCfg);
 	const { incident } = addIncident(cfg, { source: "realtime", kind: "x", summary: "stop toy" }, NOW);
 	const d = checkStop(stop(0, 0, "NsA zai/glm 12 0.1 0% $0.1 10-22 23:00 RUNNING (idle 1m)"), stopCfg);
 	expect(d.allow).toBe(false);
@@ -209,7 +206,6 @@ test("the stop is refused while an incident is open, even with a live subagent a
 });
 
 test("a planned, dismissed or fixed incident no longer blocks the stop", () => {
-	applyQueueEnv(stopCfg);
 	const a = addIncident(cfg, { source: "realtime", kind: "x", summary: "planned toy" }, NOW);
 	writeFileSync(FIX, planText(`Fixes INCIDENT ${a.incident.id}`));
 	expect(planIncident(cfg, a.incident.id, FIX)).toBe(null);
@@ -226,7 +222,6 @@ test("a planned, dismissed or fixed incident no longer blocks the stop", () => {
 });
 
 test("two idle stop attempts release the incident block, so a Main that cannot act is not stuck forever", () => {
-	applyQueueEnv(stopCfg);
 	addIncident(cfg, { source: "realtime", kind: "x", summary: "valve toy" }, NOW);
 	const first = checkStop(stop(0, 0, ""), stopCfg);
 	expect(first.allow).toBe(false);

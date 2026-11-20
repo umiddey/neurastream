@@ -17,8 +17,6 @@ import { loadConfig, type Config } from "../src/core/config.ts";
 import { type ProbeRunner, probeStep, readLimitState } from "../src/core/limit-probe.ts";
 import { readMetricEvents } from "../src/core/metrics.ts";
 import { notifyIdle } from "../src/core/notify.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
-import { blockersDirPath, indexPath } from "../src/core/queue/lib.ts";
 import { readOut } from "../src/core/provider-state.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "rate-limit-omp-"));
@@ -192,7 +190,6 @@ function ctxFor(running: unknown[] = []): Ctx {
 }
 
 function adapterWith(cfg: Config): Host {
-	applyQueueEnv(cfg);
 	const host = fakeHost();
 	createOmpAdapter(host, cfg);
 	return host;
@@ -226,15 +223,15 @@ Status: open
 `;
 
 /** One open plan in a sandbox repo, listed in the sandbox queue index: session_stop has an open item to block on. */
-function openPlanFixture(): () => void {
+function openPlanFixture(cfg: Config): () => void {
 	const repo = join(TMP, "open-repo");
 	const plan = join(repo, "docs/plans/20261025_open.md");
 	mkdirSync(dirname(plan), { recursive: true });
 	writeFileSync(plan, OPEN_PLAN);
 	mkdirSync(join(repo, ".git"), { recursive: true });
-	mkdirSync(blockersDirPath(), { recursive: true });
-	mkdirSync(dirname(indexPath()), { recursive: true });
-	writeFileSync(indexPath(), `${plan}\n`);
+	mkdirSync(cfg.paths.blockers, { recursive: true });
+	mkdirSync(dirname(cfg.paths.queue_index), { recursive: true });
+	writeFileSync(cfg.paths.queue_index, `${plan}\n`);
 	return () => {
 		writeFileSync(INDEX, "");
 		rmSync(repo, { recursive: true, force: true });
@@ -442,9 +439,9 @@ test("a named reset is waited for: no probe before it, one back message after it
 
 // (d) a normal stop with an open queue still blocks as today.
 test("a normal stop with an open queue still blocks, no post, no rate-limit lines", async () => {
-	const restore = openPlanFixture();
+	const cfg = stopCfg(writeConfig());
+	const restore = openPlanFixture(cfg);
 	try {
-		const cfg = stopCfg(writeConfig());
 		const host = adapterWith(cfg);
 		const ctx = ctxFor();
 		const results = await host.emit("session_stop", stopEvent(msg({ text: "done for now" })), ctx);
@@ -461,9 +458,9 @@ test("a normal stop with an open queue still blocks, no post, no rate-limit line
 
 // (e) the idle-stop counters are unchanged by a 429 stop.
 test("a 429 stop leaves the idle-stop counters alone: three real empty stops still needed", async () => {
-	const restore = openPlanFixture();
+	const cfg = stopCfg(writeConfig());
+	const restore = openPlanFixture(cfg);
 	try {
-		const cfg = stopCfg(writeConfig());
 		const host = adapterWith(cfg);
 		const ctx = liveCtx(cfg, fakeTicks());
 		await host.emit("session_stop", stopEvent(msg({ text: "" })), ctx); // idle stop 1: BLOCK

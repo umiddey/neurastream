@@ -12,7 +12,6 @@ import { runIncident } from "../src/cli/incident.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { addIncident, dismissIncident, openIncidents, readIncidents } from "../src/core/incidents.ts";
 import { incidentRows, inboxPath, startOwnerUi } from "../src/core/owner-ui.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
 import type { Tailscale } from "../src/core/tailscale.ts";
 
 const ROOT = "/tmp/neurastream-home-findingtaps/p1";
@@ -58,7 +57,6 @@ function fresh(): void {
 	);
 	process.env.HOME = HOME;
 	cfg = loadConfig({ home: HOME, env: {} });
-	applyQueueEnv(cfg);
 }
 
 // fresh() points QUEUE_* env at the sandbox per test; restore the caller's at the end.
@@ -78,16 +76,16 @@ const WHY = "src/core/guards.ts:40 the bucket is never created, so the stop guar
 
 test("incident propose records the reason and the incident stays open", async () => {
 	const { incident } = addIncident(cfg, { source: "findings", kind: "agent-finding", summary: "bucket missing" });
-	expect(await runIncident(["propose", incident.id, "--why", WHY])).toBe(0);
+	expect(await runIncident(["propose", incident.id, "--why", WHY], cfg)).toBe(0);
 	expect(openIncidents(cfg).map(i => i.id)).toEqual([incident.id]);
 	expect(readIncidents(cfg).find(i => i.id === incident.id)?.proposal?.why).toBe(WHY);
 });
 
 test("a newer propose replaces the older one", async () => {
 	const { incident } = addIncident(cfg, { source: "main", kind: "main-finding", summary: "bucket missing" });
-	expect(await runIncident(["propose", incident.id, "--why", WHY])).toBe(0);
+	expect(await runIncident(["propose", incident.id, "--why", WHY], cfg)).toBe(0);
 	const newer = "src/core/guards.ts:41 the bucket is created after the read, so the reading is empty";
-	expect(await runIncident(["propose", incident.id, "--why", newer])).toBe(0);
+	expect(await runIncident(["propose", incident.id, "--why", newer], cfg)).toBe(0);
 	expect(readIncidents(cfg).find(i => i.id === incident.id)?.proposal?.why).toBe(newer);
 });
 
@@ -95,12 +93,12 @@ test("incident propose refuses an unknown id, a resolved incident, a non-finding
 	const finding = addIncident(cfg, { source: "findings", kind: "agent-finding", summary: "bucket missing" }).incident;
 	const toy = addIncident(cfg, { source: "realtime", kind: "toy", summary: "not a finding" }).incident;
 	const closed = addIncident(cfg, { source: "realtime", kind: "toy", summary: "already closed" }).incident;
-	expect(await runIncident(["propose", "I-19990101-9", "--why", WHY])).toBe(1);
-	expect(await runIncident(["propose", toy.id, "--why", WHY])).toBe(1);
-	expect(await runIncident(["propose", finding.id, "--why", "no reference at all"])).toBe(1);
+	expect(await runIncident(["propose", "I-19990101-9", "--why", WHY], cfg)).toBe(1);
+	expect(await runIncident(["propose", toy.id, "--why", WHY], cfg)).toBe(1);
+	expect(await runIncident(["propose", finding.id, "--why", "no reference at all"], cfg)).toBe(1);
 	expect(readIncidents(cfg).find(i => i.id === finding.id)?.proposal ?? null).toBe(null);
 	expect(dismissIncident(cfg, closed.id, "closed to test refusals")).toBe(null);
-	expect(await runIncident(["propose", closed.id, "--why", WHY])).toBe(1);
+	expect(await runIncident(["propose", closed.id, "--why", WHY], cfg)).toBe(1);
 });
 
 // P2: the open-incident row carries Main's latest why, and the agents page shows it with two
@@ -108,7 +106,7 @@ test("incident propose refuses an unknown id, a resolved incident, a non-finding
 test("incidentRows carries Main's latest why for a finding and null for a non-finding", async () => {
 	const finding = addIncident(cfg, { source: "findings", kind: "agent-finding", summary: "bucket missing" }).incident;
 	const toy = addIncident(cfg, { source: "realtime", kind: "toy", summary: "not a finding" }).incident;
-	expect(await runIncident(["propose", finding.id, "--why", WHY])).toBe(0);
+	expect(await runIncident(["propose", finding.id, "--why", WHY], cfg)).toBe(0);
 	const rows = incidentRows(cfg);
 	expect(rows.find(r => r.id === finding.id)?.proposal).toBe(WHY);
 	expect(rows.find(r => r.id === toy.id)?.proposal).toBe(null);
@@ -130,7 +128,7 @@ function pageHtml(port: number, path: string): Promise<string> {
 test("the agents page shows Main's why and two tap buttons for a finding, and says so when there is no why", async () => {
 	const proposed = addIncident(cfg, { source: "findings", kind: "agent-finding", summary: "bucket missing" }).incident;
 	const unproposed = addIncident(cfg, { source: "findings", kind: "main-finding", summary: "no reason yet" }).incident;
-	expect(await runIncident(["propose", proposed.id, "--why", WHY])).toBe(0);
+	expect(await runIncident(["propose", proposed.id, "--why", WHY], cfg)).toBe(0);
 	const svc = startOwnerUi({
 		cfg: { ...cfg, workspace: { ...cfg.workspace, enabled: true, port: 7787, owner_login: OWNER } },
 		tailscale: TS,
@@ -196,7 +194,7 @@ function postForm(port: number, path: string, fields: Record<string, string>): P
 
 test("POST /incident choice=false closes a finding and records the owner's tap with Main's why", async () => {
 	const id = addIncident(cfg, { source: "findings", kind: "agent-finding", summary: "bucket missing" }).incident.id;
-	expect(await runIncident(["propose", id, "--why", WHY])).toBe(0);
+	expect(await runIncident(["propose", id, "--why", WHY], cfg)).toBe(0);
 	const svc = startPage();
 	try {
 		const res = await postForm(svc.port, "/incident", { id, choice: "false", tab: "agents" });
@@ -221,7 +219,7 @@ test("POST /incident choice=bug keeps the finding open and adds one inbox messag
 		svc.stop();
 	}
 	expect(openIncidents(cfg).map(i => i.id)).toContain(id);
-	const inbox = readFileSync(inboxPath(), "utf8").split("\n").filter(l => l.includes(`"id":"`) && l.includes(`"kind":"message"`));
+	const inbox = readFileSync(inboxPath(cfg.paths), "utf8").split("\n").filter(l => l.includes(`"id":"`) && l.includes(`"kind":"message"`));
 	expect(inbox.length).toBe(1);
 });
 

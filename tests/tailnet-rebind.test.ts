@@ -8,7 +8,6 @@ import { runWorkspace } from "../src/cli/workspace.ts";
 import { loadConfig } from "../src/core/config.ts";
 import { startOwnerUi } from "../src/core/owner-ui.ts";
 import { startPagesServer } from "../src/core/pages.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { type Tailscale, untilIp4Changes } from "../src/core/tailscale.ts";
 
 // Sandboxed: every config path resolves under TMP (loadConfig({ home })), and the fixture tailscale
@@ -85,7 +84,6 @@ function sandboxCfg(name: string) {
 	const cfg = loadConfig({ home });
 	cfg.workspace.enabled = true;
 	cfg.workspace.owner_login = OWNER;
-	applyQueueEnv(cfg);
 	return cfg;
 }
 

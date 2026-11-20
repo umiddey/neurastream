@@ -9,6 +9,7 @@ import { dirname, join } from "node:path";
 import { nowSec } from "./clock.ts";
 import type { Config } from "./config.ts";
 import { ownerMessagesFile } from "./incidents.ts";
+import type { QueuePaths } from "./queue/lib.ts";
 import { loadKnownSecrets, redactSecrets } from "./secret-redact.ts";
 import type { OwnerTurn } from "./adapter.ts";
 import { isOwnerProse } from "./guards.ts";
@@ -23,16 +24,16 @@ export interface LogEntry {
 	text: string;
 }
 
-export function ownerLogDir(): string {
-	return join(dirname(ownerMessagesFile()), "recall");
+export function ownerLogDir(paths: Pick<QueuePaths, "queue_state">): string {
+	return join(dirname(ownerMessagesFile(paths)), "recall");
 }
 
-export function ownerLogFile(): string {
-	return join(ownerLogDir(), "owner-log.jsonl");
+export function ownerLogFile(paths: Pick<QueuePaths, "queue_state">): string {
+	return join(ownerLogDir(paths), "owner-log.jsonl");
 }
 
-export function ownerBackfillFile(): string {
-	return join(ownerLogDir(), "owner-log.backfill.jsonl");
+export function ownerBackfillFile(paths: Pick<QueuePaths, "queue_state">): string {
+	return join(ownerLogDir(paths), "owner-log.backfill.jsonl");
 }
 
 // Ids sort by time: nine base-36 digits of the millisecond clock, then eight hex digits of
@@ -70,11 +71,12 @@ export function markTopicsSpawned(): void {
 export function appendOwnerLog(
 	role: LogRole,
 	text: string,
+	paths: Pick<QueuePaths, "queue_state">,
 	opts: { atMs?: number; rand?: (n: number) => Uint8Array } = {},
 ): string {
 	const atMs = opts.atMs ?? nowSec() * 1000;
 	const entry: LogEntry = { id: newEntryId(atMs, opts.rand), at: Math.floor(atMs / 1000), role, text };
-	appendJsonLines(ownerLogFile(), [entry]);
+	appendJsonLines(ownerLogFile(paths), [entry]);
 	appendedCount++;
 	return entry.id;
 }
@@ -83,7 +85,7 @@ export function appendOwnerLog(
 // on a failed write; the callers decide where that is logged.
 export function recordOwnerLog(cfg: Config, role: LogRole, text: string): void {
 	const clean = redactSecrets(text, loadKnownSecrets(cfg), cfg.secrets.extra_patterns).text;
-	appendOwnerLog(role, clean);
+	appendOwnerLog(role, clean, cfg.paths);
 }
 
 // The first (newest) or last (oldest) parsable entry of one log file; undefined when it has none.
@@ -113,8 +115,8 @@ export function backfillOwnerLog(cfg: Config, turns: Iterable<OwnerTurn>): numbe
 		}
 	}
 	kept.sort((a, b) => a.at - b.at);
-	const newest = logEdge(ownerBackfillFile(), true);
-	const oldest = logEdge(ownerLogFile(), false);
+	const newest = logEdge(ownerBackfillFile(cfg.paths), true);
+	const oldest = logEdge(ownerLogFile(cfg.paths), false);
 	const known = loadKnownSecrets(cfg);
 	const rows: LogEntry[] = [];
 	for (const turn of kept) {
@@ -123,7 +125,7 @@ export function backfillOwnerLog(cfg: Config, turns: Iterable<OwnerTurn>): numbe
 		const clean = redactSecrets(turn.text, known, cfg.secrets.extra_patterns).text;
 		rows.push({ id: newEntryId(turn.at * 1000), at: turn.at, role: turn.role, text: clean });
 	}
-	if (rows.length > 0) appendJsonLines(ownerBackfillFile(), rows);
+	if (rows.length > 0) appendJsonLines(ownerBackfillFile(cfg.paths), rows);
 	return rows.length;
 }
 
@@ -173,8 +175,8 @@ function parseEntry(line: string): LogEntry | undefined {
 }
 
 // Every entry, newest first: the live log, then the backfill (older by construction).
-export function* readEntries(): Generator<LogEntry> {
-	for (const file of [ownerLogFile(), ownerBackfillFile()]) {
+export function* readEntries(paths: Pick<QueuePaths, "queue_state">): Generator<LogEntry> {
+	for (const file of [ownerLogFile(paths), ownerBackfillFile(paths)]) {
 		for (const line of readLines(file)) {
 			const entry = parseEntry(line);
 			if (entry !== undefined) yield entry;
@@ -189,10 +191,10 @@ export interface SearchOpts {
 }
 
 // Entries whose text contains every word (case-insensitive, any order), newest first.
-export function searchEntries(opts: SearchOpts): LogEntry[] {
+export function searchEntries(opts: SearchOpts, paths: Pick<QueuePaths, "queue_state">): LogEntry[] {
 	const words = opts.words.map((w) => w.toLowerCase());
 	const out: LogEntry[] = [];
-	for (const e of readEntries()) {
+	for (const e of readEntries(paths)) {
 		if (opts.sinceSec !== undefined && e.at < opts.sinceSec) continue;
 		const text = e.text.toLowerCase();
 		if (!words.every((w) => text.includes(w))) continue;
@@ -205,10 +207,10 @@ export function searchEntries(opts: SearchOpts): LogEntry[] {
 // The entry with this id plus the entry it pairs with, in chronological order: an owner message
 // with the nearest newer Main answer, a Main answer with the nearest older owner message. Undefined
 // when no entry has the id. One streaming pass, newest first.
-export function showEntries(id: string): LogEntry[] | undefined {
+export function showEntries(id: string, paths: Pick<QueuePaths, "queue_state">): LogEntry[] | undefined {
 	let target: LogEntry | undefined;
 	let newerMain: LogEntry | undefined;
-	for (const e of readEntries()) {
+	for (const e of readEntries(paths)) {
 		if (target === undefined) {
 			if (e.id === id) {
 				target = e;

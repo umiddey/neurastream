@@ -12,7 +12,6 @@ import { nowSec } from "../core/clock.ts";
 import { postReply } from "../core/notify.ts";
 import { log } from "../core/guards.ts";
 import { loadKnownSecrets, redactSecrets, redactSummary } from "../core/secret-redact.ts";
-import { applyQueueEnv } from "../core/queue/env.ts";
 import { getAdapter } from "../adapters/index.ts";
 import { GUARD_USAGE, runGuard } from "./guard.ts";
 import { runInit } from "./init.ts";
@@ -32,7 +31,7 @@ import { watchOn, watchOff } from "./watch-setup.ts";
 import { runWip } from "./wip.ts";
 import { runUninstall } from "../core/uninstall.ts";
 import { queueMigrate } from "../core/queue-migrate.ts";
-import { activePlans, allowedAgents, enforceReadOnlyIndex, gitTop, indexPath, readIndex, subagentsPath, writeIndex } from "../core/queue/lib.ts";
+import { activePlans, allowedAgents, enforceReadOnlyIndex, gitTop, readIndex, writeIndex } from "../core/queue/lib.ts";
 import { defaultRunner } from "../core/mr-sweep.ts";
 import { allowAgents, denyAgents, invalidSlugs } from "../core/subagents.ts";
 import { runLabels } from "./labels.ts";
@@ -206,9 +205,10 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 	if (cmd === "doctor") {
 		for (const warning of pagesDoctor()) console.warn(`warning: ${warning}`);
 		try {
-			const was = enforceReadOnlyIndex(loadConfig().paths.queue_index);
-			if (was) console.warn(`warning: ${indexPath()} — was ${was}, set 0444 (the plan index is read-only on disk)`);
-			console.log(watchDoctorLine(watchHealth(loadConfig(), Date.now())));
+			const cfg = loadConfig();
+			const was = enforceReadOnlyIndex(cfg.paths.queue_index);
+			if (was) console.warn(`warning: ${cfg.paths.queue_index} — was ${was}, set 0444 (the plan index is read-only on disk)`);
+			console.log(watchDoctorLine(watchHealth(cfg, Date.now())));
 		} catch {} // a broken config is doctor's own report; the adapter doctor names it
 		return getAdapter().doctor();
 	}
@@ -266,9 +266,9 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 						);
 					},
 					runner: defaultRunner,
-					plans: () => activePlans(),
+					plans: () => activePlans(cfg.paths),
 					// Plans whose newest spawn (staffing.json) is inside the watch.ci_red_hours window: a timer run has no live job list to ask.
-					staffed: now => timerStaffedPlans(now, cfg.watch.ci_red_hours),
+					staffed: now => timerStaffedPlans(now, cfg.watch.ci_red_hours, cfg.paths),
 				});
 				console.log(`watch: ${report.opened.length} opened, ${report.deduped.length} deduped, ${report.closed.length} recovered, ${report.detectors.length} detector findings`);
 				return 0;
@@ -290,13 +290,14 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 		}
 	}
 	if (cmd === "queue" && (args[0] === "add" || args[0] === "move")) {
+		let cfg: Config;
 		try {
-			applyQueueEnv(loadConfig());
+			cfg = loadConfig();
 		} catch (err) {
 			console.error(err instanceof ConfigError ? err.message : String(err));
 			return 1;
 		}
-		return args[0] === "add" ? runQueueAdd(args.slice(1)) : runQueueMove(args.slice(1));
+		return args[0] === "add" ? runQueueAdd(args.slice(1), cfg) : runQueueMove(args.slice(1), cfg);
 	}
 	if (cmd === "guard") {
 		return runGuard(args[0] ?? "");
@@ -304,7 +305,7 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 	if (cmd === "agents") return runAgents(args);
 	if ((PORTED as readonly string[]).includes(cmd)) {
 		try {
-			applyQueueEnv(loadConfig());
+			loadConfig();
 		} catch (err) {
 			console.error(err instanceof ConfigError ? err.message : String(err));
 			return 1;
@@ -322,7 +323,7 @@ const QUEUE_EDIT_USAGE =
 // The index file is 0444 and guard-protected (plan 20261031_0911 P2), so these two commands are the
 // only way an agent adds a plan or reorders it. Both write through writeIndex: the set of plans can
 // only grow, and the file stays read-only on disk after every write.
-function runQueueAdd(args: string[]): number {
+function runQueueAdd(args: string[], cfg: Config): number {
 	const ri = args.indexOf("--rank");
 	const rest = args.filter((a, i) => a !== "--rank" && args[i - 1] !== "--rank");
 	const rankArg = ri >= 0 ? args[ri + 1] : undefined;
@@ -337,19 +338,20 @@ function runQueueAdd(args: string[]): number {
 		console.error(`queue add: ${abs} does not exist`);
 		return 1;
 	}
-	const lines = readIndex();
+	const index = cfg.paths.queue_index;
+	const lines = readIndex(index);
 	if (lines.includes(abs)) {
 		console.error(`queue add: ${abs} is already listed at rank ${lines.indexOf(abs) + 1} (queue move reorders it)`);
 		return 1;
 	}
 	const at = rank === null ? lines.length : Math.min(rank - 1, lines.length);
 	lines.splice(at, 0, abs);
-	writeIndex(lines);
-	console.log(`queue add: ${abs} at rank ${at + 1} of ${lines.length} in ${indexPath()}`);
+	writeIndex(lines, undefined, index);
+	console.log(`queue add: ${abs} at rank ${at + 1} of ${lines.length} in ${index}`);
 	return 0;
 }
 
-function runQueueMove(args: string[]): number {
+function runQueueMove(args: string[], cfg: Config): number {
 	const [fileArg, rankArg] = args;
 	const n = Number(rankArg);
 	const rank = rankArg !== undefined && rankArg !== "" && Number.isInteger(n) && n >= 1 ? n : null;
@@ -358,17 +360,18 @@ function runQueueMove(args: string[]): number {
 		return 2;
 	}
 	const abs = path.resolve(fileArg!);
-	const lines = readIndex();
+	const index = cfg.paths.queue_index;
+	const lines = readIndex(index);
 	const from = lines.indexOf(abs);
 	if (from === -1) {
-		console.error(`queue move: ${abs} is not in ${indexPath()}`);
+		console.error(`queue move: ${abs} is not in ${index}`);
 		return 1;
 	}
 	lines.splice(from, 1);
 	const to = Math.min(rank - 1, lines.length);
 	lines.splice(to, 0, abs);
-	writeIndex(lines);
-	console.log(`queue move: ${abs} rank ${from + 1} → ${to + 1} of ${lines.length} in ${indexPath()}`);
+	writeIndex(lines, undefined, index);
+	console.log(`queue move: ${abs} rank ${from + 1} → ${to + 1} of ${lines.length} in ${index}`);
 	return 0;
 }
 
@@ -442,13 +445,14 @@ function runAgents(args: string[]): number {
 		console.error(`invalid slug: ${bad.join(", ")} (allowed: a-z, 0-9, -)`);
 		return 2;
 	}
+	let cfg: Config;
 	try {
-		applyQueueEnv(loadConfig());
+		cfg = loadConfig();
 	} catch (err) {
 		console.error(err instanceof ConfigError ? err.message : String(err));
 		return 1;
 	}
-	const file = subagentsPath();
+	const file = cfg.paths.subagents;
 	if (action === "list") {
 		for (const slug of allowedAgents(file)) console.log(slug);
 		console.log(`file: ${file}`);

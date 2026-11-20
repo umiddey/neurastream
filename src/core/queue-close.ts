@@ -6,8 +6,7 @@ import { claimStoreFor } from "./team-client.ts";
 
 import type { Config } from "./config.ts";
 import { mainId } from "./guards.ts";
-import { applyQueueEnv } from "./queue/env.ts";
-import { activePlans, cancelledFile, cancelledLine, closeLog, finishedEntry, finishedPath, gitOut as git, INDEX, landed, prependFinished, sha, STATE_DIR, writeIndex } from "./queue/lib.ts";
+import { activePlans, cancelledFile, cancelledLine, closeLog, finishedEntry, finishedPath, gitOut as git, landed, prependFinished, sha, writeIndex } from "./queue/lib.ts";
 import { fixedIncident } from "./incidents.ts";
 
 // P4 (plan 20261031_0911): the landing check lives in queue/lib.ts (queueProblems' landed lock
@@ -15,7 +14,8 @@ import { fixedIncident } from "./incidents.ts";
 export { landed };
 
 export function queueClose(args: string[], cfg: Config): number {
-	applyQueueEnv(cfg);
+	const INDEX = cfg.paths.queue_index;
+	const STATE_DIR = cfg.paths.queue_state;
 	const ARCHIVE_DAYS = cfg.queue.archive_days;
 
 	let resultLog: string | null = null;
@@ -75,7 +75,7 @@ export function queueClose(args: string[], cfg: Config): number {
 	}
 	if (!arg) die("usage: queue-close [--auto] <plan file>");
 	const file = path.resolve(arg);
-	resultLog = closeLog(file);
+	resultLog = closeLog(file, cfg.paths);
 
 	mkdirSync(STATE_DIR, { recursive: true });
 	const lock = path.join(STATE_DIR, `close-${sha(file)}.lock`);
@@ -90,7 +90,7 @@ export function queueClose(args: string[], cfg: Config): number {
 	writeFileSync(lock, String(process.pid));
 	process.on("exit", () => rmSync(lock, { force: true }));
 
-	const plan = activePlans().find(p => p.file === file);
+	const plan = activePlans(cfg.paths).find(p => p.file === file);
 	if (!plan) die(`${file} is not listed in the main index ${INDEX}`);
 	if (plan.errors.length) die(`plan does not match the template: ${plan.errors.join("; ")}`);
 	if (plan.status !== "complete" && plan.status !== "cancelled" && !(auto && plan.status === "open"))
@@ -276,15 +276,15 @@ export function queueClose(args: string[], cfg: Config): number {
 		console.log(`queue-close: plan moved to ${dest}`);
 	}
 	if (!cancelling) {
-		const listed = finishedPath();
-		const added = prependFinished(finishedEntry(plan, dest, today));
+		const listed = finishedPath(cfg.paths);
+		const added = prependFinished(finishedEntry(plan, dest, today), listed);
 		console.log(added ? `queue-close: recorded in ${listed}` : `queue-close: already in ${listed}`);
 	}
 
 	// One index: the closed plan's line leaves the main index; there is no repo INDEX.md.
 	const lines = readFileSync(INDEX, "utf8").split("\n").filter(l => l.trim());
 	const keep = lines.filter(l => path.resolve(l.trim().replace(/^[-*]\s+/, "").replace(/`/g, "").replace(/^~(?=\/)/, os.homedir())) !== file);
-	writeIndex(keep, { removed: cancelling ? "cancel" : "close" });
+	writeIndex(keep, { removed: cancelling ? "cancel" : "close" }, INDEX);
 	console.log(`queue-close: removed from ${INDEX} (${keep.length} plan(s) left)`);
 	try {
 		const sp = path.join(STATE_DIR, "spawns.json");

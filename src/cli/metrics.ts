@@ -51,7 +51,7 @@ export function recordCi(cfg: Config, repoDir: string, mr: string, now: number, 
 	console.log(`ci: ${mr} needed ${r.tries} pipeline(s)`);
 	for (const s of r.skipped) console.error(s);
 	// A new CI record can change what a hold check sees, so every hold is re-checked now, not on its TTL.
-	const plans = activePlans(cfg.paths.queue_index);
+	const plans = activePlans(cfg.paths);
 	for (const line of staleHoldLines(recheckHolds(cfg, plans, run, now, true), plans)) console.log(line);
 	return 0;
 }

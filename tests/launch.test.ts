@@ -9,8 +9,8 @@ import { basename, dirname, join } from "node:path";
 import type { LaunchOptions } from "../src/core/adapter.ts";
 import { carriedArgs, runMainLauncher } from "../src/adapters/omp/launch.ts";
 import { loadConfig } from "../src/core/config.ts";
+import { mainStateDir } from "../src/core/guards.ts";
 import { ownerMessagesFile } from "../src/core/incidents.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { MAX_NOTE_AGE_MS, notePath, relaunchPath } from "../src/core/rollover.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "nsar-launch-"));
@@ -25,11 +25,10 @@ afterAll(() => {
 // loadConfig lets env beat the config file, and a live omp session exports QUEUE_STATE (the real
 // state dir). Load with an empty env so only the sandbox home decides the paths.
 const cfg = loadConfig({ home: join(TMP, "home"), env: {} });
-applyQueueEnv(cfg); // relaunchPath() and notePath() resolve into the sandbox state dir
 const LEGACY_RELAUNCH = join(cfg.paths.queue_state, "rollover", "relaunch.json");
 const SESSION_ID = "sess-launch";
 const SESSION_FILE = join(TMP, "prev.jsonl");
-const NOTE = notePath(SESSION_ID);
+const NOTE = notePath(SESSION_ID, mainStateDir(cfg));
 
 // First run: writes the note and the relaunch request (optionally with an old mtime) and exits 0.
 // Second run: exits 7, so the launcher's exit code must be the second run's.
@@ -64,8 +63,8 @@ function newCase(): string {
 	caseNo++;
 	const dir = join(TMP, `case-${caseNo}`);
 	mkdirSync(dir, { recursive: true });
-	mkdirSync(dirname(relaunchPath()), { recursive: true });
-	rmSync(relaunchPath(), { force: true });
+	mkdirSync(dirname(relaunchPath(mainStateDir(cfg))), { recursive: true });
+	rmSync(relaunchPath(mainStateDir(cfg)), { force: true });
 	rmSync(LEGACY_RELAUNCH, { force: true });
 	rmSync(NOTE, { force: true });
 	return dir;
@@ -82,7 +81,7 @@ async function launch(args: string[], dir: string, extra: Record<string, string>
 		FAKE_MARK: join(dir, "mark"),
 		FAKE_NOTE: NOTE,
 		FAKE_NOTE_TEXT: "Note: continue the parser work; the next step is the tests.",
-		FAKE_RELAUNCH: relaunchPath(),
+		FAKE_RELAUNCH: relaunchPath(mainStateDir(cfg)),
 		FAKE_PREV: SESSION_FILE,
 		...extra,
 	};
@@ -105,7 +104,7 @@ function runsOf(dir: string): Run[] {
 
 test("the sandbox config keeps the note and the relaunch request under TMP, whatever QUEUE_* the parent env holds", () => {
 	expect(NOTE.startsWith(TMP)).toBe(true);
-	expect(relaunchPath().startsWith(TMP)).toBe(true);
+	expect(relaunchPath(mainStateDir(cfg)).startsWith(TMP)).toBe(true);
 });
 
 test("carriedArgs drops the first message and session-picking flags, keeps the rest", () => {
@@ -148,7 +147,7 @@ test("a relaunch request starts a second run: the owner's flags, then the handof
 	expect(handoff).toContain("Owner's messages during the rollover (and any unsent draft): half typed");
 	expect(handoff).toContain(SESSION_FILE);
 	expect(code).toBe(7);
-	expect(existsSync(relaunchPath())).toBe(false);
+	expect(existsSync(relaunchPath(mainStateDir(cfg)))).toBe(false);
 }, 60_000);
 
 test("owner messages typed during a pending relaunch all reach the second run, in order", async () => {
@@ -166,7 +165,7 @@ test("owner messages typed during a pending relaunch all reach the second run, i
 // nextMessage leaves `unanswered` unset.
 test("a relaunch handoff after an unanswered owner message starts with the unanswered prefix", async () => {
 	const dir = newCase();
-	const store = ownerMessagesFile();
+	const store = ownerMessagesFile(cfg.paths);
 	mkdirSync(dirname(store), { recursive: true });
 	writeFileSync(store, `${JSON.stringify({ at: Math.floor(Date.now() / 1000) - 30, text: "Who is ARB?" })}\n`);
 	try {
@@ -260,17 +259,17 @@ test("a kill during main-start leaves the request: it is removed only after the 
 	const run = launch([], dir, {}, { mainStart });
 	await entered;
 	// The live incident: a kill while main-start collects state must not cost the owner's messages.
-	expect(existsSync(relaunchPath())).toBe(true);
+	expect(existsSync(relaunchPath(mainStateDir(cfg)))).toBe(true);
 	release();
 	expect(await run).toBe(7);
-	expect(existsSync(relaunchPath())).toBe(false);
+	expect(existsSync(relaunchPath(mainStateDir(cfg)))).toBe(false);
 }, 60_000);
 
 test("the handover path also keeps the request until the message is built", async () => {
 	const dir = newCase();
-	mkdirSync(dirname(relaunchPath()), { recursive: true });
+	mkdirSync(dirname(relaunchPath(mainStateDir(cfg))), { recursive: true });
 	writeFileSync(NOTE, "Note: continue the parser work; the next step is the tests.");
-	writeFileSync(relaunchPath(), JSON.stringify({ previousSessionFile: SESSION_FILE, notePath: NOTE, draft: "d" }));
+	writeFileSync(relaunchPath(mainStateDir(cfg)), JSON.stringify({ previousSessionFile: SESSION_FILE, notePath: NOTE, draft: "d" }));
 	writeFileSync(join(dir, "mark"), ""); // the run itself writes no new request
 	const { mainStart, entered, release } = gatedMainStart();
 	const before = process.env.NEURASTREAM_RELAUNCH_SINCE;
@@ -280,17 +279,17 @@ test("the handover path also keeps the request until the message is built", asyn
 		else process.env.NEURASTREAM_RELAUNCH_SINCE = before;
 	});
 	await entered;
-	expect(existsSync(relaunchPath())).toBe(true);
+	expect(existsSync(relaunchPath(mainStateDir(cfg)))).toBe(true);
 	release();
 	expect(await run).toBe(7);
-	expect(existsSync(relaunchPath())).toBe(false);
+	expect(existsSync(relaunchPath(mainStateDir(cfg)))).toBe(false);
 }, 60_000);
 
 test("a fresh launcher with no message continues an interrupted rollover from the request", async () => {
 	const dir = newCase();
 	mkdirSync(dirname(NOTE), { recursive: true });
 	writeFileSync(NOTE, "Note: continue the parser work; the next step is the tests.");
-	writeFileSync(relaunchPath(), JSON.stringify({ previousSessionFile: SESSION_FILE, notePath: NOTE, draft: "typed earlier" }));
+	writeFileSync(relaunchPath(mainStateDir(cfg)), JSON.stringify({ previousSessionFile: SESSION_FILE, notePath: NOTE, draft: "typed earlier" }));
 	writeFileSync(join(dir, "mark"), ""); // the run itself writes no new request
 	const errs = spyOn(console, "error");
 	let lines: string[] = [];
@@ -310,7 +309,7 @@ test("a fresh launcher with no message continues an interrupted rollover from th
 	expect(message).toContain("Owner's messages during the rollover (and any unsent draft): typed earlier");
 	expect(lines.some(l => l.includes(`neurastream: continuing the interrupted rollover from ${SESSION_FILE}`))).toBe(true);
 	expect(lines.filter(l => l.includes(HANDOFF_LINE))).toHaveLength(1);
-	expect(existsSync(relaunchPath())).toBe(false);
+	expect(existsSync(relaunchPath(mainStateDir(cfg)))).toBe(false);
 	expect(code).toBe(7);
 }, 60_000);
 
@@ -318,23 +317,23 @@ test("an interrupted rollover older than an hour is left alone: the run starts p
 	const dir = newCase();
 	mkdirSync(dirname(NOTE), { recursive: true });
 	writeFileSync(NOTE, "Note: stale");
-	writeFileSync(relaunchPath(), JSON.stringify({ previousSessionFile: SESSION_FILE, notePath: NOTE, draft: "" }));
+	writeFileSync(relaunchPath(mainStateDir(cfg)), JSON.stringify({ previousSessionFile: SESSION_FILE, notePath: NOTE, draft: "" }));
 	const old = (Date.now() - 2 * 3_600_000) / 1000;
-	utimesSync(relaunchPath(), old, old);
+	utimesSync(relaunchPath(mainStateDir(cfg)), old, old);
 	writeFileSync(join(dir, "mark"), "");
 	const code = await launch([], dir);
 	expect(runsOf(dir)[0]?.argv).toEqual([]);
-	expect(existsSync(relaunchPath())).toBe(true);
+	expect(existsSync(relaunchPath(mainStateDir(cfg)))).toBe(true);
 	expect(code).toBe(7);
 }, 60_000);
 
 test("an unreadable interrupted request is left alone: the run starts plain", async () => {
 	const dir = newCase();
-	writeFileSync(relaunchPath(), "{not json");
+	writeFileSync(relaunchPath(mainStateDir(cfg)), "{not json");
 	writeFileSync(join(dir, "mark"), "");
 	const code = await launch([], dir);
 	expect(runsOf(dir)[0]?.argv).toEqual([]);
-	expect(existsSync(relaunchPath())).toBe(true);
+	expect(existsSync(relaunchPath(mainStateDir(cfg)))).toBe(true);
 	expect(code).toBe(7);
 });
 
@@ -342,14 +341,14 @@ test("a fresh launcher with a positional message does not continue an interrupte
 	const dir = newCase();
 	mkdirSync(dirname(NOTE), { recursive: true });
 	writeFileSync(NOTE, "Note: x");
-	writeFileSync(relaunchPath(), JSON.stringify({ previousSessionFile: SESSION_FILE, notePath: NOTE, draft: "" }));
+	writeFileSync(relaunchPath(mainStateDir(cfg)), JSON.stringify({ previousSessionFile: SESSION_FILE, notePath: NOTE, draft: "" }));
 	// Older than the run's start: the in-loop read must not pick it up and consume it.
 	const past = (Date.now() - 5_000) / 1000;
-	utimesSync(relaunchPath(), past, past);
+	utimesSync(relaunchPath(mainStateDir(cfg)), past, past);
 	writeFileSync(join(dir, "mark"), "");
 	const code = await launch(["hello"], dir);
 	expect(runsOf(dir)[0]?.argv).toEqual(["hello"]);
-	expect(existsSync(relaunchPath())).toBe(true);
+	expect(existsSync(relaunchPath(mainStateDir(cfg)))).toBe(true);
 	expect(code).toBe(7);
 }, 60_000);
 
@@ -366,7 +365,7 @@ test("(a) legacy-only relaunch newer than since is consumed and the legacy file 
 	expect(runs.length).toBe(1);
 	expect(String(runs[0]?.argv.at(-1))).toContain("Note: continue the parser work");
 	expect(existsSync(LEGACY_RELAUNCH)).toBe(false);
-	expect(existsSync(relaunchPath())).toBe(false);
+	expect(existsSync(relaunchPath(mainStateDir(cfg)))).toBe(false);
 	expect(code).toBe(7);
 }, 60_000);
 
@@ -386,14 +385,14 @@ test("(c) when both paths are fresh the new-path request wins and both files are
 	const dir = newCase();
 	mkdirSync(dirname(NOTE), { recursive: true });
 	writeFileSync(NOTE, "Note: continue the parser work; the next step is the tests.");
-	writeRelaunchReq(relaunchPath(), "from new path");
+	writeRelaunchReq(relaunchPath(mainStateDir(cfg)), "from new path");
 	writeRelaunchReq(LEGACY_RELAUNCH, "from legacy");
 	writeFileSync(join(dir, "mark"), "");
 	const code = await launch([], dir);
 	const runs = runsOf(dir);
 	expect(runs.length).toBe(1);
 	expect(String(runs[0]?.argv.at(-1))).toContain("from new path");
-	expect(existsSync(relaunchPath())).toBe(false);
+	expect(existsSync(relaunchPath(mainStateDir(cfg)))).toBe(false);
 	expect(existsSync(LEGACY_RELAUNCH)).toBe(false);
 	expect(code).toBe(7);
 }, 60_000);
@@ -423,16 +422,16 @@ test("(e) a stale new-path file lets a fresh legacy request through and both are
 	const dir = newCase();
 	mkdirSync(dirname(NOTE), { recursive: true });
 	writeFileSync(NOTE, "Note: continue the parser work; the next step is the tests.");
-	writeRelaunchReq(relaunchPath());
+	writeRelaunchReq(relaunchPath(mainStateDir(cfg)));
 	writeRelaunchReq(LEGACY_RELAUNCH);
 	const stale = (Date.now() - 2 * 3_600_000) / 1000;
-	utimesSync(relaunchPath(), stale, stale);
+	utimesSync(relaunchPath(mainStateDir(cfg)), stale, stale);
 	writeFileSync(join(dir, "mark"), "");
 	const code = await launch([], dir);
 	const runs = runsOf(dir);
 	expect(runs.length).toBe(1);
 	expect(String(runs[0]?.argv.at(-1))).toContain("Note: continue the parser work");
-	expect(existsSync(relaunchPath())).toBe(false);
+	expect(existsSync(relaunchPath(mainStateDir(cfg)))).toBe(false);
 	expect(existsSync(LEGACY_RELAUNCH)).toBe(false);
 	expect(code).toBe(7);
 }, 60_000);
@@ -461,7 +460,7 @@ test("(g) a fresh new-path request clears the legacy copy even when legacy is ol
 	mkdirSync(dirname(NOTE), { recursive: true });
 	writeFileSync(NOTE, "Note: continue the parser work; the next step is the tests.");
 	const since = Date.now() - 60_000;
-	writeRelaunchReq(relaunchPath());
+	writeRelaunchReq(relaunchPath(mainStateDir(cfg)));
 	writeRelaunchReq(LEGACY_RELAUNCH);
 	const legacyWhen = (since - 30_000) / 1000;
 	utimesSync(LEGACY_RELAUNCH, legacyWhen, legacyWhen);
@@ -474,7 +473,7 @@ test("(g) a fresh new-path request clears the legacy copy even when legacy is ol
 		const runs = runsOf(dir);
 		expect(runs.length).toBe(1);
 		expect(String(runs[0]?.argv.at(-1))).toContain("Note: continue the parser work");
-		expect(existsSync(relaunchPath())).toBe(false);
+		expect(existsSync(relaunchPath(mainStateDir(cfg)))).toBe(false);
 		expect(existsSync(LEGACY_RELAUNCH)).toBe(false);
 		expect(code).toBe(7);
 	} finally {

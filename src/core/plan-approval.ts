@@ -83,44 +83,44 @@ export interface PlanApproval {
 	page: string;
 }
 
-function planApprovalsFile(): string {
-	return join(q.STATE_DIR, "plan-approvals.json");
+function planApprovalsFile(paths: Pick<q.QueuePaths, "queue_state">): string {
+	return join(paths.queue_state, "plan-approvals.json");
 }
 
-function readPlanApprovals(): Record<string, PlanApproval> {
+function readPlanApprovals(paths: Pick<q.QueuePaths, "queue_state">): Record<string, PlanApproval> {
 	try {
-		const parsed = JSON.parse(readFileSync(planApprovalsFile(), "utf8"));
+		const parsed = JSON.parse(readFileSync(planApprovalsFile(paths), "utf8"));
 		if (parsed?.approvals && typeof parsed.approvals === "object") return parsed.approvals as Record<string, PlanApproval>;
 	} catch {
 	}
 	return {};
 }
 
-function writePlanApprovals(approvals: Record<string, PlanApproval>): boolean {
+function writePlanApprovals(approvals: Record<string, PlanApproval>, paths: Pick<q.QueuePaths, "queue_state">): boolean {
 	try {
-		mkdirSync(q.STATE_DIR, { recursive: true });
-		writeFileSync(planApprovalsFile(), JSON.stringify({ approvals }, null, 1));
+		mkdirSync(paths.queue_state, { recursive: true });
+		writeFileSync(planApprovalsFile(paths), JSON.stringify({ approvals }, null, 1));
 		return true;
 	} catch {
 		return false;
 	}
 }
 
-function readPlanApproval(file: string): PlanApproval | null {
-	return readPlanApprovals()[file] ?? null;
+function readPlanApproval(file: string, paths: Pick<q.QueuePaths, "queue_state">): PlanApproval | null {
+	return readPlanApprovals(paths)[file] ?? null;
 }
 
 /** Record one approval. Throws when the queue state cannot be written, so nobody reports "approved" for a record that is not there. */
-function recordApproval(file: string, approval: PlanApproval): void {
-	const approvals = readPlanApprovals();
+function recordApproval(file: string, approval: PlanApproval, paths: Pick<q.QueuePaths, "queue_state">): void {
+	const approvals = readPlanApprovals(paths);
 	approvals[file] = approval;
-	if (!writePlanApprovals(approvals)) throw new Error(`cannot write ${planApprovalsFile()}`);
+	if (!writePlanApprovals(approvals, paths)) throw new Error(`cannot write ${planApprovalsFile(paths)}`);
 }
 
 /** The owner's click on a plan page: record a hash of the plan text in the queue state and return the page it approved. The plan file itself is never edited. */
-export function approvePlanFile(file: string, page: string, now = new Date()): string {
+export function approvePlanFile(file: string, page: string, paths: Pick<q.QueuePaths, "queue_state">, now = new Date()): string {
 	const text = readFileSync(file, "utf8");
-	recordApproval(file, { hash: reviewHash(text), at: now.getTime(), via: "page", page });
+	recordApproval(file, { hash: reviewHash(text), at: now.getTime(), via: "page", page }, paths);
 	return `approved ${page}`;
 }
 
@@ -139,12 +139,12 @@ export function chatApprove(text: string, cfg: Config, source: string): ChatAppr
 	const m = APPROVE_CMD.exec(text.trim());
 	if (!m) return { applied: false };
 	const stamp = m[1];
-	const matches = q.activePlans().filter(p => p.status === "open" && basename(p.file).startsWith(`${stamp}_`));
+	const matches = q.activePlans(cfg.paths).filter(p => p.status === "open" && basename(p.file).startsWith(`${stamp}_`));
 	const [plan, second] = matches;
 	if (!plan) return { applied: false, problem: `no open plan ${stamp}` };
 	if (second) return { applied: false, problem: `${matches.length} open plans match ${stamp}; nothing approved` };
 	try {
-		recordApproval(plan.file, { hash: reviewHash(plan.text), at: Date.now(), via: "chat", page: pageOfPlan(cfg.pages.dir, plan.file) ?? "" });
+		recordApproval(plan.file, { hash: reviewHash(plan.text), at: Date.now(), via: "chat", page: pageOfPlan(cfg.pages.dir, plan.file) ?? "" }, cfg.paths);
 	} catch (e) {
 		return { applied: false, problem: `plan ${stamp} not approved: ${e instanceof Error ? e.message : String(e)}` };
 	}
@@ -155,7 +155,7 @@ export function chatApprove(text: string, cfg: Config, source: string): ChatAppr
 }
 
 /** Why a spawn may not run on this plan, or null. Approval off (`since === ""`) approves everything, page or not (plan 20261031_1207 P5: the reviewer agent replaced the hard gate). Otherwise a plan with a page in Base needs a record with its current hash, and a plan stamped at or after `since` needs a page too (plan 20261029_1455 P3): with no page it is refused until the page is published. A file with no stamp counts as stamped after `since`. */
-export function approvalProblem(text: string, file: string, pagesDir: string, since: string): string | null {
+export function approvalProblem(text: string, file: string, pagesDir: string, since: string, paths: Pick<q.QueuePaths, "queue_state">): string | null {
 	if (since === "") return null;
 	const page = pageOfPlan(pagesDir, file);
 	const stamp = /^\d{8}_\d{4}/.exec(basename(file))?.[0] ?? null;
@@ -164,7 +164,7 @@ export function approvalProblem(text: string, file: string, pagesDir: string, si
 		if (!gated) return null; // predates the convention
 		return `plan ${file} has no page: publish its page with neurastream pages publish <page.html> --plan ${file}`;
 	}
-	const rec = readPlanApproval(file);
+	const rec = readPlanApproval(file, paths);
 	if (rec !== null && rec.hash === reviewHash(text)) return null;
 	const hint = stamp !== null ? `, or types: approve ${stamp}` : "";
 	return `plan ${file} has no approval record. The owner approves it from ${page} in Base${hint}.`;

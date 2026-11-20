@@ -14,9 +14,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createOmpAdapter, reset as resetAdapter } from "../src/adapters/omp/index.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
+import { mainStateDir } from "../src/core/guards.ts";
 import { postReply } from "../src/core/notify.ts";
 import { notePath, relaunchPath } from "../src/core/rollover.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
 
 const REPO = dirname(dirname(import.meta.path));
 const CLI = join(REPO, "src/cli/main.ts");
@@ -129,7 +129,7 @@ function reset(): void {
 	writeFileSync(INDEX, "");
 	delete process.env.NEURASTREAM_MAIN_LAUNCHER;
 	rmSync(GUARD_LOG, { force: true });
-	rmSync(notePath(SESSION_ID), { force: true });
+	rmSync(notePath(SESSION_ID, mainStateDir({ queue_state: QUEUE_STATE })), { force: true });
 	rmSync(join(QUEUE_STATE, "notify-waiting.json"), { force: true });
 	writeSession("");
 	seedSecrets();
@@ -253,7 +253,6 @@ function ctxFor(kind: "main" | "sub", running: unknown[] = []): Ctx {
 }
 
 function adapterWith(cfg: Config): Host {
-	applyQueueEnv(cfg);
 	const host = fakeHost();
 	createOmpAdapter(host, cfg);
 	return host;
@@ -327,16 +326,17 @@ test("the rollover-ready path relaunches and posts nothing", async () => {
 	const host = adapterWith(tiny);
 	const ctx = ctxFor("main");
 	await host.emit("agent_end", {}, ctx);
-	mkdirSync(dirname(notePath(SESSION_ID)), { recursive: true });
-	writeFileSync(notePath(SESSION_ID), "## In progress\nstep");
+	const stateDir = mainStateDir(tiny);
+	mkdirSync(dirname(notePath(SESSION_ID, stateDir)), { recursive: true });
+	writeFileSync(notePath(SESSION_ID, stateDir), "## In progress\nstep");
 	const later = (Date.now() + 5_000) / 1000;
-	utimesSync(notePath(SESSION_ID), later, later);
+	utimesSync(notePath(SESSION_ID, stateDir), later, later);
 	expect(await host.emit("session_stop", stopEvent(REPLY), ctx)).toEqual([]);
 	// The relaunch owns the session's end: the reply is not posted as a hand-back, and the
 	// request file is written for the launcher.
 	expect(discordHits.length).toBe(0);
 	expect(slackHits.length).toBe(0);
-	expect(existsSync(relaunchPath())).toBe(true);
+	expect(existsSync(relaunchPath(stateDir))).toBe(true);
 	resetAdapter();
 });
 

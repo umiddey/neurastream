@@ -10,15 +10,12 @@ import { join } from "node:path";
 import type { Config } from "../src/core/config.ts";
 import { ConfigError, loadConfig } from "../src/core/config.ts";
 import { chatGo, chatTier, currentTier, goFile, takeGo, tierFile } from "../src/core/autonomy.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
-import { refreshQueuePaths } from "../src/core/queue/lib.ts";
 
 const roots: string[] = [];
 const queueEnvBefore = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("QUEUE_")));
 afterAll(() => {
 	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
 	Object.assign(process.env, queueEnvBefore);
-	refreshQueuePaths();
 	for (const root of roots) rmSync(root, { recursive: true, force: true });
 });
 
@@ -56,7 +53,7 @@ ${autonomy}`,
 }
 
 function readTier(): string {
-	return readFileSync(tierFile(), "utf8");
+	return readFileSync(tierFile(cfg.paths), "utf8");
 }
 
 function tierLogLines(): string[] {
@@ -69,12 +66,12 @@ function tierLogLines(): string[] {
 
 function setTier(tier: "strict" | "opinionated" | "full"): void {
 	mkdirSync(join(root, "state"), { recursive: true });
-	writeFileSync(tierFile(), `${tier}\n`);
+	writeFileSync(tierFile(cfg.paths), `${tier}\n`);
 }
 
 function clearTier(): void {
-	rmSync(tierFile(), { force: true });
-	rmSync(goFile(), { force: true });
+	rmSync(tierFile(cfg.paths), { force: true });
+	rmSync(goFile(cfg.paths), { force: true });
 }
 
 beforeEach(() => {
@@ -86,7 +83,6 @@ beforeEach(() => {
 	mkdirSync(join(root, "state"), { recursive: true });
 	mkdirSync(repo, { recursive: true });
 	cfg = load();
-	applyQueueEnv(cfg);
 	clearTier();
 });
 
@@ -94,13 +90,13 @@ beforeEach(() => {
 
 test("no tier file: the config value is in force", () => {
 	expect(currentTier(cfg)).toBe("opinionated");
-	expect(existsSync(tierFile())).toBe(false);
+	expect(existsSync(tierFile(cfg.paths))).toBe(false);
 });
 
 test("the tier file wins when it names one of the three; junk falls back to the config", () => {
 	setTier("full");
 	expect(currentTier(cfg)).toBe("full");
-	writeFileSync(tierFile(), "banana");
+	writeFileSync(tierFile(cfg.paths), "banana");
 	expect(currentTier(cfg)).toBe("opinionated");
 });
 
@@ -127,17 +123,16 @@ test("anything but the whole-message command changes nothing and logs nothing", 
 	for (const text of ["tier nope", "please tier full", "tier", "tier full now", "full"]) {
 		expect(chatTier(text, cfg, "interactive").applied).toBe(false);
 	}
-	expect(existsSync(tierFile())).toBe(false);
+	expect(existsSync(tierFile(cfg.paths))).toBe(false);
 	expect(tierLogLines()).toEqual([]);
 });
 
 test("guards.chat_unlock off: even a real command changes nothing", () => {
 	cfg = load(AUTONOMY_OK, false);
-	applyQueueEnv(cfg);
 	expect(chatTier("tier full", cfg, "interactive").applied).toBe(false);
-	expect(existsSync(tierFile())).toBe(false);
+	expect(existsSync(tierFile(cfg.paths))).toBe(false);
 	expect(chatGo("go push", cfg, "interactive").applied).toBe(false);
-	expect(existsSync(goFile())).toBe(false);
+	expect(existsSync(goFile(cfg.paths))).toBe(false);
 	expect(tierLogLines()).toEqual([]);
 });
 
@@ -149,7 +144,7 @@ test("guards.chat_unlock off: even a real command changes nothing", () => {
 test("a bare go is an ordinary message: nothing applied, no autonomy-go file", () => {
 	expect(chatGo("go", cfg, "interactive").applied).toBe(false);
 	expect(chatGo("  GO  ", cfg, "interactive").applied).toBe(false);
-	expect(existsSync(goFile())).toBe(false);
+	expect(existsSync(goFile(cfg.paths))).toBe(false);
 	expect(takeGo(cfg)).toBe(false);
 	expect(tierLogLines()).toEqual([]);
 });
@@ -157,42 +152,41 @@ test("a bare go is an ordinary message: nothing applied, no autonomy-go file", (
 test("the approve phrase touches the file; takeGo consumes it exactly once", () => {
 	const r = chatGo("go push", cfg, "interactive");
 	expect(r).toEqual({ applied: true, minutes: 10 });
-	expect(existsSync(goFile())).toBe(true);
+	expect(existsSync(goFile(cfg.paths))).toBe(true);
 	expect(takeGo(cfg)).toBe(true);
-	expect(existsSync(goFile())).toBe(false);
+	expect(existsSync(goFile(cfg.paths))).toBe(false);
 	expect(takeGo(cfg)).toBe(false);
 	expect(tierLogLines()[0]).toContain("GO chat source=interactive minutes=10");
 });
 
 test("matching is the whole trimmed message, case-insensitive, inner spaces collapsed", () => {
 	expect(chatGo(" Go  Push ", cfg, "interactive").applied).toBe(true);
-	rmSync(goFile(), { force: true });
+	rmSync(goFile(cfg.paths), { force: true });
 	expect(chatGo("go\t push", cfg, "interactive").applied).toBe(true);
-	rmSync(goFile(), { force: true });
+	rmSync(goFile(cfg.paths), { force: true });
 	expect(chatGo("go push now", cfg, "interactive").applied).toBe(false);
 	expect(chatGo("go  pushes", cfg, "interactive").applied).toBe(false);
-	expect(existsSync(goFile())).toBe(false);
+	expect(existsSync(goFile(cfg.paths))).toBe(false);
 });
 
 test("a custom go_phrase replaces the default: ship it works, go push does not", () => {
 	cfg = load('  tier: opinionated\n  strict_edit_limit: 2\n  go_minutes: 10\n  go_phrase: "ship it"\n');
-	applyQueueEnv(cfg);
 	clearTier();
 	expect(chatGo("Ship it", cfg, "interactive").applied).toBe(true);
 	expect(tierLogLines()[0]).toContain("GO chat source=interactive minutes=10");
-	rmSync(goFile(), { force: true });
+	rmSync(goFile(cfg.paths), { force: true });
 	expect(chatGo("go push", cfg, "interactive").applied).toBe(false);
 	expect(chatGo("go", cfg, "interactive").applied).toBe(false);
-	expect(existsSync(goFile())).toBe(false);
+	expect(existsSync(goFile(cfg.paths))).toBe(false);
 });
 
 test("a stale go is refused and removed", () => {
-	writeFileSync(goFile(), "");
+	writeFileSync(goFile(cfg.paths), "");
 	// Backdate the mtime past go_minutes.
 	const past = (Date.now() - 11 * 60_000) / 1000; // utimesSync takes seconds
-	utimesSync(goFile(), past, past);
+	utimesSync(goFile(cfg.paths), past, past);
 	expect(takeGo(cfg)).toBe(false);
-	expect(existsSync(goFile())).toBe(false);
+	expect(existsSync(goFile(cfg.paths))).toBe(false);
 });
 
 test("takeGo with no file at all is false", () => {

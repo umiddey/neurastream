@@ -12,7 +12,6 @@ import ompExtension, { type ExtensionHost } from "../src/adapters/omp/index.ts";
 import { renderBlock } from "../src/core/agents-md.ts";
 import { nowSec, strftime } from "../src/core/clock.ts";
 import { loadConfig } from "../src/core/config.ts";
-import { refreshQueuePaths } from "../src/core/queue/lib.ts";
 
 const MAIN_ONLY_ENV = "NEURASTREAM_MAIN_LAUNCHER";
 
@@ -37,7 +36,6 @@ for (const k of Object.keys(queueEnvBefore)) delete process.env[k];
 Object.assign(process.env, SANDBOX);
 // queue/lib.ts fixed its paths from the real home when it loaded: refresh them to the sandbox,
 // or the onStart case appends `hello` to the live recall log and lists the live plans' open MRs.
-refreshQueuePaths();
 // The two incident gates each walk the session root when open: the daily check (once per day)
 // and the detector scan (every scan_interval_sec). A fresh sandbox has neither stamp, so seed
 // them as already run: today's daily stamp, and a scan stamp in the future so the gate stays
@@ -53,7 +51,6 @@ afterAll(() => {
 	}
 	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
 	Object.assign(process.env, queueEnvBefore);
-	refreshQueuePaths();
 	rmSync(TMP, { recursive: true, force: true });
 });
 

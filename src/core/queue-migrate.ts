@@ -1,7 +1,6 @@
 import { existsSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 import type { Config } from "./config.ts";
-import { applyQueueEnv } from "./queue/env.ts";
 import { gitTop, readIndex, writeIndex } from "./queue/lib.ts";
 
 // One index (20261024_1400_one_index): fold the old two-level layout into the main index. Every
@@ -9,7 +8,6 @@ import { gitTop, readIndex, writeIndex } from "./queue/lib.ts";
 // and the repo INDEX.md deleted. Idempotent: with plan lines only, nothing changes. A plan still
 // inside a linked worktree is reported, not moved.
 export function queueMigrate(args: string[], cfg: Config): number {
-	applyQueueEnv(cfg);
 	const index = cfg.paths.queue_index;
 	if (!existsSync(index)) {
 		console.log(`queue migrate: ${index} does not exist; nothing to migrate`);
@@ -44,7 +42,7 @@ export function queueMigrate(args: string[], cfg: Config): number {
 		rmSync(repoIndex);
 	}
 	const unique = [...new Set(kept)];
-	writeIndex(unique, { removed: "migrate" });
+	writeIndex(unique, { removed: "migrate" }, index);
 	console.log(`queue migrate: ${index} now lists ${unique.length} plan(s); folded ${folded} repo INDEX.md file(s)`);
 	for (const p of unique) {
 		const g = gitTop(p);

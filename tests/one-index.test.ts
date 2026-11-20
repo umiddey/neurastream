@@ -8,12 +8,21 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { activePlans, isOrchestrationPath, queueProblems, queueSummary, readIndex } from "../src/core/queue/lib";
+import { activePlans, isOrchestrationPath, queueProblems, queueSummary, readIndex, type QueuePaths } from "../src/core/queue/lib";
 
 const TMP = mkdtempSync(join(tmpdir(), "one-index-"));
 const HOME = join(TMP, "home");
 const MAIN = join(HOME, ".omp/agent/INDEX.md");
 const BLOCKERS = join(HOME, ".omp/agent/blockers");
+const PATHS: QueuePaths = {
+	agent_dir: join(HOME, ".omp/agent"),
+	queue_index: MAIN,
+	blockers: BLOCKERS,
+	queue_state: join(HOME, ".local/state/queue"),
+	subagents: join(HOME, ".omp/agent/notes/subagents.md"),
+	cancelled: join(HOME, ".omp/agent/CANCELLED.md"),
+	unlock: join(HOME, ".omp/agent/.guard-unlock"),
+};
 const REPO = join(HOME, "projects/toy");
 const PLANS = join(REPO, "docs/plans");
 const WT = join(HOME, "Work/toy-wt");
@@ -95,7 +104,7 @@ test("readIndex returns the plan files the main index lists (markup and duplicat
 test("activePlans reads plans straight from the main index; the repo is the plan's main checkout", () => {
 	const a = plan("20261024_1401_b.md", openPlan());
 	setIndex(a);
-	const plans = activePlans(MAIN, BLOCKERS);
+	const plans = activePlans(PATHS);
 	expect(plans.map(p => p.file)).toEqual([a]);
 	expect(plans[0]!.repo).toBe(REPO);
 });
@@ -109,7 +118,7 @@ test("queueProblems: a plan inside a linked worktree is refused, naming the work
 	writeFileSync(inWt2, openPlan());
 	rmSync(inWt);
 	setIndex(inWt2);
-	const probs = queueProblems(MAIN, BLOCKERS);
+	const probs = queueProblems(PATHS);
 	const hit = probs.find(q => q.where === inWt2);
 	expect(hit).toBeTruthy();
 	expect(hit!.problem).toContain(WT);
@@ -120,20 +129,20 @@ test("queueProblems: two open plans naming one worktree are refused; open plus c
 	const c = plan("20261024_1403_d.md", openPlan(SHARED));
 	const d = plan("20261024_1404_e.md", openPlan(SHARED));
 	setIndex(c, d);
-	let probs = queueProblems(MAIN, BLOCKERS);
+	let probs = queueProblems(PATHS);
 	const dup = probs.find(q => q.where === SHARED);
 	expect(dup).toBeTruthy();
 	expect(dup!.problem).toContain(c);
 	expect(dup!.problem).toContain(d);
 	writeFileSync(d, openPlan(SHARED, "complete"));
-	probs = queueProblems(MAIN, BLOCKERS);
+	probs = queueProblems(PATHS);
 	expect(probs.find(q => q.where === SHARED)).toBeUndefined();
 });
 
 test("queueSummary lists the plans flat in index order with a rank per line", () => {
 	const a = plan("20261024_1405_f.md", openPlan());
 	setIndex(a);
-	const s = queueSummary(MAIN);
+	const s = queueSummary(PATHS);
 	expect(s).toContain(`  1. ${a} [`);
 	expect(s).not.toMatch(/^- /m);
 });
@@ -141,15 +150,10 @@ test("queueSummary lists the plans flat in index order with a rank per line", ()
 test("isOrchestrationPath: the main index and its listed plans are orchestration files; other files are not", () => {
 	const a = plan("20261024_1406_g.md", openPlan());
 	setIndex(a);
-	process.env.QUEUE_INDEX = MAIN;
-	try {
-		const plans = activePlans(MAIN, BLOCKERS);
-		expect(isOrchestrationPath(MAIN, plans)).toBe(true);
-		expect(isOrchestrationPath(a, plans)).toBe(true);
-		expect(isOrchestrationPath(join(REPO, "src/x.ts"), plans)).toBe(false);
-	} finally {
-		delete process.env.QUEUE_INDEX;
-	}
+	const plans = activePlans(PATHS);
+	expect(isOrchestrationPath(MAIN, plans, MAIN)).toBe(true);
+	expect(isOrchestrationPath(a, plans, MAIN)).toBe(true);
+	expect(isOrchestrationPath(join(REPO, "src/x.ts"), plans, MAIN)).toBe(false);
 });
 
 // P4 (I-20261025-208): the index may not rank a plan above an open plan it waits on.
@@ -186,7 +190,7 @@ test("dependency order: a plan above the open plan it waits on is one problem na
 	const b = plan("20261025_2336_b.md", waitingPlan("Plan B"));
 	const a = plan("20261025_2335_a.md", waitingPlan("Plan A", b));
 	setIndex(a, b);
-	const probs = queueProblems(MAIN, BLOCKERS).filter(q => q.problem.includes("waits on"));
+	const probs = queueProblems(PATHS).filter(q => q.problem.includes("waits on"));
 	expect(probs).toHaveLength(1);
 	expect(probs[0]!.where).toBe(a);
 	expect(probs[0]!.problem).toContain("#1 Plan A waits on #2 Plan B");
@@ -197,23 +201,23 @@ test("dependency order: the waits-on plan sitting below its target is no problem
 	const b = plan("20261025_2337_b.md", waitingPlan("Plan B"));
 	const a = plan("20261025_2338_a.md", waitingPlan("Plan A", b));
 	setIndex(b, a);
-	expect(queueProblems(MAIN, BLOCKERS).filter(q => q.problem.includes("waits on"))).toEqual([]);
+	expect(queueProblems(PATHS).filter(q => q.problem.includes("waits on"))).toEqual([]);
 });
 
 test("dependency order: a waits-on target missing from the index is no problem", () => {
 	const ghost = plan("20261025_2339_ghost.md", waitingPlan("Plan Ghost"));
 	const a = plan("20261025_2340_a.md", waitingPlan("Plan A", ghost));
 	setIndex(a);
-	expect(queueProblems(MAIN, BLOCKERS).filter(q => q.problem.includes("waits on"))).toEqual([]);
+	expect(queueProblems(PATHS).filter(q => q.problem.includes("waits on"))).toEqual([]);
 });
 
 test("queueSummary flags an open plan waiting on an open plan with waits on #N, in any order", () => {
 	const b = plan("20261025_2341_b.md", waitingPlan("Plan B"));
 	const a = plan("20261025_2342_a.md", waitingPlan("Plan A", b));
 	setIndex(a, b);
-	const s = queueSummary(MAIN);
+	const s = queueSummary(PATHS);
 	expect(s).toContain(`  1. ${a} [open, 0/1 done, waits on #2]`);
 	expect(s).toContain(`  2. ${b} [open, 0/1 done]`);
 	setIndex(b, a);
-	expect(queueSummary(MAIN)).toContain(`  2. ${a} [open, 0/1 done, waits on #1]`);
+	expect(queueSummary(PATHS)).toContain(`  2. ${a} [open, 0/1 done, waits on #1]`);
 });

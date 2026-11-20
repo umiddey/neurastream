@@ -14,8 +14,6 @@ import { join } from "node:path";
 import type { ToolEvent } from "../src/core/adapter.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { checkTool } from "../src/core/guards.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
-import { refreshQueuePaths } from "../src/core/queue/lib.ts";
 
 // Captured before any test runs: the sentinel this run was started with (heavy-run env), so the
 // preload case can prove the sentinel never survives into a sandboxed loadConfig.
@@ -66,11 +64,10 @@ function seed(): Sandbox {
 afterAll(() => {
 	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_") && !(k in queueEnvBefore)) delete process.env[k];
 	Object.assign(process.env, queueEnvBefore);
-	refreshQueuePaths();
 	rmSync(TMP, { recursive: true, force: true });
 });
 
-type WriteIndex = (lines: string[], why?: { removed?: "close" | "cancel" | "migrate" }) => void;
+type WriteIndex = (lines: string[], why: { removed?: "close" | "cancel" | "migrate" } | undefined, file: string) => void;
 
 // Dynamic import on purpose (test exercising a module-loading boundary): src/core/queue/lib.ts
 // does not export writeIndex yet — plan P2 adds it — so a static import would crash this whole
@@ -113,35 +110,32 @@ test("(e) QUEUE_INDEX set before the run never leaks: loadConfig({ home }) gets 
 
 test("(a) writeIndex refuses to remove a plan without a close/cancel reason and leaves the file unchanged", async () => {
 	const s = seed();
-	applyQueueEnv(s.cfg);
 	const a = join(s.toy, "docs/plans/20261020_1200_a.md");
 	const b = join(s.toy, "docs/plans/20261020_1300_b.md");
 	writeFileSync(s.index, `${a}\n${b}\n`);
 	const w = await writeIndex();
 	const before = readFileSync(s.index, "utf8");
-	expect(() => w([a])).toThrow();
+	expect(() => w([a], undefined, s.index)).toThrow();
 	expect(readFileSync(s.index, "utf8")).toBe(before);
 });
 
 test("(b) writeIndex writes the same set in a new order", async () => {
 	const s = seed();
-	applyQueueEnv(s.cfg);
 	const a = join(s.toy, "docs/plans/20261020_1200_a.md");
 	const b = join(s.toy, "docs/plans/20261020_1300_b.md");
 	writeFileSync(s.index, `${a}\n${b}\n`);
 	const w = await writeIndex();
-	w([b, a]);
+	w([b, a], undefined, s.index);
 	expect(readFileSync(s.index, "utf8")).toBe(`${b}\n${a}\n`);
 });
 
 test("(c) after any writeIndex the file is 0444 and a plain writeFileSync throws EACCES", async () => {
 	const s = seed();
-	applyQueueEnv(s.cfg);
 	const a = join(s.toy, "docs/plans/20261020_1200_a.md");
 	const b = join(s.toy, "docs/plans/20261020_1300_b.md");
 	writeFileSync(s.index, `${a}\n${b}\n`);
 	const w = await writeIndex();
-	w([b, a]);
+	w([b, a], undefined, s.index);
 	expect(statSync(s.index).mode & 0o777).toBe(0o444);
 	expect(() => writeFileSync(s.index, "x")).toThrow(/EACCES/);
 	expect(readFileSync(s.index, "utf8")).toBe(`${b}\n${a}\n`);
@@ -153,7 +147,6 @@ function toolEvent(s: Sandbox, tool: string, input: Record<string, unknown>, wri
 
 test("(d) checkTool refuses Main's write/edit/bash on the index path; the owner unlock allows it", () => {
 	const s = seed();
-	applyQueueEnv(s.cfg);
 	const a = join(s.toy, "docs/plans/20261020_1200_a.md");
 	const b = join(s.toy, "docs/plans/20261020_1300_b.md");
 	writeFileSync(s.index, `${a}\n${b}\n`);

@@ -12,7 +12,6 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { loadConfig } from "../src/core/config.ts";
 import { mainId, mainStateDir, log, readWindow, writeWindow } from "../src/core/guards.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { notePath, relaunchPath } from "../src/core/rollover.ts";
 import { runMainLauncher, stripNameFlag } from "../src/adapters/omp/launch.ts";
 
@@ -31,7 +30,6 @@ afterAll(() => {
 // loadConfig lets env beat the config file; load with an empty env so only the sandbox home
 // decides the paths, then mirror them into the env like the launcher does.
 const cfg = loadConfig({ home: join(TMP, "home"), env: {} });
-applyQueueEnv(cfg);
 const STATE = cfg.paths.queue_state;
 // A second sandbox state for the legacy-move tests: the tests above already created mains/<id>
 // dirs in STATE, and the one-time move only fires while mains/main/ does not exist yet.
@@ -75,13 +73,13 @@ test("mainId defaults to main and falls back to main on a bogus env value", () =
 test("two ids keep separate edit windows under mains/<id>/", () => {
 	process.env.NEURASTREAM_MAIN_ID = "a";
 	expect(mainStateDir(cfg)).toBe(join(STATE, "mains", "a"));
-	writeWindow({ used: [], windowStart: 0, mainCalls: 2 });
-	expect(readWindow().mainCalls).toBe(2);
+	writeWindow({ used: [], windowStart: 0, mainCalls: 2 }, cfg.paths);
+	expect(readWindow(cfg.paths).mainCalls).toBe(2);
 	process.env.NEURASTREAM_MAIN_ID = "b";
-	expect(readWindow().mainCalls).toBe(0);
-	writeWindow({ used: [], windowStart: 0, mainCalls: 7 });
+	expect(readWindow(cfg.paths).mainCalls).toBe(0);
+	writeWindow({ used: [], windowStart: 0, mainCalls: 7 }, cfg.paths);
 	process.env.NEURASTREAM_MAIN_ID = "a";
-	expect(readWindow().mainCalls).toBe(2);
+	expect(readWindow(cfg.paths).mainCalls).toBe(2);
 	expect(existsSync(join(STATE, "mains", "a", "edit-window.json"))).toBe(true);
 	expect(existsSync(join(STATE, "mains", "b", "edit-window.json"))).toBe(true);
 	expect(existsSync(join(STATE, "edit-window.json"))).toBe(false);
@@ -89,11 +87,11 @@ test("two ids keep separate edit windows under mains/<id>/", () => {
 
 test("rollover note and relaunch request live in the Main's own dir", () => {
 	delete process.env.NEURASTREAM_MAIN_ID;
-	expect(notePath("s1")).toBe(join(STATE, "mains", "main", "rollover", "s1.md"));
-	expect(relaunchPath()).toBe(join(STATE, "mains", "main", "rollover", "relaunch.json"));
+	expect(notePath("s1", mainStateDir(cfg))).toBe(join(STATE, "mains", "main", "rollover", "s1.md"));
+	expect(relaunchPath(mainStateDir(cfg))).toBe(join(STATE, "mains", "main", "rollover", "relaunch.json"));
 	process.env.NEURASTREAM_MAIN_ID = "a";
-	expect(notePath("s1")).toBe(join(STATE, "mains", "a", "rollover", "s1.md"));
-	expect(relaunchPath()).toBe(join(STATE, "mains", "a", "rollover", "relaunch.json"));
+	expect(notePath("s1", mainStateDir(cfg))).toBe(join(STATE, "mains", "a", "rollover", "s1.md"));
+	expect(relaunchPath(mainStateDir(cfg))).toBe(join(STATE, "mains", "a", "rollover", "relaunch.json"));
 });
 
 test("the pre-multi-main top-level files move into mains/main once", () => {

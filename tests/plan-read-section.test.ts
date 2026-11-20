@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/core/config.ts";
 import { checkPlanEdit } from "../src/core/guards.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { parsePlan } from "../src/core/queue/lib.ts";
 
 // Plans stamped at or after this get the "## Code read by Main" requirement; older ones are grandfathered.
@@ -111,7 +110,6 @@ ${progress}`;
 
 /** Main's read log, with the sandbox queue state pointed at by applyQueueEnv. */
 function readLogWith(reads: Record<string, string>): void {
-	applyQueueEnv(GUARD_CFG);
 	mkdirSync(GUARD_CFG.paths.queue_state, { recursive: true });
 	writeFileSync(join(GUARD_CFG.paths.queue_state, "main-reads.json"), JSON.stringify(reads));
 }

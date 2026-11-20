@@ -5,13 +5,11 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { rekeySpawnFile } from "./guards.ts";
 import type { Config } from "./config.ts";
-import { applyQueueEnv } from "./queue/env.ts";
 import * as q from "./queue/lib.ts";
 
 const USAGE = "usage: queue-trim <plan file> [--keep N]";
 
 export function queueTrim(args: string[], cfg: Config): number {
-	applyQueueEnv(cfg);
 	if (args[0] === "--help" || args[0] === "-h") {
 		console.log(USAGE);
 		return 0;
@@ -30,7 +28,7 @@ export function queueTrim(args: string[], cfg: Config): number {
 		return 2;
 	}
 	const file = path.resolve(planArg);
-	if (!existsSync(file) || !q.planAt(file, q.activePlans())) {
+	if (!existsSync(file) || !q.planAt(file, q.activePlans(cfg.paths))) {
 		console.error(`queue-trim: ${file} is not an indexed plan`);
 		return 2;
 	}
@@ -39,7 +37,7 @@ export function queueTrim(args: string[], cfg: Config): number {
 		console.log(`queue-trim: ${file} has no more than ${keep} Progress entries; nothing moved`);
 		return 0;
 	}
-	rekeySpawnFile(file, t.before, t.after);
+	rekeySpawnFile(file, t.before, t.after, cfg.paths);
 	console.log(`queue-trim: moved ${t.count} older Progress entries of ${file} to ${t.archive}`);
 	return 0;
 }

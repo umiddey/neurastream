@@ -77,28 +77,28 @@ export function autoCloseCandidate(p: Plan): boolean {
 }
 
 const HOME = os.homedir();
-// Base set by applyQueueEnv from paths.agent_dir. Specific QUEUE_* vars still win.
-function agentDir(): string {
-	return process.env.QUEUE_AGENT ?? `${HOME}/.config/neurastream`;
+
+/** Explicit filesystem paths for queue operations (structurally satisfied by `Config["paths"]`). */
+export interface QueuePaths {
+	agent_dir: string;
+	queue_index: string;
+	blockers: string;
+	queue_state: string;
+	subagents: string;
+	cancelled: string;
+	unlock: string;
 }
-export function indexPath(): string {
-	return process.env.QUEUE_INDEX ?? `${agentDir()}/INDEX.md`;
-}
+
 /** FINISHED.md sits beside the main index: one short entry per closed plan. */
-export function finishedPath(): string {
-	return path.join(path.dirname(indexPath()), "FINISHED.md");
+export function finishedPath(paths: Pick<QueuePaths, "queue_index">): string {
+	return path.join(path.dirname(paths.queue_index), "FINISHED.md");
 }
-export function blockersDirPath(): string {
-	return process.env.QUEUE_BLOCKERS ?? `${agentDir()}/blockers`;
+
+/** Pending-cancel flag file inside the queue state directory. */
+export function cancelPendingPath(paths: Pick<QueuePaths, "queue_state">): string {
+	return path.join(paths.queue_state, "cancel-pending.json");
 }
-export function stateDirPath(): string {
-	return process.env.QUEUE_STATE ?? `${HOME}/.local/state/queue`;
-}
-// Import-time snapshots under the live lib's names; the bins import them as values.
-// refreshQueuePaths() reassigns them after applyQueueEnv, so a static import still sees config.
-export let INDEX = indexPath();
-export let BLOCKERS_DIR = blockersDirPath();
-export let STATE_DIR = stateDirPath();
+
 export const BACKGROUND_MAX_LINES = 40;
 export const SUB_WARN_CALLS = 90;
 export const SUB_MAX_CALLS = 100;
@@ -168,7 +168,7 @@ function indexLines(file: string): string[] | null {
 }
 
 // Relative lines resolve against `base` (default: the cwd); a repo INDEX.md passes its repo dir.
-export function readIndex(file = indexPath(), base = process.cwd()): string[] {
+export function readIndex(file: string, base = process.cwd()): string[] {
 	return [...new Set((indexLines(file) ?? []).map(l => path.resolve(base, expandHome(l))))];
 }
 
@@ -176,9 +176,8 @@ export function readIndex(file = indexPath(), base = process.cwd()): string[] {
 // disappear without an explicit close/cancel/migrate reason throws before anything is written, and
 // every write lands temp+rename then chmods the file to 0444. No 0o644 before the rename: rename(2)
 // replaces a read-only target with directory-write permission only, so the file is never writable —
-// not even between the rename and the chmod. `file` defaults to the env index; the owner page
-// reorders the cfg's queue_index, which tests point away from the env index.
-export function writeIndex(lines: string[], why?: { removed?: "close" | "cancel" | "migrate" }, file = indexPath()): void {
+// not even between the rename and the chmod.
+export function writeIndex(lines: string[], why: { removed?: "close" | "cancel" | "migrate" } | undefined, file: string): void {
 	const index = file;
 	const newSet = new Set(
 		lines.filter(l => l.trim()).map(l => path.resolve(expandHome(l.trim().replace(/^[-*]\s+/, "").replace(/`/g, "").trim()))),
@@ -196,7 +195,7 @@ export function writeIndex(lines: string[], why?: { removed?: "close" | "cancel"
 
 // Doctor's enforcement half of the same plan: the live index must sit at 0444 between writes, so
 // no program — not just an agent tool call — can rewrite it. Returns the mode it had to fix.
-export function enforceReadOnlyIndex(index = indexPath()): string | null {
+export function enforceReadOnlyIndex(index: string): string | null {
 	try {
 		const mode = statSync(index).mode & 0o777;
 		if (mode === 0o444) return null;
@@ -376,14 +375,15 @@ function reuseProblems(repo: string, file: string, secs: Map<string, string>, re
  * author's machine, so nothing here may stat this machine's disk — no blocker executable()
  * check and no reuse existsSync. Its blockers are `[]`; every other field is parsed as usual.
  */
-export function parsePlan(repo: string, file: string, text: string | null, blockersDir = blockersDirPath(), reviewAgents: string[] = [], localPaths = true): Plan {
+export function parsePlan(repo: string, file: string, text: string | null, blockersDir = "", reviewAgents: string[] = [], localPaths = true, agentDir?: string): Plan {
 	const empty = { repo, file, text: "", status: null, blockers: [], doneCheck: null, worktree: null, branch: null, appliesTo: [], waiting: false, waitingLine: null, waitingAsk: null, waitingBlocked: null, waitingWhy: null, waitingCheck: null, waitsOn: [], priorityId: null, title: path.basename(file), goal: [], summary: null, phases: { done: 0, total: 0 }, started: false };
 	if (text === null) return { ...empty, errors: ["plan file listed in the index does not exist"] };
 	const errors: string[] = [];
 	const secs = sections(text);
+	const templateHint = agentDir ? `${agentDir}/queue/TEMPLATE.md` : "queue/TEMPLATE.md";
 	for (const s of REQUIRED) {
 		if (s === "progress" ? !secs.has(s) : !items(secs.get(s) ?? "").length)
-			errors.push(`missing or empty "## ${s.replace(/^\w/, c => c.toUpperCase())}" section (template: ${agentDir()}/queue/TEMPLATE.md)`);
+			errors.push(`missing or empty "## ${s.replace(/^\w/, c => c.toUpperCase())}" section (template: ${templateHint})`);
 	}
 	const stamp = /^(\d{8}_\d{4})/.exec(path.basename(file))?.[1] ?? "";
 	if (stamp >= READ_CUTOVER && !items(secs.get("code read by main") ?? "").length)
@@ -454,23 +454,23 @@ export function planRepo(file: string): string {
 	return m?.[1] ? m[1].replace(/\/$/, "") : dir;
 }
 
-export function readPlans(files: string[], blockersDir = blockersDirPath(), reviewAgents: string[] = []): Plan[] {
+export function readPlans(files: string[], blockersDir = "", reviewAgents: string[] = [], agentDir?: string): Plan[] {
 	return files.map(file => {
 		let text: string | null = null;
 		try {
 			text = readFileSync(file, "utf8");
 		} catch {}
-		return parsePlan(planRepo(file), file, text, blockersDir, reviewAgents);
+		return parsePlan(planRepo(file), file, text, blockersDir, reviewAgents, true, agentDir);
 	});
 }
 
-export function activePlans(index = indexPath(), blockersDir = blockersDirPath(), reviewAgents: string[] = []): Plan[] {
-	return readPlans(readIndex(index), blockersDir, reviewAgents);
+export function activePlans(paths: Pick<QueuePaths, "queue_index" | "blockers" | "agent_dir">, reviewAgents: string[] = []): Plan[] {
+	return readPlans(readIndex(paths.queue_index), paths.blockers, reviewAgents, paths.agent_dir);
 }
 
 /** Owner holds: one line per plan with a WAITING on owner line. The only real holds; the summary, the rollover context and the handoff all read them here. */
-export function ownerHolds(index = INDEX): string[] {
-	return activePlans(index)
+export function ownerHolds(paths: Pick<QueuePaths, "queue_index" | "blockers" | "agent_dir">): string[] {
+	return activePlans(paths)
 		.filter(p => p.waiting)
 		.map(p => `${p.file}: WAITING on owner: ${p.waitingLine ?? ""}`);
 }
@@ -526,8 +526,8 @@ export function planAt(p: string, plans: Plan[]): Plan | null {
 	return plans.find(pl => pl.repo === g.repo && path.relative(pl.repo, pl.file) === rel) ?? null;
 }
 
-export function isOrchestrationPath(p: string, plans: Plan[] = activePlans()): boolean {
-	if (p === INDEX || p === indexPath()) return true;
+export function isOrchestrationPath(p: string, plans: Plan[], indexFile: string): boolean {
+	if (p === indexFile) return true;
 	if (planAt(p, plans)) return true;
 	return plans.some(pl => pl.blockers.some(b => b.script === p));
 }
@@ -615,7 +615,7 @@ export function registerPackageOpTarget(fn: PackageOpMatcher): void {
 	packageOpMatcher = fn;
 }
 
-function packageOpTarget(code: string): string | null {
+function packageOpTarget(code: string, paths?: Pick<QueuePaths, "agent_dir">): string | null {
 	for (const seg of code.split(/&&|\|\||;|\n|\|/)) {
 		const toks = seg.trim().split(/\s+/).filter(Boolean);
 		let i = 0;
@@ -641,7 +641,7 @@ function packageOpTarget(code: string): string | null {
 		})) {
 			const envHome = toks.slice(0, i).find(t => t.startsWith("HOME="));
 			if (envHome && envHome.slice("HOME=".length).replace(/^["']|["']$/g, "").startsWith("/tmp/")) continue;
-			return `${agentDir()}/extensions/`;
+			return `${paths?.agent_dir ?? `${HOME}/.config/neurastream`}/extensions/`;
 		}
 	}
 	return packageOpMatcher?.(code) ?? null;
@@ -687,7 +687,7 @@ function subagentsOpWrites(code: string): boolean {
 	return false;
 }
 
-export function writeTargets(toolName: string, input: Record<string, unknown>, cwd: string, relative?: string[]): string[] {
+export function writeTargets(toolName: string, input: Record<string, unknown>, cwd: string, paths?: Pick<QueuePaths, "agent_dir" | "subagents">, relative?: string[]): string[] {
 	const out = new Set<string>();
 	const add = (raw: string, from: string) => {
 		const typed = String(raw).trim().replace(/^["']|["']$/g, "");
@@ -721,7 +721,7 @@ export function writeTargets(toolName: string, input: Record<string, unknown>, c
 	const code = String(input?.command ?? input?.code ?? "");
 	// A package/plugin/cutover command is a write even though none of the
 	// generic mutating heuristics fire on its text.
-	const pkgOp = packageOpTarget(code);
+	const pkgOp = packageOpTarget(code, paths);
 	const subOp = subagentsOpWrites(code);
 	if (!MUTATING.test(withoutQuotedRedirects(code)) && !pkgOp && !subOp) return [];
 	let dir = typeof input?.cwd === "string" ? path.resolve(cwd, expandHome(input.cwd)) : cwd;
@@ -759,14 +759,10 @@ export function writeTargets(toolName: string, input: Record<string, unknown>, c
 	])
 		for (const m of code.matchAll(re)) add((m[1] ?? "").replace(/`/g, ""), dir);
 	if (pkgOp) out.add(pkgOp);
-	if (subOp) out.add(subagentsPath());
+	if (subOp) out.add(paths?.subagents ?? `${HOME}/.config/neurastream/notes/subagents.md`);
 	return [...out];
 }
 
-export function unlockPath(): string {
-	return process.env.QUEUE_UNLOCK ?? `${agentDir()}/.guard-unlock`;
-}
-export let UNLOCK = unlockPath();
 export const UNLOCK_MINUTES = 30;
 // P8 (2026-10-21): after the npm cutover the running guards load from the
 // installed package, so the package itself is guard surface. The package root
@@ -788,19 +784,21 @@ function bunGlobalRoot(): string {
 	return process.env.BUN_INSTALL ? path.resolve(expandHome(process.env.BUN_INSTALL)) : `${HOME}/.bun`;
 }
 
-function protectedPaths(): string[] {
-	const agent = agentDir();
-	const paths = [
+export function protectedPaths(paths: QueuePaths): string[] {
+	const agent = paths.agent_dir;
+	const out = [
 		`${agent}/extensions/`,
 		`${agent}/queue/`,
 		`${agent}/blockers/`,
+		`${paths.blockers.replace(/\/$/, "")}/`,
 		`${agent}/agents/`,
 		`${agent}/AGENTS.md`,
 		`${agent}/CANCELLED.md`,
+		paths.cancelled,
 		// The plan index (plan 20261031_0911 P2): append-only and 0444 on disk. Agents add or
 		// reorder through `neurastream queue add` / `queue move`; only the owner writes directly.
-		indexPath(),
-		`${stateDirPath()}/`,
+		paths.queue_index,
+		`${paths.queue_state.replace(/\/$/, "")}/`,
 		`${agent}/config.yml`,
 		// The user's neurastream config file, even when agent_dir points elsewhere: an agent that
 		// could rewrite it could point notify at its own webhook.
@@ -810,7 +808,9 @@ function protectedPaths(): string[] {
 		// writer's own dirt the truth, so no tool may touch it.
 		`${HOME}/.config/neurastream/guard-baseline`,
 		`${agent}/notes/subagents.md`,
+		paths.subagents,
 		`${agent}/.guard-unlock`,
+		paths.unlock,
 		`${path.dirname(agent)}/git-no-verify-guard.mjs`,
 		`${HOME}/.local/bin/queue-check`,
 		`${HOME}/.local/bin/queue-close`,
@@ -829,16 +829,15 @@ function protectedPaths(): string[] {
 	];
 	const pkg = packageManifest();
 	if (pkg) {
-		paths.push(`${pkg.root}/`);
-		for (const name of pkg.bins) paths.push(`${HOME}/.bun/bin/${name}`);
+		out.push(`${pkg.root}/`);
+		for (const name of pkg.bins) out.push(`${HOME}/.bun/bin/${name}`);
 	}
-	return paths;
+	return out;
 }
-export let PROTECTED = protectedPaths();
 
-export function unlocked(): boolean {
+export function unlocked(paths: Pick<QueuePaths, "unlock">, unlockMinutes = UNLOCK_MINUTES): boolean {
 	try {
-		return Date.now() - statSync(UNLOCK).mtimeMs < UNLOCK_MINUTES * 60_000;
+		return Date.now() - statSync(paths.unlock).mtimeMs < unlockMinutes * 60_000;
 	} catch {
 		return false;
 	}
@@ -871,7 +870,7 @@ export function chatUnlock(text: string, cfg: Config, source: string, word: "cha
 	if (!m) return { applied: false };
 	const minutes = cfg.guards.unlock_minutes;
 	if ((m[1] ?? "").toLowerCase() === "lock") {
-		rmSync(unlockPath(), { force: true });
+		rmSync(cfg.paths.unlock, { force: true });
 		try {
 			appendFileSync(cfg.paths.plan_guard_log, `${new Date().toISOString()} LOCK ${word} source=${source}\n`);
 		} catch {}
@@ -880,7 +879,7 @@ export function chatUnlock(text: string, cfg: Config, source: string, word: "cha
 	const want = m[2] === undefined ? minutes : Number(m[2]);
 	if (want < 1) return { applied: false }; // "unlock 0" is no unlock
 	const n = Math.min(want, minutes);
-	const file = unlockPath();
+	const file = cfg.paths.unlock;
 	writeFileSync(file, "");
 	// Backdate the mtime so the existing window (mtime + unlock_minutes) closes after exactly n minutes.
 	const past = (Date.now() - (minutes - n) * 60_000) / 1000; // utimesSync takes seconds
@@ -891,16 +890,13 @@ export function chatUnlock(text: string, cfg: Config, source: string, word: "cha
 	return { applied: true, command: "unlock", minutes: n, until: Math.floor(past + minutes * 60) };
 }
 
-export function protectedHit(paths: string[]): string | null {
-	for (const p of paths) for (const g of PROTECTED) if (g.endsWith("/") ? p.startsWith(g) || `${p}/` === g : p === g) return p;
+export function protectedHit(targetPaths: string[], paths: QueuePaths): string | null {
+	const guarded = protectedPaths(paths);
+	for (const p of targetPaths) for (const g of guarded) if (g.endsWith("/") ? p.startsWith(g) || `${p}/` === g : p === g) return p;
 	return null;
 }
 
-export function subagentsPath(): string {
-	return process.env.QUEUE_SUBAGENTS ?? `${agentDir()}/notes/subagents.md`;
-}
-export let SUBAGENTS_MD = subagentsPath();
-export function allowedAgents(file = subagentsPath()): Set<string> {
+export function allowedAgents(file: string): Set<string> {
 	let text = "";
 	try {
 		text = readFileSync(file, "utf8");
@@ -927,10 +923,6 @@ export function reviewAgentsProblem(cfg: Config, allowed: Set<string>): { proble
 }
 
 export const CANCELLED_REL = "docs/plans/CANCELLED.md";
-export function globalCancelledPath(): string {
-	return process.env.QUEUE_CANCELLED ?? `${agentDir()}/CANCELLED.md`;
-}
-export let GLOBAL_CANCELLED = globalCancelledPath();
 export function cancelledFile(repo: string): string {
 	return path.join(repo, CANCELLED_REL);
 }
@@ -971,8 +963,8 @@ function readList(file: string): CancelledEntry[] {
 export function readCancelled(repo: string): CancelledEntry[] {
 	return readList(cancelledFile(repo));
 }
-export function readGlobalCancelled(): CancelledEntry[] {
-	return readList(globalCancelledPath());
+export function readGlobalCancelled(paths: Pick<QueuePaths, "cancelled">): CancelledEntry[] {
+	return readList(paths.cancelled);
 }
 export function banLine(what: string, owner: string, date: string): string {
 	const words = keyWords(what);
@@ -1004,7 +996,7 @@ export function finishedKey(entry: string): string {
 }
 
 /** Inserts the entry above older ones. Returns false when the same plan (title + file name) is already listed. */
-export function prependFinished(entry: string, file = finishedPath()): boolean {
+export function prependFinished(entry: string, file: string): boolean {
 	let current = "";
 	try {
 		current = readFileSync(file, "utf8");
@@ -1023,11 +1015,11 @@ export function prependFinished(entry: string, file = finishedPath()): boolean {
 	return true;
 }
 const slug = (name: string) => name.replace(/\.md$/, "").replace(/^\d{8}_\d{4}_/, "");
-export function cancelledMatches(plan: Plan): CancelledEntry[] {
+export function cancelledMatches(plan: Plan, paths: Pick<QueuePaths, "cancelled">): CancelledEntry[] {
 	if (plan.status !== "open") return [];
 	const mine = new Set(planWords(plan.text));
 	const name = path.basename(plan.file);
-	return [...readCancelled(plan.repo), ...readGlobalCancelled()].filter(c => {
+	return [...readCancelled(plan.repo), ...readGlobalCancelled(paths)].filter(c => {
 		const cleared = plan.text.split("\n").some(l => {
 			const m = l.match(/^\s*(?:[-*]\s+)?False positive:\s*`?([^\s`]+)`?\s+[—:–-]+\s*(.+)$/);
 			return m && m[1] === c.name && (m[2] ?? "").trim().length >= 15;
@@ -1039,54 +1031,44 @@ export function cancelledMatches(plan: Plan): CancelledEntry[] {
 		return need >= 2 && shared >= need && shared / Math.max(1, Math.min(c.words.length, mine.size)) >= 0.5;
 	});
 }
-export function cancelledProblem(plan: Plan, c: CancelledEntry): string {
+export function cancelledProblem(plan: Plan, c: CancelledEntry, paths: Pick<QueuePaths, "queue_index">): string {
 	const what = c.name.startsWith("ban-")
 		? `work the owner said NEVER to do: ${c.name} (${c.date}, owner: ${c.owner}; list ${c.list})`
 		: `a plan the owner CANCELLED: ${c.name} (${c.date}, owner: ${c.owner}; archived under ${path.dirname(plan.file)}/archive/)`;
-	return `resembles ${what}. Check it before going on. Same work: drop this plan (remove it from ${INDEX}) and don't do it. Different work: add the line "False positive: ${c.name} — <why it differs>" to this plan.`;
+	return `resembles ${what}. Check it before going on. Same work: drop this plan (remove it from ${paths.queue_index}) and don't do it. Different work: add the line "False positive: ${c.name} — <why it differs>" to this plan.`;
 }
 
 export const CANCEL_WORDS =
 	/\b(?:cancel(?:led|ed)?|abort|scrap|call (?:it|that|this) off|forget (?:it|about)|no longer (?:do|need|want)|skip (?:it|that|this|the)|(?:don'?t|do not|never|stop|quit|not to|not) (?:do|doing|start|starting|work(?:ing)? on|implement|implementing|build|building|touch|run|running|continue|continuing|bother|pursue|go ahead|proceed)|stop (?:it|that|this|the|working|now)|drop (?:it|that|this|the))\b/i;
-export let CANCEL_PENDING = path.join(STATE_DIR, "cancel-pending.json");
-export function refreshQueuePaths(): void {
-	INDEX = indexPath();
-	BLOCKERS_DIR = blockersDirPath();
-	STATE_DIR = stateDirPath();
-	UNLOCK = unlockPath();
-	PROTECTED = protectedPaths();
-	SUBAGENTS_MD = subagentsPath();
-	GLOBAL_CANCELLED = globalCancelledPath();
-	CANCEL_PENDING = path.join(STATE_DIR, "cancel-pending.json");
-}
-export function cancelPending(): { at: string; words: string } | null {
+
+export function cancelPending(paths: Pick<QueuePaths, "queue_state">): { at: string; words: string } | null {
 	try {
-		return JSON.parse(readFileSync(CANCEL_PENDING, "utf8"));
+		return JSON.parse(readFileSync(cancelPendingPath(paths), "utf8"));
 	} catch {
 		return null;
 	}
 }
 
-export function closeLog(file: string): string {
-	return path.join(STATE_DIR, `close-${path.basename(file, ".md")}-${sha(file).slice(0, 6)}.log`);
+export function closeLog(file: string, paths: Pick<QueuePaths, "queue_state">): string {
+	return path.join(paths.queue_state, `close-${path.basename(file, ".md")}-${sha(file).slice(0, 6)}.log`);
 }
 
-export function lastCloseResult(file: string): string | null {
+export function lastCloseResult(file: string, paths: Pick<QueuePaths, "queue_state">): string | null {
 	try {
-		const lines = readFileSync(closeLog(file), "utf8").split("\n").filter(l => /^queue-close: (REFUSED|CLOSED|AWAITING|already)/.test(l));
+		const lines = readFileSync(closeLog(file, paths), "utf8").split("\n").filter(l => /^queue-close: (REFUSED|CLOSED|AWAITING|already)/.test(l));
 		return lines.at(-1) ?? null;
 	} catch {
 		return null;
 	}
 }
 
-export function awaitingMerge(p: Plan): boolean {
-	return p.status === "complete" && (lastCloseResult(p.file) ?? "").startsWith("queue-close: AWAITING merge");
+export function awaitingMerge(p: Plan, paths: Pick<QueuePaths, "queue_state">): boolean {
+	return p.status === "complete" && (lastCloseResult(p.file, paths) ?? "").startsWith("queue-close: AWAITING merge");
 }
 
 /** P5 (plan 20261031_0911): the plan's last queue-close attempt did not close it — a refusal or still awaiting merge ("already running" is another close in flight, not a failure). */
-export function lastCloseFailed(file: string): boolean {
-	const last = lastCloseResult(file);
+export function lastCloseFailed(file: string, paths: Pick<QueuePaths, "queue_state">): boolean {
+	const last = lastCloseResult(file, paths);
 	return !!last && !last.startsWith("queue-close: CLOSED") && !last.startsWith("queue-close: already");
 }
 
@@ -1117,26 +1099,27 @@ export interface QueueProblem {
 	problem: string;
 }
 
-export function queueProblems(index = INDEX, blockersDir = BLOCKERS_DIR, reviewAgents: string[] = []): QueueProblem[] {
+export function queueProblems(paths: QueuePaths, reviewAgents: string[] = []): QueueProblem[] {
+	const index = paths.queue_index;
 	const probs: QueueProblem[] = [];
 	if (!existsSync(index)) probs.push({ where: index, problem: "main index missing: create it (empty = no open work)" });
-	const plans = readPlans(readIndex(index), blockersDir, reviewAgents);
+	const plans = activePlans(paths, reviewAgents);
 	const byWorktree = new Map<string, Plan[]>();
 	for (const p of plans) {
 		for (const e of p.errors) probs.push({ where: p.file, problem: e });
-		if ((p.status === "complete" || p.status === "cancelled") && !awaitingMerge(p)) {
-			const last = lastCloseResult(p.file);
+		if ((p.status === "complete" || p.status === "cancelled") && !awaitingMerge(p, paths)) {
+			const last = lastCloseResult(p.file, paths);
 			probs.push({ where: p.file, problem: `says ${p.status} but is still indexed; auto-close runs at every prompt, every 15 min and after a push${last ? ` (last: ${last.replace(/^queue-close: /, "")})` : ""}` });
 		}
 		// P5 (plan 20261031_0911): a landed open plan whose auto-close failed locks the queue — the
 		// spawn gate and the stop gate refuse everything that does not name it until it closes.
-		if (p.status === "open" && autoCloseCandidate(p) && lastCloseFailed(p.file))
-			probs.push({ where: p.file, problem: `landed but not closed: ${path.basename(p.file)} — ${(lastCloseResult(p.file) ?? "").replace(/^queue-close: /, "")}` });
+		if (p.status === "open" && autoCloseCandidate(p) && lastCloseFailed(p.file, paths))
+			probs.push({ where: p.file, problem: `landed but not closed: ${path.basename(p.file)} — ${(lastCloseResult(p.file, paths) ?? "").replace(/^queue-close: /, "")}` });
 		// P5: a done check that rides `merge-base --is-ancestor` re-does the landing check the
 		// closer already owns, squash-aware — and misses squashes.
 		if (p.doneCheck?.includes("merge-base --is-ancestor"))
 			probs.push({ where: p.file, problem: "done check runs git merge-base --is-ancestor — queue-close checks landing itself, squash-aware; drop it" });
-		for (const c of cancelledMatches(p)) probs.push({ where: p.file, problem: cancelledProblem(p, c) });
+		for (const c of cancelledMatches(p, paths)) probs.push({ where: p.file, problem: cancelledProblem(p, c, paths) });
 		probs.push(...doneClaimProblems(p));
 		// A plan file must live in a main checkout, never in a linked worktree.
 		const g = gitTop(p.file);
@@ -1232,10 +1215,11 @@ export function holdWarnings(plans: Plan[]): string[] {
 // and passes `cap = Infinity`.
 export const SUMMARY_CAP = 10;
 
-export function queueSummary(index = INDEX, reviewAgents: string[] = [], staleOrClaims: ReadonlySet<string> | Pick<ClaimStore, "holder"> | null = null, cap: number = SUMMARY_CAP): string {
+export function queueSummary(paths: QueuePaths, reviewAgents: string[] = [], staleOrClaims: ReadonlySet<string> | Pick<ClaimStore, "holder"> | null = null, cap: number = SUMMARY_CAP): string {
 	// Index order IS priority (20261025_0215_index_priority): the list is flat and ranked,
 	// rank 1 = the index's top line; repos only surface through each plan's own path.
-	const plans = activePlans(index);
+	const index = paths.queue_index;
+	const plans = activePlans(paths);
 	const rank = new Map(plans.map((p, i) => [p.file, i + 1] as const));
 	const repos = [...new Set(plans.map(p => p.repo))];
 	const lines = [`Queue (${index}): ${plans.length ? `${plans.length} plan(s) in ${repos.length} repo(s)` : "empty, no open work"}`];
@@ -1247,7 +1231,7 @@ export function queueSummary(index = INDEX, reviewAgents: string[] = [], staleOr
 		stale = staleOrClaims as ReadonlySet<string> ?? new Set<string>();
 	}
 	plans.slice(0, cap).forEach((p, i) => {
-		const status = awaitingMerge(p) ? "complete, awaiting merge" : (p.status ?? "INVALID");
+		const status = awaitingMerge(p, paths) ? "complete, awaiting merge" : (p.status ?? "INVALID");
 		const ask = (p.waitingLine ?? "").slice(0, 80);
 		const hold = p.waiting ? (stale?.has(p.file) ? `[STALE?] ${ask}` : `WAITING on owner: ${ask}`) : "";
 		// I-20261025-208: an open plan waiting on an open plan of the queue shows the target's rank.
@@ -1277,7 +1261,7 @@ export function queueSummary(index = INDEX, reviewAgents: string[] = [], staleOr
 	if (nCancelled) lines.push(`Cancelled rules: ${nCancelled}`);
 	const more = plans.length - Math.min(plans.length, cap);
 	if (more > 0) lines.push(`… ${more} more plans (queue-check lists all)`);
-	const probs = queueProblems(index, BLOCKERS_DIR, reviewAgents);
+	const probs = queueProblems(paths, reviewAgents);
 	const shown = new Set(plans.slice(0, cap).map(p => p.file));
 	const planProbs = probs.filter(x => shown.has(x.where));
 	const hidden = probs.length - planProbs.length;

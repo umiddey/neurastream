@@ -98,11 +98,11 @@ function setUnlockAge(msAgo: number): void {
 function childProtected(extra: NodeJS.ProcessEnv): string[] {
 	// Dynamic import is deliberate here (module-loading boundary test): the
 	// import runs inside a `bun -e` child whose env pins HOME/BUN_INSTALL/QUEUE_*,
-	// so lib.ts re-derives every path from that sandbox — a static import in
-	// this test process would bake in the real HOME at module load.
-	const body = `const lib = await import(${JSON.stringify(join(REPO, "src/core/queue/lib.ts"))});
-lib.refreshQueuePaths();
-console.log(JSON.stringify(lib.PROTECTED));`;
+	// so loadConfig + protectedPaths derive every path from that sandbox.
+	const body = `const cfgMod = await import(${JSON.stringify(join(REPO, "src/core/config.ts"))});
+const lib = await import(${JSON.stringify(join(REPO, "src/core/queue/lib.ts"))});
+const cfg = cfgMod.loadConfig();
+console.log(JSON.stringify(lib.protectedPaths(cfg.paths)));`;
 	const r = spawnSync("bun", ["-e", body], { encoding: "utf8", env: envFor(extra), cwd: "/tmp" });
 	if (r.status !== 0) throw new Error(`protected child failed: ${r.stderr}`);
 	return JSON.parse(r.stdout.trim().split("\n").pop() ?? "[]") as string[];
@@ -154,9 +154,8 @@ test("protectedPaths honours BUN_INSTALL for the global package dir", () => {
 
 test("writeTargets maps global package, plugin and cutover commands to protected roots", () => {
 	const savedBunInstall = process.env.BUN_INSTALL;
-	const savedQueueAgent = process.env.QUEUE_AGENT;
 	process.env.BUN_INSTALL = join(HOME, ".bun");
-	process.env.QUEUE_AGENT = AGENT;
+	const paths = { ...loadConfig({ home: HOME, env: {} }).paths, agent_dir: AGENT };
 	try {
 		const bunRoot = `${HOME}/.bun/install/global/node_modules/neurastream`;
 		for (const [cmd, want] of [
@@ -178,19 +177,17 @@ test("writeTargets maps global package, plugin and cutover commands to protected
 			["bash scripts/cutover.sh", `${AGENT}/extensions/`],
 			["bash $PWD/scripts/rollback.sh x.tar", `${AGENT}/extensions/`],
 		] as const) {
-			const hits = writeTargets("bash", bashEvent(cmd), TOY);
+			const hits = writeTargets("bash", bashEvent(cmd), TOY, paths);
 			expect(hits).toContain(want);
 		}
 		// Unrelated global packages and reads are not package-guard writes.
 		for (const cmd of ["bun add -g lodash", "npm i -g eslint", `cat ${CUTOVER}`, "grep -rn bun\\ add\\ -g README.md"]) {
-			expect(writeTargets("bash", bashEvent(cmd), TOY)).not.toContain(bunRoot);
-			expect(writeTargets("bash", bashEvent(cmd), TOY)).not.toContain(`${AGENT}/extensions/`);
+			expect(writeTargets("bash", bashEvent(cmd), TOY, paths)).not.toContain(bunRoot);
+			expect(writeTargets("bash", bashEvent(cmd), TOY, paths)).not.toContain(`${AGENT}/extensions/`);
 		}
 	} finally {
 		if (savedBunInstall === undefined) delete process.env.BUN_INSTALL;
 		else process.env.BUN_INSTALL = savedBunInstall;
-		if (savedQueueAgent === undefined) delete process.env.QUEUE_AGENT;
-		else process.env.QUEUE_AGENT = savedQueueAgent;
 	}
 });
 

@@ -211,7 +211,7 @@ export async function mainStartText(args: string[], cfg: Config, opts: { inherit
 	out.push(text.endsWith("\n") || text === "" ? text : `${text}\n`);
 	if (doctor.error) say(doctor.error.message);
 	try {
-		const sweep = mrSweep({ index: cfg.paths.queue_index });
+		const sweep = mrSweep({ paths: cfg.paths });
 		if (sweep.lines.length) {
 			say("=== mr-sweep");
 			for (const line of sweep.lines) say(line);

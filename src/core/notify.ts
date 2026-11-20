@@ -9,7 +9,7 @@ import { configFile, type Config } from "./config.ts";
 import { mainId } from "./guards.ts";
 import { strftime } from "./clock.ts";
 import { recentOwnerMessages, type MessageRow } from "./owner-ui.ts";
-import { stateDirPath } from "./queue/lib.ts";
+import type { QueuePaths } from "./queue/lib.ts";
 import { loadKnownSecrets, redactSecrets } from "./secret-redact.ts";
 
 export type NotifyProviderName = "discord" | "slack";
@@ -248,8 +248,8 @@ export function postReply(text: string, cfg: Config): Promise<NotifyPostResult[]
 // under the queue state, not in session memory: one-shot CLI calls and a reloaded plugin must
 // agree, like the guard window file.
 
-function ownerAnswerStatePath(): string {
-	return `${stateDirPath()}/owner-answer.json`;
+function ownerAnswerStatePath(paths: Pick<QueuePaths, "queue_state">): string {
+	return `${paths.queue_state}/owner-answer.json`;
 }
 
 interface OwnerAnswerState {
@@ -259,9 +259,9 @@ interface OwnerAnswerState {
 	steered: string[];
 }
 
-function readOwnerAnswerState(): OwnerAnswerState {
+function readOwnerAnswerState(paths: Pick<QueuePaths, "queue_state">): OwnerAnswerState {
 	try {
-		const s = JSON.parse(readFileSync(ownerAnswerStatePath(), "utf8")) as Partial<OwnerAnswerState>;
+		const s = JSON.parse(readFileSync(ownerAnswerStatePath(paths), "utf8")) as Partial<OwnerAnswerState>;
 		return {
 			lastHandBack: Number(s.lastHandBack) || 0,
 			steered: Array.isArray(s.steered) ? s.steered.filter((x): x is string => typeof x === "string") : [],
@@ -271,17 +271,17 @@ function readOwnerAnswerState(): OwnerAnswerState {
 	}
 }
 
-function writeOwnerAnswerState(state: OwnerAnswerState): void {
-	mkdirSync(stateDirPath(), { recursive: true });
-	writeFileSync(ownerAnswerStatePath(), `${JSON.stringify(state)}\n`);
+function writeOwnerAnswerState(state: OwnerAnswerState, paths: Pick<QueuePaths, "queue_state">): void {
+	mkdirSync(paths.queue_state, { recursive: true });
+	writeFileSync(ownerAnswerStatePath(paths), `${JSON.stringify(state)}\n`);
 }
 
 /** Phone-page owner messages waiting past notify.answer_within_min with no hand-back after them; none when the limit is 0. */
 export function waitingOwnerMessages(cfg: Config, now: number): MessageRow[] {
 	const limit = cfg.notify.answer_within_min * 60;
 	if (!(limit > 0)) return [];
-	const { lastHandBack } = readOwnerAnswerState();
-	return recentOwnerMessages(now).filter((m) => now - m.ts > limit && m.ts > lastHandBack);
+	const { lastHandBack } = readOwnerAnswerState(cfg.paths);
+	return recentOwnerMessages(now, cfg.paths).filter((m) => now - m.ts > limit && m.ts > lastHandBack);
 }
 
 /** The steer for every waiting message this turn has not steered yet — one line per message, so
@@ -289,16 +289,16 @@ export function waitingOwnerMessages(cfg: Config, now: number): MessageRow[] {
 export function ownerAnswerSteer(cfg: Config, now: number): string | null {
 	const limit = cfg.notify.answer_within_min * 60;
 	if (!(limit > 0)) return null;
-	const state = readOwnerAnswerState();
-	const due = recentOwnerMessages(now).filter((m) => now - m.ts > limit && m.ts > state.lastHandBack && !state.steered.includes(m.id));
+	const state = readOwnerAnswerState(cfg.paths);
+	const due = recentOwnerMessages(now, cfg.paths).filter((m) => now - m.ts > limit && m.ts > state.lastHandBack && !state.steered.includes(m.id));
 	if (due.length === 0) return null;
 	state.steered.push(...due.map((m) => m.id));
-	writeOwnerAnswerState(state);
+	writeOwnerAnswerState(state, cfg.paths);
 	return due.map((m) => `Owner asked at ${strftime(m.ts, "%H:%M")}; end your turn with the answer now`).join("\n");
 }
 
 /** A hand-back ends the wait: the reply just posted answers whatever waited, so the wait clears
  * and the next owner message starts fresh. */
-export function ownerAnswerHandback(now: number): void {
-	writeOwnerAnswerState({ lastHandBack: now, steered: [] });
+export function ownerAnswerHandback(now: number, paths: Pick<QueuePaths, "queue_state">): void {
+	writeOwnerAnswerState({ lastHandBack: now, steered: [] }, paths);
 }

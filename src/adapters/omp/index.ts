@@ -42,7 +42,6 @@ import { inboxPath } from "../../core/owner-ui.ts";
 import { realTailscale } from "../../core/tailscale.ts";
 import { briefPaths } from "../../core/brief-lint.ts";
 import { actionsRules, ownedRepoOf, suspiciousActions, unreportedFindings } from "../../core/trace-actions.ts";
-import { applyQueueEnv } from "../../core/queue/env.ts";
 import { mainDetectors, mainStartText } from "../../core/main-start.ts";
 
 import { buildHandoff, holdsBlock, notePath, noteRequest, OWNER_AWAY, ownerText, relaunchPath, rolloverState, spawnRefusal, unansweredOwnerMessages, type RolloverState } from "../../core/rollover.ts";
@@ -261,20 +260,31 @@ export function autoClose(cfg: Config): string[] {
 	try {
 		// P4: landed open plans auto-close too (q.autoCloseCandidate) — the child runs queue-close
 		// --auto and writes "Status: complete" itself when the done check passes.
-		plans = q.activePlans().filter(p => (p.status === "complete" || p.status === "cancelled" || q.autoCloseCandidate(p)) && !p.errors.length);
+		plans = q.activePlans(cfg.paths).filter(p => (p.status === "complete" || p.status === "cancelled" || q.autoCloseCandidate(p)) && !p.errors.length);
 	} catch {
 		return started;
 	}
 	try {
-		mkdirSync(q.stateDirPath(), { recursive: true });
+		mkdirSync(cfg.paths.queue_state, { recursive: true });
 	} catch {}
 	for (const p of plans) {
 		try {
-			const outFile = q.closeLog(p.file);
+			const outFile = q.closeLog(p.file, cfg.paths);
 			appendFileSync(outFile, `--- ${new Date().toISOString()} auto-close attempt\n`);
 			const out = openSync(outFile, "a");
 			const [bin, args] = closeChildArgs(p.file, p.status === "open");
-			const child = spawn(bin, args, { detached: true, stdio: ["ignore", out, out], env: process.env });
+			const childEnv: NodeJS.ProcessEnv = {
+				...process.env,
+				HOME: cfg.paths.home,
+				QUEUE_AGENT: cfg.paths.agent_dir,
+				QUEUE_INDEX: cfg.paths.queue_index,
+				QUEUE_BLOCKERS: cfg.paths.blockers,
+				QUEUE_STATE: cfg.paths.queue_state,
+				QUEUE_SUBAGENTS: cfg.paths.subagents,
+				QUEUE_CANCELLED: cfg.paths.cancelled,
+				QUEUE_UNLOCK: cfg.paths.unlock,
+			};
+			const child = spawn(bin, args, { detached: true, stdio: ["ignore", out, out], env: childEnv });
 			child.unref();
 			closeSync(out);
 			started.push(p.file);
@@ -299,10 +309,10 @@ function ledgerText(cfg: Config): string {
 
 // Write-time checks (plan 20261028_1228): the text of each file a call names that a configured linter
 // covers, read before the call runs; null when the file does not exist yet.
-function writeCheckSnapshot(tool: string, input: Record<string, unknown>, cwd: string, wc: WriteCheckConfig): Map<string, string | null> {
+function writeCheckSnapshot(tool: string, input: Record<string, unknown>, cwd: string, wc: WriteCheckConfig, cfg: Config): Map<string, string | null> {
 	const exts = wc.linters.flatMap((l) => l.ext);
 	const snap = new Map<string, string | null>();
-	for (const file of q.writeTargets(tool, input, cwd)) {
+	for (const file of q.writeTargets(tool, input, cwd, cfg.paths)) {
 		if (!exts.includes(extname(file))) continue;
 		try {
 			snap.set(file, readFileSync(file, "utf8"));
@@ -318,8 +328,8 @@ function writeCheckSnapshot(tool: string, input: Record<string, unknown>, cwd: s
 function snapshotPlans(tool: string, input: Record<string, unknown>, cwd: string, snap: Map<string, string>, main: boolean, plannerPlan: string | null, cfg: Config): void {
 	if (tool !== "write" && tool !== "edit") return;
 	const delegated = currentPlanner(cfg) === "delegated";
-	const plans = q.activePlans();
-	for (const p of q.writeTargets(tool, input, cwd)) {
+	const plans = q.activePlans(cfg.paths);
+	for (const p of q.writeTargets(tool, input, cwd, cfg.paths)) {
 		if (snap.has(p)) continue;
 		if (main) {
 			// Main's own plan text is checked too; a plan that did not exist yet snapshots as "".
@@ -331,7 +341,7 @@ function snapshotPlans(tool: string, input: Record<string, unknown>, cwd: string
 			}
 			continue;
 		}
-		if (!q.isOrchestrationPath(p, plans) || !q.planAt(p, plans)) {
+		if (!q.isOrchestrationPath(p, plans, cfg.paths.queue_index) || !q.planAt(p, plans)) {
 			// planner mode P2 (b): the brief's named plan snapshots before its create/edit so
 			// checkPlanEdit judges it (Planner header, Main-only lines) — a new plan file is not
 			// an indexed path yet, and every other plan write is refused pre-tool while delegated.
@@ -469,8 +479,8 @@ function spawnTopics(cfg: Config, ctx: unknown, args: string[]): void {
 	}
 	let out: number | undefined;
 	try {
-		mkdirSync(ownerLogDir(), { recursive: true, mode: 0o700 });
-		out = openSync(topicsLogFile(), "a", 0o600);
+		mkdirSync(ownerLogDir(cfg.paths), { recursive: true, mode: 0o700 });
+		out = openSync(topicsLogFile(cfg.paths), "a", 0o600);
 		const child = spawn("nice", ["-n", "19", "bun", join(import.meta.dir, "../../cli/main.ts"), ...args], { detached: true, stdio: ["ignore", out, out], env });
 		child.on("error", err => adapterLog(cfg, `OWNER-TOPICS: could not start: ${err.message}`));
 		child.unref();
@@ -510,7 +520,7 @@ export const OWNER_INBOX_POLL_MS = 15_000;
 export const CLAIM_BEAT_MS = 60_000;
 
 /** The delivered cursor: how many owner-inbox rows this Main's session has consumed (P5: one file per Main, under its mainStateDir). */
-export function ownerInboxCursorPath(cfg?: Config): string {
+export function ownerInboxCursorPath(cfg: Config | Pick<q.QueuePaths, "queue_state">): string {
 	return `${mainStateDir(cfg)}/inbox-cursor`;
 }
 
@@ -535,7 +545,7 @@ function writeOwnerInboxCursor(cfg: Config, n: number): void {
 
 /** The user message one inbox record becomes, or null when the record is not one Main can act on.
  * Records without `kind` are page answers (the original shape). */
-export function ownerInboxMessage(rec: Record<string, unknown>): string | ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] | null {
+export function ownerInboxMessage(rec: Record<string, unknown>, queuePaths?: Pick<q.QueuePaths, "queue_state">): string | ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] | null {
 	const kind = rec.kind === undefined ? "answer" : asString(rec.kind);
 	const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 	switch (kind) {
@@ -572,7 +582,8 @@ export function ownerInboxMessage(rec: Record<string, unknown>): string | ({ typ
 			const id = asString(rec.id);
 			if (ts === null || !/^[0-9]+-[0-9a-f]{6}$/.test(id)) return null;
 			const at = strftime(ts, "%H:%M");
-			const dir = join(q.stateDirPath(), "owner-messages", id);
+			if (!queuePaths) return null;
+			const dir = join(queuePaths.queue_state, "owner-messages", id);
 			let message: Record<string, unknown>;
 			try {
 				message = JSON.parse(readFileSync(join(dir, "message.json"), "utf8")) as Record<string, unknown>;
@@ -639,7 +650,7 @@ export function pendingInboxRecords(text: string, cursor: number): { records: Re
 export function deliverOwnerInbox(pi: ExtensionHost, cfg: Config): void {
 	let text: string;
 	try {
-		text = readFileSync(inboxPath(), "utf8");
+		text = readFileSync(inboxPath(cfg.paths), "utf8");
 	} catch {
 		return; // no inbox yet: nothing to deliver
 	}
@@ -650,7 +661,7 @@ export function deliverOwnerInbox(pi: ExtensionHost, cfg: Config): void {
 	for (const rec of records) {
 		// P5: a row addressed to another Main (`to` set and not this Main's id) is consumed but not delivered here.
 		if (typeof rec.to === "string" && rec.to !== "" && rec.to !== mainId()) continue;
-		const msg = ownerInboxMessage(rec);
+		const msg = ownerInboxMessage(rec, cfg.paths);
 		if (msg === null) continue;
 		pi.sendUserMessage(msg);
 		delivered++;
@@ -709,8 +720,6 @@ function spawnLimitProbeChild(cfg: Config): void {
 export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig: () => Config = () => initial): void {
 	// Guarded handlers take `cfg = freshConfig()` first, so an edited config.yml reaches the next call (P4e).
 	let cfg = initial;
-	// The queue library resolves its paths from env snapshots; point them at this config first.
-	applyQueueEnv(cfg);
 	// P2 d: the first seam — a mode fact another writer left behind is reverted before any handler runs.
 	cfg = freshPlannerConfig(freshConfig);
 	// P5: seed the per-Main inbox floor once — a Main that has never delivered starts past rows
@@ -721,12 +730,12 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 			mkdirSync(mainStateDir(cfg), { recursive: true });
 			if (mainId() === "main") {
 				try {
-					renameSync(`${q.stateDirPath()}/owner-inbox.cursor`, ownerInboxCursorPath(cfg));
+					renameSync(`${cfg.paths.queue_state}/owner-inbox.cursor`, ownerInboxCursorPath(cfg));
 				} catch {}
 			}
 			if (!existsSync(ownerInboxCursorPath(cfg))) {
 				try {
-					inboxFloor = pendingInboxRecords(readFileSync(inboxPath(), "utf8"), 0).next;
+					inboxFloor = pendingInboxRecords(readFileSync(inboxPath(cfg.paths), "utf8"), 0).next;
 				} catch {
 					inboxFloor = 0;
 				}
@@ -786,7 +795,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 			adapterLog(cfg, `RECALL-LOG record failed: ${err instanceof Error ? err.message : String(err)}`);
 		}
 		try {
-			appendOwnerAnswer(reply.text);
+			appendOwnerAnswer(reply.text, cfg.paths);
 		} catch (err) {
 			adapterLog(cfg, `OWNER-ANSWER record failed: ${err instanceof Error ? err.message : String(err)}`);
 		}
@@ -901,9 +910,9 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 	// source the owner page lists). Keys are `plan file|waiting line`, remembered in
 	// <queue_state>/notify-waiting.json; a key whose line is gone is dropped, so the same question
 	// asked again later posts again. No waiting plans: no decision, no log line.
-	const waitingKeysFile = join(cfg.paths.queue_state, "notify-waiting.json");
 	const notifyWaitingPlans = (): void => {
-		const waiting = q.activePlans(cfg.paths.queue_index).filter(p => p.waiting && p.status === "open" && p.waitingLine);
+		const waitingKeysFile = join(cfg.paths.queue_state, "notify-waiting.json");
+		const waiting = q.activePlans(cfg.paths).filter(p => p.waiting && p.status === "open" && p.waitingLine);
 		let stored: string[] = [];
 		try {
 			const parsed: unknown = JSON.parse(readFileSync(waitingKeysFile, "utf8"));
@@ -1038,9 +1047,9 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		};
 		add(cwd);
 		if (cfg.guards.read_tools.includes(tool) && typeof input.path === "string") add(resolve(cwd, q.expandHome(input.path)));
-		for (const p of q.writeTargets(tool, input, cwd)) add(p);
+		for (const p of q.writeTargets(tool, input, cwd, cfg.paths)) add(p);
 		if (tool === "task") {
-			const plans = q.readIndex();
+			const plans = q.readIndex(cfg.paths.queue_index);
 			for (const t of Array.isArray(input.tasks) ? input.tasks : []) {
 				const plan = plans.find(file => String(asRecord(t).task ?? "").includes(file));
 				if (plan) add(plan);
@@ -1057,7 +1066,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 			if (c.kind !== "sub") return undefined;
 			// A subagent's first turn is the only one carrying its brief, and the plan the brief
 			// names is the repo whose rules it needs — the same index match the plan gate makes.
-			const plans = q.readIndex();
+			const plans = q.readIndex(cfg.paths.queue_index);
 			const content = unhanded(asString(c.id) || "sub", plans.find(file => prompt.includes(file)) ?? null);
 			return content ? { message: { customType: "main-guard.rules", content, display: false } } : undefined;
 		}
@@ -1099,8 +1108,8 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		cfg = freshPlannerConfig(freshConfig);
 		const agent = asString(asRecord(event).agent);
 		const kind = asString(asRecord(event).invocationKind);
-		if (!q.allowedAgents().has(agent))
-			return { block: true, reason: `main-guard: agent "${agent}" is not in "## Allowed" of ${q.SUBAGENTS_MD}.` };
+		if (!q.allowedAgents(cfg.paths.subagents).has(agent))
+			return { block: true, reason: `main-guard: agent "${agent}" is not in "## Allowed" of ${cfg.paths.subagents}.` };
 		if (kind !== "task")
 			return { block: true, reason: "main-guard: spawn implementers with the task tool (the plan gate checks its brief)." };
 		return undefined;
@@ -1124,7 +1133,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		const cwd = c.cwd ?? process.cwd();
 		// planner mode P2 (plan 20261102_1515): the plan a sub's approved spawn bound to it (the
 		// brief's `Planner role for <plan path>` line) — the gates check it against plan-path writes.
-		const plannerPlan = isSub ? plannerSpawnPlan(id) : null;
+		const plannerPlan = isSub ? plannerSpawnPlan(id, cfg.paths) : null;
 		const snap = new Map<string, string>();
 		snapshotPlans(tool, input, cwd, snap, !isSub, plannerPlan, cfg);
 		// Drain (src/core/rollover.ts): while a rollover is pending no new subagent starts; the
@@ -1168,7 +1177,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		if (snap.size) pending.set(asString(e.toolCallId), snap);
 		const wc = cfg.write_check;
 		if (wc.enabled && (wc.applies_to === "all" || isSub)) {
-			const ws = writeCheckSnapshot(tool, input, cwd, wc);
+			const ws = writeCheckSnapshot(tool, input, cwd, wc, cfg);
 			if (ws.size) pendingWrite.set(asString(e.toolCallId), ws);
 		}
 		// An allowed Main call inside a repo queues that repo's rules for the next prompt (P3).
@@ -1182,7 +1191,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 	const trimProgress = (file: string): string | undefined => {
 		const t = q.trimPlanProgress(file, cfg.queue.progress_keep);
 		if (!t) return undefined;
-		rekeySpawnFile(file, t.before, t.after);
+		rekeySpawnFile(file, t.before, t.after, cfg.paths);
 		return `plan-guard: moved ${t.count} older Progress entries to ${t.archive}; re-read the plan before editing it again.`;
 	};
 
@@ -1240,7 +1249,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 					} catch {}
 					if (d.note) notes.push(d.note);
 				}
-				if (d.allow && (!c.hasAgent || c.kind === "main") && q.doneCount(after) > q.doneCount(before) && q.planAt(file, q.activePlans())) {
+				if (d.allow && (!c.hasAgent || c.kind === "main") && q.doneCount(after) > q.doneCount(before) && q.planAt(file, q.activePlans(cfg.paths))) {
 					const note = trimProgress(file);
 					if (note) notes.push(note);
 				}
@@ -1287,7 +1296,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		}
 		if ((!c.hasAgent || c.kind === "main") && !e.isError) {
 			const text = content.map(p => asString(asRecord(p).text)).join("\n");
-			recordMainResult(asString(e.toolName), asRecord(e.input), c.cwd ?? process.cwd(), text);
+			recordMainResult(asString(e.toolName), asRecord(e.input), c.cwd ?? process.cwd(), text, cfg.paths);
 			// After the reads are recorded: a fresh hit clears its own warning, a stale list warns
 			// before Main drafts an edit the plan-read guard would refuse (I-20261025-208 P3).
 			const readNote = planReadNote(asString(e.toolName), asRecord(e.input), c.cwd ?? process.cwd(), text, cfg);
@@ -1355,7 +1364,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 				adapterLog(cfg, `ALLOW stop: rollover ${snap.state}`);
 				recordTurnAnswer(reply);
 				// Under the launcher a ready rollover starts now (not a hand-back to the owner).
-				const handsToOwner = !(snap.state === "ready" && requestRelaunch(rc, notePath(rc.sessionId)));
+				const handsToOwner = !(snap.state === "ready" && requestRelaunch(rc, notePath(rc.sessionId, mainStateDir(cfg))));
 				if (handsToOwner) notifyHandback(reply, "allowed session_stop");
 				else adapterLog(cfg, "notify: skipped (relaunch requested)");
 				return undefined;
@@ -1392,7 +1401,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		const nowMs = Date.now();
 		const bytes = sizeOf(c.sessionFile);
 		const maxMb = cfg.rollover.max_session_mb;
-		const noteMtimeMs = mtimeOf(notePath(c.sessionId));
+		const noteMtimeMs = mtimeOf(notePath(c.sessionId, mainStateDir(cfg)));
 		const liveVersion = packageVersion(packageJsonPath());
 		const stale = liveVersion === null || loadedVersion === null || liveVersion !== loadedVersion;
 		if (stale) {
@@ -1420,7 +1429,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 	// The note request for a state. A stale install names both versions in place of the size line.
 	const noteRequestFor = (c: RolloverCtx, snap: { stale: boolean; liveVersion: string | null }): string => {
 		const reason = snap.stale ? `neurastream on disk is ${snap.liveVersion ?? "unknown"}, this session runs ${loadedVersion ?? "unknown"}` : undefined;
-		return noteRequest(notePath(c.sessionId), reason);
+		return noteRequest(notePath(c.sessionId, mainStateDir(cfg)), reason);
 	};
 
 	let relaunched = false;
@@ -1452,13 +1461,13 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 	// the wait sends the owner's text to this session as an ordinary message.
 	const rolloverInProcess = async (c: RolloverCtx, owner: string[], notice: string): Promise<void> => {
 		const previous = c.sessionFile;
-		const path = notePath(c.sessionId);
+		const path = notePath(c.sessionId, mainStateDir(cfg));
 		flight = owner;
 		try {
 			c.notify(notice);
 			const generated = [
 					await mainStartText([], cfg, { inheritStdin: false }, { source: defaultRunSource(cfg), results: defaultCompletedResults(cfg), providers: ompProviders(cfg) }),
-				holdsBlock(q.ownerHolds()),
+				holdsBlock(q.ownerHolds(cfg.paths)),
 			].join("\n");
 			const note = readFileSync(path, "utf8");
 			adapterLog(cfg, `rollover: new session from ${previous}; note ${path}`);
@@ -1479,7 +1488,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 				note,
 				previousSessionFile: previous,
 				ownerMessage: owner.filter(s => s !== "").join("\n"),
-				unanswered: unansweredOwnerMessages(readOwnerMessages(), readOwnerAnswers()),
+				unanswered: unansweredOwnerMessages(readOwnerMessages(cfg.paths), readOwnerAnswers(cfg.paths)),
 			});
 			pi.sendUserMessage(handoff);
 		} finally {
@@ -1507,9 +1516,10 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 	// shuts down only after the file is written. A failed write keeps the session running.
 	// Returns whether the request was written.
 	const requestRelaunch = (c: RolloverCtx, note: string, draft = c.draft()): boolean => {
+		const reqFile = relaunchPath(mainStateDir(cfg));
 		try {
-			mkdirSync(dirname(relaunchPath()), { recursive: true });
-			writeFileSync(relaunchPath(), `${JSON.stringify({ previousSessionFile: c.sessionFile, notePath: note, draft })}\n`);
+			mkdirSync(dirname(reqFile), { recursive: true });
+			writeFileSync(reqFile, `${JSON.stringify({ previousSessionFile: c.sessionFile, notePath: note, draft })}\n`);
 		} catch (err) {
 			adapterLog(cfg, `rollover: relaunch request not written: ${String(err)}`);
 			return false;
@@ -1524,12 +1534,13 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 	// An owner message typed while the relaunch is pending joins the request's draft, in order; the
 	// launcher's handoff carries it. The rewrite is atomic, so the launcher never reads a partial file.
 	const appendToRelaunch = (text: string): boolean => {
+		const reqFile = relaunchPath(mainStateDir(cfg));
 		try {
-			const req = asRecord(JSON.parse(readFileSync(relaunchPath(), "utf8")));
+			const req = asRecord(JSON.parse(readFileSync(reqFile, "utf8")));
 			const draft = [asString(req.draft), text].filter(s => s !== "").join("\n");
-			const tmp = `${relaunchPath()}.tmp`;
+			const tmp = `${reqFile}.tmp`;
 			writeFileSync(tmp, `${JSON.stringify({ ...req, draft })}\n`);
-			renameSync(tmp, relaunchPath());
+			renameSync(tmp, reqFile);
 			return true;
 		} catch (err) {
 			adapterLog(cfg, `rollover: owner message not added to the relaunch request: ${String(err)}`);
@@ -1542,11 +1553,12 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 	// dead UI. The owner-away text stands in when nothing was typed.
 	const exitGraceElapsed = (c: RolloverCtx): void => {
 		adapterLog(cfg, `rollover: omp did not exit within ${cfg.rollover.exit_grace_s}s; rolling over in-process`);
+		const reqFile = relaunchPath(mainStateDir(cfg));
 		let draft = "";
 		try {
-			draft = asString(asRecord(JSON.parse(readFileSync(relaunchPath(), "utf8"))).draft);
+			draft = asString(asRecord(JSON.parse(readFileSync(reqFile, "utf8"))).draft);
 		} catch {}
-		rmSync(relaunchPath(), { force: true });
+		rmSync(reqFile, { force: true });
 		relaunched = false;
 		rolloverInProcess(c, [draft.trim() === "" ? OWNER_AWAY : draft], "rollover: omp did not restart; continuing in a new session here").catch((err: unknown) => {
 			adapterLog(cfg, `rollover: in-process rollover failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -1568,7 +1580,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 			);
 		} else if (terminal && snap.state === "ready" && !relaunched && flight === null) {
 			// flight !== null: an in-process rollover (the fallback) owns this session's end.
-			requestRelaunch(c, notePath(c.sessionId));
+			requestRelaunch(c, notePath(c.sessionId, mainStateDir(cfg)));
 		} else if (terminal && relaunched) {
 			// A tool result mid-run never restarts the session (I-20261024-4), and omp's interactive
 			// mode re-runs its deferred exit check only when shutdown() is called again: re-arm at
@@ -1635,8 +1647,8 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		// A deferred hand-back fires no session_stop: reset the per-turn cap here (I-20261030-24),
 		// record the hand-back for the owner-answer wait (P9), and steer a promise like checkStop
 		// refuses it (I-20261030-32).
-		resetMainCalls();
-		ownerAnswerHandback(nowSec());
+		resetMainCalls(cfg.paths);
+		ownerAnswerHandback(nowSec(), cfg.paths);
 		if (new RegExp(cfg.guards.plan_offer, "i").test(reply.text)) {
 			pi.sendUserMessage(STOP_PLAN_OFFER_REFUSAL);
 		}
@@ -1679,8 +1691,8 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 	pi.on("agent_end", (e, ctx) => {
 		if (!isMain(ctx)) return;
 		if (asRecord(e).willContinue === true) return;
-		resetMainCalls();
-		ownerAnswerHandback(nowSec());
+		resetMainCalls(cfg.paths);
+		ownerAnswerHandback(nowSec(), cfg.paths);
 	});
 	// P4k backstop (plan 20261028_1600): a named review spawn that ends with no verdict recorded at its edit is judged here, from its own plan file; the note tells Main at its next prompt.
 	pi.on("agent_end", (_e, ctx) => {
@@ -1711,7 +1723,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 	// Compaction keeps the owner's holds true: a summary may state a hold only as a plans' WAITING on owner line says it.
 	pi.on("session.compacting", (_e, ctx) => {
 		if (!isMain(ctx)) return undefined;
-		const holds = q.ownerHolds();
+		const holds = q.ownerHolds(cfg.paths);
 		return {
 			context: [
 				"Owner holds/blockers: only plans' WAITING on owner lines are real:",
@@ -1880,7 +1892,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		if (!relaunched) {
 			if (rolloverSnapshot(c).state !== "ready") return undefined;
 			// The message is the request's first owner text, so the editor draft is not carried.
-			if (!requestRelaunch(c, notePath(c.sessionId), "")) return undefined;
+			if (!requestRelaunch(c, notePath(c.sessionId, mainStateDir(cfg)), "")) return undefined;
 		}
 		if (appendToRelaunch(text)) c.notify("rollover in progress: your message goes to the new session");
 		else c.notify("rollover in progress: your message could not be saved and was not sent; send it again after the rollover");

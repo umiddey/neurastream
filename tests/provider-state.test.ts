@@ -15,7 +15,6 @@ import { createOmpAdapter, reset as resetAdapter } from "../src/adapters/omp/ind
 import { loadConfig } from "../src/core/config.ts";
 import { nowSec } from "../src/core/clock.ts";
 import { outUntil, pinModel, providerOfModel, providerStatus, readOut, recordOut, resetEpochFromText } from "../src/core/provider-state.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "provider-state-"));
 const roots: string[] = [];
@@ -188,7 +187,6 @@ const mainCtx = (sessionFile: string): unknown => ({
 });
 
 async function adapterWith(cfg: Config) {
-	applyQueueEnv(cfg);
 	const host = fakeHost();
 	createOmpAdapter(hostFor(host), cfg);
 	return host;

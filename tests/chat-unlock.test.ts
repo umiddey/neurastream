@@ -12,9 +12,8 @@ import { dirname, join } from "node:path";
 import { createOmpAdapter, reset as resetAdapter } from "../src/adapters/omp/index.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { relaunchPath } from "../src/core/rollover.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
-import { checkInject } from "../src/core/guards.ts";
-import { chatUnlock, unlockPath, unlocked } from "../src/core/queue/lib.ts";
+import { checkInject, mainStateDir } from "../src/core/guards.ts";
+import { chatUnlock, unlocked } from "../src/core/queue/lib.ts";
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
 
@@ -84,9 +83,8 @@ const CFG: Config = {
 	guards: { ...baseCfg.guards, chat_unlock: true },
 };
 const OFF: Config = { ...CFG, guards: { ...CFG.guards, chat_unlock: false } };
-applyQueueEnv(CFG);
 
-const UNLOCK = unlockPath();
+const UNLOCK = CFG.paths.unlock;
 const LOG = CFG.paths.plan_guard_log;
 // Live installs have the agent dir (init creates it); the sandbox mirrors that.
 mkdirSync(dirname(UNLOCK), { recursive: true });
@@ -109,7 +107,7 @@ function reset(): void {
 	rmSync(UNLOCK, { force: true });
 	rmSync(LOG, { force: true });
 	rmSync(NOTE, { force: true });
-	rmSync(relaunchPath(), { force: true });
+	rmSync(relaunchPath(mainStateDir(CFG)), { force: true });
 	writeFileSync(SESSION_FILE, "");
 	notes.length = 0;
 	shutdowns = 0;
@@ -170,7 +168,7 @@ test("unlock: fresh file, unlocked now, logged with the source", () => {
 	expect(r.command).toBe("unlock");
 	expect(r.minutes).toBe(CFG.guards.unlock_minutes);
 	expect(existsSync(UNLOCK)).toBe(true);
-	expect(unlocked()).toBe(true);
+	expect(unlocked(CFG.paths)).toBe(true);
 	expect(Date.now() - mtimeMs()).toBeLessThan(5_000);
 	expect(logLines()).toContain(`UNLOCK chat source=interactive minutes=${CFG.guards.unlock_minutes}`);
 });
@@ -192,7 +190,7 @@ test("unlock N: unlocked for exactly N minutes (mtime backdated)", () => {
 	const r = chatUnlock("unlock 10", CFG, "interactive");
 	expect(r.applied).toBe(true);
 	expect(r.minutes).toBe(10);
-	expect(unlocked()).toBe(true);
+	expect(unlocked(CFG.paths)).toBe(true);
 	// Backdated by (unlock_minutes - 10) so the existing mtime window closes in exactly 10 min.
 	const age = Date.now() - mtimeMs();
 	const expected = (CFG.guards.unlock_minutes - 10) * 60_000;
@@ -200,7 +198,7 @@ test("unlock N: unlocked for exactly N minutes (mtime backdated)", () => {
 	// Ten minutes later the window is shut.
 	const shifted = (mtimeMs() - 10.5 * 60_000) / 1000; // utimesSync takes seconds
 	utimesSync(UNLOCK, shifted, shifted);
-	expect(unlocked()).toBe(false);
+	expect(unlocked(CFG.paths)).toBe(false);
 });
 
 test("unlock N above unlock_minutes clamps to unlock_minutes", () => {
@@ -218,14 +216,14 @@ test("anything but the whole message changes nothing and logs nothing", () => {
 		expect(r.applied).toBe(false);
 	}
 	expect(existsSync(UNLOCK)).toBe(false);
-	expect(unlocked()).toBe(false);
+	expect(unlocked(CFG.paths)).toBe(false);
 	expect(logLines()).toBe("");
 });
 
 test("matching is trimmed and case-insensitive", () => {
 	reset();
 	expect(chatUnlock("  UNLOCK 15  ", CFG, "interactive").applied).toBe(true);
-	expect(unlocked()).toBe(true);
+	expect(unlocked(CFG.paths)).toBe(true);
 	reset();
 	expect(chatUnlock("Lock", CFG, "interactive").applied).toBe(true);
 	expect(existsSync(UNLOCK)).toBe(false);
@@ -236,7 +234,7 @@ test("lock removes the file, also when it is already gone; every lock is logged"
 	chatUnlock("unlock", CFG, "interactive");
 	expect(chatUnlock("lock", CFG, "collab:Amiir").command).toBe("lock");
 	expect(existsSync(UNLOCK)).toBe(false);
-	expect(unlocked()).toBe(false);
+	expect(unlocked(CFG.paths)).toBe(false);
 	// Locking again (no file) stays a valid owner command and is logged. \b keeps "UNLOCK chat" lines out.
 	expect(chatUnlock("lock", CFG, "interactive").applied).toBe(true);
 	const lines = logLines().split("\n").filter(l => /\bLOCK chat/.test(l));
@@ -249,7 +247,7 @@ test("guards.chat_unlock false: even a real command changes nothing", () => {
 	const r = chatUnlock("unlock 30", OFF, "interactive");
 	expect(r.applied).toBe(false);
 	expect(existsSync(UNLOCK)).toBe(false);
-	expect(unlocked()).toBe(false);
+	expect(unlocked(CFG.paths)).toBe(false);
 	expect(logLines()).toBe("");
 });
 
@@ -262,12 +260,12 @@ test("input interactive unlock 30: handled, unlocked, owner notified, Main woken
 	const ctx = mainCtx();
 	const results = await host.emit("input", { text: "unlock 30", source: "interactive" }, ctx);
 	expect(results).toEqual([{ handled: true }]);
-	expect(unlocked()).toBe(true);
+	expect(unlocked(CFG.paths)).toBe(true);
 	expect(notes.length).toBe(1);
 	expect(host.sent.length).toBe(1);
 	expect(host.sent[0]).toMatch(/^Owner unlocked the guards in chat for 30 min \(until \d\d:\d\d\)\. Do the step that waited on the unlock now\.$/);
 	await host.emit("input", { text: "lock", source: "interactive" }, ctx);
-	expect(unlocked()).toBe(false);
+	expect(unlocked(CFG.paths)).toBe(false);
 	expect(host.sent.length).toBe(1);
 });
 
@@ -277,7 +275,7 @@ test("input with the config off, a machine source, or a subagent context is not 
 	createOmpAdapter(offHost, OFF);
 	const main = mainCtx();
 	expect(await offHost.emit("input", { text: "unlock 30", source: "interactive" }, main)).toEqual([]);
-	expect(unlocked()).toBe(false);
+	expect(unlocked(CFG.paths)).toBe(false);
 
 	const host = fakeHost();
 	createOmpAdapter(host, CFG);
@@ -286,7 +284,7 @@ test("input with the config off, a machine source, or a subagent context is not 
 	}
 	expect(await host.emit("input", { text: "unlock 30", source: "interactive" }, mainCtx({ agent: { kind: "sub", id: "s1" } }))).toEqual([]);
 	expect(await host.emit("input", { text: "please unlock 30", source: "interactive" }, mainCtx())).toEqual([]);
-	expect(unlocked()).toBe(false);
+	expect(unlocked(CFG.paths)).toBe(false);
 	expect(logLines()).toBe("");
 });
 
@@ -299,9 +297,9 @@ test("unlock works while a rollover is ready: the rollover input handler never s
 	await armReady(host, ctx);
 	const results = await host.emit("input", { text: "unlock 30", source: "interactive" }, ctx);
 	expect(results).toEqual([{ handled: true }]);
-	expect(unlocked()).toBe(true);
+	expect(unlocked(CFG.paths)).toBe(true);
 	expect(shutdowns).toBe(0);
-	expect(existsSync(relaunchPath())).toBe(false);
+	expect(existsSync(relaunchPath(mainStateDir(CFG)))).toBe(false);
 });
 
 test("unlock works in plain omp with a rollover ready: no /main-rollover rewrite", async () => {
@@ -312,7 +310,7 @@ test("unlock works in plain omp with a rollover ready: no /main-rollover rewrite
 	await armReady(host, ctx);
 	const results = await host.emit("input", { text: "unlock 30", source: "interactive" }, ctx);
 	expect(results).toEqual([{ handled: true }]);
-	expect(unlocked()).toBe(true);
+	expect(unlocked(CFG.paths)).toBe(true);
 });
 
 // --- adapter: collab guest prompts on the context event ---
@@ -323,19 +321,19 @@ test("collab prompt from a write peer unlocks, logged with the peer name", async
 	createOmpAdapter(host, CFG);
 	const ctx = mainCtx();
 	await host.emit("context", { messages: [collabPrompt("unlock 30")] }, ctx);
-	expect(unlocked()).toBe(true);
+	expect(unlocked(CFG.paths)).toBe(true);
 	expect(logLines()).toContain("UNLOCK chat source=collab:Amiir");
 });
 
 test("collab prompt with array content lock removes the file", async () => {
 	reset();
 	chatUnlock("unlock", CFG, "interactive");
-	expect(unlocked()).toBe(true);
+	expect(unlocked(CFG.paths)).toBe(true);
 	const host = fakeHost();
 	createOmpAdapter(host, CFG);
 	const ctx = mainCtx();
 	await host.emit("context", { messages: [collabPrompt([{ type: "text", text: "lock" }])] }, ctx);
-	expect(unlocked()).toBe(false);
+	expect(unlocked(CFG.paths)).toBe(false);
 	expect(existsSync(UNLOCK)).toBe(false);
 });
 
@@ -352,7 +350,7 @@ test("assistant messages, tool results, other custom types and non-user attribut
 		{ ...collabPrompt("unlock 30"), details: {} },
 	];
 	await host.emit("context", { messages }, ctx);
-	expect(unlocked()).toBe(false);
+	expect(unlocked(CFG.paths)).toBe(false);
 	expect(logLines()).toBe("");
 });
 
@@ -374,7 +372,7 @@ test("an old collab prompt replayed from a resumed session does not unlock", asy
 	const host = fakeHost();
 	createOmpAdapter(host, CFG);
 	await host.emit("context", { messages: [collabPrompt("unlock 30", "Amiir", Date.now() - 30 * 60_000)] }, mainCtx());
-	expect(unlocked()).toBe(false);
+	expect(unlocked(CFG.paths)).toBe(false);
 	expect(logLines()).toBe("");
 });
 
@@ -385,6 +383,6 @@ test("before_agent_start carrying the words never unlocks", async () => {
 	const host = fakeHost();
 	createOmpAdapter(host, CFG);
 	await host.emit("before_agent_start", { prompt: "unlock 30" }, mainCtx());
-	expect(unlocked()).toBe(false);
+	expect(unlocked(CFG.paths)).toBe(false);
 	expect(existsSync(UNLOCK)).toBe(false);
 });

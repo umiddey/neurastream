@@ -6,7 +6,6 @@ import { loadConfig } from "../src/core/config.ts";
 import { startPagesServer } from "../src/core/pages.ts";
 import { notesStorePath } from "../src/core/page-notes.ts";
 import { reviewHash } from "../src/core/guards.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
 const LOOPBACK = [127, 0, 0, 1].join(".");
 const servers: {stop():void}[]=[];
 const dirs:string[]=[];
@@ -37,7 +36,6 @@ test("POST /_approve records the plan hash and leaves the plan unchanged", async
 	cfg.pages.port = 0;
 	cfg.workspace.owner_login = "owner@example.test";
 	cfg.paths.queue_state = state;
-	applyQueueEnv(cfg);
 	const plan = join(root, "20261027_toy.md");
 	const original = "# Toy\n\n## Phases\n- [ ] P1 x\n";
 	writeFileSync(plan, original);
@@ -72,7 +70,6 @@ test("POST /_approve writes one approval inbox row and leaves the notes store em
 	cfg.pages.port = 0;
 	cfg.workspace.owner_login = "owner@example.test";
 	cfg.paths.queue_state = state;
-	applyQueueEnv(cfg);
 	const plan = join(root, "20261027_toy.md");
 	writeFileSync(plan, "# Toy\n\n## Phases\n- [ ] P1 x\n");
 	mkdirSync(join(root, ".meta"), { recursive: true });

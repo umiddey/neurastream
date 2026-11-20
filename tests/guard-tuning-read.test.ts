@@ -9,7 +9,6 @@ import type { ToolEvent } from "../src/core/adapter.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { checkTool } from "../src/core/guards.ts";
 import { writeLevels, type RuleLevels } from "../src/core/rule-levels.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
 
 const REPO = dirname(dirname(import.meta.path));
 // Scratch sits beside the worktree, never under the system temp dir.
@@ -22,7 +21,6 @@ const QUEUE_ENV_BEFORE = Object.fromEntries(Object.entries(process.env).filter((
 beforeAll(() => {
 	mkdirSync(HOME, { recursive: true });
 	cfg = loadConfig({ home: HOME, env: {} });
-	applyQueueEnv(cfg);
 	on = { ...cfg, tuning: { ...cfg.tuning, guards: true } };
 });
 

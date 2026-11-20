@@ -7,8 +7,6 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, type Config } from "../src/core/config.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
-import { refreshQueuePaths } from "../src/core/queue/lib.ts";
 import { ownerBackfillFile, ownerLogDir, ownerLogFile } from "../src/core/owner-log.ts";
 import { recallCli } from "../src/cli/recall.ts";
 
@@ -33,14 +31,11 @@ afterAll(() => {
 	else process.env.HOME = homeBefore;
 	if (nowBefore === undefined) delete process.env.NEURASTREAM_NOW;
 	else process.env.NEURASTREAM_NOW = nowBefore;
-	refreshQueuePaths();
 });
 
-/** Points the recall dir at this file's sandbox, then throws if it is still elsewhere: a live path is never touched. */
+/** Verifies the recall dir is inside this file's sandbox: a live path is never touched. */
 function sandboxed(): void {
-	process.env.QUEUE_STATE = QUEUE;
-	refreshQueuePaths();
-	if (!ownerLogDir().startsWith(TMP)) throw new Error(`refusing to touch ${ownerLogDir()} outside ${TMP}`);
+	if (!ownerLogDir(CFG.paths).startsWith(TMP)) throw new Error(`refusing to touch ${ownerLogDir(CFG.paths)} outside ${TMP}`);
 }
 
 /** Sandbox config: queue state under TMP, guard logs under TMP, rollover off. */
@@ -60,7 +55,6 @@ rollover:
 `,
 	);
 	const cfg = loadConfig({ home: HOME, env: {} });
-	applyQueueEnv(cfg);
 	return cfg;
 }
 
@@ -83,10 +77,10 @@ const BACKFILL: Row[] = [
 /** Replace the live log and the backfill with these rows, oldest first. */
 function seed(live: Row[], backfill: Row[]): void {
 	sandboxed();
-	rmSync(ownerLogDir(), { recursive: true, force: true });
-	mkdirSync(ownerLogDir(), { recursive: true });
-	writeFileSync(ownerLogFile(), `${live.map(r => JSON.stringify(r)).join("\n")}\n`);
-	if (backfill.length > 0) writeFileSync(ownerBackfillFile(), `${backfill.map(r => JSON.stringify(r)).join("\n")}\n`);
+	rmSync(ownerLogDir(CFG.paths), { recursive: true, force: true });
+	mkdirSync(ownerLogDir(CFG.paths), { recursive: true });
+	writeFileSync(ownerLogFile(CFG.paths), `${live.map(r => JSON.stringify(r)).join("\n")}\n`);
+	if (backfill.length > 0) writeFileSync(ownerBackfillFile(CFG.paths), `${backfill.map(r => JSON.stringify(r)).join("\n")}\n`);
 }
 
 /** Run the CLI and capture what it prints to stdout and stderr. */

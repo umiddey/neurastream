@@ -9,7 +9,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileClaimStore } from "../src/core/claims.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
-import { refreshQueuePaths } from "../src/core/queue/lib.ts";
 import { queueClose } from "../src/core/queue-close.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "ns-qclose-finished-"));
@@ -218,6 +217,5 @@ test("queue-close still closes when the upstream default branch is gone: it fall
 afterAll(() => {
 	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
 	for (const [k, v] of Object.entries(queueEnvBefore)) if (v !== undefined) process.env[k] = v;
-	refreshQueuePaths();
 	rmSync(TMP, { recursive: true, force: true });
 });

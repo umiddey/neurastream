@@ -7,13 +7,11 @@ import { getAdapter } from "../adapters/index.ts";
 import { nowSec } from "../core/clock.ts";
 import { loadConfig } from "../core/config.ts";
 import { computeResults, resultsCachePath } from "../core/owner-ui.ts";
-import { applyQueueEnv } from "../core/queue/env.ts";
 
 const cfg = loadConfig();
-applyQueueEnv(cfg);
 const at = nowSec();
 const data = computeResults(cfg, getAdapter(cfg).runSource(cfg), at);
-const path = resultsCachePath();
+const path = resultsCachePath(cfg.paths);
 // Write then rename: the page never reads a half-written file.
 writeFileSync(`${path}.tmp`, JSON.stringify({ at, data }));
 renameSync(`${path}.tmp`, path);

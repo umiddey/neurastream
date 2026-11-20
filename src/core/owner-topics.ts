@@ -8,6 +8,7 @@ import { nowSec } from "./clock.ts";
 import type { Config } from "./config.ts";
 import { tryLock } from "./file-lock.ts";
 import { appendJsonLines, entryIdSec, type LogEntry, ownerLogDir, ownerLogFile, readEntries, readLines } from "./owner-log.ts";
+import type { QueuePaths } from "./queue/lib.ts";
 import { loadKnownSecrets, redactSecrets } from "./secret-redact.ts";
 
 export interface CompleteRequest {
@@ -102,13 +103,13 @@ const SYSTEM = [
 	"- continues: always null.",
 ].join("\n");
 
-export function topicsFile(): string {
-	return join(ownerLogDir(), TOPICS_FILE);
+export function topicsFile(paths: Pick<QueuePaths, "queue_state">): string {
+	return join(ownerLogDir(paths), TOPICS_FILE);
 }
 
 // stdout and stderr of the background `recall topics` run: stats and `topics: fail` lines only.
-export function topicsLogFile(): string {
-	return join(ownerLogDir(), TOPICS_LOG_FILE);
+export function topicsLogFile(paths: Pick<QueuePaths, "queue_state">): string {
+	return join(ownerLogDir(paths), TOPICS_LOG_FILE);
 }
 
 export function topicsDue(count: number, every: number): boolean {
@@ -172,9 +173,9 @@ function parseRow(line: string): TopicRow | undefined {
 
 // The index as a reader sees it: file order, where a line replaces every earlier line that reaches into its
 // ids (a re-cut of the open segment, or the closed copy that --close writes). Unparsable lines are skipped.
-function effectiveRows(): TopicRow[] {
+function effectiveRows(paths: Pick<QueuePaths, "queue_state">): TopicRow[] {
 	const out: TopicRow[] = [];
-	for (const line of [...readLines(topicsFile())].toReversed()) {
+	for (const line of [...readLines(topicsFile(paths))].toReversed()) {
 		const row = parseRow(line);
 		if (row === undefined) continue;
 		while (out.length > 0 && out.at(-1)!.to >= row.from) out.pop();
@@ -183,8 +184,8 @@ function effectiveRows(): TopicRow[] {
 	return out;
 }
 
-export function readTopics(): Segment[] {
-	return effectiveRows().filter(isSegment);
+export function readTopics(paths: Pick<QueuePaths, "queue_state">): Segment[] {
+	return effectiveRows(paths).filter(isSegment);
 }
 
 // The id the next window starts after: the last segment that is closed, or a skipped window.
@@ -389,7 +390,7 @@ function appendSegments(cfg: Config, segments: readonly AnswerSegment[]): void {
 		names: s.names.map(clean),
 		continues: s.continues,
 	}));
-	appendJsonLines(topicsFile(), rows);
+	appendJsonLines(topicsFile(cfg.paths), rows);
 }
 
 // One model call on the window. On a good answer the segments are appended; otherwise nothing is written.
@@ -442,42 +443,42 @@ async function segmentWindow(
 	const second = await attemptOnce(cfg, complete, window, retry, earlier, tally);
 	if (second.kind === "ok") return undefined;
 	if (second.kind === "error") return { reason: second.reason, in: second.in, out: 0 };
-	appendJsonLines(topicsFile(), [
+	appendJsonLines(topicsFile(cfg.paths), [
 		{ from: window[0]!.id, to: window.at(-1)!.id, at: nowSec(), skipped: true, why: second.reason },
 	]);
 	return { reason: second.reason, in: second.in, out: second.out };
 }
 
 // `--close`: the open segment becomes closed (a copy with open:false), so the next window starts after it.
-function closeOpen(): void {
-	const last = effectiveRows().at(-1);
-	if (last !== undefined && isSegment(last) && last.open) appendJsonLines(topicsFile(), [{ ...last, open: false }]);
+function closeOpen(paths: Pick<QueuePaths, "queue_state">): void {
+	const last = effectiveRows(paths).at(-1);
+	if (last !== undefined && isSegment(last) && last.open) appendJsonLines(topicsFile(paths), [{ ...last, open: false }]);
 }
 
-function oldestFirst(): LogEntry[] {
-	return [...readEntries()].toReversed();
+function oldestFirst(paths: Pick<QueuePaths, "queue_state">): LogEntry[] {
+	return [...readEntries(paths)].toReversed();
 }
 
 // The entries after `afterId`, oldest first. No id means every entry.
-export function newEntries(afterId?: string): LogEntry[] {
-	const all = oldestFirst();
+export function newEntries(paths: Pick<QueuePaths, "queue_state">, afterId?: string): LogEntry[] {
+	const all = oldestFirst(paths);
 	if (afterId === undefined) return all;
 	const i = all.findIndex(e => e.id === afterId);
 	return i < 0 ? all : all.slice(i + 1);
 }
 
 // The entries from `from` to `to`, both inclusive, oldest first. Empty when either id is missing.
-export function rangeEntries(from: string, to: string): LogEntry[] {
-	const all = oldestFirst();
+export function rangeEntries(from: string, to: string, paths: Pick<QueuePaths, "queue_state">): LogEntry[] {
+	const all = oldestFirst(paths);
 	const a = all.findIndex(e => e.id === from);
 	const b = all.findIndex(e => e.id === to);
 	return a < 0 || b < 0 || b < a ? [] : all.slice(a, b + 1);
 }
 
 // Topics whose text holds every word (case-insensitive, any order), in file order.
-export function searchTopics(query: readonly string[]): Segment[] {
+export function searchTopics(query: readonly string[], paths: Pick<QueuePaths, "queue_state">): Segment[] {
 	const want = query.map(w => w.toLowerCase());
-	return readTopics().filter(s => {
+	return readTopics(paths).filter(s => {
 		const hay = [s.title, ...s.keywords, ...s.decisions.map(d => d.text), ...s.questions.map(q => q.text), ...s.names]
 			.join(" ")
 			.toLowerCase();
@@ -502,9 +503,9 @@ function spread(values: number[]): { mean: number; median: number; p90: number; 
 }
 
 // The ids of the live log file (not the backfill): a segment's lag is measured only where its `to` is live.
-function liveIds(): Set<string> {
+function liveIds(paths: Pick<QueuePaths, "queue_state">): Set<string> {
 	const ids = new Set<string>();
-	for (const line of readLines(ownerLogFile())) {
+	for (const line of readLines(ownerLogFile(paths))) {
 		try {
 			const e = JSON.parse(line) as Partial<LogEntry>;
 			if (typeof e.id === "string") ids.add(e.id);
@@ -517,18 +518,18 @@ function liveIds(): Set<string> {
 
 // The one stats line every run ends with. Counts come from the index as it stands; tokens and calls are
 // this run's. Lag is the age, in hours, of each segment's `to` entry, for the segments whose `to` is live.
-function statsLine(tally: Tally): string {
-	const rows = effectiveRows();
+function statsLine(tally: Tally, paths: Pick<QueuePaths, "queue_state">): string {
+	const rows = effectiveRows(paths);
 	const segments = rows.filter(isSegment);
 	const skipped = rows.length - segments.length;
-	const all = oldestFirst();
+	const all = oldestFirst(paths);
 	const byId = new Map(all.map((e, index) => [e.id, { index, at: e.at }]));
 	const counts = segments.flatMap(s => {
 		const a = byId.get(s.from);
 		const b = byId.get(s.to);
 		return a !== undefined && b !== undefined && b.index >= a.index ? [b.index - a.index + 1] : [];
 	});
-	const live = liveIds();
+	const live = liveIds(paths);
 	const lags = segments.flatMap(s => {
 		const b = byId.get(s.to);
 		return b !== undefined && live.has(s.to) ? [(nowSec() - b.at) / 3600] : [];
@@ -547,7 +548,7 @@ function statsLine(tally: Tally): string {
 // the lines and exits by `failures`.
 export async function runTopics(cfg: Config, complete: Complete, opts: { close: boolean }): Promise<TopicsRun> {
 	if (!opts.close && cfg.recall.topics_model === "") return { lines: ["topics: off"], failures: 0 };
-	const dir = ownerLogDir();
+	const dir = ownerLogDir(cfg.paths);
 	mkdirSync(dir, { recursive: true, mode: 0o700 });
 	chmodSync(dir, 0o700);
 	const lock = tryLock(join(dir, LOCK_FILE));
@@ -556,19 +557,19 @@ export async function runTopics(cfg: Config, complete: Complete, opts: { close: 
 	try {
 		const tally: Tally = { calls: 0, tokensIn: 0, tokensOut: 0 };
 		if (opts.close) {
-			closeOpen();
-			return { lines: [statsLine(tally)], failures: 0 };
+			closeOpen(cfg.paths);
+			return { lines: [statsLine(tally, cfg.paths)], failures: 0 };
 		}
-		const rows = effectiveRows();
-		const window = newEntries(afterClosed(rows)).slice(0, WINDOW);
-		if (window.length === 0) return { lines: [statsLine(tally)], failures: 0 };
+		const rows = effectiveRows(cfg.paths);
+		const window = newEntries(cfg.paths, afterClosed(rows)).slice(0, WINDOW);
+		if (window.length === 0) return { lines: [statsLine(tally, cfg.paths)], failures: 0 };
 		const last = rows.at(-1);
-		if (last !== undefined && isSegment(last) && last.open && window.at(-1)!.id === last.to) return { lines: [statsLine(tally)], failures: 0 };
+		if (last !== undefined && isSegment(last) && last.open && window.at(-1)!.id === last.to) return { lines: [statsLine(tally, cfg.paths)], failures: 0 };
 		const failed = await segmentWindow(cfg, complete, window, rows, tally);
 		const lines = failed
 			? [`topics: fail ${window[0]!.id}..${window.at(-1)!.id} ${failed.reason} in=${failed.in} out=${failed.out}`]
 			: [];
-		lines.push(statsLine(tally));
+		lines.push(statsLine(tally, cfg.paths));
 		return { lines, failures: failed ? 1 : 0 };
 	} finally {
 		lock.release();

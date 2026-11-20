@@ -22,8 +22,7 @@ import { loadConfig, type Config } from "../src/core/config.ts";
 import { checkInject, checkPlanEdit, checkSpawn } from "../src/core/guards.ts";
 import { defaultRunner, type CommandRunner } from "../src/core/mr-sweep.ts";
 import { isLoopback, startOwnerUi, type OwnerUiServer } from "../src/core/owner-ui.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
-import { parsePlan, queueSummary, refreshQueuePaths, sha } from "../src/core/queue/lib.ts";
+import { parsePlan, queueSummary, sha } from "../src/core/queue/lib.ts";
 import { startTeamServer, teamPlanId, type TeamServer } from "../src/core/team-server.ts";
 import type { Tailscale } from "../src/core/tailscale.ts";
 import type { TeamEntry, TeamView, WireRequest, WireResponse } from "../src/core/team-client.ts";
@@ -158,7 +157,6 @@ console.log(svc.port);
 	PORT = Number(new TextDecoder().decode(first.value).trim());
 	SERVER_URL = `http://${LOOPBACK}:${PORT}`;
 	cfg = loadConfig({ file: writeCfg([{ name: "acme", server: SERVER_URL, repos: ["gitlab.com/acme/*"] }]), home: HOME, env: {} });
-	applyQueueEnv(cfg);
 });
 
 beforeEach(() => {
@@ -177,7 +175,6 @@ afterAll(() => {
 	else process.env.NEURASTREAM_NOW = savedNow;
 	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
 	Object.assign(process.env, queueEnvBefore);
-	refreshQueuePaths();
 	rmSync(TMP, { recursive: true, force: true });
 });
 
@@ -561,7 +558,7 @@ test("one queueSummary with two team plans and one personal plan sends exactly o
 	await publish(TEAMH, B_PEER);
 	expect((await call("POST", `/claims/${idOf(TEAMH)}`, B_PEER, { main: "main", host: "laptop", pid: 4242 })).status).toBe(200);
 	const spy = spySend({ status: 200, body: { claims: [teamRow(TEAMH, B)] } });
-	const summary = queueSummary(INDEX, [], summaryHolder(cfg, { send: spy.send }));
+	const summary = queueSummary(cfg.paths, [], summaryHolder(cfg, { send: spy.send }));
 	expect(spy.calls.filter((c) => c.method === "GET" && c.url.endsWith("/claims")).length).toBe(1);
 	expect(summary).toContain(`1. ${TEAMH} [open, 0/1 done, held by main since ${SINCE}]`);
 	expect(summary).toContain(`2. ${SH} [open, 0/1 done, free]`);
@@ -576,7 +573,7 @@ test("a never-synced Queue: team plan held on the server shows that holder in th
 	await publish(TEAMH, B_PEER);
 	expect((await call("POST", `/claims/${idOf(TEAMH)}`, B_PEER, { main: "main", host: "laptop", pid: 4242 })).status).toBe(200);
 	// TEAMH has no record entry: the summary answers by the id computed from the repo origin.
-	const summary = queueSummary(INDEX, [], summaryHolder(cfg));
+	const summary = queueSummary(cfg.paths, [], summaryHolder(cfg));
 	expect(summary).toContain(`1. ${TEAMH} [open, 0/1 done, held by main since ${SINCE}]`);
 	await dropClaim(TEAMH, B_PEER);
 });
@@ -694,7 +691,6 @@ test("holder() answers the typed Unreachable, never null, when the server is dow
 test("the outage: the edit gate restores with the unreachable text and claimGate refuses leaving no claim", () => {
 	writePlan(TEAMH2, "", "Queue: team"); // TEAMH2 lives in DOWNR: its header routes to the down team
 	const cfgDown = cfgWith([cfg.teams[0]!, DOWN_TEAM]);
-	applyQueueEnv(cfgDown);
 	indexPlans(TEAMH2);
 	const before = readFileSync(TEAMH2, "utf8");
 	const edit = checkPlanEdit({ path: TEAMH2, before, after: `${before}\n- A note.\n`, agent: "main" }, cfgDown);
@@ -711,7 +707,6 @@ test("the outage: claim next skips, release and unshare exit 1, the summary flag
 	writePlan(TEAMH2, "", "Queue: team");
 	writePlan(PERS);
 	const cfgDown = cfgWith([cfg.teams[0]!, DOWN_TEAM]);
-	applyQueueEnv(cfgDown);
 	indexPlans(TEAMH2);
 	const next = capture(() => claimCli(["next"], cfgDown));
 	expect(next.rc).toBe(1);
@@ -725,7 +720,7 @@ test("the outage: claim next skips, release and unshare exit 1, the summary flag
 	expect(readFileSync(TEAMH2, "utf8")).toContain("Queue: team");
 	// The queue summary flags the team plan unreachable and prints the personal plan as today.
 	indexPlans(TEAMH2, PERS);
-	const summary = queueSummary(INDEX, [], summaryHolder(cfgDown));
+	const summary = queueSummary(cfgDown.paths, [], summaryHolder(cfgDown));
 	expect(summary).toContain(`1. ${TEAMH2} [open, 0/1 done, team server ${DOWN_PORT} unreachable]`);
 	expect(summary).toContain(`2. ${PERS} [open, 0/1 done, free]`);
 });
@@ -738,7 +733,6 @@ test("the outage between holder() and claim(): claimGate refuses and releases th
 	refresh(TQ, "Queue: team");
 	indexPlans(TEAMH2, TQ);
 	const cfgDown = cfgWith([cfg.teams[0]!, DOWN_TEAM]);
-	applyQueueEnv(cfgDown);
 	// The stub answers the first plan's holder() and claim(), then refuses every later request:
 	// the outage starts between holder() and claim() for the second plan.
 	const seen: WireRequest[] = [];
@@ -774,7 +768,6 @@ test("a fresh team claim is released through the remote store that took it, neve
 	refresh(TQ, "Queue: team");
 	indexPlans(TEAMH2, TQ);
 	const cfgDown = cfgWith([cfg.teams[0]!, DOWN_TEAM]);
-	applyQueueEnv(cfgDown);
 	// The second plan's claim is refused with a 429 (the write limiter): fail closed, and the
 	// team is not marked down — so the release of the first plan reaches the wire. Through the
 	// file store it would be a silent no-op and the server claim would outlive the refusal.
@@ -906,7 +899,6 @@ test("with the team server down the tick still beats the personal claim", async 
 	refresh(PERS, "");
 	claims().claim(PERS, "main");
 	const cfgDown = cfgWith([DOWN_TEAM]);
-	applyQueueEnv(cfgDown);
 	// The tick's remote list hits the closed port once, memoizes, and the personal beat runs.
 	const timers: { cb: () => void; ms: number }[] = [];
 	const host = fakeHost();
@@ -1017,7 +1009,7 @@ test("the team summary lists a view plan by rel_path with its holder and approva
 	const downLines = teamSummaryLines(cfgDown, down);
 	expect(downLines[0]).toBe("Team acme: 1 plan(s)");
 	expect(downLines.at(-1)).toBe(`Team down: team server ${DOWN_PORT} unreachable`);
-	expect(queueSummary(INDEX, [], summaryHolder(cfgDown, {}, down), Infinity)).not.toContain("Team down");
+	expect(queueSummary(cfgDown.paths, [], summaryHolder(cfgDown, {}, down), Infinity)).not.toContain("Team down");
 });
 
 test("checkInject reads one GET /view per team and never GET /claims", async () => {
@@ -1047,7 +1039,6 @@ console.log(svc.port);
 	await reader.cancel();
 	const PORT_REC = Number(new TextDecoder().decode(first.value).trim());
 	const recCfg = cfgWith([{ name: "acme", server: `http://${LOOPBACK}:${PORT_REC}`, repos: ["gitlab.com/acme/*"] }]);
-	applyQueueEnv(recCfg);
 	writePlan(TEAMH, "", "Queue: team");
 	indexPlans(TEAMH);
 	const d = checkInject({ agent: "main", inject: "what is next" }, recCfg);
@@ -1055,7 +1046,6 @@ console.log(svc.port);
 	expect(d.inject).toContain(VIEW_REL);
 	expect(readFileSync(log, "utf8").trim().split("\n")).toEqual(["GET /view"]);
 	proc.kill();
-	applyQueueEnv(cfg);
 });
 
 test("postTeamAnswer posts the answer alone to the percent-encoded /answer/<id>, and the server stores the caller's login", async () => {
@@ -1103,7 +1093,6 @@ test("a team answer from the page goes to the team server only: login stored, no
 	await publish(TEAMH, A_PEER);
 	const id = idOf(TEAMH);
 	const pageCfg: Config = { ...cfg, workspace: { ...cfg.workspace, enabled: true, owner_login: A } };
-	applyQueueEnv(pageCfg);
 	const page = startOwnerUi({ cfg: pageCfg, tailscale: TS, source: PAGE_SOURCE, hostname: LOOPBACK, port: 0, peerOf: () => A_PEER, resultsBuild: () => {} });
 	try {
 		const answersOf = async (): Promise<{ plan: string; login: string; answer: string }[]> =>

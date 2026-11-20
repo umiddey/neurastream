@@ -7,7 +7,6 @@ import { ConfigError, loadConfig, type Config } from "../core/config.ts";
 import { helpDoc, printText } from "../core/help.ts";
 import { backfillOwnerLog, type LogEntry, searchEntries, showEntries } from "../core/owner-log.ts";
 import { rangeEntries, runTopics, searchTopics, type Segment, type TopicsRun } from "../core/owner-topics.ts";
-import { applyQueueEnv } from "../core/queue/env.ts";
 
 const USAGE = "usage: neurastream recall <words>... [--since 7d|12h|YYYY-MM-DD] [--limit N] [--json]\n       neurastream recall --show <id> [--json]";
 const BACKFILL_USAGE = "usage: neurastream recall backfill [--since 7d|12h|YYYY-MM-DD]";
@@ -132,8 +131,6 @@ export function recallCli(args: string[], cfg: Config): number | Promise<number>
 		printText(helpDoc("recall"));
 		return 0;
 	}
-	// The log paths follow the queue state directory, so the config's queue env is applied first.
-	applyQueueEnv(cfg);
 	if (args[0] === "backfill") return backfillCli(args.slice(1), cfg);
 	if (args[0] === "topics") return topicsCli(args.slice(1), cfg);
 	const parsed = parseArgs(args);
@@ -143,7 +140,7 @@ export function recallCli(args: string[], cfg: Config): number | Promise<number>
 	}
 	if (parsed.show !== undefined) {
 		const parts = parsed.show.split("..");
-		const pair = parts.length === 2 ? rangeEntries(parts[0]!, parts[1]!) : showEntries(parsed.show);
+		const pair = parts.length === 2 ? rangeEntries(parts[0]!, parts[1]!, cfg.paths) : showEntries(parsed.show, cfg.paths);
 		if (pair === undefined || pair.length === 0) {
 			console.error(`no entry with id ${parsed.show}`);
 			return 2;
@@ -157,11 +154,11 @@ export function recallCli(args: string[], cfg: Config): number | Promise<number>
 		console.error(USAGE);
 		return 2;
 	}
-	const topics = searchTopics(parsed.words)
+	const topics = searchTopics(parsed.words, cfg.paths)
 		.filter((s) => parsed.sinceSec === undefined || s.at >= parsed.sinceSec)
 		.slice(0, parsed.limit);
 	const left = parsed.limit - topics.length;
-	const hits = left > 0 ? searchEntries({ words: parsed.words, sinceSec: parsed.sinceSec, limit: left }) : [];
+	const hits = left > 0 ? searchEntries({ words: parsed.words, sinceSec: parsed.sinceSec, limit: left }, cfg.paths) : [];
 	if (topics.length === 0 && hits.length === 0) {
 		console.log("no match");
 		return 1;

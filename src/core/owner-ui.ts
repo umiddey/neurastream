@@ -24,7 +24,7 @@ import { isBusy } from "./file-lock.ts";
 import { log, MAIN_ID_RE } from "./guards.ts";
 import { publishedPages } from "./pages-expiry.ts";
 import { readMetricEvents } from "./metrics.ts";
-import { activePlans, chatUnlock, dependencyOrderProblems, expandHome, gitTop, stateDirPath, unlockPath, writeIndex, type Plan } from "./queue/lib.ts";
+import { activePlans, chatUnlock, dependencyOrderProblems, expandHome, gitTop, writeIndex, type Plan, type QueuePaths } from "./queue/lib.ts";
 import { featuresReport, gatherTags, loadPlans, releasesReport, type FeaturesReport, type ReleaseRow, type ReleaseSideStats, type ReleasesReport } from "./results.ts";
 import type { Tailscale } from "./tailscale.ts";
 import { recheckHolds, staleFiles, type HoldRunner } from "./waiting-check.ts";
@@ -70,8 +70,8 @@ export interface OwnerUiOptions {
 export type Auth = { ok: true; login: string } | { ok: false; why: string };
 
 /** The inbox the page appends answers to and the adapter delivers from: under the queue state dir. */
-export function inboxPath(): string {
-	return `${stateDirPath()}/owner-inbox.jsonl`;
+export function inboxPath(paths: Pick<QueuePaths, "queue_state">): string {
+	return `${paths.queue_state}/owner-inbox.jsonl`;
 }
 
 export function isLoopback(peer: string): boolean {
@@ -127,10 +127,10 @@ export interface QuestionRow {
 }
 
 /** The newest inbox record that carries an answer for this plan, if any. A missing or torn inbox is simply "no answer". */
-function lastAnswerFor(plan: string): { answer: string; at: number } | null {
+function lastAnswerFor(plan: string, paths: Pick<QueuePaths, "queue_state">): { answer: string; at: number } | null {
 	let lines: string[];
 	try {
-		lines = readFileSync(inboxPath(), "utf8").split("\n");
+		lines = readFileSync(inboxPath(paths), "utf8").split("\n");
 	} catch {
 		return null;
 	}
@@ -199,7 +199,7 @@ export interface MachineRow {
 
 export function questionRows(cfg: Config, run?: HoldRunner): QuestionRow[] {
 	const now = Date.now();
-	const plans = activePlans(cfg.paths.queue_index);
+	const plans = activePlans(cfg.paths);
 	const stale = staleFiles(recheckHolds(cfg, plans, run));
 	return plans
 		.filter(p => p.waiting && p.status === "open" && p.waitingLine && !stale.has(p.file))
@@ -219,7 +219,7 @@ export function questionRows(cfg: Config, run?: HoldRunner): QuestionRow[] {
 				unblocks: plans.filter(o => o.status === "open" && o.file !== p.file && o.waitsOn.includes(p.file)).map(o => o.title),
 				goal: p.goal,
 				waitingMin,
-				answered: lastAnswerFor(p.file),
+				answered: lastAnswerFor(p.file, cfg.paths),
 			};
 		});
 }
@@ -262,7 +262,7 @@ function queueState(p: Plan, plans: Plan[]): string {
 }
 
 export function queueRows(cfg: Config, views?: Map<string, TeamView | Unreachable>): QueueRow[] {
-	const plans = activePlans(cfg.paths.queue_index).filter(p => p.status === "open");
+	const plans = activePlans(cfg.paths).filter(p => p.status === "open");
 	const claims = summaryHolder(cfg, {}, views);
 	return plans.map(p => {
 		const holder = claims.holder(p.file);
@@ -446,14 +446,14 @@ export function nowStats(cfg: Config, source: RunSource, now: number): NowStats 
 	const byModel = [...models.entries()].map(([model, v]) => ({ model, spend: v.spend, runs: v.runs })).sort((a, b) => b.spend - a.spend);
 	// The tile counts the open plans the queue card renders; a holder read here would ask every
 	// team server a second time on a page that already read one view per team (P4).
-	return { spend24, mainSpend, agentSpend, runs24, running, died, spendByHour, runsByHour, byModel, openPlans: activePlans(cfg.paths.queue_index).filter(p => p.status === "open").length };
+	return { spend24, mainSpend, agentSpend, runs24, running, died, spendByHour, runsByHour, byModel, openPlans: activePlans(cfg.paths).filter(p => p.status === "open").length };
 }
 
 // ---- owner messages (plan P13): a one-way note plus images, kept for 12 h ----
 
 /** Where the page stores owner messages: under the queue state dir, one dir per message. */
-function ownerMessagesDir(): string {
-	return `${stateDirPath()}/owner-messages`;
+function ownerMessagesDir(paths: Pick<QueuePaths, "queue_state">): string {
+	return `${paths.queue_state}/owner-messages`;
 }
 
 /** Main ids with a live running.lock in their main state dir (P5 multi-main): the page's picker list and the @-routing target set. */
@@ -521,25 +521,27 @@ const IMAGE_EXT: Record<string, string> = { png: "png", jpeg: "jpg", gif: "gif",
 const IMAGE_MIME: Record<string, string> = { png: "image/png", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp" };
 
 /** Removes every message dir older than the keep window; runs on every GET / and every POST /message. */
-export function sweepOwnerMessages(now: number): void {
+export function sweepOwnerMessages(now: number, paths: Pick<QueuePaths, "queue_state">): void {
+	const dir = ownerMessagesDir(paths);
 	let names: string[];
 	try {
-		names = readdirSync(ownerMessagesDir());
+		names = readdirSync(dir);
 	} catch {
 		return;
 	}
 	for (const name of names) {
 		const ts = Number(name.slice(0, name.indexOf("-")));
 		if (Number.isFinite(ts) && now - ts <= OWNER_MESSAGE_KEEP_SEC) continue;
-		rmSync(`${ownerMessagesDir()}/${name}`, { recursive: true, force: true });
+		rmSync(`${dir}/${name}`, { recursive: true, force: true });
 	}
 }
 
 /** The messages newer than the keep window for the "Sent today" list, newest first. A torn dir is skipped, not fatal. */
-export function recentOwnerMessages(now: number): MessageRow[] {
+export function recentOwnerMessages(now: number, paths: Pick<QueuePaths, "queue_state">): MessageRow[] {
+	const dir = ownerMessagesDir(paths);
 	let names: string[] = [];
 	try {
-		names = readdirSync(ownerMessagesDir());
+		names = readdirSync(dir);
 	} catch {
 		return [];
 	}
@@ -548,7 +550,7 @@ export function recentOwnerMessages(now: number): MessageRow[] {
 		const dirTs = Number(id.slice(0, id.indexOf("-")));
 		if (!Number.isFinite(dirTs) || now - dirTs >= OWNER_MESSAGE_KEEP_SEC) continue;
 		try {
-			const meta = JSON.parse(readFileSync(`${ownerMessagesDir()}/${id}/message.json`, "utf8")) as Record<string, unknown>;
+			const meta = JSON.parse(readFileSync(`${dir}/${id}/message.json`, "utf8")) as Record<string, unknown>;
 			rows.push({
 				id,
 				ts: Number(meta.ts) || dirTs,
@@ -910,7 +912,7 @@ function publishedRows(cfg: Config, host: string): PublishedPageRow[] {
 
 function lockMinutesLeft(cfg: Config): number | null {
 	try {
-		const end = statSync(unlockPath()).mtimeMs + cfg.guards.unlock_minutes * 60_000;
+		const end = statSync(cfg.paths.unlock).mtimeMs + cfg.guards.unlock_minutes * 60_000;
 		const left = Math.round((end - Date.now()) / 60_000);
 		return left > 0 ? left : null;
 	} catch {
@@ -934,8 +936,8 @@ export function buildPageData(cfg: Config, source: RunSource, tab: string, build
 		pages: safe(() => publishedRows(cfg, pagesHost)),
 		stats: safe(() => nowStats(cfg, source, nowSec())),
 		teams: views === null ? null : safe(() => teamSections(cfg, views)),
-		results: tab === "results" ? safe(() => resultsView(nowSec(), build)) : undefined,
-		messages: safe(() => recentOwnerMessages(nowSec())),
+		results: tab === "results" ? safe(() => resultsView(nowSec(), build, cfg.paths)) : undefined,
+		messages: safe(() => recentOwnerMessages(nowSec(), cfg.paths)),
 		lockMinutesLeft: lockMinutesLeft(cfg),
 	};
 }
@@ -1131,8 +1133,8 @@ const RESULTS_MAX_AGE_SEC = 3600;
 /** A build that failed or got killed is retried no sooner than this. */
 const RESULTS_RETRY_SEC = 600;
 
-export function resultsCachePath(): string {
-	return `${stateDirPath()}/results-cache.json`;
+export function resultsCachePath(paths: Pick<QueuePaths, "queue_state">): string {
+	return `${paths.queue_state}/results-cache.json`;
 }
 
 /**
@@ -1166,10 +1168,10 @@ let buildRunning = false;
 let lastBuildStart = 0;
 
 /** Reads the saved numbers and, when they are missing or stale, starts one build in the background. */
-function resultsView(now: number, build: ResultsBuild): ResultsView {
+function resultsView(now: number, build: ResultsBuild, paths: Pick<QueuePaths, "queue_state">): ResultsView {
 	let saved: { at: number; data: ResultsData } | null = null;
 	try {
-		saved = JSON.parse(readFileSync(resultsCachePath(), "utf8"));
+		saved = JSON.parse(readFileSync(resultsCachePath(paths), "utf8"));
 	} catch {
 		// No build has finished yet.
 	}
@@ -1687,12 +1689,12 @@ const lastAnswerByPlan = new Map<string, { answer: string; ts: number }>();
 const DOUBLE_PRESS_SEC = 10;
 
 /** Appends the answer to the owner inbox unless this plan got the same trimmed answer in the last 10 s (P8c). */
-function appendAnswer(plan: string, question: string, answer: string, login: string): void {
+function appendAnswer(plan: string, question: string, answer: string, login: string, paths: Pick<QueuePaths, "queue_state">): void {
 	const now = nowSec();
 	const last = lastAnswerByPlan.get(plan);
 	if (last !== undefined && last.answer === answer && now - last.ts < DOUBLE_PRESS_SEC) return;
-	mkdirSync(stateDirPath(), { recursive: true });
-	appendFileSync(inboxPath(), `${JSON.stringify({ ts: now, plan, question, answer, login })}\n`);
+	mkdirSync(paths.queue_state, { recursive: true });
+	appendFileSync(inboxPath(paths), `${JSON.stringify({ ts: now, plan, question, answer, login })}\n`);
 	lastAnswerByPlan.set(plan, { answer, ts: now });
 }
 
@@ -1704,15 +1706,15 @@ function handleAnswer(cfg: Config, source: RunSource, fields: Record<string, str
 	// P4: a team plan is answered on its server, never in this machine's inbox; the branch sits
 	// before the INDEX lookup, which knows only this machine's own plans.
 	if ((fields.team ?? "").trim()) return handleTeamAnswer(cfg, fields, planFile, answer, wantsJson);
-	const plan = activePlans(cfg.paths.queue_index).find(p => p.file === planFile);
+	const plan = activePlans(cfg.paths).find(p => p.file === planFile);
 	if (!plan) return wantsJson ? jsonFail("plan is not open and waiting", 409) : textRes("plan is not open and waiting", 409);
 	if (plan.status !== "open" || !plan.waiting || !plan.waitingLine) {
 		// Stale answer (P8b): Main cleared the question before the answer arrived; pass it on anyway.
-		appendAnswer(planFile, "(already cleared)", answer, login);
+		appendAnswer(planFile, "(already cleared)", answer, login, cfg.paths);
 		if (wantsJson) return jsonSent("stale", receiptText("stale", new URLSearchParams()));
 		return pageRes(cfg, source, new URLSearchParams({ sent: "stale" }), undefined, pagesHost);
 	}
-	appendAnswer(planFile, plan.waitingLine, answer, login);
+	appendAnswer(planFile, plan.waitingLine, answer, login, cfg.paths);
 	if (wantsJson) return jsonSent("answer", receiptText("answer", new URLSearchParams()));
 	return redirect(sentTo(fields.tab ?? "", "sent=answer"));
 }
@@ -1764,17 +1766,17 @@ function handleIncident(cfg: Config, fields: Record<string, string>, login: stri
 		if (wantsJson) return jsonSent("incident-closed", receiptText("incident-closed", new URLSearchParams()));
 		return redirect(sentTo(fields.tab ?? "", "sent=incident-closed"));
 	}
-	storeOwnerMessage(`${id}: it's a bug — plan it`, login, [], "");
+	storeOwnerMessage(`${id}: it's a bug — plan it`, login, [], "", cfg.paths);
 	if (wantsJson) return jsonSent("incident-bug", receiptText("incident-bug", new URLSearchParams()));
 	return redirect(sentTo(fields.tab ?? "", "sent=incident-bug"));
 }
 
 /** Stores an owner message (text and images) under a new id and inboxes it for Main (P13/P14). */
-function storeOwnerMessage(text: string, login: string, images: { bytes: Uint8Array; kind: string }[], to: string): void {
+function storeOwnerMessage(text: string, login: string, images: { bytes: Uint8Array; kind: string }[], to: string, paths: Pick<QueuePaths, "queue_state">): void {
 	const ts = nowSec();
 	// The dir name starts with a whole-second ts: the sweep and the image route both parse it.
 	const id = `${Math.floor(ts)}-${randomUUID().slice(0, 6)}`;
-	const dir = `${ownerMessagesDir()}/${id}`;
+	const dir = `${ownerMessagesDir(paths)}/${id}`;
 	mkdirSync(dir, { recursive: true });
 	const names: string[] = [];
 	for (let i = 0; i < images.length; i++) {
@@ -1783,15 +1785,15 @@ function storeOwnerMessage(text: string, login: string, images: { bytes: Uint8Ar
 		names.push(name);
 	}
 	writeFileSync(`${dir}/message.json`, `${JSON.stringify({ ts, text, login, to, images: names })}\n`);
-	mkdirSync(stateDirPath(), { recursive: true });
+	mkdirSync(paths.queue_state, { recursive: true });
 	// The text stays out of owner-inbox.jsonl; Main reads message.json through the id (P14).
-	appendFileSync(inboxPath(), `${JSON.stringify({ ts, kind: "message", id, login, to })}\n`);
+	appendFileSync(inboxPath(paths), `${JSON.stringify({ ts, kind: "message", id, login, to })}\n`);
 }
 
 // ---- POST /message (plan P13): the owner's one-way note plus images, inboxed by id ----
 
 async function handleMessage(req: Request, cfg: Config, login: string, wantsJson: boolean): Promise<Response> {
-	sweepOwnerMessages(nowSec());
+	sweepOwnerMessages(nowSec(), cfg.paths);
 	const form = await req.formData();
 	let text = "";
 	let toField = "";
@@ -1820,24 +1822,25 @@ async function handleMessage(req: Request, cfg: Config, login: string, wantsJson
 	// P5: an `@<id>` prefix or the picker's to field names one Main; a stale name is refused before anything is stored.
 	const pick = ownerMessageTarget(text, cfg, toField);
 	if ("refuse" in pick) return fail(pick.refuse);
-	storeOwnerMessage(text, login, images, pick.to);
+	storeOwnerMessage(text, login, images, pick.to, cfg.paths);
 	if (wantsJson) return jsonSent("message", receiptText("message", new URLSearchParams()));
 	return redirect("/?sent=message");
 }
 
 /** Serves one stored message image. Both path pieces are shape-checked and the name must be in message.json — raw input never reaches a path join. */
-function handleMessageImage(id: string, file: string): Response {
+function handleMessageImage(id: string, file: string, paths: Pick<QueuePaths, "queue_state">): Response {
 	if (!/^[0-9]+-[0-9a-f]{6}$/.test(id) || !/^[0-9]+\.(png|jpg|gif|webp)$/.test(file)) return textRes("not found", 404);
+	const dir = ownerMessagesDir(paths);
 	let meta: Record<string, unknown>;
 	try {
-		meta = JSON.parse(readFileSync(`${ownerMessagesDir()}/${id}/message.json`, "utf8")) as Record<string, unknown>;
+		meta = JSON.parse(readFileSync(`${dir}/${id}/message.json`, "utf8")) as Record<string, unknown>;
 	} catch {
 		return textRes("not found", 404);
 	}
 	const names = Array.isArray(meta.images) ? meta.images.filter((n): n is string => typeof n === "string") : [];
 	if (!names.includes(file)) return textRes("not found", 404);
 	try {
-		return new Response(readFileSync(`${ownerMessagesDir()}/${id}/${file}`), {
+		return new Response(readFileSync(`${dir}/${id}/${file}`), {
 			headers: { "content-type": IMAGE_MIME[file.slice(file.lastIndexOf(".") + 1)] ?? "application/octet-stream" },
 		});
 	} catch {
@@ -1850,9 +1853,9 @@ function handleUnlock(cfg: Config, fields: Record<string, string>, login: string
 	if (minutes !== "" && !/^\d+$/.test(minutes)) return wantsJson ? jsonFail("minutes must be a number", 400) : textRes("minutes must be a number", 400);
 	const result = chatUnlock(minutes === "" ? "unlock" : `unlock ${minutes}`, cfg, `ui:${login}`, "ui");
 	if (!result.applied) return wantsJson ? jsonFail("Refused — chat unlock is off", 400) : redirect(sentTo(fields.tab ?? "", "sent=unlock-off"));
-	mkdirSync(stateDirPath(), { recursive: true });
+	mkdirSync(cfg.paths.queue_state, { recursive: true });
 	appendFileSync(
-		inboxPath(),
+		inboxPath(cfg.paths),
 		`${JSON.stringify({ ts: nowSec(), kind: "unlock", minutes: result.minutes, until: result.until, login })}\n`,
 	);
 	if (wantsJson) return jsonSent("unlock", receiptText("unlock", new URLSearchParams({ minutes: String(result.minutes) })));
@@ -1862,8 +1865,8 @@ function handleUnlock(cfg: Config, fields: Record<string, string>, login: string
 function handleLock(cfg: Config, fields: Record<string, string>, login: string, wantsJson: boolean): Response {
 	const result = chatUnlock("lock", cfg, `ui:${login}`, "ui");
 	if (!result.applied) return wantsJson ? jsonFail("Refused — chat unlock is off", 400) : redirect(sentTo(fields.tab ?? "", "sent=unlock-off"));
-	mkdirSync(stateDirPath(), { recursive: true });
-	appendFileSync(inboxPath(), `${JSON.stringify({ ts: nowSec(), kind: "lock", login })}\n`);
+	mkdirSync(cfg.paths.queue_state, { recursive: true });
+	appendFileSync(inboxPath(cfg.paths), `${JSON.stringify({ ts: nowSec(), kind: "lock", login })}\n`);
 	if (wantsJson) return jsonSent("lock", receiptText("lock", new URLSearchParams()));
 	return redirect(sentTo(fields.tab ?? "", "sent=lock"));
 }
@@ -1878,8 +1881,8 @@ function handleTier(cfg: Config, fields: Record<string, string>, login: string, 
 	if (!(TIERS as readonly string[]).includes(name)) return wantsJson ? jsonFail("tier must be strict, opinionated or full", 400) : textRes("tier must be strict, opinionated or full", 400);
 	const result = chatTier(`tier ${name}`, cfg, `ui:${login}`, "ui");
 	if (!result.applied) return wantsJson ? jsonFail("Refused — chat unlock is off", 400) : redirect(sentTo(fields.tab ?? "", "sent=unlock-off"));
-	mkdirSync(stateDirPath(), { recursive: true });
-	appendFileSync(inboxPath(), `${JSON.stringify({ ts: nowSec(), kind: "tier", tier: result.tier, login })}\n`);
+	mkdirSync(cfg.paths.queue_state, { recursive: true });
+	appendFileSync(inboxPath(cfg.paths), `${JSON.stringify({ ts: nowSec(), kind: "tier", tier: result.tier, login })}\n`);
 	if (wantsJson) return jsonSent("tier");
 	return redirect(sentTo(fields.tab ?? "", `sent=tier&tier=${result.tier}`));
 }
@@ -1960,7 +1963,7 @@ function handleReorder(cfg: Config, fields: Record<string, string>, login: strin
 	const fail = (error: string, status: number): Response =>
 		wantsJson ? Response.json({ ok: false, error }, { status }) : textRes(error, status);
 	// One source of truth for the reorderable set: the open plans, the same list queueRows renders.
-	const openPlans = activePlans(index).filter(p => p.status === "open");
+	const openPlans = activePlans(cfg.paths).filter(p => p.status === "open");
 	const openPaths = openPlans.map(p => p.file);
 	const openPlan: Record<string, Plan> = Object.fromEntries(openPlans.map(p => [p.file, p]));
 	if (!moved || !order.length) return fail("order and moved are required", 400);
@@ -1986,8 +1989,8 @@ function handleReorder(cfg: Config, fields: Record<string, string>, login: strin
 	// The queue library owns every index write (plan 20261031_0911 P2): a reorder is the same plan
 	// set, so no removal reason, and the write lands temp+rename and leaves the file 0444.
 	writeIndex(newText.trimEnd().split("\n"), undefined, index);
-	mkdirSync(stateDirPath(), { recursive: true });
-	appendFileSync(inboxPath(), `${JSON.stringify({ ts: nowSec(), kind: "reorder", plan: moved, from: from + 1, to: to + 1, login })}\n`);
+	mkdirSync(cfg.paths.queue_state, { recursive: true });
+	appendFileSync(inboxPath(cfg.paths), `${JSON.stringify({ ts: nowSec(), kind: "reorder", plan: moved, from: from + 1, to: to + 1, login })}\n`);
 	if (wantsJson) return Response.json({ ok: true, to: to + 1 });
 	return redirect(sentTo(fields.tab ?? "", `sent=reorder&to=${to + 1}`));
 }
@@ -2056,7 +2059,7 @@ export function startOwnerUi(opts: OwnerUiOptions): OwnerUiServer {
 							res = textRes("forbidden: origin is not this page", 403);
 							code = 403;
 						} else if (req.method === "GET" && url.pathname === "/") {
-							sweepOwnerMessages(nowSec());
+							sweepOwnerMessages(nowSec(), cfg.paths);
 res = pageRes(cfg, source, url.searchParams, resultsBuild, pagesHost);
 							code = 200;
 						} else if (req.method === "GET" && url.pathname.startsWith("/knowledge/")) {
@@ -2070,7 +2073,7 @@ res = pageRes(cfg, source, url.searchParams, resultsBuild, pagesHost);
 							code = res.status;
 						} else if (req.method === "GET" && url.pathname.startsWith("/message-image/")) {
 							const mim = /^\/message-image\/([^/]+)\/([^/]+)$/.exec(url.pathname);
-							res = mim ? handleMessageImage(mim[1]!, mim[2]!) : textRes("not found", 404);
+							res = mim ? handleMessageImage(mim[1]!, mim[2]!, cfg.paths) : textRes("not found", 404);
 							code = res.status;
 						} else if (req.method === "POST") {
 							// The page's script asks for JSON on every POST (P11b); a no-JS form post gets today's 303s.

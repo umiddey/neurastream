@@ -108,10 +108,10 @@ export function proposeIncidentCmd(cfg: Config, id: string, why: string | undefi
 	return 0;
 }
 
-export async function runIncident(args: string[]): Promise<number> {
+export async function runIncident(args: string[], injected?: Config): Promise<number> {
 	let cfg: Config;
 	try {
-		cfg = loadConfig();
+		cfg = injected ?? loadConfig();
 	} catch (err) {
 		console.error(err instanceof ConfigError ? err.message : String(err));
 		return 1;

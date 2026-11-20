@@ -10,7 +10,6 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, type Config } from "../src/core/config.ts";
-import { refreshQueuePaths } from "../src/core/queue/lib.ts";
 import { queueCancel } from "../src/core/queue-cancel.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "ns-qcancel-closebin-"));
@@ -97,6 +96,5 @@ afterAll(() => {
 	process.env.HOME = homeBefore;
 	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
 	for (const [k, v] of Object.entries(queueEnvBefore)) if (v !== undefined) process.env[k] = v;
-	refreshQueuePaths();
 	rmSync(TMP, { recursive: true, force: true });
 });

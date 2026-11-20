@@ -9,7 +9,6 @@ import path from "node:path";
 import { fileClaimStore, heldByOther, type Claim, type ClaimStore } from "../core/claims.ts";
 import { nowSec, strftime } from "../core/clock.ts";
 import { mainId } from "../core/guards.ts";
-import { applyQueueEnv } from "../core/queue/env.ts";
 import { activePlans, openWaits } from "../core/queue/lib.ts";
 import { claimStoreFor, remoteStoreFor, type TeamEntry } from "../core/team-client.ts";
 import type { Config } from "../core/config.ts";
@@ -21,13 +20,12 @@ const USAGE = [
 ].join("\n");
 
 export function claimCli(args: string[], cfg: Config): number {
-	applyQueueEnv(cfg);
 	const me = mainId();
 
 	if (args[0] === "next") {
 		// Index order IS priority; the skips are queueSummary's flags minus plans another live
 		// Main holds. A claim that races away mid-loop just moves the pick to the next plan.
-		const plans = activePlans();
+		const plans = activePlans(cfg.paths);
 		const rank = new Map(plans.map((p, i) => [p.file, i + 1] as const));
 		for (const p of plans) {
 			if (p.status !== "open" || p.waiting || openWaits(p, plans, rank).length) continue;

@@ -28,6 +28,7 @@ import { addIncident, dismissIncident, openIncidents, readIncidents, type Incide
 import { m7, rowsOf, silentFailures, snap } from "./report.ts";
 import { loadKnownSecrets, redactSecrets } from "./secret-redact.ts";
 import { ciScan } from "./ci.ts";
+import type { QueuePaths } from "./queue/lib.ts";
 import type { CommandRunner } from "./mr-sweep.ts";
 import type { ReleaseTag } from "./results.ts";
 import { levelFor, readLevels, writeLevels, type Level, type RuleLevels } from "./rule-levels.ts";
@@ -618,9 +619,9 @@ function judgeRelease(cfg: Config, tag: string, before: Window, after: Window, d
 }
 
 /** The plan files a timer run treats as staffed: a plan whose newest spawn (staffing.json) names tasks and is newer than `ciRedHours` before `now`. An older spawn's agent is gone, so its red MR is not held back (I-20261031-265). A timer run has no live job list, so the spawn record is the only signal it has. */
-export function timerStaffedPlans(now: number, ciRedHours: number): string[] {
+export function timerStaffedPlans(now: number, ciRedHours: number, paths: Pick<QueuePaths, "queue_state">): string[] {
 	const since = now - ciRedHours * 3600;
-	return Object.entries(readStaffingEntries()).filter(([, e]) => e.names.length > 0 && e.at > since).map(([file]) => file);
+	return Object.entries(readStaffingEntries(paths)).filter(([, e]) => e.names.length > 0 && e.at > since).map(([file]) => file);
 }
 
 /** The watcher's unit files under one home: the systemd user service and timer on Linux, the

@@ -11,8 +11,7 @@ import { runConfigKeys } from "../src/cli/config-set.ts";
 import { chatPlanner, currentPlanner, plannerBaselineFile, plannerFile, plannerPin, verifyPlannerMode } from "../src/core/autonomy.ts";
 import { configFile, loadConfig, type Config } from "../src/core/config.ts";
 import { checkPlanEdit, checkTool, plannerBody, plannerSpawnPlan, spawnProblem } from "../src/core/guards.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
-import { PROTECTED, protectedHit, STATE_DIR } from "../src/core/queue/lib.ts";
+import { protectedHit, protectedPaths } from "../src/core/queue/lib.ts";
 
 const roots: string[] = [];
 const queueEnvBefore = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("QUEUE_")));
@@ -46,11 +45,11 @@ function load(text: string): Config {
 
 function writePlannerFile(word: string): void {
 	mkdirSync(join(root, "state"), { recursive: true });
-	writeFileSync(plannerFile(), `${word}\n`);
+	writeFileSync(plannerFile(cfg.paths), `${word}\n`);
 }
 
 function clearPlannerFile(): void {
-	rmSync(plannerFile(), { force: true });
+	rmSync(plannerFile(cfg.paths), { force: true });
 }
 
 function plannerLogLines(): string[] {
@@ -81,9 +80,7 @@ async function capture(fn: () => number | Promise<number>): Promise<{ code: numb
 beforeEach(() => {
 	root = mkdtempSync(join(tmpdir(), "neurastream-planner-"));
 	roots.push(root);
-	clearPlannerFile();
 	cfg = load(UNLOCKED());
-	applyQueueEnv(cfg);
 	clearPlannerFile();
 });
 
@@ -92,23 +89,22 @@ beforeEach(() => {
 test("no planner file: the config default main is in force", () => {
 	expect(cfg.autonomy.planner).toBe("main");
 	expect(currentPlanner(cfg)).toBe("main");
-	expect(existsSync(plannerFile())).toBe(false);
+	expect(existsSync(plannerFile(cfg.paths))).toBe(false);
 });
 
 // --- chatPlanner: a non-owner source changes nothing ---
 
 test("chat unlock off: the switch refuses and writes nothing", () => {
 	const locked = load(UNLOCKED().replace("chat_unlock: true", "chat_unlock: false"));
-	applyQueueEnv(locked);
 	expect(chatPlanner("planner delegated", locked, "interactive")).toEqual({ applied: false });
-	expect(existsSync(plannerFile())).toBe(false);
+	expect(existsSync(plannerFile(cfg.paths))).toBe(false);
 });
 
 test("anything that is not the whole-message `planner <mode>` command is ignored", () => {
 	for (const text of ["planner", "planner sideways", "please planner delegated", "planner delegated now", "delegated", ""]) {
 		expect(chatPlanner(text, cfg, "interactive")).toEqual({ applied: false });
 	}
-	expect(existsSync(plannerFile())).toBe(false);
+	expect(existsSync(plannerFile(cfg.paths))).toBe(false);
 	expect(plannerLogLines()).toEqual([]);
 });
 
@@ -117,7 +113,7 @@ test("anything that is not the whole-message `planner <mode>` command is ignored
 test("planner delegated writes the file, logs PLANNER with the source, and currentPlanner reads it back", () => {
 	const r = chatPlanner("planner delegated", cfg, "interactive");
 	expect(r).toEqual({ applied: true, planner: "delegated" });
-	expect(readFileSync(plannerFile(), "utf8")).toBe("delegated\n");
+	expect(readFileSync(plannerFile(cfg.paths), "utf8")).toBe("delegated\n");
 	expect(currentPlanner(cfg)).toBe("delegated");
 	expect(plannerLogLines().join("\n")).toContain(" PLANNER delegated chat source=interactive");
 });
@@ -130,7 +126,7 @@ test("matching is trimmed and case-insensitive", () => {
 test("planner main returns to the default", () => {
 	writePlannerFile("delegated");
 	expect(chatPlanner("planner main", cfg, "interactive")).toEqual({ applied: true, planner: "main" });
-	expect(readFileSync(plannerFile(), "utf8")).toBe("main\n");
+	expect(readFileSync(plannerFile(cfg.paths), "utf8")).toBe("main\n");
 	expect(currentPlanner(cfg)).toBe("main");
 });
 
@@ -149,7 +145,6 @@ test("config set autonomy.planner round-trips: set, get, effective mode, back to
 	expect(got.out).toBe("delegated");
 	// No state file: the effective mode follows the config door.
 	const delegated = load(UNLOCKED("delegated"));
-	applyQueueEnv(delegated);
 	expect(delegated.autonomy.planner).toBe("delegated");
 	expect(currentPlanner(delegated)).toBe("delegated");
 	// The owner's chat switch wins over the config default.
@@ -235,7 +230,7 @@ test("delegated: the planner sub's brief-named NEW plan with its Planner header 
 test("delegated: the named review spawn may write its own plan's verdict, anyone else may not", () => {
 	writePlannerFile("delegated");
 	const plan = planPath("immediate/20261102_1801_planner_work.md");
-	writeFileSync(join(STATE_DIR, "review-spawns.json"), JSON.stringify({ revPunch: { plan, text: "", hash: "x", verdicts: 0 } }));
+	writeFileSync(join(cfg.paths.queue_state, "review-spawns.json"), JSON.stringify({ revPunch: { plan, text: "", hash: "x", verdicts: 0 } }));
 	const line = "- 2026-11-02 23:40 revPunch: PLAN REVIEW: PASS — redundant: none — inefficient: none — insecure: none\n";
 	const pre = checkTool({ tool: "edit", input: { path: plan, old_string: "## Progress\n", new_string: `## Progress\n${line}` }, cwd: root, agent: "sub", agentId: "revPunch", calls: 0, paths: [], writes: [], command: "" }, cfg);
 	expect(pre.allow).toBe(true);
@@ -333,7 +328,7 @@ test("delegated: text after the plan path on the Planner-role line never joins t
 	writePlannerFile("delegated");
 	const plan = planPath("20261103_1100_binding.md");
 	expect(bindPlanner("PlanBound", `${plan}. Read the brief at local://x.md. MR: none open.`)).toBeNull();
-	expect(plannerSpawnPlan("PlanBound")).toBe(plan);
+	expect(plannerSpawnPlan("PlanBound", cfg.paths)).toBe(plan);
 });
 
 test("delegated: a relative, outside-docs/plans, non-.md or missing-docs/plans path is refused at spawn", () => {
@@ -390,15 +385,15 @@ test("(d2) a deleted baseline reverts the mode to main and the config value to t
 	expect(verifyPlannerMode(plannerPin(reread())).reverted).toBe(true);
 	expect(reread().autonomy.planner).toBe("main");
 	expect(currentPlanner(reread())).toBe("main");
-	expect(existsSync(plannerFile())).toBe(false);
+	expect(existsSync(plannerFile(cfg.paths))).toBe(false);
 });
 
 test("(d3) a hand-edited state file is reverted to the baseline bytes", () => {
 	ownerStamp("delegated");
-	writeFileSync(plannerFile(), "main\n");
+	writeFileSync(plannerFile(cfg.paths), "main\n");
 	const v = verifyPlannerMode(plannerPin(cfg));
 	expect(v.reverted).toBe(true);
-	expect(readFileSync(plannerFile(), "utf8")).toBe("delegated\n");
+	expect(readFileSync(plannerFile(cfg.paths), "utf8")).toBe("delegated\n");
 	expect(currentPlanner(cfg)).toBe("delegated");
 });
 
@@ -408,17 +403,17 @@ test("(d4) a clean stamp is accepted: the baseline records it and the next seam 
 	expect(base.planner).toEqual({ exists: true, bytes: "delegated\n" });
 	expect(base.config.planner).toBe("main");
 	expect(verifyPlannerMode(plannerPin(reread())).reverted).toBe(false);
-	expect(readFileSync(plannerFile(), "utf8")).toBe("delegated\n");
+	expect(readFileSync(plannerFile(cfg.paths), "utf8")).toBe("delegated\n");
 });
 
 test("(d5) the baseline path is in the built-in protected set", () => {
-	expect(PROTECTED).toContain(join(dirname(configFile()), "guard-baseline"));
+	expect(protectedPaths(cfg.paths)).toContain(join(dirname(configFile()), "guard-baseline"));
 });
 
 test("(d6) a queue-side edit to the baseline is refused by protectedHit", () => {
 	const baseline = join(dirname(configFile()), "guard-baseline");
-	expect(protectedHit([baseline])).toBe(baseline);
-	expect(protectedHit([join(root, "docs/plans/20261102_1500_thing.md")])).toBeNull();
+	expect(protectedHit([baseline], cfg.paths)).toBe(baseline);
+	expect(protectedHit([join(root, "docs/plans/20261102_1500_thing.md")], cfg.paths)).toBeNull();
 });
 
 test("(d7) with no baseline, a planted state file is deleted and the mode stays main", () => {
@@ -426,7 +421,7 @@ test("(d7) with no baseline, a planted state file is deleted and the mode stays 
 	expect(currentPlanner(cfg)).toBe("delegated");
 	const v = verifyPlannerMode(plannerPin(cfg));
 	expect(v.reverted).toBe(true);
-	expect(existsSync(plannerFile())).toBe(false);
+	expect(existsSync(plannerFile(cfg.paths))).toBe(false);
 	expect(currentPlanner(cfg)).toBe("main");
 });
 

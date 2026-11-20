@@ -10,15 +10,12 @@ import { dirname, join } from "node:path";
 import { checkInject, checkTool, readWindow, resetMainCalls, writeWindow } from "../src/core/guards.ts";
 import type { Config } from "../src/core/config.ts";
 import { loadConfig } from "../src/core/config.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
-import { refreshQueuePaths } from "../src/core/queue/lib.ts";
 
 const roots: string[] = [];
 const originalQueueEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith("QUEUE_")));
 afterAll(() => {
 	for (const key of Object.keys(process.env)) if (key.startsWith("QUEUE_")) delete process.env[key];
 	Object.assign(process.env, originalQueueEnv);
-	refreshQueuePaths();
 	for (const root of roots) rmSync(root, { recursive: true, force: true });
 });
 
@@ -42,7 +39,7 @@ beforeEach(() => {
 	writeFileSync(join(agent, "CANCELLED.md"), "");
 	writeFileSync(join(agent, "subagents.md"), "## Allowed\n- `task`\n");
 	loadCfg("guards:\n  main_warn_calls: 2\n  main_max_calls: 3\n  main_edit_limit: 5\n  main_window_min: 15\n");
-	writeWindow({ used: [], windowStart: 0, mainCalls: 0 });
+	writeWindow({ used: [], windowStart: 0, mainCalls: 0 }, cfg.paths);
 });
 
 function loadCfg(guardsYaml: string): void {
@@ -67,7 +64,6 @@ ${guardsYaml}`,
 	const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("QUEUE_")));
 	Object.assign(env, { HOME: root });
 	cfg = loadConfig({ home: root, env });
-	applyQueueEnv(cfg);
 }
 
 const mainEvent = (tool: string, input: Record<string, unknown> = {}) => ({
@@ -116,14 +112,14 @@ test("calls 1-3 are allowed with the warn band from main_warn_calls; the 4th is 
 	expect(fourth.reason).toContain("main-guard: call 3/3 since the owner's last message or your last hand-back");
 	expect(fourth.reason).toContain("spawn an implementer");
 	// the refused call does not count
-	expect(readWindow().mainCalls).toBe(3);
+	expect(readWindow(cfg.paths).mainCalls).toBe(3);
 });
 
 test("an exempt tool at the cap passes and never counts", () => {
 	toCap();
 	const d = checkTool(mainEvent("task", { tasks: [] }), cfg);
 	expect(d.allow).toBe(true);
-	expect(readWindow().mainCalls).toBe(3);
+	expect(readWindow(cfg.paths).mainCalls).toBe(3);
 });
 
 test("a real owner prompt resets the count; a continuation prompt does not", () => {
@@ -132,7 +128,7 @@ test("a real owner prompt resets the count; a continuation prompt does not", () 
 	checkInject({ inject: "what is next", agent: "main" }, cfg);
 	const d = checkTool(mainEvent("read"), cfg);
 	expect(d.allow).toBe(true);
-	expect(readWindow().mainCalls).toBe(1);
+	expect(readWindow(cfg.paths).mainCalls).toBe(1);
 	// two more reads reach the cap again; the next is refused
 	expect(checkTool(mainEvent("read"), cfg).allow).toBe(true);
 	expect(checkTool(mainEvent("read"), cfg).allow).toBe(true);
@@ -143,11 +139,11 @@ test("a real owner prompt resets the count; a continuation prompt does not", () 
 
 test("the terminal hand-back resets the count and keeps the edit window", () => {
 	toCap();
-	const w = readWindow();
-	writeWindow({ ...w, used: ["edit:src/code.ts"] });
-	resetMainCalls();
-	expect(readWindow().mainCalls).toBe(0);
-	expect(readWindow().used).toEqual(["edit:src/code.ts"]);
+	const w = readWindow(cfg.paths);
+	writeWindow({ ...w, used: ["edit:src/code.ts"] }, cfg.paths);
+	resetMainCalls(cfg.paths);
+	expect(readWindow(cfg.paths).mainCalls).toBe(0);
+	expect(readWindow(cfg.paths).used).toEqual(["edit:src/code.ts"]);
 	expect(checkTool(mainEvent("read"), cfg).allow).toBe(true);
 });
 
@@ -160,7 +156,7 @@ test("subagent counting is unchanged", () => {
 	expect(spent.allow).toBe(false);
 	expect(spent.reason).toContain("call budget spent (100/100)");
 	// sub calls never touch Main's counter
-	expect(readWindow().mainCalls).toBe(0);
+	expect(readWindow(cfg.paths).mainCalls).toBe(0);
 });
 
 test("main_max_calls 0 is off", () => {
@@ -237,14 +233,14 @@ test("the adapter resets at a terminal agent_end and keeps counting across willC
 
 test("a capped count starts over 15 min after its first call, with no owner message or hand-back", () => {
 	toCap();
-	const start = readWindow().mainCallsStart!;
-	writeWindow({ ...readWindow(), mainCallsStart: start - 14 * 60 });
+	const start = readWindow(cfg.paths).mainCallsStart!;
+	writeWindow({ ...readWindow(cfg.paths), mainCallsStart: start - 14 * 60 }, cfg.paths);
 	const still = checkTool(mainEvent("read"), cfg);
 	expect(still.allow).toBe(false);
 	expect(still.reason).toContain("starts over 1 min from now");
-	writeWindow({ ...readWindow(), mainCallsStart: start - 15 * 60 });
+	writeWindow({ ...readWindow(cfg.paths), mainCallsStart: start - 15 * 60 }, cfg.paths);
 	expect(checkTool(mainEvent("read"), cfg).allow).toBe(true);
-	expect(readWindow().mainCalls).toBe(1);
+	expect(readWindow(cfg.paths).mainCalls).toBe(1);
 });
 
 test("a deferred hand-back (willContinue + a running job, reply ended with stop) resets the count", () => {

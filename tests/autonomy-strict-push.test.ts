@@ -12,15 +12,12 @@ import type { ToolEvent } from "../src/core/adapter.ts";
 import type { Config } from "../src/core/config.ts";
 import { loadConfig } from "../src/core/config.ts";
 import { checkTool } from "../src/core/guards.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
-import { refreshQueuePaths, stateDirPath } from "../src/core/queue/lib.ts";
 
 const roots: string[] = [];
 const queueEnvBefore = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("QUEUE_")));
 afterAll(() => {
 	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
 	Object.assign(process.env, queueEnvBefore);
-	refreshQueuePaths();
 	for (const root of roots) rmSync(root, { recursive: true, force: true });
 });
 
@@ -59,8 +56,7 @@ guards:
 	const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("QUEUE_")));
 	env.HOME = root;
 	cfg = loadConfig({ home: root, env });
-	applyQueueEnv(cfg);
-	writeFileSync(join(stateDirPath(), "autonomy-tier"), "strict\n");
+	writeFileSync(join(cfg.paths.queue_state, "autonomy-tier"), "strict\n");
 });
 
 function mainEvent(tool: string, input: Record<string, unknown>): ToolEvent {

@@ -5,7 +5,7 @@
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { cmd } from "./proc.ts";
-import { activePlans, gitTop } from "./queue/lib.ts";
+import { activePlans, gitTop, type QueuePaths } from "./queue/lib.ts";
 
 export const MR_SWEEP_NO_CLI = "mr-sweep: skipped (no forge CLI)";
 const UNTRACKED_TAIL = "— no open plan mentions it";
@@ -42,6 +42,7 @@ export interface SweepResult {
 
 export interface SweepOpts {
 	index?: string;
+	paths?: Pick<QueuePaths, "queue_index" | "blockers" | "agent_dir">;
 	env?: NodeJS.ProcessEnv;
 	runner?: CommandRunner;
 }
@@ -270,7 +271,8 @@ export function listOpenMrs(repo: string, run: CommandRunner = defaultRunner, en
  */
 export function mrSweep(opts: SweepOpts = {}): SweepResult {
 	const run = opts.runner ?? defaultRunner;
-	const plans = activePlans(opts.index);
+	const paths = opts.paths ?? (opts.index ? { queue_index: opts.index, blockers: "", agent_dir: path.dirname(opts.index) } : null);
+	const plans = paths ? activePlans(paths) : [];
 	const repos: string[] = [];
 	for (const p of plans) if (!repos.includes(p.repo)) repos.push(p.repo);
 	const lines: string[] = [];

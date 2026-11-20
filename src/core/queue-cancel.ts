@@ -3,28 +3,27 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileS
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Config } from "./config.ts";
-import { applyQueueEnv } from "./queue/env.ts";
 import {
 	activePlans,
 	banLine,
-	CANCEL_PENDING,
 	cancelledFile,
 	cancelledMatches,
 	cancelPending,
-	GLOBAL_CANCELLED,
+	cancelPendingPath,
 	repoRoot,
-	STATE_DIR,
 } from "./queue/lib.ts";
 
 export function queueCancel(args: string[], cfg: Config): number {
-	applyQueueEnv(cfg);
+	const STATE_DIR = cfg.paths.queue_state;
+	const CANCEL_PENDING = cancelPendingPath(cfg.paths);
+	const GLOBAL_CANCELLED = cfg.paths.cancelled;
 	const today = new Date().toISOString().slice(0, 10);
 	function die(msg: string): never {
 		console.error(`queue-cancel: REFUSED: ${msg}`);
 		process.exit(1);
 	}
 	function clearPending(how: string) {
-		const p = cancelPending();
+		const p = cancelPending(cfg.paths);
 		mkdirSync(STATE_DIR, { recursive: true });
 		appendFileSync(path.join(STATE_DIR, "cancel.log"), `${new Date().toISOString()} ${how}${p ? ` (flagged message: ${p.words})` : ""}\n`);
 		rmSync(CANCEL_PENDING, { force: true });
@@ -34,7 +33,7 @@ export function queueCancel(args: string[], cfg: Config): number {
 	if (args[0] === "--not-a-cancel") {
 		const why = (args[1] ?? "").trim();
 		// Only a message main-guard flagged needs an answer; a bare call is a wasted round.
-		if (!cancelPending()) die("nothing is flagged: main-guard did not see cancel words, so there is nothing to record");
+		if (!cancelPending(cfg.paths)) die("nothing is flagged: main-guard did not see cancel words, so there is nothing to record");
 		if (why.length < 10) die(`say why the message was no cancel (at least 10 characters). ${usage}`);
 		clearPending(`not a cancel: ${why}`);
 		console.log("queue-cancel: noted, not a cancel");
@@ -70,7 +69,7 @@ export function queueCancel(args: string[], cfg: Config): number {
 			console.log(c.status === 0 ? `queue-cancel: committed in ${repo}; push it with the usual rules` : `queue-cancel: WARNING commit failed (hooks above); the line is in the file and already enforced, commit it later`);
 		}
 		clearPending(`never: ${line}`);
-		for (const p of activePlans()) if (cancelledMatches(p).some(c => line.startsWith(`- ${c.name} `)))
+		for (const p of activePlans(cfg.paths)) if (cancelledMatches(p, cfg.paths).some(c => line.startsWith(`- ${c.name} `)))
 			console.log(`queue-cancel: open plan ${p.file} matches it and is now refused; cancel it too: queue-cancel ${p.file} "${owner}"`);
 		return 0;
 	}
@@ -78,7 +77,7 @@ export function queueCancel(args: string[], cfg: Config): number {
 	const [planArg, owner = ""] = args;
 	if (!planArg || planArg.startsWith("-")) die(usage);
 	const file = path.resolve(planArg);
-	const plan = activePlans().find(p => p.file === file);
+	const plan = activePlans(cfg.paths).find(p => p.file === file);
 	if (!plan) die(`${file} is not an indexed plan; for work without a plan use --never`);
 	if (owner.trim().length < 3) die(`quote the owner's words. ${usage}`);
 	let text = readFileSync(file, "utf8");
@@ -87,6 +86,17 @@ export function queueCancel(args: string[], cfg: Config): number {
 	writeFileSync(file, text);
 	clearPending(`plan: ${file}`);
 	const closeBin = path.join(path.dirname(fileURLToPath(import.meta.url)), "../cli/main.ts");
-	const r = spawnSync("bun", [closeBin, "queue-close", file], { stdio: "inherit", env: process.env });
+	const childEnv: NodeJS.ProcessEnv = {
+		...process.env,
+		HOME: cfg.paths.home,
+		QUEUE_AGENT: cfg.paths.agent_dir,
+		QUEUE_INDEX: cfg.paths.queue_index,
+		QUEUE_BLOCKERS: cfg.paths.blockers,
+		QUEUE_STATE: cfg.paths.queue_state,
+		QUEUE_SUBAGENTS: cfg.paths.subagents,
+		QUEUE_CANCELLED: cfg.paths.cancelled,
+		QUEUE_UNLOCK: cfg.paths.unlock,
+	};
+	const r = spawnSync("bun", [closeBin, "queue-close", file], { stdio: "inherit", env: childEnv });
 	return r.status ?? 1;
 }

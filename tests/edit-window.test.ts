@@ -5,15 +5,13 @@ import { join } from "node:path";
 import { checkTool, readWindow, revertMainEdit, writeWindow } from "../src/core/guards.ts";
 import type { Config } from "../src/core/config.ts";
 import { loadConfig } from "../src/core/config.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
-import { changesFiles, refreshQueuePaths } from "../src/core/queue/lib.ts";
+import { changesFiles } from "../src/core/queue/lib.ts";
 
 const roots: string[] = [];
 const originalQueueEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith("QUEUE_")));
 afterAll(() => {
   for (const key of Object.keys(process.env)) if (key.startsWith("QUEUE_")) delete process.env[key];
   Object.assign(process.env, originalQueueEnv);
-  refreshQueuePaths();
   for (const root of roots) rmSync(root, { recursive: true, force: true });
 });
 
@@ -60,8 +58,7 @@ guards:
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("QUEUE_")));
   Object.assign(env, { HOME: root });
   cfg = loadConfig({ home: root, env });
-  applyQueueEnv(cfg);
-  writeWindow({ used: [], windowStart: 0, mainCalls: 0 });
+  writeWindow({ used: [], windowStart: 0, mainCalls: 0 }, cfg.paths);
 });
 
 const mainEvent = (tool: string, input: Record<string, unknown>) => ({
@@ -83,7 +80,7 @@ test("(a) a guard-denied call does not count", () => {
   const plan = join(plans, "20261024_0100_test.md");
   const d = checkTool(mainEvent("bash", { command: `echo 'update' > ${plan}` }), cfg);
   expect(d.allow).toBe(false);
-  expect(readWindow().used.length).toBe(0);
+  expect(readWindow(cfg.paths).used.length).toBe(0);
 });
 
 test("(b) a failed edit (tool result is an error) does not count", () => {
@@ -91,10 +88,10 @@ test("(b) a failed edit (tool result is an error) does not count", () => {
   const editInput = { path: target, input: `[${target}#1234]\nPUT 1:=1:\n+broken\n` };
   const d = checkTool(mainEvent("edit", editInput), cfg);
   expect(d.allow).toBe(true);
-  expect(readWindow().used.length).toBe(1);
+  expect(readWindow(cfg.paths).used.length).toBe(1);
   // Tool failed (isError: true), so adapter reverts the edit
   revertMainEdit("edit", editInput, repo, cfg);
-  expect(readWindow().used.length).toBe(0);
+  expect(readWindow(cfg.paths).used.length).toBe(0);
 });
 
 test("(c) echo '{\"input\":\"PUT >50:\"}' | bun x counts nothing", () => {
@@ -102,7 +99,7 @@ test("(c) echo '{\"input\":\"PUT >50:\"}' | bun x counts nothing", () => {
   expect(changesFiles("bash", { command: cmd })).toBe(false);
   const d = checkTool(mainEvent("bash", { command: cmd }), cfg);
   expect(d.allow).toBe(true);
-  expect(readWindow().used.length).toBe(0);
+  expect(readWindow(cfg.paths).used.length).toBe(0);
 });
 
 test("(d) a real echo x > file and a successful edit still count once each", () => {
@@ -111,11 +108,11 @@ test("(d) a real echo x > file and a successful edit still count once each", () 
   expect(changesFiles("bash", { command: echoCmd })).toBe(true);
   const d1 = checkTool(mainEvent("bash", { command: echoCmd }), cfg);
   expect(d1.allow).toBe(true);
-  expect(readWindow().used.length).toBe(1);
+  expect(readWindow(cfg.paths).used.length).toBe(1);
 
   const f2 = join(repo, "src/code.ts");
   const editInput = { path: f2, input: `[${f2}#1234]\nPUT 1:=1:\n+export const a = 2;\n` };
   const d2 = checkTool(mainEvent("edit", editInput), cfg);
   expect(d2.allow).toBe(true);
-  expect(readWindow().used.length).toBe(2);
+  expect(readWindow(cfg.paths).used.length).toBe(2);
 });

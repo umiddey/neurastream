@@ -5,7 +5,6 @@ import { isLoopback, isTailnet, inboxPath, type UiHttpServer } from "./owner-ui.
 import { nowSec } from "./clock.ts";
 import { appendPageNotes, openNoteIds } from "./page-notes.ts";
 import { approvePlanFile, readPagePlan } from "./plan-approval.ts";
-import { stateDirPath } from "./queue/lib.ts";
 import type { RunSource } from "./adapter.ts";
 import type { Tailscale } from "./tailscale.ts";
 
@@ -44,11 +43,11 @@ export function startPagesServer(opts: PagesOptions): PagesServer {
     const plan = record.plan;
     if (!existsSync(plan)) return plain("not found: the plan file is gone", 404);
     try {
-      const approved = approvePlanFile(plan, page);
+      const approved = approvePlanFile(plan, page, opts.cfg.paths);
       // P5 (plan 20261031_0917): the tap must reach Main at once — one owner-inbox row, the same
       // direct append the message POST uses; never a page note, which would 409 the next tap.
-      mkdirSync(stateDirPath(), { recursive: true });
-      appendFileSync(inboxPath(), `${JSON.stringify({ ts: nowSec(), kind: "approval", page, plan, login })}\n`);
+      mkdirSync(opts.cfg.paths.queue_state, { recursive: true });
+      appendFileSync(inboxPath(opts.cfg.paths), `${JSON.stringify({ ts: nowSec(), kind: "approval", page, plan, login })}\n`);
       return Response.json({ approved });
     } catch (e) {
       return plain(`not approved: ${e instanceof Error ? e.message : String(e)}`, 500);

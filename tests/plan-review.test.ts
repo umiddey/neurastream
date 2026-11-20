@@ -10,7 +10,6 @@ import { loadConfig, reloadingConfig } from "../src/core/config.ts";
 import { checkPlanEdit, checkSpawn, checkTool, reviewHash, reviewSpawnEnd } from "../src/core/guards.ts";
 import type { CommandRunner } from "../src/core/mr-sweep.ts";
 import { queueCheck } from "../src/core/queue-check.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { parsePlan, queueProblems, queueSummary, reviewAgentsProblem, type Plan } from "../src/core/queue/lib.ts";
 import { fixturePlan } from "./fixtures/plan.ts";
 
@@ -75,7 +74,7 @@ test("queueProblems reports the missing Reuse section under the plan's file", ()
 	const file = planFile("20261029_0106", "");
 	const index = join(TMP, "INDEX.md");
 	writeFileSync(index, `${file}\n`);
-	const probs = queueProblems(index, BLOCKERS, AGENTS);
+	const probs = queueProblems({ ...gcfg.paths, queue_index: index, blockers: BLOCKERS }, AGENTS);
 	expect(probs.map(q => `${q.where}: ${q.problem}`).join("\n")).toMatch(new RegExp(file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + ".*## Reuse"));
 });
 
@@ -118,7 +117,6 @@ review:
 // leaks into the test files that run after this one.
 const queueEnvBefore = Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith("QUEUE_")));
 const gcfg = loadConfig({ home: GHOME, env: {} });
-applyQueueEnv(gcfg);
 
 afterAll(() => {
 	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
@@ -354,7 +352,7 @@ test("the queue summary shows N/M done for a plan's phases", () => {
 	writeFileSync(file, THREE_PHASES);
 	const index = join(TMP, "INDEX3.md");
 	writeFileSync(index, `${file}\n`);
-	expect(queueSummary(index, AGENTS)).toMatch(/\[open, 2\/3 done\]/);
+	expect(queueSummary({ ...gcfg.paths, queue_index: index }, AGENTS)).toMatch(/\[open, 2\/3 done\]/);
 });
 
 test("ticking a phase box does not change the review hash", () => {

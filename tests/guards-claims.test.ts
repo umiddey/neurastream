@@ -16,8 +16,6 @@ import { fileClaimStore } from "../src/core/claims.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { nowSec, strftime } from "../src/core/clock.ts";
 import { checkPlanEdit, checkSpawn, checkTool, mainId } from "../src/core/guards.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
-import { refreshQueuePaths } from "../src/core/queue/lib.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "nsar-guard-claims-"));
 const HOME = join(TMP, "home");
@@ -43,7 +41,6 @@ afterAll(() => {
 	else process.env.NEURASTREAM_NOW = savedNow;
 	// applyQueueEnv exports QUEUE_* into process.env above; clear them so later files see none.
 	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
-	refreshQueuePaths();
 	// A full `bun test` must leave nothing under os.tmpdir() (merged b3ffd37).
 	rmSync(TMP, { recursive: true, force: true });
 });
@@ -158,7 +155,6 @@ function taskEv(): ToolEvent {
 
 test("B cannot spawn on or edit A's plan; A can", () => {
 	const cfg = buildCfg();
-	applyQueueEnv(cfg);
 	fresh();
 	as("a");
 	refresh();
@@ -183,7 +179,6 @@ test("B cannot spawn on or edit A's plan; A can", () => {
 
 test("after A's claim expires B can spawn on and edit the plan", () => {
 	const cfg = buildCfg();
-	applyQueueEnv(cfg);
 	fresh();
 	as("a");
 	refresh();
@@ -203,7 +198,6 @@ test("after A's claim expires B can spawn on and edit the plan", () => {
 
 test("a sub of A is refused once its Main no longer holds the claim", () => {
 	const cfg = buildCfg();
-	applyQueueEnv(cfg);
 	fresh();
 	as("a");
 	refresh();
@@ -227,7 +221,6 @@ test("a sub of A is refused once its Main no longer holds the claim", () => {
 
 test("env unset means id main, and the claim is recorded for main", () => {
 	const cfg = buildCfg();
-	applyQueueEnv(cfg);
 	fresh();
 	delete process.env.NEURASTREAM_MAIN_ID;
 	expect(mainId()).toBe("main");
@@ -264,7 +257,6 @@ function fakeHost(): {
 
 test("the adapter heartbeats every held claim every 60 s while the Main session lives", async () => {
 	const cfg = buildCfg();
-	applyQueueEnv(cfg);
 	fresh();
 	as("a");
 	const store = claims();
@@ -335,7 +327,6 @@ ledger:
 	);
 	mkdirSync(join(AGENT, "agents"), { recursive: true });
 	writeFileSync(join(AGENT, "agents/ahead.md"), "---\nname: ahead\nmodel: zai/glm-5.3-flash\n---\n\nBody.\n");
-	applyQueueEnv(cfg);
 	fresh();
 	as("a");
 	refresh();
@@ -348,7 +339,6 @@ ledger:
 
 test("a refused claim gate releases the claims this call created (review finding 2a)", () => {
 	const cfg = buildCfg();
-	applyQueueEnv(cfg);
 	fresh();
 	indexBoth();
 	claims().claim(PLAN2, "b"); // another Main holds file 2
@@ -363,7 +353,6 @@ test("a refused claim gate releases the claims this call created (review finding
 
 test("a refused claim gate keeps a claim this Main already held (review finding 2b)", () => {
 	const cfg = buildCfg();
-	applyQueueEnv(cfg);
 	fresh();
 	indexBoth();
 	claims().claim(PLAN, "a"); // A already held file 1 before the call
@@ -378,7 +367,6 @@ test("a refused claim gate keeps a claim this Main already held (review finding 
 
 test("a bypass launch claims the free plan it names (I-20261031-280)", () => {
 	const cfg = buildCfg();
-	applyQueueEnv(cfg);
 	fresh();
 	as("a");
 	refresh();
@@ -389,7 +377,6 @@ test("a bypass launch claims the free plan it names (I-20261031-280)", () => {
 
 test("a bypass launch refuses a plan another Main holds, with the held text (I-20261031-280)", () => {
 	const cfg = buildCfg();
-	applyQueueEnv(cfg);
 	fresh();
 	as("a");
 	refresh();

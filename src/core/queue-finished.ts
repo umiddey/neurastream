@@ -3,7 +3,6 @@
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Config } from "./config.ts";
-import { applyQueueEnv } from "./queue/env.ts";
 import { finishedEntry, finishedKey, finishedPath, parsePlan, planRepo, prependFinished, repoRoot } from "./queue/lib.ts";
 
 const USAGE = "usage: queue-finished --backfill | --dedupe | queue-finished <word>";
@@ -92,23 +91,24 @@ function backfill(cfg: Config): number {
 			} catch {
 				return null;
 			}
-			const plan = parsePlan(planRepo(file), file, raw);
+			const plan = parsePlan(planRepo(file), file, raw, cfg.paths.blockers, [], true, cfg.paths.agent_dir);
 			return plan.status === "complete" ? plan : null;
 		})
 		.filter(p => p !== null)
 		.sort((a, b) => (path.basename(a.file) < path.basename(b.file) ? -1 : 1));
 	let added = 0;
+	const target = finishedPath(cfg.paths);
 	// Oldest first so each prepend leaves the newer entry on top.
 	for (const plan of plans) {
-		if (prependFinished(finishedEntry(plan, plan.file, stampDate(plan.file)))) added++;
+		if (prependFinished(finishedEntry(plan, plan.file, stampDate(plan.file)), target)) added++;
 	}
 	console.log(`queue-finished: backfill added ${added} (${plans.length} complete archived)`);
 	return 0;
 }
 
 /** Keeps the first entry for each finished key and drops later repeats. */
-function dedupe(): number {
-	const file = finishedPath();
+function dedupe(cfg: Config): number {
+	const file = finishedPath(cfg.paths);
 	let text = "";
 	try {
 		text = readFileSync(file, "utf8");
@@ -133,10 +133,10 @@ function entries(text: string): string[] {
 	return text.split(/^(?=## )/m).filter(p => p.startsWith("## ")).map(p => p.trimEnd());
 }
 
-function search(word: string): number {
+function search(word: string, cfg: Config): number {
 	let text = "";
 	try {
-		text = readFileSync(finishedPath(), "utf8");
+		text = readFileSync(finishedPath(cfg.paths), "utf8");
 	} catch {}
 	const needle = word.toLowerCase();
 	const hits = entries(text).filter(e => e.toLowerCase().includes(needle));
@@ -149,17 +149,16 @@ function search(word: string): number {
 }
 
 export function queueFinished(args: string[], cfg: Config): number {
-	applyQueueEnv(cfg);
 	if (args[0] === "--help" || args[0] === "-h") {
 		console.log(USAGE);
 		return 0;
 	}
 	if (args.includes("--backfill")) return backfill(cfg);
-	if (args.includes("--dedupe")) return dedupe();
+	if (args.includes("--dedupe")) return dedupe(cfg);
 	const word = args.filter(a => !a.startsWith("-")).join(" ").trim();
 	if (!word) {
 		console.error(USAGE);
 		return 2;
 	}
-	return search(word);
+	return search(word, cfg);
 }

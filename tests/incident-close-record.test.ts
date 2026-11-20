@@ -10,7 +10,6 @@ import { join } from "node:path";
 import { strftime } from "../src/core/clock.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { addIncident, planIncident, readIncidents } from "../src/core/incidents.ts";
-import { refreshQueuePaths } from "../src/core/queue/lib.ts";
 import { queueClose } from "../src/core/queue-close.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "nsar-qclose-"));
@@ -235,6 +234,5 @@ afterAll(() => {
 	// into the test files that run after this one.
 	for (const k of Object.keys(process.env)) if (k.startsWith("QUEUE_")) delete process.env[k];
 	Object.assign(process.env, queueEnvBefore);
-	refreshQueuePaths();
 	rmSync(TMP, { recursive: true, force: true });
 });

@@ -14,7 +14,6 @@ import { nowSec } from "../src/core/clock.ts";
 import { addIncident, openIncidents } from "../src/core/incidents.ts";
 import { approvalProblem, recordPagePlan } from "../src/core/plan-approval.ts";
 import { checkInject, checkPlanEdit, checkSpawn, checkStop, checkTool, writeWindow } from "../src/core/guards.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { cancelPending, queueSummary } from "../src/core/queue/lib.ts";
 
 const REPO = dirname(dirname(import.meta.path));
@@ -147,7 +146,6 @@ review:
 `,
 	);
 	cfg = loadConfig({ home: HOME, env: {} });
-	applyQueueEnv(cfg);
 	spawnSync("git", ["init", "-q"], { cwd: TOY });
 }
 
@@ -217,11 +215,11 @@ test("cancel wording in system notices, task results and incident lines does not
 		const e: InjectEvent = { inject, agent: "main" };
 		const d = checkInject(e, cfg);
 		expect(d.inject).not.toContain("Flagged:");
-		expect(cancelPending()).toBeNull();
+		expect(cancelPending(cfg.paths)).toBeNull();
 	}
 	const owner = checkInject({ inject: "stop running the backup", agent: "main" }, cfg);
 	expect(owner.inject).toContain("Flagged:");
-	expect(cancelPending()).not.toBeNull();
+	expect(cancelPending(cfg.paths)).not.toBeNull();
 });
 
 // (d) P1d/P5: a named review spawn's read-only shell call is allowed; rm, push and secret reads stay denied.
@@ -240,7 +238,7 @@ test("a named review spawn may run read-only shell; rm, push and secret reads st
 test("stop is allowed once the turn reaches guards.main_max_calls, even with an open incident", () => {
 	fresh();
 	addIncident(cfg, { source: "realtime", kind: "detector", summary: "toy detector fired", evidence: "guard log" });
-	writeWindow({ used: [], windowStart: Date.now(), mainCalls: cfg.guards.main_max_calls, mainCallsStart: nowSec() });
+	writeWindow({ used: [], windowStart: Date.now(), mainCalls: cfg.guards.main_max_calls, mainCallsStart: nowSec() }, cfg.paths);
 	const d = checkStop({ agent: "main", callsSinceStop: 0, idleStops: 0, ledgerText: "" }, cfg);
 	expect(d.allow).toBe(true);
 });
@@ -258,8 +256,8 @@ test("a spawn with two problems is denied once, naming both", () => {
 test("approvalProblem is off when approval.since is empty, even when the plan has a page", () => {
 	fresh();
 	recordPagePlan(PAGES, "toy.html", { plan: PLAN, missing: [], thin: [] });
-	expect(approvalProblem(TOY_PLAN, PLAN, PAGES, "")).toBeNull();
-	expect(approvalProblem(TOY_PLAN, PLAN, PAGES, "20260101_0000")).toContain("no approval record");
+	expect(approvalProblem(TOY_PLAN, PLAN, PAGES, "", cfg.paths)).toBeNull();
+	expect(approvalProblem(TOY_PLAN, PLAN, PAGES, "20260101_0000", cfg.paths)).toContain("no approval record");
 });
 
 // P5b: the queue summary lists the top 10 plans then one "N more" line (queue-check still lists all).
@@ -272,7 +270,7 @@ test("queue summary lists the top 10 plans then one more-line", () => {
 		files.push(f);
 	}
 	writeFileSync(INDEX, `${files.join("\n")}\n`);
-	const lines = queueSummary(INDEX, []).split("\n");
+	const lines = queueSummary(cfg.paths, []).split("\n");
 	const planLines = lines.filter(l => /^  \d+\. /.test(l));
 	expect(planLines).toHaveLength(10);
 	expect(lines.some(l => l.includes("2 more plans"))).toBe(true);

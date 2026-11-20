@@ -3,11 +3,20 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { cancelledFile, parsePlan, queueSummary } from "../src/core/queue/lib";
+import { cancelledFile, parsePlan, queueSummary, type QueuePaths } from "../src/core/queue/lib";
 
 const TMP = mkdtempSync(path.join(tmpdir(), "queue-summary-"));
 const REPO = path.join(TMP, "repo");
 const MAIN_INDEX = path.join(TMP, "INDEX.md");
+const PATHS: QueuePaths = {
+	agent_dir: TMP,
+	queue_index: MAIN_INDEX,
+	blockers: path.join(TMP, "blockers"),
+	queue_state: path.join(TMP, "state"),
+	subagents: path.join(TMP, "subagents.md"),
+	cancelled: path.join(TMP, "CANCELLED.md"),
+	unlock: path.join(TMP, ".guard-unlock"),
+};
 const HOLD = "hold the rollover fix until the owner says go, then ship it as one patch release with the notes";
 
 const PLAN_A = `# Plan A
@@ -54,14 +63,14 @@ test("parsePlan returns the WAITING on owner line text, or null without one", ()
 });
 
 test("queueSummary shows the owner hold text cut to 80 characters, not just the flag", () => {
-	const s = queueSummary(MAIN_INDEX);
+	const s = queueSummary(PATHS);
 	expect(s).toContain(`20261021_0100_a.md [open, WAITING on owner: ${HOLD.slice(0, 80)}]`);
 	expect(s).not.toContain(HOLD.slice(0, 81));
 	expect(s).toContain("20261021_0102_b.md [open]");
 });
 
 test("queueSummary lists plans in index order as ranked lines, each carrying its repo (rank 1 = top line)", () => {
-	const s = queueSummary(MAIN_INDEX);
+	const s = queueSummary(PATHS);
 	const lines = s.split("\n").filter(l => /^\s*\d+\. /.test(l));
 	expect(lines.map(l => l.replace(/\s*\[[^\n]*$/, ""))).toEqual([
 		`  1. ${FILE_A}`,
@@ -81,7 +90,7 @@ test("queueSummary moves the per-repo cancelled counts to one footer line", () =
 		cancelledFile(REPO_MID),
 		"- ban-y | 2026-10-25 | owner: no demo spam | words: spam\n- ban-z | 2026-10-25 | owner: no demo spam | words: spam\n",
 	);
-	const s = queueSummary(MAIN_INDEX);
+	const s = queueSummary(PATHS);
 	expect(s).toContain("Cancelled rules: 3");
 	expect(s).not.toMatch(/\(\d+ cancelled\)/);
 });

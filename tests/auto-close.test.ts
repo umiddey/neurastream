@@ -16,8 +16,7 @@ import { autoClose } from "../src/adapters/omp/index.ts";
 import type { StopEvent } from "../src/core/adapter.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { checkStop, planGate } from "../src/core/guards.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
-import { autoCloseCandidate, lastCloseResult, parsePlan, queueProblems, readIndex, refreshQueuePaths } from "../src/core/queue/lib.ts";
+import { autoCloseCandidate, lastCloseResult, parsePlan, queueProblems, readIndex } from "../src/core/queue/lib.ts";
 
 // The port under test is the checkout these tests ship in (worktree-safe: never a hardcoded path).
 const REPO = dirname(dirname(import.meta.path));
@@ -167,13 +166,11 @@ afterAll(() => {
 	Object.assign(process.env, queueEnvBefore);
 	if (closeBinBefore === undefined) delete process.env.QUEUE_CLOSE_BIN;
 	else process.env.QUEUE_CLOSE_BIN = closeBinBefore;
-	refreshQueuePaths();
 	rmSync(TMP, { recursive: true, force: true });
 });
 
 test("(f) autoClose closes an open plan whose branch is squash-merged and whose done check passes — nobody edits Status", () => {
 	const s = seed();
-	applyQueueEnv(s.cfg);
 	process.env.QUEUE_CLOSE_BIN = closeStub(s);
 	const repo = landedRepo(s.home, "fix/land-now");
 	const plan = join(repo, "docs/plans/20261020_1200_land-now.md");
@@ -189,16 +186,15 @@ test("(f) autoClose closes an open plan whose branch is squash-merged and whose 
 
 test("(g) a landed open plan whose done check fails stays indexed and queueProblems reports 'landed but not closed'", () => {
 	const s = seed();
-	applyQueueEnv(s.cfg);
 	process.env.QUEUE_CLOSE_BIN = closeStub(s);
 	const repo = landedRepo(s.home, "fix/stuck");
 	const plan = join(repo, "docs/plans/20261020_1300_stuck.md");
 	writeFileSync(plan, openPlanText({ title: "stuck", branch: "fix/stuck", done: "exit 1" }));
 	writeFileSync(s.index, `${plan}\n`);
 	autoClose(s.cfg);
-	waitFor(() => (lastCloseResult(plan) ?? "") !== "", 20_000);
+	waitFor(() => (lastCloseResult(plan, s.cfg.paths) ?? "") !== "", 20_000);
 	expect(readIndex(s.index).includes(plan)).toBe(true);
-	const hit = queueProblems(s.index, s.blockers).find(
+	const hit = queueProblems(s.cfg.paths).find(
 		(p) => p.problem.includes("landed but not closed") && p.problem.includes(basename(plan)),
 	);
 	stuck = { cfg: s.cfg, index: s.index, blockers: s.blockers, plan, toy: s.toy };
@@ -209,7 +205,6 @@ test("(h) planGate refuses a brief for another plan while the landed plan is stu
 	if (!stuck) throw new Error("(g) left no stuck plan");
 	// The bunfig preload's beforeEach re-points QUEUE_* at its own tmp before every test; assert
 	// this file's sandbox back (same pattern as owner-ui.test.ts), or planGate reads an empty index.
-	applyQueueEnv(stuck.cfg);
 	const other = join(stuck.toy, "docs/plans/20261020_1400_other.md");
 	writeFileSync(other, openPlanText({ title: "other work", done: "exit 1" }));
 	writeFileSync(stuck.index, `${stuck.plan}\n${other}\n`);
@@ -222,7 +217,6 @@ test("(h) planGate refuses a brief for another plan while the landed plan is stu
 test("(i) checkStop refuses Main while the stuck plan holds and the running subagents are not on it", () => {
 	if (!stuck) throw new Error("(g) left no stuck plan");
 	// Same preload-env re-assert as (h): checkStop reads the queue through env-derived paths.
-	applyQueueEnv(stuck.cfg);
 	// A live subagent on unrelated work must not release the stop: only fix work naming the
 	// blocking plan may. (The allowed counterpart is pinned by (h): a brief naming the plan passes.)
 	const ledger = "unrelated-impl RUNNING since 10:00 idle 0m\n";
@@ -232,11 +226,10 @@ test("(i) checkStop refuses Main while the stuck plan holds and the running suba
 
 test("(j) queueProblems flags a done check that uses merge-base --is-ancestor", () => {
 	const s = seed();
-	applyQueueEnv(s.cfg);
 	const plan = join(s.toy, "docs/plans/20261020_1500_ancestor.md");
 	writeFileSync(plan, openPlanText({ title: "ancestor", done: "git merge-base --is-ancestor HEAD origin/main" }));
 	writeFileSync(s.index, `${plan}\n`);
-	const probs = queueProblems(s.index, s.blockers);
+	const probs = queueProblems(s.cfg.paths);
 	expect(probs.some((p) => p.where === plan && /is-ancestor|squash-aware/.test(p.problem))).toBe(true);
 });
 
@@ -246,14 +239,13 @@ test("(j) queueProblems flags a done check that uses merge-base --is-ancestor", 
 // phase is ticked AND the branch landed.
 test("(k) a plan with unticked phases and a landed branch is not an auto-close candidate", () => {
 	const s = seed();
-	applyQueueEnv(s.cfg);
 	const repo = landedRepo(s.home, "fix/two-open");
 	const p = parsePlan(repo, join(repo, "docs/plans/20261031_2320_two-open.md"), openPlanText({
 		title: "two open",
 		branch: "fix/two-open",
 		done: "exit 1",
 		phases: ["- [ ] P1 first — verify: `true`", "- [ ] P2 second — verify: `true`"],
-	}));
+	}), s.cfg.paths.blockers);
 	expect(p.phases).toEqual({ done: 0, total: 2 });
 	expect(p.errors).toEqual([]);
 	expect(autoCloseCandidate(p)).toBe(false);
@@ -261,16 +253,14 @@ test("(k) a plan with unticked phases and a landed branch is not an auto-close c
 
 test("(l) a plan with every phase ticked and a landed branch stays a candidate", () => {
 	const s = seed();
-	applyQueueEnv(s.cfg);
 	const repo = landedRepo(s.home, "fix/all-ticked");
-	const p = parsePlan(repo, join(repo, "docs/plans/20261031_2321_all-ticked.md"), openPlanText({ title: "all ticked", branch: "fix/all-ticked", done: "exit 1" }));
+	const p = parsePlan(repo, join(repo, "docs/plans/20261031_2321_all-ticked.md"), openPlanText({ title: "all ticked", branch: "fix/all-ticked", done: "exit 1" }), s.cfg.paths.blockers);
 	expect(p.errors).toEqual([]);
 	expect(autoCloseCandidate(p)).toBe(true);
 });
 
 test("(m) a branched plan with zero phases and a landed branch is not a candidate", () => {
 	const s = seed();
-	applyQueueEnv(s.cfg);
 	const repo = landedRepo(s.home, "fix/no-phases");
 	const file = join(repo, "docs/plans/20261031_2322_no-phases.md");
 	// parsePlan cannot build an errorless zero-phase plan ("## Phases" is a required section), so

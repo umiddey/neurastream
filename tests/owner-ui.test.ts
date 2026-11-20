@@ -16,7 +16,6 @@ import { nowSec, strftime } from "../src/core/clock.ts";
 import { addIncident } from "../src/core/incidents.ts";
 import { appendMetric } from "../src/core/metrics.ts";
 import { checkTool } from "../src/core/guards.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { createOmpAdapter, reset as resetAdapter, ownerInboxCursorPath, ownerInboxMessage, type ExtensionHost } from "../src/adapters/omp/index.ts";
 import { fileClaimStore } from "../src/core/claims.ts";
 import { tryLock } from "../src/core/file-lock.ts";
@@ -25,7 +24,7 @@ import { inboxPath, agentRows, buildPageData, ciRows, dropSlot, edgeScrollStep, 
 import type { TeamView } from "../src/core/team-client.ts";
 import type { ChainRow, FeaturesReport, ReleaseRow, ReleaseSideStats } from "../src/core/results.ts";
 import { runWorkspace } from "../src/cli/workspace.ts";
-import { parsePlan, stateDirPath, unlockPath } from "../src/core/queue/lib.ts";
+import { parsePlan } from "../src/core/queue/lib.ts";
 import { parseWhoisLogin, type Tailscale } from "../src/core/tailscale.ts";
 
 const OWNER = "owner@example.com";
@@ -84,13 +83,12 @@ const CFG: Config = {
 	guards: { ...baseCfg.guards, chat_unlock: true },
 	workspace: { enabled: true, port: 7787, owner_login: OWNER, allow_this_machine: false },
 };
-applyQueueEnv(CFG);
 
 const INDEX = CFG.paths.queue_index;
 mkdirSync(join(TOY, ".git"), { recursive: true }); // gitTop only looks for the dir: the repo label is basename(TOY)
 mkdirSync(join(TOY, "docs/plans"), { recursive: true });
-mkdirSync(dirname(unlockPath()), { recursive: true });
-mkdirSync(stateDirPath(), { recursive: true });
+mkdirSync(dirname(CFG.paths.unlock), { recursive: true });
+mkdirSync(CFG.paths.queue_state, { recursive: true });
 writeFileSync(PLAN_W, PLAN_TEXT("open", true));
 writeFileSync(PLAN_D, PLAN_TEXT("complete", false));
 writeFileSync(INDEX, `${PLAN_W}\n${PLAN_D}\n`);
@@ -159,14 +157,13 @@ beforeEach(() => {
 	// shared sandbox for each test, overriding the module-top applyQueueEnv(CFG): the runtime
 	// helpers would then read the preload's inbox while the adapter and checkTool judge CFG's
 	// paths. Re-assert CFG's queue paths first, so env and CFG name the same files again.
-	applyQueueEnv(CFG);
-	rmSync(inboxPath(), { force: true });
+	rmSync(inboxPath(CFG.paths), { force: true });
 	rmSync(ownerInboxCursorPath(CFG), { force: true });
-	rmSync(join(stateDirPath(), "mains"), { recursive: true, force: true });
-	rmSync(unlockPath(), { force: true });
-	rmSync(join(stateDirPath(), "autonomy-tier"), { force: true });
-	rmSync(join(stateDirPath(), "autonomy-go"), { force: true });
-	rmSync(join(stateDirPath(), "owner-messages"), { recursive: true, force: true });
+	rmSync(join(CFG.paths.queue_state, "mains"), { recursive: true, force: true });
+	rmSync(CFG.paths.unlock, { force: true });
+	rmSync(join(CFG.paths.queue_state, "autonomy-tier"), { force: true });
+	rmSync(join(CFG.paths.queue_state, "autonomy-go"), { force: true });
+	rmSync(join(CFG.paths.queue_state, "owner-messages"), { recursive: true, force: true });
 	rmSync(CFG.paths.guard_log, { force: true });
 	rmSync(CFG.paths.plan_guard_log, { force: true });
 });
@@ -239,7 +236,7 @@ function post(
 
 function inboxRecords(): Record<string, unknown>[] {
 	try {
-		return readFileSync(inboxPath(), "utf8")
+		return readFileSync(inboxPath(CFG.paths), "utf8")
 			.split("\n")
 			.filter(l => l.trim())
 			.map(l => JSON.parse(l) as Record<string, unknown>);
@@ -254,7 +251,7 @@ const PNG_BYTES = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0
 const PDF_BYTES = Uint8Array.from([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34]); // %PDF-1.4
 
 function messagesDir(): string {
-	return join(stateDirPath(), "owner-messages");
+	return join(CFG.paths.queue_state, "owner-messages");
 }
 
 function storedMessages(): Record<string, unknown>[] {
@@ -625,7 +622,7 @@ test("POST /unlock moves the guard unlock file and logs UNLOCK ui source=ui:<log
 	const svc = ui();
 	const res = await post(svc, "/unlock", { minutes: "5" });
 	expect(res.status).toBe(303);
-	expect(existsSync(unlockPath())).toBe(true);
+	expect(existsSync(CFG.paths.unlock)).toBe(true);
 	const lines = planGuardLogLines().filter(l => l.includes("UNLOCK"));
 	expect(lines.length).toBe(1);
 	expect(lines[0]).toContain(`UNLOCK ui source=ui:${OWNER} minutes=5`);
@@ -638,7 +635,7 @@ test("POST /lock removes the unlock file and logs LOCK ui source=ui:<login>", as
 	await post(svc, "/unlock", { minutes: "5" });
 	const res = await post(svc, "/lock", {});
 	expect(res.status).toBe(303);
-	expect(existsSync(unlockPath())).toBe(false);
+	expect(existsSync(CFG.paths.unlock)).toBe(false);
 	const lines = planGuardLogLines().filter(l => /^\S+ LOCK /.test(l));
 	expect(lines.length).toBe(1);
 	expect(lines[0]).toContain(`LOCK ui source=ui:${OWNER}`);
@@ -649,13 +646,13 @@ test("unlock or lock with the chat gate off redirects to the explanation and cha
 	const res = await post(svc, "/unlock", { minutes: "5" });
 	expect(res.status).toBe(303);
 	expect(res.headers.get("location")).toBe("/?sent=unlock-off");
-	expect(existsSync(unlockPath())).toBe(false);
+	expect(existsSync(CFG.paths.unlock)).toBe(false);
 	expect(planGuardLogLines().some(l => l.includes("UNLOCK"))).toBe(false);
 	expect(inboxRecords()).toEqual([]);
 	const lock = await post(svc, "/lock", {});
 	expect(lock.status).toBe(303);
 	expect(lock.headers.get("location")).toBe("/?sent=unlock-off");
-	expect(existsSync(unlockPath())).toBe(false);
+	expect(existsSync(CFG.paths.unlock)).toBe(false);
 	expect(inboxRecords()).toEqual([]);
 });
 
@@ -699,7 +696,7 @@ test("POST /tier writes the tier file, logs TIER ui, marks the current button an
 	const res = await post(svc, "/tier", { tier: "full" });
 	expect(res.status).toBe(303);
 	expect(res.headers.get("location")).toBe("/?sent=tier&tier=full");
-	expect(readFileSync(join(stateDirPath(), "autonomy-tier"), "utf8")).toBe("full\n");
+	expect(readFileSync(join(CFG.paths.queue_state, "autonomy-tier"), "utf8")).toBe("full\n");
 	const lines = planGuardLogLines().filter(l => l.includes(" TIER "));
 	expect(lines.length).toBe(1);
 	expect(lines[0]).toContain(`TIER full ui source=ui:${OWNER}`);
@@ -716,14 +713,14 @@ test("POST /tier from a stranger gets 403 and writes nothing", async () => {
 	const svc = ui({ peerOf: () => "100.95.10.7" }); // whois: other@example.com
 	const res = await post(svc, "/tier", { tier: "full" });
 	expect(res.status).toBe(403);
-	expect(existsSync(join(stateDirPath(), "autonomy-tier"))).toBe(false);
+	expect(existsSync(join(CFG.paths.queue_state, "autonomy-tier"))).toBe(false);
 });
 
 test("POST /tier with a bad name gets 400 before the core is called", async () => {
 	const svc = ui();
 	const res = await post(svc, "/tier", { tier: "nope" });
 	expect(res.status).toBe(400);
-	expect(existsSync(join(stateDirPath(), "autonomy-tier"))).toBe(false);
+	expect(existsSync(join(CFG.paths.queue_state, "autonomy-tier"))).toBe(false);
 	expect(planGuardLogLines().some(l => l.includes(" TIER "))).toBe(false);
 	expect(inboxRecords()).toEqual([]);
 });
@@ -733,7 +730,7 @@ test("tier buttons with the chat gate off redirect to the explanation and change
 	const res = await post(svc, "/tier", { tier: "full" });
 	expect(res.status).toBe(303);
 	expect(res.headers.get("location")).toBe("/?sent=unlock-off");
-	expect(existsSync(join(stateDirPath(), "autonomy-tier"))).toBe(false);
+	expect(existsSync(join(CFG.paths.queue_state, "autonomy-tier"))).toBe(false);
 	expect(inboxRecords()).toEqual([]);
 });
 
@@ -768,7 +765,7 @@ test("an unreadable section shows unavailable and never fails the page", async (
 // --- inbox location (the adapter reads it in P3) ---
 
 test("the owner inbox lives under the queue state dir", () => {
-	expect(inboxPath()).toBe(join(stateDirPath(), "owner-inbox.jsonl"));
+	expect(inboxPath(CFG.paths)).toBe(join(CFG.paths.queue_state, "owner-inbox.jsonl"));
 });
 
 // --- adapter: inbox delivery to Main (P3b) ---
@@ -808,7 +805,7 @@ test("ownerInboxMessage returns phone message text and image content", () => {
 	writeFileSync(join(dir, "2.jpg"), Uint8Array.from([0xff, 0xd8, 0xff, 0x00]));
 	writeFileSync(join(dir, "message.json"), JSON.stringify({ ts: nowSec(), text: "Please inspect these.", images: ["1.png", "2.jpg"] }));
 	const ts = nowSec();
-	expect(ownerInboxMessage({ ts, kind: "message", id })).toEqual([
+	expect(ownerInboxMessage({ ts, kind: "message", id }, CFG.paths)).toEqual([
 		{ type: "text", text: `Owner message from the phone page (${strftime(ts, "%H:%M")}): Please inspect these.\nImages:\n- ${join(dir, "1.png")}\n- ${join(dir, "2.jpg")}` },
 		{ type: "image", data: Buffer.from(PNG_BYTES).toString("base64"), mimeType: "image/png" },
 		{ type: "image", data: Buffer.from([0xff, 0xd8, 0xff, 0x00]).toString("base64"), mimeType: "image/jpeg" },
@@ -821,11 +818,11 @@ test("ownerInboxMessage handles text-only and expired phone messages", () => {
 	mkdirSync(dir, { recursive: true });
 	const ts = nowSec();
 	writeFileSync(join(dir, "message.json"), JSON.stringify({ ts, text: "Only text.", images: [] }));
-	expect(ownerInboxMessage({ ts, kind: "message", id })).toEqual([
+	expect(ownerInboxMessage({ ts, kind: "message", id }, CFG.paths)).toEqual([
 		{ type: "text", text: `Owner message from the phone page (${strftime(ts, "%H:%M")}): Only text.` },
 	]);
 	const expiredTs = nowSec() - 3600;
-	expect(ownerInboxMessage({ ts: expiredTs, kind: "message", id: "123456-abcdef" })).toEqual([
+	expect(ownerInboxMessage({ ts: expiredTs, kind: "message", id: "123456-abcdef" }, CFG.paths)).toEqual([
 		{ type: "text", text: `Owner sent a message from the phone page at ${strftime(expiredTs, "%H:%M")}; it expired (12 h) before delivery.` },
 	]);
 });
@@ -839,9 +836,9 @@ test("deliverOwnerInbox sends the structured phone message unchanged", () => {
 	mkdirSync(dir, { recursive: true });
 	writeFileSync(join(dir, "1.png"), PNG_BYTES);
 	writeFileSync(join(dir, "message.json"), JSON.stringify({ ts, text: "Look.", images: ["1.png"] }));
-	appendFileSync(inboxPath(), `${JSON.stringify({ ts, kind: "message", id, login: OWNER })}\n`);
+	appendFileSync(inboxPath(CFG.paths), `${JSON.stringify({ ts, kind: "message", id, login: OWNER })}\n`);
 	handlers.get("agent_end")!({ willContinue: false }, mainCtx);
-	expect(sent).toEqual([ownerInboxMessage({ ts, kind: "message", id })!]);
+	expect(sent).toEqual([ownerInboxMessage({ ts, kind: "message", id }, CFG.paths)!]);
 });
 
 const rec = (answer: string) => JSON.stringify({ ts: nowSec(), plan: PLAN_W, question: QUESTION, answer, login: OWNER });
@@ -888,7 +885,7 @@ const subCtx = { agent: { kind: "sub" } };
 test("the adapter delivers an undelivered inbox record to Main once; the cursor holds it back", () => {
 	const { pi, sent, handlers } = fakePi();
 	createOmpAdapter(pi, CFG);
-	appendFileSync(inboxPath(), `${rec("yes")}\n`);
+	appendFileSync(inboxPath(CFG.paths), `${rec("yes")}\n`);
 	handlers.get("agent_end")!({ willContinue: false }, mainCtx);
 	expect(sent).toEqual([`Owner answered on the phone page — 20261019_wait.md: ${QUESTION} → yes`]);
 	expect(readFileSync(ownerInboxCursorPath(CFG), "utf8")).toBe("1\n");
@@ -896,7 +893,7 @@ test("the adapter delivers an undelivered inbox record to Main once; the cursor 
 	handlers.get("agent_end")!({ willContinue: false }, mainCtx);
 	expect(sent.length).toBe(1);
 	// A new record delivers alone.
-	appendFileSync(inboxPath(), `${rec("no")}\n`);
+	appendFileSync(inboxPath(CFG.paths), `${rec("no")}\n`);
 	handlers.get("agent_end")!({ willContinue: false }, mainCtx);
 	expect(sent.length).toBe(2);
 	expect(sent[1]).toContain("→ no");
@@ -907,7 +904,7 @@ test("deliverOwnerInbox sends answer then unlock in order and moves the cursor b
 	createOmpAdapter(pi, CFG);
 	const until = nowSec() + 300;
 	const unlockLine = JSON.stringify({ ts: nowSec(), kind: "unlock", minutes: 5, until, login: OWNER });
-	appendFileSync(inboxPath(), `${rec("yes")}\n${unlockLine}\n`);
+	appendFileSync(inboxPath(CFG.paths), `${rec("yes")}\n${unlockLine}\n`);
 	handlers.get("agent_end")!({ willContinue: false }, mainCtx);
 	expect(sent.length).toBe(2);
 	expect(sent[0]).toBe(`Owner answered on the phone page — 20261019_wait.md: ${QUESTION} → yes`);
@@ -921,10 +918,10 @@ test("a torn inbox tail waits for the write to complete and is never delivered t
 	const { pi, sent, handlers } = fakePi();
 	createOmpAdapter(pi, CFG);
 	const full = `${rec("wait for it")}\n`;
-	appendFileSync(inboxPath(), full.slice(0, 20));
+	appendFileSync(inboxPath(CFG.paths), full.slice(0, 20));
 	handlers.get("agent_end")!({}, mainCtx);
 	expect(sent).toEqual([]);
-	appendFileSync(inboxPath(), full.slice(20));
+	appendFileSync(inboxPath(CFG.paths), full.slice(20));
 	handlers.get("agent_end")!({}, mainCtx);
 	expect(sent).toEqual([`Owner answered on the phone page — 20261019_wait.md: ${QUESTION} → wait for it`]);
 });
@@ -932,7 +929,7 @@ test("a torn inbox tail waits for the write to complete and is never delivered t
 test("a malformed complete inbox row is consumed but skipped, so delivery never wedges", () => {
 	const { pi, sent, handlers } = fakePi();
 	createOmpAdapter(pi, CFG);
-	appendFileSync(inboxPath(), `not json\n${rec("after garbage")}\n`);
+	appendFileSync(inboxPath(CFG.paths), `not json\n${rec("after garbage")}\n`);
 	handlers.get("agent_end")!({}, mainCtx);
 	expect(sent).toEqual([`Owner answered on the phone page — 20261019_wait.md: ${QUESTION} → after garbage`]);
 	expect(readFileSync(ownerInboxCursorPath(CFG), "utf8")).toBe("2\n");
@@ -941,7 +938,7 @@ test("a malformed complete inbox row is consumed but skipped, so delivery never 
 test("a subagent session never delivers and never moves the cursor", () => {
 	const { pi, sent, handlers } = fakePi();
 	createOmpAdapter(pi, CFG);
-	appendFileSync(inboxPath(), `${rec("yes")}\n`);
+	appendFileSync(inboxPath(CFG.paths), `${rec("yes")}\n`);
 	handlers.get("agent_end")!({}, subCtx);
 	expect(sent).toEqual([]);
 	expect(existsSync(ownerInboxCursorPath(CFG))).toBe(false);
@@ -963,7 +960,7 @@ test("Main's session start arms a 15 s inbox poll; a subagent session arms none"
 		// The inbox poll (15 s) among the session timers (autoClose, the multi-main claim beat).
 		const poll = timers.find(t => t.ms === 15_000);
 		expect(poll).toBeTruthy();
-		appendFileSync(inboxPath(), `${rec("later")}\n`);
+		appendFileSync(inboxPath(CFG.paths), `${rec("later")}\n`);
 		poll!.cb();
 		expect(sent).toEqual([`Owner answered on the phone page — 20261019_wait.md: ${QUESTION} → later`]);
 		// A subagent session arms no timer (the handler returns before arming).
@@ -985,7 +982,7 @@ test("Main's session start arms a 15 s inbox poll; a subagent session arms none"
 });
 
 test("an agent write to the owner inbox is refused like any protected state file", () => {
-	const ev: ToolEvent = { tool: "write", input: { path: inboxPath() }, cwd: TMP, agent: "sub", agentId: "regress", calls: 0, paths: [], writes: [], command: "" };
+	const ev: ToolEvent = { tool: "write", input: { path: inboxPath(CFG.paths) }, cwd: TMP, agent: "sub", agentId: "regress", calls: 0, paths: [], writes: [], command: "" };
 	const d = checkTool(ev, CFG);
 	expect(d.allow).toBe(false);
 	expect(d.reason).toContain("protected");
@@ -1274,7 +1271,7 @@ test("the Results tab never lists old runs in the server: it starts one backgrou
 		expect(buildPageData(CFG, rec, tab, build).results).toBeUndefined();
 	}
 	expect(dones).toHaveLength(0);
-	rmSync(resultsCachePath(), { force: true });
+	rmSync(resultsCachePath(CFG.paths), { force: true });
 	// Nothing saved yet: one build starts, and the tab says it is working, not "unavailable".
 	expect(buildPageData(CFG, rec, "results", build).results).toEqual({ data: null, at: null, building: true });
 	expect(dones).toHaveLength(1);
@@ -1284,11 +1281,11 @@ test("the Results tab never lists old runs in the server: it starts one backgrou
 	expect(sinces.every(s => s >= dayAgo)).toBe(true);
 	// The build saves its numbers and exits: the tab shows them, and fresh numbers start no build.
 	const at = nowSec();
-	writeFileSync(resultsCachePath(), JSON.stringify({ at, data: RESULTS }));
+	writeFileSync(resultsCachePath(CFG.paths), JSON.stringify({ at, data: RESULTS }));
 	dones[0]!();
 	expect(buildPageData(CFG, rec, "results", build).results).toEqual({ data: RESULTS, at, building: false });
 	expect(dones).toHaveLength(1);
-	rmSync(resultsCachePath(), { force: true });
+	rmSync(resultsCachePath(CFG.paths), { force: true });
 });
 
 // --- P4: queue reorder by drag and drop ---
@@ -2150,7 +2147,6 @@ console.log(svc.port);
 	const first = await reader.read();
 	await reader.cancel();
 	const recCfg: Config = { ...CFG, teams: [{ name: "acme", server: teamUrl(Number(new TextDecoder().decode(first.value).trim())), repos: ["gitlab.com/acme/*"] }] };
-	applyQueueEnv(recCfg);
 	const data = buildPageData(recCfg, RUNS, "queue");
 	expect(data.teams?.[0]?.rows.map((r) => r.repo)).toEqual(["docs/plans/a.md", "docs/plans/b.md"]);
 	expect(data.teams?.[0]?.rows[0]?.holder).toBe("main (teammate@example.com)");
@@ -2281,8 +2277,8 @@ test("queue rows carry the holder and the card shows the Main chip (P5)", () => 
 
 /** Holds <id>'s running lock so the page's running check sees it; returns release. */
 function runMainUi(id: string): () => void {
-	mkdirSync(join(stateDirPath(), "mains", id), { recursive: true });
-	return tryLock(join(stateDirPath(), "mains", id, "running.lock"))!.release;
+	mkdirSync(join(CFG.paths.queue_state, "mains", id), { recursive: true });
+	return tryLock(join(CFG.paths.queue_state, "mains", id, "running.lock"))!.release;
 }
 
 test("@<id> messages go only to that Main; @gone is refused and stores nothing (P5)", async () => {

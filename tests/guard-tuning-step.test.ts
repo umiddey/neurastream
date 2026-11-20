@@ -12,7 +12,6 @@ import { loadConfig, type Config } from "../src/core/config.ts";
 import { checkTool } from "../src/core/guards.ts";
 import { addIncident } from "../src/core/incidents.ts";
 import { appendMetric, readMetricEvents } from "../src/core/metrics.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { readLevels, writeLevels } from "../src/core/rule-levels.ts";
 import { ruleLevelVerdicts, tuneRules } from "../src/core/watch.ts";
 
@@ -125,7 +124,6 @@ test("tuning.guards on: a noisy, useless guard id steps block to tell, logs one 
 
 test("tuning.guards on: after the step, a refusal of that id is allowed with its reason kept", () => {
 	const c = cfg(true);
-	applyQueueEnv(c);
 	blocks(c, RELATIVE, 4, NOW - DAY);
 	bypass(c, 4, NOW - DAY, RELATIVE);
 	tuneRules(c, NOW, () => {});

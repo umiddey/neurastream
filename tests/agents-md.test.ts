@@ -11,7 +11,6 @@ import { BEGIN_MARK, END_MARK, renderBlock } from "../src/core/agents-md.ts";
 import { loadConfig } from "../src/core/config.ts";
 import { initHome } from "../src/cli/init.ts";
 import { checkInject } from "../src/core/guards.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
 
 const REPO = join(import.meta.dir, "..");
 const HOME = "/tmp/neurastream-home-agentsmd";
@@ -138,7 +137,6 @@ rmSync(P3_HOME, { recursive: true, force: true });
 const p3Base = loadConfig({ home: P3_HOME, env: {} });
 mkdirSync(p3Base.paths.queue_state, { recursive: true });
 mkdirSync(p3Base.paths.agent_dir, { recursive: true });
-applyQueueEnv(p3Base);
 const tuned = { ...p3Base, guards: { ...p3Base.guards, main_edit_limit: 7, main_window_min: 20 } };
 
 test("the main prompt states the tier and the edit limit from config", () => {

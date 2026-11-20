@@ -9,7 +9,6 @@ import { dirname, join } from "node:path";
 import type { Config } from "../src/core/config.ts";
 import { loadConfig } from "../src/core/config.ts";
 import { checkStop } from "../src/core/guards.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "nsar-stop-live-agents-"));
 const HOME = join(TMP, "home");
@@ -92,7 +91,6 @@ review:
 	return loadConfig({ home: HOME, env: {} });
 })();
 
-applyQueueEnv(cfg);
 
 // queue-check stub with no output, so openQueue holds only the toy plan.
 const queueCheck = join(HOME, ".local/bin/queue-check");

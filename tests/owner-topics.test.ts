@@ -8,8 +8,6 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writ
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { loadConfig, type Config } from "../src/core/config.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
-import { refreshQueuePaths } from "../src/core/queue/lib.ts";
 import {
 	appendOwnerLog,
 	appendedSinceSpawn,
@@ -34,6 +32,7 @@ import { MAIN_ENV } from "../src/adapters/omp/launch.ts";
 const TMP = mkdtempSync(join(tmpdir(), "owner-topics-"));
 const HOME = join(TMP, "home");
 const QUEUE = join(TMP, "queue-state");
+const STATE = { queue_state: QUEUE };
 const NOW_SEC = 1_795_000_000;
 const MODEL = "fake/topic-model";
 
@@ -53,14 +52,11 @@ afterAll(() => {
 	else process.env.HOME = homeBefore;
 	if (nowBefore === undefined) delete process.env.NEURASTREAM_NOW;
 	else process.env.NEURASTREAM_NOW = nowBefore;
-	refreshQueuePaths();
 });
 
-/** Points the recall dir at this file's sandbox, then throws if it is still elsewhere: a live path is never touched. */
+/** Verifies the recall dir is inside this file's sandbox: a live path is never touched. */
 function sandboxed(): void {
-	process.env.QUEUE_STATE = QUEUE;
-	refreshQueuePaths();
-	if (!ownerLogDir().startsWith(TMP)) throw new Error(`refusing to touch ${ownerLogDir()} outside ${TMP}`);
+	if (!ownerLogDir(STATE).startsWith(TMP)) throw new Error(`refusing to touch ${ownerLogDir(STATE)} outside ${TMP}`);
 }
 
 // ---- fixtures -------------------------------------------------------------------------------
@@ -96,8 +92,8 @@ function writeLines(file: string, entries: LogEntry[]): void {
 /** Backfill holds 0..19 (older), live log 20..44, so a range can cross from one file to the other. */
 function seedLog(count = 45): void {
 	const upto = ENTRIES.slice(0, count);
-	writeLines(ownerBackfillFile(), upto.slice(0, 20));
-	writeLines(ownerLogFile(), upto.slice(20));
+	writeLines(ownerBackfillFile(STATE), upto.slice(0, 20));
+	writeLines(ownerLogFile(STATE), upto.slice(20));
 }
 
 function sandboxConfig(topicsModel: string, topicsEvery = 30): Config {
@@ -119,14 +115,13 @@ recall:
 `,
 	);
 	const cfg = loadConfig({ home: HOME, env: {} });
-	applyQueueEnv(cfg);
 	return cfg;
 }
 
 beforeEach(() => {
 	sandboxed();
 	sandboxConfig(MODEL);
-	rmSync(ownerLogDir(), { recursive: true, force: true });
+	rmSync(ownerLogDir(STATE), { recursive: true, force: true });
 	markTopicsSpawned();
 	seedLog();
 });
@@ -204,7 +199,7 @@ function answer(segments: unknown[]): string {
 }
 
 function fileLines(): Record<string, unknown>[] {
-	return readFileSync(topicsFile(), "utf8")
+	return readFileSync(topicsFile(STATE), "utf8")
 		.split("\n")
 		.filter((l) => l.length > 0)
 		.map((l) => JSON.parse(l) as Record<string, unknown>);
@@ -212,7 +207,7 @@ function fileLines(): Record<string, unknown>[] {
 
 function readTopicsSafe(): unknown[] {
 	try {
-		return readTopics();
+		return readTopics(STATE);
 	} catch {
 		return [];
 	}
@@ -249,7 +244,7 @@ describe("topic answer becomes index lines", () => {
 	test("readTopics returns the effective index in order", async () => {
 		const cfg = sandboxConfig(MODEL);
 		await runTopics(cfg, fakeComplete([answer(goodSegments())]).complete, { close: false });
-		const topics = readTopics();
+		const topics = readTopics(STATE);
 		expect(topics.map((t) => [t.from, t.to])).toEqual([
 			[idOf(0), idOf(14)],
 			[idOf(15), idOf(29)],
@@ -305,7 +300,7 @@ describe("a failed check gets one retry, then a skipped line", () => {
 		const fc = fakeComplete([answer([seg(0, 1), seg(2, 29), seg(30, 44)])]);
 		await runTopics(cfg, fc.complete, { close: false });
 		expect(fc.calls).toHaveLength(1);
-		expect(readTopics().map((t) => [t.from, t.to])).toEqual([
+		expect(readTopics(STATE).map((t) => [t.from, t.to])).toEqual([
 			[idOf(0), idOf(29)],
 			[idOf(30), idOf(44)],
 		]);
@@ -318,7 +313,7 @@ describe("a failed check gets one retry, then a skipped line", () => {
 		]);
 		await runTopics(cfg, fc.complete, { close: false });
 		expect(fc.calls).toHaveLength(1);
-		const topics = readTopics();
+		const topics = readTopics(STATE);
 		expect(topics).toHaveLength(3);
 		expect(topics[0]!.questions).toEqual([]);
 	});
@@ -351,7 +346,7 @@ describe("a failed check gets one retry, then a skipped line", () => {
 	test("a skipped line is a closing boundary: the next run starts after its to", async () => {
 		const cfg = sandboxConfig(MODEL);
 		await runTopics(cfg, fakeComplete(["not json", "not json"]).complete, { close: false });
-		writeLines(ownerLogFile(), ENTRIES.slice(20, 50));
+		writeLines(ownerLogFile(STATE), ENTRIES.slice(20, 50));
 		const next = fakeComplete([answer([seg(45, 49)])]);
 		await runTopics(cfg, next.complete, { close: false });
 		expect(next.calls).toHaveLength(1);
@@ -368,7 +363,7 @@ describe("a failed check gets one retry, then a skipped line", () => {
 			seg(30, 44, { from: "31", to: "45" }),
 		];
 		await runTopics(cfg, fakeComplete([answer(numbered)]).complete, { close: false });
-		const topics = readTopics();
+		const topics = readTopics(STATE);
 		expect(topics.map((t) => [t.from, t.to])).toEqual([
 			[idOf(0), idOf(14)],
 			[idOf(15), idOf(29)],
@@ -385,14 +380,14 @@ describe("re-cut and close", () => {
 	test("a second run re-sends the open last segment and the new entries; the effective index has no gap or overlap", async () => {
 		const cfg = sandboxConfig(MODEL);
 		await runTopics(cfg, fakeComplete([answer(goodSegments())]).complete, { close: false });
-		writeLines(ownerLogFile(), ENTRIES.slice(20, 55));
+		writeLines(ownerLogFile(STATE), ENTRIES.slice(20, 55));
 		const fc = fakeComplete([answer([seg(30, 40), seg(41, 54)])]);
 		await runTopics(cfg, fc.complete, { close: false });
 		expect(fc.calls).toHaveLength(1);
 		expect(fc.calls[0]!.prompt).toContain("[1] (");
 		expect(fc.calls[0]!.prompt).toContain("[25] (");
 		expect(fc.calls[0]!.prompt).not.toContain("[26] (");
-		const topics = readTopics();
+		const topics = readTopics(STATE);
 		expect(topics.map((t) => [t.from, t.to])).toEqual([
 			[idOf(0), idOf(14)],
 			[idOf(15), idOf(29)],
@@ -416,10 +411,10 @@ describe("re-cut and close", () => {
 		const closer = fakeComplete([]);
 		await runTopics(cfg, closer.complete, { close: true });
 		expect(closer.calls).toHaveLength(0);
-		const last = readTopics().at(-1)!;
+		const last = readTopics(STATE).at(-1)!;
 		expect(last).toMatchObject({ from: idOf(30), to: idOf(44), open: false });
 
-		writeLines(ownerLogFile(), ENTRIES.slice(20, 50));
+		writeLines(ownerLogFile(STATE), ENTRIES.slice(20, 50));
 		const next = fakeComplete([answer([seg(45, 49)])]);
 		await runTopics(cfg, next.complete, { close: false });
 		expect(next.calls[0]!.prompt).toContain("[5] (");
@@ -461,7 +456,7 @@ describe("planted secrets", () => {
 		await runTopics(cfg, fakeComplete([answer([{ ...g[0]!, title: `leak ${token}` }, g[1], g[2]])]).complete, {
 			close: false,
 		});
-		const raw = readFileSync(topicsFile(), "utf8");
+		const raw = readFileSync(topicsFile(STATE), "utf8");
 		expect(raw).not.toContain(token);
 		expect(raw).not.toContain("sk-ant-api03-");
 	});
@@ -473,13 +468,13 @@ describe("modes", () => {
 	test("after a run the recall dir is 0700 and the topics file is 0600, also when they pre-existed looser", async () => {
 		sandboxed();
 		const cfg = sandboxConfig(MODEL);
-		mkdirSync(ownerLogDir(), { recursive: true });
-		chmodSync(ownerLogDir(), 0o755);
-		writeFileSync(topicsFile(), "", { mode: 0o644 });
-		chmodSync(topicsFile(), 0o644);
+		mkdirSync(ownerLogDir(STATE), { recursive: true });
+		chmodSync(ownerLogDir(STATE), 0o755);
+		writeFileSync(topicsFile(STATE), "", { mode: 0o644 });
+		chmodSync(topicsFile(STATE), 0o644);
 		await runTopics(cfg, fakeComplete([answer(goodSegments())]).complete, { close: false });
-		expect(modeOf(ownerLogDir())).toBe(0o700);
-		expect(modeOf(topicsFile())).toBe(0o600);
+		expect(modeOf(ownerLogDir(STATE))).toBe(0o700);
+		expect(modeOf(topicsFile(STATE))).toBe(0o600);
 	});
 });
 
@@ -487,17 +482,17 @@ describe("modes", () => {
 
 describe("ranges and windows", () => {
 	test("newEntries and rangeEntries are oldest first across backfill and live log", () => {
-		expect(newEntries().map((e) => e.id)).toEqual(ENTRIES.slice(0, 45).map((e) => e.id));
-		expect(rangeEntries(idOf(15), idOf(25)).map((e) => e.id)).toEqual(ENTRIES.slice(15, 26).map((e) => e.id));
+		expect(newEntries(STATE).map((e) => e.id)).toEqual(ENTRIES.slice(0, 45).map((e) => e.id));
+		expect(rangeEntries(idOf(15), idOf(25), STATE).map((e) => e.id)).toEqual(ENTRIES.slice(15, 26).map((e) => e.id));
 	});
 
 	test("newEntries is exclusive of its id; rangeEntries is inclusive at both ends", () => {
-		expect(newEntries(idOf(40)).map((e) => e.id)).toEqual([idOf(41), idOf(42), idOf(43), idOf(44)]);
-		expect(rangeEntries(idOf(30), idOf(30)).map((e) => e.id)).toEqual([idOf(30)]);
+		expect(newEntries(STATE, idOf(40)).map((e) => e.id)).toEqual([idOf(41), idOf(42), idOf(43), idOf(44)]);
+		expect(rangeEntries(idOf(30), idOf(30), STATE).map((e) => e.id)).toEqual([idOf(30)]);
 	});
 
 	test("consecutive windows cover each entry once", () => {
-		const windows = [rangeEntries(idOf(0), idOf(14)), rangeEntries(idOf(15), idOf(29)), newEntries(idOf(29))];
+		const windows = [rangeEntries(idOf(0), idOf(14), STATE), rangeEntries(idOf(15), idOf(29), STATE), newEntries(STATE, idOf(29))];
 		const ids = windows.flatMap((w) => w.map((e) => e.id));
 		expect(ids).toEqual(ENTRIES.slice(0, 45).map((e) => e.id));
 		expect(new Set(ids).size).toBe(ids.length);
@@ -510,11 +505,11 @@ describe("fresh machine", () => {
 	test("no recall dir and no log: the run creates the dir at 0700 and does not throw", async () => {
 		sandboxed();
 		const cfg = sandboxConfig(MODEL);
-		rmSync(ownerLogDir(), { recursive: true, force: true });
+		rmSync(ownerLogDir(STATE), { recursive: true, force: true });
 		const fc = fakeComplete([answer(goodSegments())]);
 		await expect(runTopics(cfg, fc.complete, { close: false })).resolves.toBeDefined();
 		expect(fc.calls).toHaveLength(0);
-		expect(modeOf(ownerLogDir())).toBe(0o700);
+		expect(modeOf(ownerLogDir(STATE))).toBe(0o700);
 	});
 });
 
@@ -585,7 +580,7 @@ describe("trigger and isolation", () => {
 		const f = fakeHost();
 		createOmpAdapter(f.host, loadConfig({ home: HOME, env: {} }));
 		const spawns: Spawn[] = [];
-		for (let k = 0; k < 5; k++) appendOwnerLog("main", `main line ${k}`);
+		for (let k = 0; k < 5; k++) appendOwnerLog("main", `main line ${k}`, STATE);
 		expect(appendedSinceSpawn()).toBe(5);
 		process.env[MAIN_ENV] = "1";
 		try {
@@ -606,7 +601,7 @@ describe("trigger and isolation", () => {
 		const f = fakeHost();
 		createOmpAdapter(f.host, loadConfig({ home: HOME, env: {} }));
 		const spawns: Spawn[] = [];
-		for (let k = 0; k < 4; k++) appendOwnerLog("main", `main line ${k}`);
+		for (let k = 0; k < 4; k++) appendOwnerLog("main", `main line ${k}`, STATE);
 		await f.emit("agent_end", turnEndPayload("done"), mainCtx(spawns));
 		expect(spawns).toHaveLength(0);
 		expect(appendedSinceSpawn()).toBe(4);
@@ -619,7 +614,7 @@ describe("trigger and isolation", () => {
 		const f = fakeHost();
 		createOmpAdapter(f.host, loadConfig({ home: HOME, env: {} }));
 		const spawns: Spawn[] = [];
-		for (let k = 0; k < 5; k++) appendOwnerLog("main", `main line ${k}`);
+		for (let k = 0; k < 5; k++) appendOwnerLog("main", `main line ${k}`, STATE);
 		await f.emit("agent_end", turnEndPayload("done"), mainCtx(spawns));
 		await f.emit("session_shutdown", {}, mainCtx(spawns));
 		expect(spawns).toHaveLength(0);
@@ -639,7 +634,7 @@ describe("trigger and isolation", () => {
 				spawns.push({ args, env });
 			},
 		};
-		for (let k = 0; k < 5; k++) appendOwnerLog("main", `main line ${k}`);
+		for (let k = 0; k < 5; k++) appendOwnerLog("main", `main line ${k}`, STATE);
 		await f.emit("agent_end", turnEndPayload("done"), sub);
 		await f.emit("session_shutdown", {}, sub);
 		expect(spawns).toHaveLength(0);

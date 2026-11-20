@@ -13,7 +13,6 @@ import type { Config } from "../src/core/config.ts";
 import { loadConfig } from "../src/core/config.ts";
 import { checkPlanEdit, checkSpawn, pendingWorkProblem, reviewHash, spawnProblem } from "../src/core/guards.ts";
 import { listOpenMrs, type CommandResult, type CommandRunner } from "../src/core/mr-sweep.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { unlandedRows } from "../src/core/wip-check.ts";
 import { fixturePlan } from "./fixtures/plan.ts";
 
@@ -82,7 +81,6 @@ const cfg: Config = (() => {
 	);
 	return loadConfig({ home: HOME, env: {} });
 })();
-applyQueueEnv(cfg);
 
 // The P2 PASS gate sits beside the P3 gate: record one review through the guard's named review
 // spawn (P4k) so these tests exercise only the pending-work check.

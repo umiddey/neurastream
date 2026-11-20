@@ -4,15 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkTool } from "../src/core/guards.ts";
 import { loadConfig } from "../src/core/config.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
-import { activePlans, planAt, refreshQueuePaths, touchedPaths, writeTargets } from "../src/core/queue/lib.ts";
+import { activePlans, planAt, touchedPaths, writeTargets } from "../src/core/queue/lib.ts";
 
 const roots: string[] = [];
 const originalQueueEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith("QUEUE_")));
 afterAll(() => {
   for (const key of Object.keys(process.env)) if (key.startsWith("QUEUE_")) delete process.env[key];
   Object.assign(process.env, originalQueueEnv);
-  refreshQueuePaths();
   for (const root of roots) rmSync(root, { recursive: true, force: true });
 });
 
@@ -39,7 +37,6 @@ test("at call cap, own indexed plan edits and selected reads are allowed, other 
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("QUEUE_")));
   Object.assign(env, { HOME: root });
   const cfg = loadConfig({ home: root, env });
-  applyQueueEnv(cfg);
   const event = (tool: string, input: Record<string, unknown>, calls = 100) => ({ tool, input, cwd: repo, agent: "sub" as const, agentId: "worker", calls, paths: [], writes: [], command: String(input?.command ?? "") });
   const editHashline = { path: plan, input: `[${plan}#AB12]\nPUT >40:\n+- recorded progress\n` };
   const editStructuredNotify = {
@@ -60,11 +57,11 @@ test("at call cap, own indexed plan edits and selected reads are allowed, other 
   const ownReadSelector = { path: `${plan}:44+10` };
   const ownReadRawSelector = { path: `${plan}:raw:44+10` };
 
-  expect(activePlans().map(p => p.file)).toContain(plan);
+  expect(activePlans(cfg.paths).map(p => p.file)).toContain(plan);
   expect(touchedPaths("edit", editHashline, repo)).toContain(plan);
   expect(writeTargets("edit", editHashline, repo)).toContain(plan);
   expect(writeTargets("edit", editStructuredNotify, repo)).toContain(plan);
-  expect(planAt(plan, activePlans())).not.toBeNull();
+  expect(planAt(plan, activePlans(cfg.paths))).not.toBeNull();
 
   // Allowed at cap: own plan edits (hashline, structured, write)
   expect(checkTool(event("edit", editHashline), cfg)).toEqual({ allow: true, reason: "" });

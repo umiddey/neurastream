@@ -9,23 +9,23 @@ import { appendFileSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSyn
 import path from "node:path";
 import { configFile, loadConfig, type Config } from "./config.ts";
 import { checkEdited, setConfigKeys, yamlValue } from "./config-edit.ts";
-import { stateDirPath } from "./queue/lib.ts";
+import type { QueuePaths } from "./queue/lib.ts";
 
 export type Tier = "strict" | "opinionated" | "full";
 const TIERS: readonly Tier[] = ["strict", "opinionated", "full"];
 
-export function tierFile(): string {
-	return path.join(stateDirPath(), "autonomy-tier");
+export function tierFile(paths: Pick<QueuePaths, "queue_state">): string {
+	return path.join(paths.queue_state, "autonomy-tier");
 }
 
-export function goFile(): string {
-	return path.join(stateDirPath(), "autonomy-go");
+export function goFile(paths: Pick<QueuePaths, "queue_state">): string {
+	return path.join(paths.queue_state, "autonomy-go");
 }
 
 /** The tier the guards follow: `<state dir>/autonomy-tier` when it names one of the three (one word), else the config value. */
 export function currentTier(cfg: Config): Tier {
 	try {
-		const word = readFileSync(tierFile(), "utf8").trim().toLowerCase();
+		const word = readFileSync(tierFile(cfg.paths), "utf8").trim().toLowerCase();
 		if ((TIERS as readonly string[]).includes(word)) return word as Tier;
 	} catch {}
 	return cfg.autonomy.tier;
@@ -52,8 +52,8 @@ export function chatTier(text: string, cfg: Config, source: string, word: "chat"
 	const m = TIER_CMD.exec(text.trim());
 	if (!m) return { applied: false };
 	const tier = (m[1] ?? "").toLowerCase() as Tier;
-	mkdirSync(stateDirPath(), { recursive: true });
-	writeFileSync(tierFile(), `${tier}\n`);
+	mkdirSync(cfg.paths.queue_state, { recursive: true });
+	writeFileSync(tierFile(cfg.paths), `${tier}\n`);
 	try {
 		appendFileSync(cfg.paths.plan_guard_log, `${new Date().toISOString()} TIER ${tier} ${word} source=${source}\n`);
 	} catch {}
@@ -80,8 +80,8 @@ const goWords = (s: string): string => s.trim().toLowerCase().replace(/\s+/g, " 
 export function chatGo(text: string, cfg: Config, source: string, word: "chat" | "ui" = "chat"): ChatGoResult {
 	if (!cfg.guards.chat_unlock) return { applied: false };
 	if (goWords(text) !== goWords(cfg.autonomy.go_phrase)) return { applied: false };
-	mkdirSync(stateDirPath(), { recursive: true });
-	writeFileSync(goFile(), "");
+	mkdirSync(cfg.paths.queue_state, { recursive: true });
+	writeFileSync(goFile(cfg.paths), "");
 	try {
 		appendFileSync(cfg.paths.plan_guard_log, `${new Date().toISOString()} GO ${word} source=${source} minutes=${cfg.autonomy.go_minutes}\n`);
 	} catch {}
@@ -93,13 +93,14 @@ export function chatGo(text: string, cfg: Config, source: string, word: "chat" |
  * autonomy.go_minutes; a stale or missing file is false (a stale one is removed).
  */
 export function takeGo(cfg: Config, now = Date.now()): boolean {
+	const file = goFile(cfg.paths);
 	let mtimeMs: number;
 	try {
-		mtimeMs = statSync(goFile()).mtimeMs;
+		mtimeMs = statSync(file).mtimeMs;
 	} catch {
 		return false;
 	}
-	rmSync(goFile(), { force: true });
+	rmSync(file, { force: true });
 	return now - mtimeMs < cfg.autonomy.go_minutes * 60_000;
 }
 
@@ -111,8 +112,8 @@ export function takeGo(cfg: Config, now = Date.now()): boolean {
 export type PlannerMode = "main" | "delegated";
 const PLANNER_MODES: readonly PlannerMode[] = ["main", "delegated"];
 
-export function plannerFile(): string {
-	return path.join(stateDirPath(), "planner-mode");
+export function plannerFile(paths: Pick<QueuePaths, "queue_state">): string {
+	return path.join(paths.queue_state, "planner-mode");
 }
 
 // The effective mode facts are owner-only (P2 d). A guard baseline beside the config file records
@@ -130,10 +131,11 @@ export function plannerFile(): string {
 export interface PlannerPin {
 	file: string;
 	home: string;
+	stateDir?: string;
 }
 
 export function plannerPin(cfg: Config): PlannerPin {
-	return { file: cfg.file ?? configFile(cfg.paths.home), home: cfg.paths.home };
+	return { file: cfg.file ?? configFile(cfg.paths.home), home: cfg.paths.home, stateDir: cfg.paths.queue_state };
 }
 
 /** The baseline file: beside the config file it describes. */
@@ -253,7 +255,8 @@ export function verifyPlannerMode(pin: PlannerPin): PlannerVerifyResult {
 			else if (base !== null) reverted = writeConfig(pin, base.config.bytes) || reverted;
 		}
 		// The state file: pinned by the baseline; with no baseline it may not exist at all.
-		const pinnedDir = base?.state_dir ?? stateDirPath();
+		const liveStateDir = pin.stateDir ?? facts?.queue_state ?? base?.state_dir ?? path.join(pin.home, ".local/state/queue");
+		const pinnedDir = base?.state_dir ?? liveStateDir;
 		const pinnedFile = path.join(pinnedDir, "planner-mode");
 		const want = base?.planner ?? { exists: false, bytes: null };
 		const cur = readPlannerState(pinnedFile);
@@ -268,7 +271,7 @@ export function verifyPlannerMode(pin: PlannerPin): PlannerVerifyResult {
 			reverted = true;
 		}
 		// A mode file beside the freshly configured state dir is foreign: the baseline pins the dir.
-		const live = plannerFile();
+		const live = plannerFile({ queue_state: liveStateDir });
 		if (live !== pinnedFile && readPlannerState(live).exists) {
 			rmSync(live, { force: true });
 			reverted = true;
@@ -285,7 +288,7 @@ export function stampPlannerMode(pin: PlannerPin): void {
 	try {
 		const text = readFileSync(pin.file, "utf8");
 		const facts = fileFacts(pin);
-		const dir = stateDirPath();
+		const dir = pin.stateDir ?? facts.queue_state;
 		const base: PlannerBaseline = {
 			version: 1,
 			state_dir: dir,
@@ -300,7 +303,7 @@ export function stampPlannerMode(pin: PlannerPin): void {
 /** The planner mode in force: the file twin of tierFile() when it names one of the two (one word), else the config value. */
 export function currentPlanner(cfg: Config): PlannerMode {
 	try {
-		const word = readFileSync(plannerFile(), "utf8").trim().toLowerCase();
+		const word = readFileSync(plannerFile(cfg.paths), "utf8").trim().toLowerCase();
 		if ((PLANNER_MODES as readonly string[]).includes(word)) return word as PlannerMode;
 	} catch {}
 	return cfg.autonomy.planner;
@@ -331,8 +334,8 @@ export function chatPlanner(text: string, cfg: Config, source: string, word: "ch
 	// The owner's own switch: revert any dirt first, write, then record the new state. The mode
 	// file is written in-process, so no tool call sees it.
 	verifyPlannerMode(pin);
-	mkdirSync(stateDirPath(), { recursive: true });
-	writeFileSync(plannerFile(), `${planner}\n`);
+	mkdirSync(cfg.paths.queue_state, { recursive: true });
+	writeFileSync(plannerFile(cfg.paths), `${planner}\n`);
 	stampPlannerMode(pin);
 	try {
 		appendFileSync(cfg.paths.plan_guard_log, `${new Date().toISOString()} PLANNER ${planner} ${word} source=${source}\n`);

@@ -528,7 +528,7 @@ export function syncTeam(team: TeamEntry, cfg: Config, run: CommandRunner = defa
 			if (typeof row?.id === "string" && typeof row.sha === "string" && rec[row.id]?.sha !== row.sha) pullPlan(team, cfg, row.id);
 		}
 	}
-	for (const plan of activePlans(cfg.paths.queue_index)) {
+	for (const plan of activePlans(cfg.paths)) {
 		if (planShare(plan, cfg, run) !== team.name) continue;
 		const id = pathId(team, cfg, plan.file, run);
 		if (id === null) continue;

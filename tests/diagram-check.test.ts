@@ -9,7 +9,6 @@ import { join } from "node:path";
 import { checkDiagram, diagramData, planItems } from "../src/core/diagram-check.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { publishPage } from "../src/core/pages-setup.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
 import { startPagesServer } from "../src/core/pages.ts";
 import { runDiagram } from "../src/cli/diagram.ts";
 
@@ -93,7 +92,6 @@ test("publish --plan: an incomplete diagram keeps Approve disabled and the serve
 	process.env.QUEUE_STATE = join(dir, "state");
 	const cfg: Config = loadConfig({ file: join(dir, "missing.yml"), home: dir, env: {} });
 	cfg.paths.queue_state = join(dir, "state");
-	applyQueueEnv(cfg);
 	cfg.pages.enabled = true;
 	cfg.pages.dir = join(dir, "public");
 	cfg.pages.port = 0;

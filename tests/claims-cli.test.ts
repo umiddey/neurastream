@@ -19,7 +19,6 @@ import { claimCli } from "../src/cli/claim.ts";
 import { checkTool } from "../src/core/guards.ts";
 import type { ToolEvent } from "../src/core/adapter.ts";
 import { queueSummary } from "../src/core/queue/lib.ts";
-import { applyQueueEnv } from "../src/core/queue/env.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "ns-claims-cli-"));
 const HOME = join(TMP, "home");
@@ -111,7 +110,6 @@ review:
 }
 
 const cfg = build();
-applyQueueEnv(cfg);
 
 /** The claim store the CLI and guards use, clock pinned to NOW (TTL 30 min). */
 function store() {
@@ -202,7 +200,7 @@ test("queueSummary flags each plan held by <id> since HH:MM or free, and an expi
 	claims.claim(PLAN_D, "a");
 	// An expired claim (beat 31 min old, TTL 30) must not flag its holder.
 	fileClaimStore(STATE, () => NOW - 31 * 60, 30).claim(PLAN_C, "c");
-	const s = queueSummary(INDEX, [], claims);
+	const s = queueSummary(cfg.paths, [], claims);
 	expect(s).toContain(`1. ${PLAN_A} [open, 0/1 done, held by b since ${SINCE}]`);
 	expect(s).toContain(`2. ${PLAN_B} [open, 0/1 done, WAITING on owner:`);
 	expect(s).toContain(`3. ${PLAN_C} [open, 0/1 done, waits on #4, free]`);
