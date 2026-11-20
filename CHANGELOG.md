@@ -1,4 +1,8 @@
 # Changelog
+## 0.3.19
+### Changed
+- Queue helpers now take explicit `QueuePaths` (`cfg.paths`) instead of mutating `process.env.QUEUE_*` via `applyQueueEnv()` and reassigning module-level globals (`INDEX`, `BLOCKERS_DIR`, `STATE_DIR`, `UNLOCK`, `PROTECTED`, `SUBAGENTS_MD`, `GLOBAL_CANCELLED`, `CANCEL_PENDING`). Deleted `src/core/queue/env.ts`; config hot-reloads in the omp adapter now pick up path changes immediately, and tests/child processes no longer leak `QUEUE_*` env mutations.
+
 ## 0.3.18
 ### Fixed
 - A reviewer's `PLAN REVIEW:` / `CODE REVIEW:` line with a `~` before the time or a note after its name (`- 2026-11-17 ~17:55 Rev (re-verify, read-only): PLAN REVIEW: PASS`) was neither recorded nor restored, so the spawn gate kept saying "no current reviewer PASS". Such lines now record; the name still comes from the spawn.
