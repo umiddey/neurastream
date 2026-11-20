@@ -1,4 +1,10 @@
 # Changelog
+## 0.3.20
+### Fixed
+- Team client outage memoization (`downUntil` in `src/core/team-client.ts`) is now keyed by `team.name + team.server` instead of `team.name` alone, so an unreachable server URL does not poison a different server URL for the same team name for 60 seconds.
+### Changed
+- Rewrote `README.md` as a concise landing page with a 5-minute quickstart and moved detailed reference specs into `docs/guards.md`, `docs/workspace.md`, `docs/operations.md`, and `docs/traces-and-metrics.md`.
+
 ## 0.3.19
 ### Changed
 - Queue helpers now take explicit `QueuePaths` (`cfg.paths`) instead of mutating `process.env.QUEUE_*` via `applyQueueEnv()` and reassigning module-level globals (`INDEX`, `BLOCKERS_DIR`, `STATE_DIR`, `UNLOCK`, `PROTECTED`, `SUBAGENTS_MD`, `GLOBAL_CANCELLED`, `CANCEL_PENDING`). Deleted `src/core/queue/env.ts`; config hot-reloads in the omp adapter now pick up path changes immediately, and tests/child processes no longer leak `QUEUE_*` env mutations.
