@@ -2143,15 +2143,25 @@ console.log(svc.port);
 `,
 	);
 	const proc = Bun.spawn([process.execPath, child, log, JSON.stringify(teamViewFixture())], { stdout: "pipe", stderr: "pipe" });
-	const reader = proc.stdout.getReader();
-	const first = await reader.read();
-	await reader.cancel();
-	const recCfg: Config = { ...CFG, teams: [{ name: "acme", server: teamUrl(Number(new TextDecoder().decode(first.value).trim())), repos: ["gitlab.com/acme/*"] }] };
-	const data = buildPageData(recCfg, RUNS, "queue");
-	expect(data.teams?.[0]?.rows.map((r) => r.repo)).toEqual(["docs/plans/a.md", "docs/plans/b.md"]);
-	expect(data.teams?.[0]?.rows[0]?.holder).toBe("main (teammate@example.com)");
-	expect(readFileSync(log, "utf8").trim().split("\n")).toEqual(["GET /view"]);
-	proc.kill();
+	try {
+		const reader = proc.stdout.getReader();
+		const dec = new TextDecoder();
+		let buf = "";
+		while (!buf.includes("\n")) {
+			const { value, done } = await reader.read();
+			if (done) break;
+			buf += dec.decode(value, { stream: true });
+		}
+		await reader.cancel();
+		const port = Number(buf.trim());
+		const recCfg: Config = { ...CFG, teams: [{ name: "acme", server: teamUrl(port), repos: ["gitlab.com/acme/*"] }] };
+		const data = buildPageData(recCfg, RUNS, "queue");
+		expect(data.teams?.[0]?.rows.map((r) => r.repo)).toEqual(["docs/plans/a.md", "docs/plans/b.md"]);
+		expect(data.teams?.[0]?.rows[0]?.holder).toBe("main (teammate@example.com)");
+		expect(readFileSync(log, "utf8").trim().split("\n")).toEqual(["GET /view"]);
+	} finally {
+		proc.kill();
+	}
 });
 
 function resultsPage(params: string, results: ResultsData | null = RESULTS): string {

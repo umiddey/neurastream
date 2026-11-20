@@ -106,14 +106,15 @@ function markDown(name: string, clock: () => number): void {
 	downUntil.set(name, clock() + OUTAGE_MEMO_SEC);
 }
 
-/** One request through the send seam, with the memo: down answers at once; transport failures and 5xx mark the team down. Returns "down" when the server did not answer. */
+/** One request through the send seam, with the memo: down answers at once; transport failures and 5xx mark the team+server down. Returns "down" when the server did not answer. */
 function askRaw(team: TeamEntry, req: WireRequest, opts: RawOpts = {}): WireResponse | "down" {
 	const clock = opts.clock ?? nowSec;
 	const send = opts.send ?? defaultSend;
-	if (memoDown(team.name, clock)) return "down";
+	const memoKey = `${team.name}\0${team.server}`;
+	if (memoDown(memoKey, clock)) return "down";
 	const res = send(req);
 	if (res === null || res.error !== undefined || typeof res.status !== "number" || res.status >= 500) {
-		markDown(team.name, clock);
+		markDown(memoKey, clock);
 		return "down";
 	}
 	return res;
