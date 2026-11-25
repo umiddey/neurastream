@@ -72,6 +72,84 @@ export function parseBackendState(stdout: string): "running" | "stopped" {
 	}
 }
 
+/** How long a positive peer→login whois lookup stays cached (ms). */
+export const WHOIS_TTL_MS = 30_000;
+
+/** Maximum number of peer→login entries kept in the whois cache. */
+export const WHOIS_MAX_ENTRIES = 256;
+
+export interface CachedWhoisOptions {
+	ttlMs?: number;
+	maxEntries?: number;
+	now?: () => number;
+}
+
+export interface CachedWhois {
+	whois(peer: string): string | null;
+	clear(): void;
+}
+
+/**
+ * Wrap a synchronous peer→login lookup with a bounded, positive-only TTL cache.
+ * Transient `null` failures are never cached; expired entries are evicted on read;
+ * when capacity is reached, the oldest inserted entry is evicted.
+ *
+ * Args:
+ *     lookup ((peer: string) => string | null): Underlying synchronous whois lookup
+ *     opts (CachedWhoisOptions | undefined): Optional TTL, capacity, and clock overrides
+ *
+ * Returns:
+ *     CachedWhois: Cached lookup function paired with a `clear()` reset helper
+ */
+export function createCachedWhois(
+	lookup: (peer: string) => string | null,
+	opts: CachedWhoisOptions = {},
+): CachedWhois {
+	const ttlMs = opts.ttlMs ?? WHOIS_TTL_MS;
+	const maxEntries = opts.maxEntries ?? WHOIS_MAX_ENTRIES;
+	const now = opts.now ?? Date.now;
+	const cache = new Map<string, { login: string; expiresAt: number }>();
+
+	return {
+		whois(peer: string): string | null {
+			const nowMs = now();
+			const hit = cache.get(peer);
+			if (hit) {
+				if (nowMs < hit.expiresAt) return hit.login;
+				cache.delete(peer);
+			}
+			const login = lookup(peer);
+			if (login === null) return null;
+			if (ttlMs > 0 && maxEntries > 0) {
+				if (cache.has(peer)) cache.delete(peer);
+				while (cache.size >= maxEntries) {
+					const oldest = cache.keys().next().value;
+					if (oldest === undefined) break;
+					cache.delete(oldest);
+				}
+				cache.set(peer, { login, expiresAt: nowMs + ttlMs });
+			}
+			return login;
+		},
+		clear(): void {
+			cache.clear();
+		},
+	};
+}
+
+function rawWhois(peer: string): string | null {
+	const r = spawnSync("tailscale", ["whois", "--json", peer], { encoding: "utf8", timeout: 8000 });
+	if (r.error || r.status !== 0) return null;
+	return parseWhoisLogin(r.stdout ?? "");
+}
+
+const realWhoisCache = createCachedWhois(rawWhois);
+
+/** Clear the process-wide `realTailscale.whois()` TTL cache (used by tests). */
+export function clearWhoisCache(): void {
+	realWhoisCache.clear();
+}
+
 export const realTailscale: Tailscale = {
 	ip4() {
 		return firstStdoutLine(["ip", "-4"]);
@@ -88,9 +166,7 @@ export const realTailscale: Tailscale = {
 		}
 	},
 	whois(peer) {
-		const r = spawnSync("tailscale", ["whois", "--json", peer], { encoding: "utf8", timeout: 8000 });
-		if (r.error || r.status !== 0) return null;
-		return parseWhoisLogin(r.stdout ?? "");
+		return realWhoisCache.whois(peer);
 	},
 	logins() {
 		try {

@@ -4,6 +4,7 @@
 // has no record with the plan's current hash; a plan with no page predates the convention and is left alone, unless it is stamped at or after approval.since (plan 20261029_1455 P3), when it is refused until its page is published.
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
+import { withFileLock, writeAtomicSync } from "./file-lock.ts";
 import * as q from "./queue/lib.ts";
 import type { Config } from "./config.ts";
 
@@ -96,25 +97,22 @@ function readPlanApprovals(paths: Pick<q.QueuePaths, "queue_state">): Record<str
 	return {};
 }
 
-function writePlanApprovals(approvals: Record<string, PlanApproval>, paths: Pick<q.QueuePaths, "queue_state">): boolean {
-	try {
-		mkdirSync(paths.queue_state, { recursive: true });
-		writeFileSync(planApprovalsFile(paths), JSON.stringify({ approvals }, null, 1));
-		return true;
-	} catch {
-		return false;
-	}
-}
-
 function readPlanApproval(file: string, paths: Pick<q.QueuePaths, "queue_state">): PlanApproval | null {
 	return readPlanApprovals(paths)[file] ?? null;
 }
 
-/** Record one approval. Throws when the queue state cannot be written, so nobody reports "approved" for a record that is not there. */
+/** Record one approval atomically under lock. Throws when the queue state cannot be written, so nobody reports "approved" for a record that is not there. */
 function recordApproval(file: string, approval: PlanApproval, paths: Pick<q.QueuePaths, "queue_state">): void {
-	const approvals = readPlanApprovals(paths);
-	approvals[file] = approval;
-	if (!writePlanApprovals(approvals, paths)) throw new Error(`cannot write ${planApprovalsFile(paths)}`);
+	const target = planApprovalsFile(paths);
+	try {
+		withFileLock(`${target}.lock`, () => {
+			const approvals = readPlanApprovals(paths);
+			approvals[file] = approval;
+			writeAtomicSync(target, JSON.stringify({ approvals }, null, 1));
+		});
+	} catch {
+		throw new Error(`cannot write ${target}`);
+	}
 }
 
 /** The owner's click on a plan page: record a hash of the plan text in the queue state and return the page it approved. The plan file itself is never edited. */

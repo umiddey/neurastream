@@ -265,8 +265,9 @@ test("main-start prints the sweep and still exits 0", async () => {
 	let text = "";
 	let code = -1;
 	await withEnvAsync(jsonEnv(shims, GL(206, "feat/lost")), async () => {
-		text = await mainStartText([], cfg, { inheritStdin: false });
-		code = await mainStart([], cfg);
+		const stubDoctor = { doctor: () => "doctor: ok\n" };
+		text = await mainStartText([], cfg, { inheritStdin: false }, stubDoctor);
+		code = await mainStart([], cfg, stubDoctor);
 	});
 	expect(code).toBe(0);
 	expect(text).toContain(`UNTRACKED MR !206 pm ${repo} (feat/lost) — no open plan mentions it`);

@@ -1215,3 +1215,23 @@ test("a server plan id that is not a plan id is never fetched, written, or read 
 		stub.stop();
 	}
 });
+
+test("team-client never spawns process.execPath and defaultSend round-trips via bun child", async () => {
+	const src = readFileSync(join(ROOT, "src/core/team-client.ts"), "utf8");
+	const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+	expect(code).not.toContain("process.execPath");
+
+	const stub = await stubTeam({
+		"GET /claims": { status: 200, body: { claims: [] } },
+	});
+	try {
+		const team: TeamEntry = { name: "roundtrip", server: stub.url, repos: ["gitlab.com/acme/*"] };
+		// Uses the real defaultSend (no injected send seam) against the live stub server.
+		const list = remoteClaimStore(team, STATE).list();
+		expect("unreachable" in list).toBe(false);
+		expect(list).toEqual([]);
+		expect(stub.requests().some(r => r.method === "GET" && r.path === "/claims")).toBe(true);
+	} finally {
+		stub.stop();
+	}
+});

@@ -57,6 +57,7 @@ function seed(): Config {
 	const blocker = join(AGENT, "blockers/no-push");
 	writeFileSync(blocker, "#!/bin/sh\nexit 0\n");
 	chmodSync(blocker, 0o755);
+	rmSync(INDEX, { force: true });
 	writeFileSync(INDEX, `${PLAN}\n`);
 	writeFileSync(
 		join(HOME, ".config/neurastream/config.yml"),
@@ -90,6 +91,14 @@ test("a cancelled plan is closed through the real CLI: archived and listed as ca
 	const month = new Date().toISOString().slice(0, 7).replace("-", "");
 	expect(existsSync(join(TOY, "docs/plans/archive", month, "20261020_1400_cancel.md"))).toBe(true);
 	expect(readFileSync(join(TOY, "docs/plans/CANCELLED.md"), "utf8")).toContain("20261020_1400_cancel.md");
+});
+
+test("queueCancel returns 1 in-process on refusal without exiting the test runner", () => {
+	const cfg = seed();
+	expect(queueCancel([], cfg)).toBe(1);
+	expect(queueCancel(["--not-a-cancel", "too short"], cfg)).toBe(1);
+	expect(queueCancel(["--never", "short", "stop"], cfg)).toBe(1);
+	expect(queueCancel([join(TOY, "docs/plans/not_indexed.md"), "stop this work"], cfg)).toBe(1);
 });
 
 afterAll(() => {

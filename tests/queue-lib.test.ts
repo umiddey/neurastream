@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parsePlan, queueProblems, queueSummary, splitWaiting, type QueuePaths } from "../src/core/queue/lib";
+import { expandHome, parsePlan, queueProblems, queueSummary, splitWaiting, type QueuePaths } from "../src/core/queue/lib";
 
 function queuePaths(dir: string, index: string): QueuePaths {
 	return {
@@ -132,5 +132,20 @@ test("queueSummary labels a stale hold [STALE?] instead of WAITING on owner", ()
 		expect(queueSummary(paths)).toContain(`WAITING on owner: ${ask}`);
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("expandHome reads process.env.HOME dynamically at call time", () => {
+	const prev = process.env.HOME;
+	try {
+		process.env.HOME = "/tmp/dynamic-home-alpha";
+		expect(expandHome("~")).toBe("/tmp/dynamic-home-alpha");
+		expect(expandHome("~/plans/p.md")).toBe("/tmp/dynamic-home-alpha/plans/p.md");
+		process.env.HOME = "/tmp/dynamic-home-beta";
+		expect(expandHome("~")).toBe("/tmp/dynamic-home-beta");
+		expect(expandHome("~/plans/p.md")).toBe("/tmp/dynamic-home-beta/plans/p.md");
+	} finally {
+		if (prev === undefined) delete process.env.HOME;
+		else process.env.HOME = prev;
 	}
 });

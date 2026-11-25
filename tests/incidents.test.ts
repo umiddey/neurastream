@@ -228,3 +228,26 @@ test("CLI usage errors exit 2", () => {
 	expect(incidentCli(["add"]).code).toBe(2);
 	expect(incidentCli(["dismiss", cliId1]).code).toBe(2);
 });
+
+test("concurrent addIncident calls across processes preserve every record with unique ids", async () => {
+	const concurrentDay = 1770000000;
+	const incMod = join(REPO, "src/core/incidents.ts");
+	const cfgMod = join(REPO, "src/core/config.ts");
+	const procs = Array.from({ length: 8 }, (_, idx) => {
+		const script = `
+import { loadConfig } from ${JSON.stringify(cfgMod)};
+import { addIncident } from ${JSON.stringify(incMod)};
+const cfg = loadConfig({ home: ${JSON.stringify(HOME)}, env: {} });
+addIncident(cfg, { source: "main", kind: "race", summary: "concurrent-bug-${idx}" }, ${concurrentDay});
+`;
+		return Bun.spawn(["bun", "-e", script], { stdout: "pipe", stderr: "pipe" });
+	});
+	for (const p of procs) expect(await p.exited).toBe(0);
+
+	const raceIncidents = readIncidents(cfg).filter(i => i.kind === "race");
+	expect(raceIncidents).toHaveLength(8);
+	const uniqueIds = new Set(raceIncidents.map(i => i.id));
+	expect(uniqueIds.size).toBe(8);
+	const summaries = new Set(raceIncidents.map(i => i.summary));
+	for (let i = 0; i < 8; i++) expect(summaries.has(`concurrent-bug-${i}`)).toBe(true);
+});

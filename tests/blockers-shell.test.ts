@@ -219,3 +219,81 @@ describe("deny-path foreign plan (20261028_1228 P6, I-20261028-111)", () => {
 		expect(refused(denyPath, { ...call("edit", { path: p, input: "x" }, "sub", [p]), foreign: true }, ["secret/**"])).toBe(true);
 	});
 });
+
+describe("security hardening: shell blocker bypass regressions", () => {
+	test("deny-command blocks quoted/escaped commands, subcommands, flags, and git add pathspecs", () => {
+		expect(refused(denyCommand, bash("'rm' -rf /"), ["rm\\s+-rf"])).toBe(true);
+		expect(refused(denyCommand, bash('"curl" https://example.test'), ["\\bcurl\\b"])).toBe(true);
+		expect(refused(denyCommand, bash('"npm" "publish"'), FORBIDDEN_COMMANDS)).toBe(true);
+		expect(refused(denyCommand, bash("np\\m publish"), FORBIDDEN_COMMANDS)).toBe(true);
+		expect(refused(denyCommand, bash('gi\\t -C repo "tag" v1'), FORBIDDEN_COMMANDS)).toBe(true);
+		expect(refused(denyCommand, bash('git -c user.name=a "tag" v1'), FORBIDDEN_COMMANDS)).toBe(true);
+		expect(refused(denyCommand, bash('git commit "--no-verify" -m x'), FORBIDDEN_COMMANDS)).toBe(true);
+		expect(refused(denyCommand, bash('git add "."'), FORBIDDEN_COMMANDS)).toBe(true);
+		expect(refused(denyCommand, bash('git -C repo "add" "."'), FORBIDDEN_COMMANDS)).toBe(true);
+		// Short `-m` / `-maxdepth` on non-prose commands and subcommands must never be treated as prose flags.
+		expect(refused(denyCommand, bash("python3 -m pip install foo"), ["pip\\s+install"])).toBe(true);
+		expect(refused(denyCommand, bash("python -m http.server"), ["http\\.server"])).toBe(true);
+		expect(refused(denyCommand, bash("git branch -m main"), ["git\\s+branch\\s+-m"])).toBe(true);
+		expect(refused(denyCommand, bash("find . -maxdepth 1 -delete"), ["-maxdepth"])).toBe(true);
+	});
+
+	test("deny-command preserves prose exclusions for commit messages, echo, and heredocs", () => {
+		expect(refused(denyCommand, bash('git commit -m "tag the release: git tag later"'), FORBIDDEN_COMMANDS)).toBe(false);
+		expect(refused(denyCommand, bash('git commit --message="--no-verify"'), FORBIDDEN_COMMANDS)).toBe(false);
+		expect(refused(denyCommand, bash('git commit -m"--no-verify"'), FORBIDDEN_COMMANDS)).toBe(false);
+		expect(refused(denyCommand, bash('git commit -m "--no-verify"'), FORBIDDEN_COMMANDS)).toBe(false);
+		expect(refused(denyCommand, bash('git commit -am "--no-verify"'), FORBIDDEN_COMMANDS)).toBe(false);
+		expect(refused(denyCommand, bash('echo "npm publish"'), FORBIDDEN_COMMANDS)).toBe(false);
+		expect(refused(denyCommand, bash("cat <<'EOF'\nnpm publish\ngit tag v1\nEOF"), FORBIDDEN_COMMANDS)).toBe(false);
+	});
+
+	test("deny-path blocks expanded mutators, destination-last tools, dd, curl/wget, tar -x -C, and git mutators", () => {
+		const UV = ["uv.lock"];
+		const SECRET = ["secret/**"];
+
+		expect(refused(denyPath, bash("ln -sf other uv.lock"), UV)).toBe(true);
+		expect(refused(denyPath, bash("ln -sf uv.lock other.lock"), UV)).toBe(false);
+		expect(refused(denyPath, bash("dd if=/dev/zero of=uv.lock bs=1 count=1"), UV)).toBe(true);
+		expect(refused(denyPath, bash("dd if=uv.lock of=/dev/null bs=1 count=1"), UV)).toBe(false);
+		expect(refused(denyPath, bash("chmod 777 uv.lock"), UV)).toBe(true);
+		expect(refused(denyPath, bash("chown root:root uv.lock"), UV)).toBe(true);
+		expect(refused(denyPath, bash("touch uv.lock"), UV)).toBe(true);
+		expect(refused(denyPath, bash("mkdir -p secret/sub"), SECRET)).toBe(true);
+		expect(refused(denyPath, bash("rmdir secret/sub"), SECRET)).toBe(true);
+		expect(refused(denyPath, bash("unlink uv.lock"), UV)).toBe(true);
+		expect(refused(denyPath, bash("install -m 644 a.txt uv.lock"), UV)).toBe(true);
+		expect(refused(denyPath, bash("cp -t secret a.txt"), SECRET)).toBe(true);
+		expect(refused(denyPath, bash("cp --target-directory=secret a.txt"), SECRET)).toBe(true);
+		expect(refused(denyPath, bash("rsync -a src/ secret/"), SECRET)).toBe(true);
+		expect(refused(denyPath, bash("curl -sL https://example.test -o uv.lock"), UV)).toBe(true);
+		expect(refused(denyPath, bash("curl --output=uv.lock https://example.test"), UV)).toBe(true);
+		expect(refused(denyPath, bash("wget -O uv.lock https://example.test"), UV)).toBe(true);
+		expect(refused(denyPath, bash("wget --output-document=uv.lock https://example.test"), UV)).toBe(true);
+		expect(refused(denyPath, bash("tar -xf a.tar -C secret"), SECRET)).toBe(true);
+		expect(refused(denyPath, bash("tar -xf a.tar -C secret"), ["secret"])).toBe(true);
+		expect(refused(denyPath, bash("tar -tf a.tar -C secret"), SECRET)).toBe(false);
+		expect(refused(denyPath, bash("git reset -- uv.lock"), UV)).toBe(true);
+		expect(refused(denyPath, bash("git clean -f uv.lock"), UV)).toBe(true);
+		// git apply's patch filename is read, not treated as a mutated target path.
+		expect(refused(denyPath, bash("git apply uv.lock"), UV)).toBe(false);
+
+		// Eval parity via CODE_MUTATING.
+		expect(refused(denyPath, call("eval", { code: "Bun.$`chmod 777 uv.lock`" }), UV)).toBe(true);
+		expect(refused(denyPath, call("eval", { code: "Bun.$`curl -o uv.lock https://example.test`" }), UV)).toBe(true);
+		expect(refused(denyPath, call("eval", { code: "Bun.$`git reset -- uv.lock`" }), UV)).toBe(true);
+	});
+
+	test("no-push blocks flag-prefixed gh/glab merge commands in both bash and eval", () => {
+		expect(refused(noPush, bash("gh -R owner/repo pr merge 3"), [])).toBe(true);
+		expect(refused(noPush, bash("gh --repo=owner/repo pr merge 3"), [])).toBe(true);
+		expect(refused(noPush, bash("glab --repo group/proj mr merge 3"), [])).toBe(true);
+		expect(refused(noPush, bash("glab -H gitlab.example -R group/proj mr merge 3"), [])).toBe(true);
+		expect(refused(noPush, bash("gh -R owner/repo pr view 3"), [])).toBe(false);
+		expect(refused(noPush, bash("glab --repo group/proj mr list"), [])).toBe(false);
+
+		expect(refused(noPush, call("eval", { code: "Bun.$`gh -R owner/repo pr merge 3`" }), [])).toBe(true);
+		expect(refused(noPush, call("eval", { code: "Bun.$`glab --repo group/proj mr merge 3`" }), [])).toBe(true);
+		expect(refused(noPush, call("eval", { code: "Bun.$`gh -R owner/repo pr view 3`" }), [])).toBe(false);
+	});
+});

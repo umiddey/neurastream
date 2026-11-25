@@ -44,6 +44,7 @@ function setup(): { dir: string; cfg: Config; pages: string } {
 	cfg.pages.dir = pages;
 	cfg.pages.port = 0;
 	cfg.workspace.owner_login = "owner@example.test";
+	cfg.workspace.allow_this_machine = true;
 	return { dir, cfg, pages };
 }
 
@@ -122,12 +123,15 @@ test("server: approve records the plan, plan bytes unchanged", async () => {
 	const server = startPagesServer({ cfg, tailscale, source: { listRuns: () => [], mainSession: () => null }, hostname: LOOPBACK, port: 0, root: pages, peerOf: () => LOOPBACK });
 	servers.push(server);
 	const base = `http://${LOOPBACK}:${server.port}`;
+	const shell = await (await fetch(`${base}/toy.html`)).text();
+	const approveToken = /id="ns-approve"[^>]*data-ns-token="([0-9a-f]{64})"/i.exec(shell)?.[1] ?? "";
+	expect(approveToken).not.toBe("");
 	expect(await (await fetch(`${base}/_approve?page=toy.html`)).json()).toEqual({ open: ["n1"], problems: [] });
-	let res = await fetch(`${base}/_approve?page=toy.html`, { method: "POST", headers: { origin: base } });
+	let res = await fetch(`${base}/_approve?page=toy.html`, { method: "POST", headers: { origin: base, "x-ns-token": approveToken } });
 	expect(res.status).toBe(409);
 	expect(readFileSync(plan, "utf8")).toBe(original); // plan bytes unchanged while a note is open
 	writeFileSync(notesAnswersPath(cfg, "toy.html"), JSON.stringify({ n1: "labelled level 3" }));
-	res = await fetch(`${base}/_approve?page=toy.html`, { method: "POST", headers: { origin: base } });
+	res = await fetch(`${base}/_approve?page=toy.html`, { method: "POST", headers: { origin: base, "x-ns-token": approveToken } });
 	expect(res.status).toBe(200);
 	expect((await res.json()).approved).toBe("approved toy.html");
 	expect(readFileSync(plan, "utf8")).toBe(original); // plan bytes still unchanged

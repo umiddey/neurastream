@@ -52,7 +52,7 @@ function isDir(p: string): boolean {
 
 // Eval code (JS or Python) keeps the whole-text test; shell commands are judged per command.
 const CODE_MUTATING =
-	/(\brm\b|\bmv\b|\bcp\b|\btruncate\b|\bsed\s+-i|\btee\b|>{1,2}\s*\S|\bgit\s+(rm|mv|checkout|restore)\b|writeFile|Bun\.write|unlink|\bpatch\b)/;
+	/(\brm\b|\bmv\b|\bcp\b|\bln\b|\bdd\b|\bchmod\b|\bchown\b|\btouch\b|\bmkdir\b|\brmdir\b|\binstall\b|\brsync\b|\btruncate\b|\bsed\s+-i|\btee\b|\bcurl\b[^;\n]*(?:\s-[a-zA-Z]*o|--output)|\bwget\b[^;\n]*(?:\s-[a-zA-Z]*O|--output-document)|>{1,2}\s*\S|\bgit\s+(rm|mv|checkout|restore|reset|clean|merge|rebase|cherry-pick)\b|writeFile|Bun\.write|unlink|\bpatch\b)/;
 
 export function blockerEnv(call: BlockerCall, args: string[]): BlockerEnv {
 	const shell = call.tool === "bash" || call.tool === "eval";
@@ -409,9 +409,65 @@ const INTERPRETERS: Record<string, true> = {
 	perl: true,
 	ruby: true,
 };
-const GIT_VALUE_OPTS: Record<string, true> = { "-C": true, "-c": true, "--git-dir": true, "--work-tree": true, "--namespace": true };
-const MUTATING_NAMES: Record<string, true> = { rm: true, mv: true, truncate: true, tee: true, patch: true };
-const GIT_MUTATING: Record<string, true> = { rm: true, mv: true, checkout: true, restore: true };
+const GIT_VALUE_OPTS: Record<string, true> = {
+	"-C": true,
+	"-c": true,
+	"--git-dir": true,
+	"--work-tree": true,
+	"--namespace": true,
+	"--super-prefix": true,
+	"--config-env": true,
+};
+const GH_GLAB_VALUE_OPTS: Record<string, true> = {
+	"-R": true,
+	"--repo": true,
+	"-H": true,
+	"--hostname": true,
+};
+const SUBCMD_TOOLS: Record<string, { valueOpts: Record<string, true>; depth: number }> = {
+	git: { valueOpts: GIT_VALUE_OPTS, depth: 1 },
+	npm: { valueOpts: { "--prefix": true, "-C": true, "--userconfig": true, "--cache": true, "--registry": true }, depth: 1 },
+	bun: { valueOpts: { "--cwd": true, "-c": true, "--config": true, "--env-file": true, "-e": true, "--eval": true, "-p": true, "--print": true }, depth: 1 },
+	gh: { valueOpts: GH_GLAB_VALUE_OPTS, depth: 2 },
+	glab: { valueOpts: GH_GLAB_VALUE_OPTS, depth: 2 },
+	docker: { valueOpts: { "-H": true, "--host": true, "--context": true, "--config": true, "-c": true, "-l": true, "--log-level": true }, depth: 2 },
+	kubectl: { valueOpts: { "-n": true, "--namespace": true, "--context": true, "--kubeconfig": true, "--cluster": true, "--user": true }, depth: 1 },
+	cargo: { valueOpts: { "--manifest-path": true, "-C": true, "--target-dir": true }, depth: 1 },
+	uv: { valueOpts: { "--directory": true, "--project": true, "--cache-dir": true, "--config-file": true }, depth: 1 },
+	yarn: { valueOpts: { "--cwd": true }, depth: 1 },
+	pnpm: { valueOpts: { "-C": true, "--dir": true, "--filter": true, "-F": true }, depth: 1 },
+};
+const MUTATING_NAMES: Record<string, true> = {
+	rm: true,
+	mv: true,
+	truncate: true,
+	tee: true,
+	patch: true,
+	chmod: true,
+	chown: true,
+	touch: true,
+	mkdir: true,
+	rmdir: true,
+	unlink: true,
+};
+const DEST_LAST_NAMES: Record<string, true> = { cp: true, ln: true, install: true, rsync: true };
+const DEST_LAST_VALUE_OPTS: Record<string, Record<string, true>> = {
+	cp: { "-S": true, "--suffix": true },
+	ln: { "-S": true, "--suffix": true },
+	install: { "-m": true, "--mode": true, "-o": true, "--owner": true, "-g": true, "--group": true, "-S": true, "--suffix": true },
+	rsync: { "-e": true, "--rsh": true, "--exclude": true, "--include": true, "--filter": true, "-f": true },
+};
+const GIT_MUTATING: Record<string, true> = {
+	rm: true,
+	mv: true,
+	checkout: true,
+	restore: true,
+	reset: true,
+	clean: true,
+	merge: true,
+	rebase: true,
+	"cherry-pick": true,
+};
 // Code-write forms, one list for shell and eval: the code parts of queue/lib.ts MUTATING plus
 // Ruby's File.write. Never fork a second list.
 const CODE_WRITE =
@@ -420,9 +476,10 @@ const CODE_WRITE =
 interface ShellCommand {
 	name: string;
 	args: ShellWord[];
+	headIndex: number;
 }
 
-// The command a segment runs: leading assignments, wrapper words, options and durations are skipped.
+/** Resolve the command a segment runs, skipping leading assignments, wrapper words, options, and durations. */
 function commandOf(seg: ShellSegment): ShellCommand | null {
 	let k = 0;
 	for (; k < seg.words.length; k++) {
@@ -432,7 +489,23 @@ function commandOf(seg: ShellSegment): ShellCommand | null {
 		if (!skippable) break;
 	}
 	const head = seg.words[k];
-	return head ? { name: path.basename(head.text), args: seg.words.slice(k + 1) } : null;
+	return head ? { name: path.basename(head.text), args: seg.words.slice(k + 1), headIndex: k } : null;
+}
+
+/** Extract non-option subcommand words from CLI args, skipping leading flags and their value arguments. */
+function cliSubcommands(args: ShellWord[], valueOpts: Record<string, true>, limit = 2): string[] {
+	const out: string[] = [];
+	for (let k = 0; k < args.length && out.length < limit; k++) {
+		const t = args[k]?.text ?? "";
+		if (t === "--") break;
+		if (valueOpts[t] === true) {
+			k++;
+			continue;
+		}
+		if (t.startsWith("-")) continue;
+		out.push(t);
+	}
+	return out;
 }
 
 // git's subcommand and the words after it, skipping global options (-C <dir>, --git-dir=...).
@@ -487,9 +560,109 @@ function executed(command: string): ShellSegment[] {
 	return out;
 }
 
-// Words a segment changes: its output redirections, the operands of mutating commands, the last
-// operand of cp (its destination; the source is only read), and the file arguments of code an
-// interpreter runs.
+/** Extract destination target path(s) for copy/link/sync commands (`cp`, `ln`, `install`, `rsync`). */
+function destLastTargets(cmd: ShellCommand): string[] {
+	const valueOpts = DEST_LAST_VALUE_OPTS[cmd.name] ?? {};
+	let targetDir: string | null = null;
+	let installDirMode = false;
+	const operands: string[] = [];
+	let afterDoubleDash = false;
+	for (let k = 0; k < cmd.args.length; k++) {
+		const t = cmd.args[k]?.text ?? "";
+		if (!t) continue;
+		if (!afterDoubleDash && t === "--") {
+			afterDoubleDash = true;
+			continue;
+		}
+		if (!afterDoubleDash) {
+			if (t === "-t" || t === "--target-directory") {
+				const dir = cmd.args[++k]?.text ?? "";
+				if (dir) targetDir = dir;
+				continue;
+			}
+			if (t.startsWith("--target-directory=")) {
+				const dir = t.slice("--target-directory=".length);
+				if (dir) targetDir = dir;
+				continue;
+			}
+			if (/^-t.+$/.test(t)) {
+				targetDir = t.slice(2);
+				continue;
+			}
+			if (cmd.name === "install" && (t === "-d" || t === "--directory")) {
+				installDirMode = true;
+				continue;
+			}
+			if (valueOpts[t] === true) {
+				k++;
+				continue;
+			}
+			if (t.startsWith("-")) continue;
+		}
+		operands.push(t);
+	}
+	if (targetDir !== null) {
+		const base = targetDir.replace(/\/+$/, "");
+		const children = operands.length > 0 ? operands.map((src) => `${base}/${path.basename(src)}`) : [`${base}/_`];
+		return [targetDir, ...children];
+	}
+	if (installDirMode) return operands;
+	if (operands.length === 0) return [];
+	if (cmd.name === "ln" && operands.length === 1) return [path.basename(operands[0]!)];
+	const dest = operands[operands.length - 1]!;
+	return dest.endsWith("/") ? [dest, `${dest}_`] : [dest];
+}
+
+/** Extract output file targets from `curl` (`-o`, `--output`) or `wget` (`-O`, `--output-document`). */
+function downloadTargets(cmd: ShellCommand): string[] {
+	const out: string[] = [];
+	const shortFlag = cmd.name === "curl" ? "o" : "O";
+	const longFlag = cmd.name === "curl" ? "--output" : "--output-document";
+	const longPrefix = `${longFlag}=`;
+	const combinedEnd = new RegExp(`^-[a-zA-Z]+${shortFlag}$`);
+	const shortAttached = new RegExp(`^-${shortFlag}(.+)$`);
+	for (let k = 0; k < cmd.args.length; k++) {
+		const t = cmd.args[k]?.text ?? "";
+		if (!t) continue;
+		if (t === `-${shortFlag}` || t === longFlag || combinedEnd.test(t)) {
+			const next = cmd.args[++k]?.text ?? "";
+			if (next && next !== "-") out.push(next);
+		} else if (t.startsWith(longPrefix)) {
+			const val = t.slice(longPrefix.length);
+			if (val && val !== "-") out.push(val);
+		} else {
+			const m = shortAttached.exec(t);
+			if (m?.[1] && m[1] !== "-") out.push(m[1]);
+		}
+	}
+	return out;
+}
+
+/** Extract target directory paths when `tar` runs in extraction mode (`-x` / `--extract` / `xf`) with `-C`/`--directory`. */
+function tarExtractTargets(args: ShellWord[]): string[] {
+	const first = args[0]?.text ?? "";
+	const extracting =
+		/^[a-zA-Z]*x[a-zA-Z]*$/.test(first) ||
+		args.some((w) => w.text === "-x" || w.text === "--extract" || /^-[a-zA-Z]*x/.test(w.text));
+	if (!extracting) return [];
+	const out: string[] = [];
+	for (let k = 0; k < args.length; k++) {
+		const t = args[k]?.text ?? "";
+		let dir = "";
+		if (t === "-C" || t === "--directory") dir = args[++k]?.text ?? "";
+		else if (t.startsWith("--directory=")) dir = t.slice("--directory=".length);
+		else if (/^-C.+$/.test(t)) dir = t.slice(2);
+		if (dir) {
+			out.push(dir, `${dir.replace(/\/+$/, "")}/_`);
+		}
+	}
+	return out;
+}
+
+/**
+ * Words a segment changes: output redirections, operands of mutating commands, destination targets of
+ * copy/link/sync/download/dd/tar-extract commands, and file arguments of interpreter write code.
+ */
 function mutationTargets(seg: ShellSegment): string[] {
 	const out = [...seg.writes];
 	const cmd = commandOf(seg);
@@ -503,7 +676,13 @@ function mutationTargets(seg: ShellSegment): string[] {
 	}
 	const ops = args.filter((w) => w.text !== "" && !w.text.startsWith("-")).map((w) => w.text);
 	if (mutating) out.push(...ops);
-	else if (cmd.name === "cp" && ops.length) out.push(ops[ops.length - 1] ?? "");
+	else if (DEST_LAST_NAMES[cmd.name] === true) out.push(...destLastTargets(cmd));
+	else if (cmd.name === "dd") {
+		for (const w of cmd.args) {
+			if (w.text.startsWith("of=") && w.text.length > 3) out.push(w.text.slice(3));
+		}
+	} else if (cmd.name === "curl" || cmd.name === "wget") out.push(...downloadTargets(cmd));
+	else if (cmd.name === "tar") out.push(...tarExtractTargets(cmd.args));
 	else if (cmd.name === "sed" && cmd.args.some((a) => /^-[a-zA-Z]*i|^--in-place/.test(a.text))) out.push(...ops.slice(1));
 	const raw = [...seg.words.map((w) => w.raw), ...seg.bodies].join(" ");
 	if (INTERPRETERS[cmd.name] === true && CODE_WRITE.test(raw)) {
@@ -546,23 +725,135 @@ function shellTargets(env: BlockerEnv): string[] {
 function evalPaths(env: BlockerEnv): string[] {
 	const base = expandHome(String(env.call.input?.cwd || env.call.cwd || "/"));
 	const out: string[] = [];
-	for (const w of env.command.split(/[\s;&|<>()'"]+/)) {
+	for (const w of env.command.split(/[\s;&|<>()'"`]+/)) {
 		const t = w.trim();
 		if (t && !t.startsWith("-")) out.push(path.normalize(path.join(base, expandHome(t))));
 	}
 	return out;
 }
 
-// A segment that pushes (git push) or merges an MR/PR (glab mr merge, gh pr merge), as a command.
+/** True when a segment pushes (`git push`) or merges an MR/PR (`glab mr merge`, `gh pr merge`), skipping leading flags. */
 function pushesOrMerges(seg: ShellSegment): boolean {
 	const cmd = commandOf(seg);
 	if (!cmd) return false;
 	if (cmd.name === "git") return gitSub(cmd.args)?.sub === "push";
-	const words = cmd.args.map((w) => w.text);
-	return (
-		(cmd.name === "glab" && words[0] === "mr" && words[1] === "merge") ||
-		(cmd.name === "gh" && words[0] === "pr" && words[1] === "merge")
-	);
+	if (cmd.name === "glab") {
+		const subs = cliSubcommands(cmd.args, GH_GLAB_VALUE_OPTS);
+		return subs[0] === "mr" && subs[1] === "merge";
+	}
+	if (cmd.name === "gh") {
+		const subs = cliSubcommands(cmd.args, GH_GLAB_VALUE_OPTS);
+		return subs[0] === "pr" && subs[1] === "merge";
+	}
+	return false;
+}
+
+const GIT_PROSE_SUBS: Record<string, true> = {
+	commit: true,
+	tag: true,
+	merge: true,
+	notes: true,
+	stash: true,
+	revert: true,
+};
+
+/** True when a command/subcommand accepts short prose flags (`-m`, `-am`, `-F`) for message text. */
+function hasShortProseFlags(cmdName: string | undefined, firstSub: string | undefined): boolean {
+	return cmdName === "git" && firstSub !== undefined && GIT_PROSE_SUBS[firstSub] === true;
+}
+
+/** True when a flag takes a prose message/search argument in the immediately following word. */
+function isProseNextFlag(token: string, shortProse: boolean): boolean {
+	if (token === "--message" || token === "--grep") return true;
+	if (!shortProse) return false;
+	return token === "-m" || token === "-F" || /^-[a-zA-Z]*m$/.test(token);
+}
+
+/** True when a single word combines a prose flag with its attached value (e.g. `--message=--no-verify`, `-m--no-verify`). */
+function isProseAttachedFlag(token: string, shortProse: boolean): boolean {
+	if (token.startsWith("--message=") || token.startsWith("--grep=")) return true;
+	if (!shortProse) return false;
+	return /^-[a-zA-Z]*m.+$/.test(token) || /^-F.+$/.test(token);
+}
+
+/**
+ * Build the match text(s) for `deny-command` from one shell segment.
+ * Preserves the resolved command head, subcommands (skipping global value options), non-prose
+ * flags (even if quoted), `git add` single-token quoted pathspecs like `"."`, and unquoted words,
+ * while excluding prose arguments (`--message`, `--grep`, and git message-subcommand `-m`/`-F`/`-am`)
+ * and quoted prose.
+ */
+function commandMatchText(seg: ShellSegment): string[] {
+	const cmd = commandOf(seg);
+	const subIndices: number[] = [];
+	if (cmd) {
+		const spec = SUBCMD_TOOLS[cmd.name];
+		if (spec) {
+			for (let j = 0; j < cmd.args.length && subIndices.length < spec.depth; j++) {
+				const t = cmd.args[j]?.text ?? "";
+				if (t === "--") break;
+				if (spec.valueOpts[t] === true) {
+					j++;
+					continue;
+				}
+				if (t.startsWith("-")) continue;
+				if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(t)) break;
+				subIndices.push(cmd.headIndex + 1 + j);
+			}
+		}
+	}
+	const subIndexSet = new Set(subIndices);
+	const firstSub = subIndices.length > 0 ? seg.words[subIndices[0]!]?.text : undefined;
+	const isGitAdd = cmd?.name === "git" && firstSub === "add";
+	const shortProse = hasShortProseFlags(cmd?.name, firstSub);
+
+	const keptIndices: number[] = [];
+	let skipProseNext = false;
+	for (let i = 0; i < seg.words.length; i++) {
+		const w = seg.words[i]!;
+		if (skipProseNext) {
+			skipProseNext = false;
+			continue;
+		}
+		if (cmd !== null && i === cmd.headIndex) {
+			keptIndices.push(i);
+			continue;
+		}
+		if (subIndexSet.has(i)) {
+			keptIndices.push(i);
+			continue;
+		}
+		if (isProseNextFlag(w.text, shortProse)) {
+			// Keep the flag token itself and skip only the following prose argument.
+			keptIndices.push(i);
+			skipProseNext = true;
+			continue;
+		}
+		if (isProseAttachedFlag(w.text, shortProse)) {
+			continue;
+		}
+		if (!w.quoted) {
+			keptIndices.push(i);
+		} else if (/^--?[A-Za-z0-9]/.test(w.text)) {
+			keptIndices.push(i);
+		} else if (isGitAdd && w.text !== "" && !/\s/.test(w.text)) {
+			keptIndices.push(i);
+		}
+	}
+
+	const fullText = keptIndices.map((idx) => seg.words[idx]!.text).join(" ");
+	if (cmd === null) return [fullText];
+
+	// Also emit a canonical command form with head basename and leading global options before the
+	// subcommand stripped, so `gi\t -C repo "tag" v1` matches `/git\s+tag/`.
+	const lastSubIdx = subIndices.length > 0 ? subIndices[subIndices.length - 1]! : cmd.headIndex;
+	const canonicalParts = [
+		cmd.name,
+		...subIndices.map((idx) => seg.words[idx]!.text),
+		...keptIndices.filter((idx) => idx > lastSubIdx).map((idx) => seg.words[idx]!.text),
+	];
+	const canonicalText = canonicalParts.join(" ");
+	return canonicalText !== fullText ? [fullText, canonicalText] : [fullText];
 }
 
 // The text a call would write: write content, the added lines of an edit, the whole input of an
@@ -580,14 +871,11 @@ function writtenText(env: BlockerEnv): string {
 	return env.command;
 }
 
-/** deny-command <regex>...: refuse shell commands matching any regex (use \s for spaces). Each command is matched by its unquoted words, so quoted arguments and heredoc bodies never match; eval code is matched whole. */
+/** deny-command <regex>...: refuse shell commands matching any regex (use \s for spaces). Matches resolved command heads, subcommands, flags, and unquoted tokens while excluding prose arguments and heredoc bodies; eval code is matched whole. */
 export function denyCommand(env: BlockerEnv): void {
 	if (!env.args.length) block("deny-command needs at least one regex in the plan");
 	if (!env.shell) return;
-	const texts =
-		env.call.tool === "eval"
-			? [env.command]
-			: executed(env.command).map((seg) => seg.words.filter((w) => !w.quoted).map((w) => w.text).join(" "));
+	const texts = env.call.tool === "eval" ? [env.command] : executed(env.command).flatMap(commandMatchText);
 	for (const rx of env.args) {
 		const re = new RegExp(rx);
 		if (texts.some((t) => re.test(t))) block(`command matches forbidden pattern /${rx}/ (plan Forbidden list)`);
@@ -625,24 +913,32 @@ export function denyText(env: BlockerEnv): void {
 }
 
 // Eval code's words: the same subcommand test as the bash path, so `git stash push` is not a push
-// (I-20261027-266). Global options before the subcommand (-C <dir>, -c k=v) are skipped as there.
+// (I-20261027-266), while flag-prefixed `gh -R owner/repo pr merge` and `glab --repo g/p mr merge`
+// are caught with the same `cliSubcommands` logic.
 const CODE_WORDS = /[A-Za-z0-9_@%+=:.,/~-]+/g;
 
-function evalPushes(code: string): boolean {
+/** True when eval code invokes `git push`, `glab mr merge`, or `gh pr merge` (even with leading flags). */
+function evalPushesOrMerges(code: string): boolean {
 	const words = code.match(CODE_WORDS) ?? [];
 	return words.some((w, i) => {
-		if (w !== "git" && !w.endsWith("/git")) return false;
+		const base = path.basename(w);
 		const args = words.slice(i + 1).map((text) => ({ text, raw: text, quoted: false }));
-		return gitSub(args)?.sub === "push";
+		if (base === "git") return gitSub(args)?.sub === "push";
+		if (base === "glab") {
+			const subs = cliSubcommands(args, GH_GLAB_VALUE_OPTS);
+			return subs[0] === "mr" && subs[1] === "merge";
+		}
+		if (base === "gh") {
+			const subs = cliSubcommands(args, GH_GLAB_VALUE_OPTS);
+			return subs[0] === "pr" && subs[1] === "merge";
+		}
+		return false;
 	});
 }
 
 /** no-push: subagents never push or merge (Main pushes and merges). Matched as commands, never as words inside arguments. */
 export function noPush(env: BlockerEnv): void {
 	if (!env.shell || env.call.agent === "main") return;
-	const hit =
-		env.call.tool === "eval"
-			? evalPushes(env.command) || /\bglab\s+mr\s+merge\b|\bgh\s+pr\s+merge\b/.test(env.command)
-			: executed(env.command).some(pushesOrMerges);
+	const hit = env.call.tool === "eval" ? evalPushesOrMerges(env.command) : executed(env.command).some(pushesOrMerges);
 	if (hit) block("subagents never push or merge; commit on the feature branch and report");
 }

@@ -96,6 +96,7 @@ test("publish --plan: an incomplete diagram keeps Approve disabled and the serve
 	cfg.pages.dir = join(dir, "public");
 	cfg.pages.port = 0;
 	cfg.workspace.owner_login = "owner@example.test";
+	cfg.workspace.allow_this_machine = true;
 	const plan = join(dir, "plan.md");
 	writeFileSync(plan, PLAN);
 	const src = join(dir, "toy-architecture.html");
@@ -112,7 +113,10 @@ test("publish --plan: an incomplete diagram keeps Approve disabled and the serve
 	writeFileSync(src, FULL);
 	expect(publishPage(src, "Toy", false, out, { plan })).toBe("toy.html");
 	expect(readFileSync(join(out, "toy.html"), "utf8")).toContain("<button id=\"ns-approve-btn\" type=\"button\">Approve</button>");
-	expect((await fetch(`${base}/_approve?page=toy.html`, { method: "POST", headers: { origin: base } })).status).toBe(200);
+	const shell = await (await fetch(`${base}/toy.html`)).text();
+	const approveToken = /id="ns-approve"[^>]*data-ns-token="([0-9a-f]{64})"/i.exec(shell)?.[1] ?? "";
+	expect(approveToken).not.toBe("");
+	expect((await fetch(`${base}/_approve?page=toy.html`, { method: "POST", headers: { origin: base, "x-ns-token": approveToken } })).status).toBe(200);
 	expect(readFileSync(plan, "utf8")).not.toContain("Approved:"); // the plan file is never edited
 	expect(JSON.parse(readFileSync(join(cfg.paths.queue_state, "plan-approvals.json"), "utf8")).approvals[plan].page).toBe("toy.html");
 });

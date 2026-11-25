@@ -2,12 +2,13 @@
 
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { accessSync, appendFileSync, chmodSync, constants, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { accessSync, appendFileSync, chmodSync, constants, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Config } from "../config.ts";
 import type { ClaimStore } from "../claims.ts";
 import { strftime } from "../clock.ts";
+import { withFileLock, writeAtomicSync } from "../file-lock.ts";
 
 // --- landing detection (plan 20261031_0911 P4/P5): lives here, not queue-close.ts, because
 // queueProblems' landed lock needs it and lib must not import the closer that imports lib ---
@@ -76,7 +77,10 @@ export function autoCloseCandidate(p: Plan): boolean {
 	return landed(p.repo, p.branch, originBase(p.repo), p.text);
 }
 
-const HOME = os.homedir();
+/** Resolve the current home directory dynamically so runtime `process.env.HOME` changes take effect. */
+function currentHome(): string {
+	return process.env.HOME || os.homedir();
+}
 
 /** Explicit filesystem paths for queue operations (structurally satisfied by `Config["paths"]`). */
 export interface QueuePaths {
@@ -147,50 +151,94 @@ export interface Plan {
 }
 
 export function expandHome(p: string): string {
-	return p === "~" ? HOME : p.startsWith("~/") ? `${HOME}/${p.slice(2)}` : p;
+	const home = currentHome();
+	return p === "~" ? home : p.startsWith("~/") ? `${home}/${p.slice(2)}` : p;
 }
 
 export function sha(text: string): string {
 	return createHash("sha256").update(text).digest("hex").slice(0, 16);
 }
 
-function indexLines(file: string): string[] | null {
-	let text: string;
-	try {
-		text = readFileSync(file, "utf8");
-	} catch {
-		return null;
-	}
-	return text
+/** Parse normalized absolute plan paths from index file text, resolving relative lines against `base`. */
+export function parseIndex(text: string, base = process.cwd()): string[] {
+	const lines = text
 		.split("\n")
 		.map(l => l.trim().replace(/^[-*]\s+/, "").replace(/`/g, "").trim())
 		.filter(Boolean);
+	return [...new Set(lines.map(l => path.resolve(base, expandHome(l))))];
 }
 
 // Relative lines resolve against `base` (default: the cwd); a repo INDEX.md passes its repo dir.
 export function readIndex(file: string, base = process.cwd()): string[] {
-	return [...new Set((indexLines(file) ?? []).map(l => path.resolve(base, expandHome(l))))];
+	let text: string;
+	try {
+		text = readFileSync(file, "utf8");
+	} catch {
+		return [];
+	}
+	return parseIndex(text, base);
 }
 
-// The one writer of the index (plan 20261031_0911 P2): the index can only grow. A plan that would
-// disappear without an explicit close/cancel/migrate reason throws before anything is written, and
-// every write lands temp+rename then chmods the file to 0444. No 0o644 before the rename: rename(2)
-// replaces a read-only target with directory-write permission only, so the file is never writable —
-// not even between the rename and the chmod.
-export function writeIndex(lines: string[], why: { removed?: "close" | "cancel" | "migrate" } | undefined, file: string): void {
-	const index = file;
+/** Lock file sibling for `INDEX.md`, serializing read-modify-write index updates. */
+export function indexLockPath(index: string): string {
+	return path.join(path.dirname(index), `.${path.basename(index)}.lock`);
+}
+
+function writeIndexUnlocked(
+	lines: string[],
+	why: { removed?: "close" | "cancel" | "migrate" } | undefined,
+	file: string,
+	currentText: string,
+): void {
 	const newSet = new Set(
 		lines.filter(l => l.trim()).map(l => path.resolve(expandHome(l.trim().replace(/^[-*]\s+/, "").replace(/`/g, "").trim()))),
 	);
-	const gone = readIndex(index).filter(p => !newSet.has(p));
+	const gone = parseIndex(currentText).filter(p => !newSet.has(p));
 	if (gone.length && !why?.removed)
 		throw new Error(
 			`writeIndex: ${gone.join(", ")} would leave the index; only a close, cancel or migrate removes a plan (why: { removed: "close" | "cancel" | "migrate" })`,
 		);
-	const tmp = `${index}.tmp`;
-	writeFileSync(tmp, lines.length ? `${lines.join("\n")}\n` : "");
-	renameSync(tmp, index);
-	chmodSync(index, 0o444);
+	writeAtomicSync(file, lines.length ? `${lines.join("\n")}\n` : "", 0o444);
+}
+
+/**
+ * Locked read-modify-write helper for the queue index: acquires `indexLockPath(file)`, reads the
+ * current text under the lock, invokes `mutate(currentText)`, verifies no plan disappears without
+ * an explicit `why.removed` reason, and atomically writes the new index with `0o444` applied
+ * before `renameSync`. Returning `null` from `mutate` aborts cleanly without writing.
+ *
+ * Args:
+ *     file (string): Path to the queue index file
+ *     why ({ removed?: "close" | "cancel" | "migrate" } | undefined): Removal authorization if lines are dropped
+ *     mutate ((currentText: string) => string[] | null): Pure transform from current file text to next lines
+ *
+ * Returns:
+ *     boolean: True when the index was written; false when `mutate` returned null
+ */
+export function updateIndex(
+	file: string,
+	why: { removed?: "close" | "cancel" | "migrate" } | undefined,
+	mutate: (currentText: string) => string[] | null,
+): boolean {
+	return withFileLock(indexLockPath(file), () => {
+		let currentText = "";
+		try {
+			currentText = readFileSync(file, "utf8");
+		} catch {}
+		const next = mutate(currentText);
+		if (next === null) return false;
+		writeIndexUnlocked(next, why, file, currentText);
+		return true;
+	});
+}
+
+// The one writer of the index (plan 20261031_0911 P2): the index can only grow. A plan that would
+// disappear without an explicit close/cancel/migrate reason throws before anything is written, and
+// every write lands temp + chmod 0444 + rename under the index lock. No 0o644 before the rename:
+// rename(2) replaces a read-only target with directory-write permission only, so the file is never
+// writable — not even between the rename and the chmod.
+export function writeIndex(lines: string[], why: { removed?: "close" | "cancel" | "migrate" } | undefined, file: string): void {
+	updateIndex(file, why, () => lines);
 }
 
 // Doctor's enforcement half of the same plan: the live index must sit at 0444 between writes, so
@@ -641,7 +689,7 @@ function packageOpTarget(code: string, paths?: Pick<QueuePaths, "agent_dir">): s
 		})) {
 			const envHome = toks.slice(0, i).find(t => t.startsWith("HOME="));
 			if (envHome && envHome.slice("HOME=".length).replace(/^["']|["']$/g, "").startsWith("/tmp/")) continue;
-			return `${paths?.agent_dir ?? `${HOME}/.config/neurastream`}/extensions/`;
+			return `${paths?.agent_dir ?? `${currentHome()}/.config/neurastream`}/extensions/`;
 		}
 	}
 	return packageOpMatcher?.(code) ?? null;
@@ -759,7 +807,7 @@ export function writeTargets(toolName: string, input: Record<string, unknown>, c
 	])
 		for (const m of code.matchAll(re)) add((m[1] ?? "").replace(/`/g, ""), dir);
 	if (pkgOp) out.add(pkgOp);
-	if (subOp) out.add(paths?.subagents ?? `${HOME}/.config/neurastream/notes/subagents.md`);
+	if (subOp) out.add(paths?.subagents ?? `${currentHome()}/.config/neurastream/notes/subagents.md`);
 	return [...out];
 }
 
@@ -781,11 +829,12 @@ function packageManifest(): { root: string; bins: string[] } | null {
 }
 
 function bunGlobalRoot(): string {
-	return process.env.BUN_INSTALL ? path.resolve(expandHome(process.env.BUN_INSTALL)) : `${HOME}/.bun`;
+	return process.env.BUN_INSTALL ? path.resolve(expandHome(process.env.BUN_INSTALL)) : `${currentHome()}/.bun`;
 }
 
 export function protectedPaths(paths: QueuePaths): string[] {
 	const agent = paths.agent_dir;
+	const home = currentHome();
 	const out = [
 		`${agent}/extensions/`,
 		`${agent}/queue/`,
@@ -802,25 +851,25 @@ export function protectedPaths(paths: QueuePaths): string[] {
 		`${agent}/config.yml`,
 		// The user's neurastream config file, even when agent_dir points elsewhere: an agent that
 		// could rewrite it could point notify at its own webhook.
-		`${HOME}/.config/neurastream/config.yml`,
+		`${home}/.config/neurastream/config.yml`,
 		// The planner mode guard baseline beside that file (plan 20261102_1515 P2 d): the
 		// owner-only anchor of the mode facts. A write that could plant or edit it would make the
 		// writer's own dirt the truth, so no tool may touch it.
-		`${HOME}/.config/neurastream/guard-baseline`,
+		`${home}/.config/neurastream/guard-baseline`,
 		`${agent}/notes/subagents.md`,
 		paths.subagents,
 		`${agent}/.guard-unlock`,
 		paths.unlock,
 		`${path.dirname(agent)}/git-no-verify-guard.mjs`,
-		`${HOME}/.local/bin/queue-check`,
-		`${HOME}/.local/bin/queue-close`,
-		`${HOME}/.local/bin/queue-cancel`,
-		`${HOME}/.local/bin/agent-ledger`,
-		`${HOME}/.local/bin/brief-lint`,
-		`${HOME}/.local/bin/main-start`,
-		`${HOME}/.local/bin/git`,
-		`${HOME}/.local/bin/git-secret-gate`,
-		`${HOME}/.config/git-secret-gate/`,
+		`${home}/.local/bin/queue-check`,
+		`${home}/.local/bin/queue-close`,
+		`${home}/.local/bin/queue-cancel`,
+		`${home}/.local/bin/agent-ledger`,
+		`${home}/.local/bin/brief-lint`,
+		`${home}/.local/bin/main-start`,
+		`${home}/.local/bin/git`,
+		`${home}/.local/bin/git-secret-gate`,
+		`${home}/.config/git-secret-gate/`,
 		// Where `bun add -g neurastream` lands; writeTargets points package
 		// operations here so they need the owner's unlock like any guard edit.
 		// The plugin dir is adapter surface: the installer lists it in the
@@ -830,7 +879,7 @@ export function protectedPaths(paths: QueuePaths): string[] {
 	const pkg = packageManifest();
 	if (pkg) {
 		out.push(`${pkg.root}/`);
-		for (const name of pkg.bins) out.push(`${HOME}/.bun/bin/${name}`);
+		for (const name of pkg.bins) out.push(`${home}/.bun/bin/${name}`);
 	}
 	return out;
 }

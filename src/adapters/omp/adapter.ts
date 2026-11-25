@@ -5,7 +5,7 @@ import type { HarnessAdapter } from "../index.ts";
 import { runDoctor } from "./doctor.ts";
 import { ompProviders } from "./providers.ts";
 import { runAdapterInstall } from "./install.ts";
-import { runMainLauncher } from "./launch.ts";
+import { ompComplete, runMainLauncher } from "./launch.ts";
 import { defaultCompletedResults, defaultOwnerTurns, defaultRunSource } from "./sessions.ts";
 import { dumpModel, dumpParts, dumpPromptTokens, ompDumps, ompEpisodes, ompScoreTraces, ompTraceRuns, ompTraceSource, ompTraceStart, spawnBriefsIn, subagentTraces } from "./traces.ts";
 
@@ -30,4 +30,5 @@ export const ompAdapter: HarnessAdapter = {
 	install: runAdapterInstall,
 	doctor: runDoctor,
 	providers: ompProviders,
+	complete: ompComplete,
 };

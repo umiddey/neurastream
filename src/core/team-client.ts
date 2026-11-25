@@ -162,9 +162,20 @@ if (import.meta.main) {
 	);
 }
 
-/** The default transport: one synchronous child, JSON request on stdin, JSON answer on stdout. */
+/**
+ * The default transport: one synchronous child, JSON request on stdin, JSON answer on stdout.
+ *
+ * Args:
+ *     req (WireRequest): HTTP request parameters to execute in the child process
+ *
+ * Returns:
+ *     WireResponse | null: Parsed response object or an error envelope
+ */
 function defaultSend(req: WireRequest): WireResponse | null {
-	const r = spawnSync(process.execPath, [fileURLToPath(import.meta.url)], {
+	// Always invoke `bun` by name, never `process.execPath`: when core is loaded inside a
+	// compiled host harness, `process.execPath` points at the harness binary itself, so spawning
+	// it would recursively launch full host sessions instead of running this request script.
+	const r = spawnSync("bun", [fileURLToPath(import.meta.url)], {
 		input: JSON.stringify(req),
 		timeout: REQUEST_TIMEOUT_MS,
 		encoding: "utf8",

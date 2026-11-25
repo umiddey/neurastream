@@ -1,18 +1,31 @@
 import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, fstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { claimStoreFor } from "./team-client.ts";
 
 import type { Config } from "./config.ts";
-import { mainId } from "./guards.ts";
-import { activePlans, cancelledFile, cancelledLine, closeLog, finishedEntry, finishedPath, gitOut as git, landed, prependFinished, sha, writeIndex } from "./queue/lib.ts";
+import { tryLock } from "./file-lock.ts";
+import { deleteSpawnRecord, mainId } from "./guards.ts";
+import { activePlans, cancelledFile, cancelledLine, closeLog, expandHome, finishedEntry, finishedPath, gitOut as git, landed, prependFinished, sha, updateIndex } from "./queue/lib.ts";
 import { fixedIncident } from "./incidents.ts";
 
 // P4 (plan 20261031_0911): the landing check lives in queue/lib.ts (queueProblems' landed lock
 // shares it, and lib cannot import this closer back); re-exported here per the plan.
 export { landed };
 
+/** Internal control-flow error thrown by `die()` so `queueClose` returns exit code 1 cleanly without killing the process. */
+class AbortClose extends Error {}
+
+/**
+ * Close and archive a completed or cancelled plan, run its done check, and remove it from the queue index.
+ *
+ * Args:
+ *     args (string[]): CLI arguments (`[--auto] <plan file>` or `-h`/`--help`)
+ *     cfg (Config): Loaded neurastream configuration
+ *
+ * Returns:
+ *     number: Exit code (`0` closed, `1` refused, `3` already running, `4` awaiting merge)
+ */
 export function queueClose(args: string[], cfg: Config): number {
 	const INDEX = cfg.paths.queue_index;
 	const STATE_DIR = cfg.paths.queue_state;
@@ -29,8 +42,9 @@ export function queueClose(args: string[], cfg: Config): number {
 	}
 	function die(msg: string): never {
 		result(`queue-close: REFUSED: ${msg}`);
-		process.exit(1);
+		throw new AbortClose(msg);
 	}
+	try {
 	// A clone of a clone judges "landed" against the middle copy's default branch, which can be
 	// stale. Follow local-path origins (at most 3 hops) to the upstream repo and fetch its default
 	// branch: that commit is the base. No local origin: the existing base, unchanged.
@@ -79,16 +93,20 @@ export function queueClose(args: string[], cfg: Config): number {
 
 	mkdirSync(STATE_DIR, { recursive: true });
 	const lock = path.join(STATE_DIR, `close-${sha(file)}.lock`);
+	const held = tryLock(lock);
+	if (!held) {
+		let pidNote = "";
+		try {
+			const pid = Number(readFileSync(lock, "utf8").trim());
+			if (pid) pidNote = ` (pid ${pid})`;
+		} catch {}
+		console.error(`queue-close: already running for ${file}${pidNote}`);
+		return 3;
+	}
 	try {
-		const pid = Number(readFileSync(lock, "utf8"));
-		if (pid && pid !== process.pid) {
-			process.kill(pid, 0);
-			console.error(`queue-close: already running for ${file} (pid ${pid})`);
-			return 3;
-		}
+	try {
+		writeFileSync(lock, `${process.pid}\n`);
 	} catch {}
-	writeFileSync(lock, String(process.pid));
-	process.on("exit", () => rmSync(lock, { force: true }));
 
 	const plan = activePlans(cfg.paths).find(p => p.file === file);
 	if (!plan) die(`${file} is not listed in the main index ${INDEX}`);
@@ -147,7 +165,8 @@ export function queueClose(args: string[], cfg: Config): number {
 				// A shared clone of the base, deliberately NOT a registered worktree: it never shows up
 				// in `git worktree list` and can be dropped with a plain delete when it stays clean.
 				scratch = mkdtempSync(path.join(STATE_DIR, "done-base-"));
-				const add = git(plan.repo, "clone", "-q", "--shared", ".", scratch) && git(scratch, "checkout", "-q", "--detach", base);
+				const cloned = git(plan.repo, "clone", "-q", "--shared", ".", scratch);
+				const add = cloned.ok ? git(scratch, "checkout", "-q", "--detach", base) : cloned;
 				if (!add.ok) {
 					rmSync(scratch, { recursive: true, force: true });
 					die(`could not check out ${base} for the done check: ${add.out}`);
@@ -282,16 +301,15 @@ export function queueClose(args: string[], cfg: Config): number {
 	}
 
 	// One index: the closed plan's line leaves the main index; there is no repo INDEX.md.
-	const lines = readFileSync(INDEX, "utf8").split("\n").filter(l => l.trim());
-	const keep = lines.filter(l => path.resolve(l.trim().replace(/^[-*]\s+/, "").replace(/`/g, "").replace(/^~(?=\/)/, os.homedir())) !== file);
-	writeIndex(keep, { removed: cancelling ? "cancel" : "close" }, INDEX);
-	console.log(`queue-close: removed from ${INDEX} (${keep.length} plan(s) left)`);
-	try {
-		const sp = path.join(STATE_DIR, "spawns.json");
-		const s = JSON.parse(readFileSync(sp, "utf8"));
-		delete s[file];
-		writeFileSync(sp, JSON.stringify(s, null, 1));
-	} catch {}
+	let remaining = 0;
+	updateIndex(INDEX, { removed: cancelling ? "cancel" : "close" }, (currentText) => {
+		const lines = currentText.split("\n").filter(l => l.trim());
+		const keep = lines.filter(l => path.resolve(expandHome(l.trim().replace(/^[-*]\s+/, "").replace(/`/g, ""))) !== file);
+		remaining = keep.length;
+		return keep;
+	});
+	console.log(`queue-close: removed from ${INDEX} (${remaining} plan(s) left)`);
+	deleteSpawnRecord(file, cfg.paths);
 	// Incidents this plan fixes (plan P5): each INCIDENT <id> cited outside ## Progress gets a
 	// fixed record, so the guards stop pushing a bug whose fix just shipped. Progress is
 	// narrative, not fix work (I-20261031-349, P5b): an id Main only filed there ("needs a phase
@@ -324,4 +342,11 @@ export function queueClose(args: string[], cfg: Config): number {
 	claimStoreFor(file, cfg).release(file, mainId());
 	console.log("queue-close: CLOSED");
 	return 0;
+	} finally {
+		held.release();
+	}
+	} catch (e) {
+		if (e instanceof AbortClose) return 1;
+		throw e;
+	}
 }

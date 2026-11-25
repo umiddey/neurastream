@@ -4,12 +4,14 @@
 
 import { afterAll, expect, test } from "bun:test";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileClaimStore } from "../src/core/claims.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
+import { isBusy, tryLock } from "../src/core/file-lock.ts";
 import { queueClose } from "../src/core/queue-close.ts";
+import { sha } from "../src/core/queue/lib.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "ns-qclose-finished-"));
 const HOME = join(TMP, "home");
@@ -30,6 +32,7 @@ function seed(): Config {
 	const blocker = join(AGENT, "blockers/no-push");
 	writeFileSync(blocker, "#!/bin/sh\nexit 0\n");
 	chmodSync(blocker, 0o755);
+	rmSync(INDEX, { force: true });
 	writeFileSync(INDEX, `${COMPLETE}\n${CANCELLED}\n`);
 	writeFileSync(
 		join(HOME, ".config/neurastream/config.yml"),
@@ -211,6 +214,83 @@ test("queue-close still closes when the upstream default branch is gone: it fall
 		expect(existsSync(join(UCLONE, "docs/plans/archive", month, "20261020_1500_upstream.md"))).toBe(true);
 	} finally {
 		rmSync(U, { recursive: true, force: true });
+	}
+});
+
+test("queueClose returns 1 in-process on refusal without exiting, and returns 3 when flock is held", () => {
+	const cfg = seed();
+	expect(queueClose([], cfg)).toBe(1);
+	const unlisted = join(TOY, "docs/plans/20261020_1600_unlisted.md");
+	expect(queueClose([unlisted], cfg)).toBe(1);
+
+	const lockPath = join(QUEUE_STATE, `close-${sha(unlisted)}.lock`);
+	expect(isBusy(lockPath)).toBe(false);
+
+	const held = tryLock(lockPath);
+	expect(held).not.toBeNull();
+	try {
+		expect(queueClose([unlisted], cfg)).toBe(3);
+	} finally {
+		held!.release();
+	}
+	expect(isBusy(lockPath)).toBe(false);
+	// Once released, queueClose acquires and releases the lock cleanly even on refusal.
+	expect(queueClose([unlisted], cfg)).toBe(1);
+	expect(isBusy(lockPath)).toBe(false);
+});
+
+test("detached done-check clone failure reports the clone error and never runs git checkout", () => {
+	const D = mkdtempSync(join(tmpdir(), "ns-qclose-clone-fail-"));
+	try {
+		const DHOME = join(D, "home");
+		const DAGENT = join(DHOME, "agent");
+		const DSTATE = join(DHOME, "state");
+		const DIX = join(DAGENT, "INDEX.md");
+		const DREPO = join(DHOME, "projects/toy");
+		const DBIN = join(D, "bin");
+		const GITLOG = join(D, "git.log");
+		for (const d of [join(DAGENT, "blockers"), join(DHOME, ".config/neurastream"), DSTATE, join(DREPO, "docs/plans"), DBIN]) {
+			mkdirSync(d, { recursive: true });
+		}
+		const blocker = join(DAGENT, "blockers/no-push");
+		writeFileSync(blocker, "#!/bin/sh\nexit 0\n");
+		chmodSync(blocker, 0o755);
+		writeFileSync(
+			join(DHOME, ".config/neurastream/config.yml"),
+			`paths:\n  home: "${DHOME}"\n  work_roots: ["${DREPO}"]\n  agent_dir: "${DAGENT}"\n  queue_index: "${DIX}"\n  blockers: "${join(DAGENT, "blockers")}"\n  queue_state: "${DSTATE}"\n  subagents: "${join(DAGENT, "notes/subagents.md")}"\n  cancelled: "${join(DAGENT, "CANCELLED.md")}"\n  unlock: "${join(DAGENT, ".guard-unlock")}"\n  guard_log: "${join(DHOME, "main-guard.log")}"\n  plan_guard_log: "${join(DHOME, "plan-guard.log")}"\n`,
+		);
+		gitRun("init", "-q", "-b", "main", DREPO);
+		writeFileSync(join(DREPO, "f.txt"), "hello\n");
+		gitRun("-C", DREPO, "add", "f.txt");
+		gitRun("-C", DREPO, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "init");
+
+		const DPLAN = join(DREPO, "docs/plans/20261020_1700_clonefail.md");
+		const planBody = plan("Clone fail plan", "complete", []).replace(
+			"# Clone fail plan\n",
+			`# Clone fail plan\nWorktree: ${join(D, "missing-wt")}\nBranch: main\n`,
+		);
+		writeFileSync(DPLAN, planBody);
+		writeFileSync(DIX, `${DPLAN}\n`);
+
+		const realGit = spawnSync("which", ["git"], { encoding: "utf8" }).stdout.trim();
+		const stub = join(DBIN, "git");
+		writeFileSync(
+			stub,
+			`#!/bin/sh\necho "$@" >> "${GITLOG}"\nfor a in "$@"; do\n  if [ "$a" = "clone" ]; then\n    echo "simulated clone failure" >&2\n    exit 128\n  fi\ndone\nexec "${realGit}" "$@"\n`,
+		);
+		chmodSync(stub, 0o755);
+
+		const env = { ...childEnv(DHOME), PATH: `${DBIN}:${process.env.PATH}` };
+		const r = spawnSync("bun", [CLI, "queue-close", DPLAN], { env, encoding: "utf8" });
+		expect(r.status).toBe(1);
+		expect(r.stderr).toContain("simulated clone failure");
+		const calls = readFileSync(GITLOG, "utf8");
+		expect(calls).toContain("clone");
+		expect(calls).not.toContain("checkout");
+		const leftover = readdirSync(DSTATE).filter(n => n.startsWith("done-base-"));
+		expect(leftover).toEqual([]);
+	} finally {
+		rmSync(D, { recursive: true, force: true });
 	}
 });
 

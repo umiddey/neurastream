@@ -4,6 +4,7 @@
 
 import { chmodSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import type { CompleteRequest, CompleteResult } from "./adapter.ts";
 import { nowSec } from "./clock.ts";
 import type { Config } from "./config.ts";
 import { tryLock } from "./file-lock.ts";
@@ -11,19 +12,7 @@ import { appendJsonLines, entryIdSec, type LogEntry, ownerLogDir, ownerLogFile, 
 import type { QueuePaths } from "./queue/lib.ts";
 import { loadKnownSecrets, redactSecrets } from "./secret-redact.ts";
 
-export interface CompleteRequest {
-	model: string;
-	system: string;
-	prompt: string;
-	maxTokens: number;
-	/** Reasoning effort for the model ("" or absent = none). */
-	effort?: string;
-}
-
-export interface CompleteResult {
-	text: string;
-	usage: { prompt_tokens: number; completion_tokens: number };
-}
+export type { CompleteRequest, CompleteResult };
 
 export type Complete = (req: CompleteRequest) => Promise<CompleteResult>;
 

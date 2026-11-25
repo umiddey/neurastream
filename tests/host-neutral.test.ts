@@ -72,3 +72,17 @@ test("src/cli imports adapters only via src/adapters/index.ts", () => {
 	}
 	expect(bad).toEqual([]);
 });
+
+// Core must never reach back into src/cli via relative runtime paths (e.g. `../cli/main.ts`).
+const CLI_ESCAPE_RE = /(?:\.\.\/)+cli\//g;
+
+test("src/core contains no relative path escaping into src/cli", () => {
+	const bad: string[] = [];
+	for (const file of tsFiles(CORE)) {
+		const text = readFileSync(file, "utf8");
+		for (const m of text.matchAll(CLI_ESCAPE_RE)) {
+			bad.push(`${file}:${text.slice(0, m.index).split("\n").length} references ${m[0]}`);
+		}
+	}
+	expect(bad).toEqual([]);
+});

@@ -1,8 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import type { Config } from "./config.ts";
+import { queueClose } from "./queue-close.ts";
 import {
 	activePlans,
 	banLine,
@@ -13,6 +13,19 @@ import {
 	repoRoot,
 } from "./queue/lib.ts";
 
+/** Internal control-flow error thrown by `die()` so `queueCancel` returns exit code 1 cleanly without killing the process. */
+class AbortCancel extends Error {}
+
+/**
+ * Record a cancelled plan, global/repo never-do rule, or false-positive cancellation dismissal.
+ *
+ * Args:
+ *     args (string[]): CLI arguments for `queue-cancel`
+ *     cfg (Config): Loaded neurastream configuration
+ *
+ * Returns:
+ *     number: Exit code (`0` succeeded, `1` refused, or child `queue-close` exit code)
+ */
 export function queueCancel(args: string[], cfg: Config): number {
 	const STATE_DIR = cfg.paths.queue_state;
 	const CANCEL_PENDING = cancelPendingPath(cfg.paths);
@@ -20,7 +33,7 @@ export function queueCancel(args: string[], cfg: Config): number {
 	const today = new Date().toISOString().slice(0, 10);
 	function die(msg: string): never {
 		console.error(`queue-cancel: REFUSED: ${msg}`);
-		process.exit(1);
+		throw new AbortCancel(msg);
 	}
 	function clearPending(how: string) {
 		const p = cancelPending(cfg.paths);
@@ -29,7 +42,7 @@ export function queueCancel(args: string[], cfg: Config): number {
 		rmSync(CANCEL_PENDING, { force: true });
 	}
 	const usage = 'usage: queue-cancel <plan> "<owner words>" | --never "<what>" "<owner words>" [--repo <repo>] | --not-a-cancel "<why>"';
-
+	try {
 	if (args[0] === "--not-a-cancel") {
 		const why = (args[1] ?? "").trim();
 		// Only a message main-guard flagged needs an answer; a bare call is a wasted round.
@@ -85,18 +98,9 @@ export function queueCancel(args: string[], cfg: Config): number {
 	text = text.replace(/^Status:\s*\S+\s*$/m, `Status: cancelled\nCancelled by owner: ${today} ${owner.trim().replace(/\n/g, " ")}`);
 	writeFileSync(file, text);
 	clearPending(`plan: ${file}`);
-	const closeBin = path.join(path.dirname(fileURLToPath(import.meta.url)), "../cli/main.ts");
-	const childEnv: NodeJS.ProcessEnv = {
-		...process.env,
-		HOME: cfg.paths.home,
-		QUEUE_AGENT: cfg.paths.agent_dir,
-		QUEUE_INDEX: cfg.paths.queue_index,
-		QUEUE_BLOCKERS: cfg.paths.blockers,
-		QUEUE_STATE: cfg.paths.queue_state,
-		QUEUE_SUBAGENTS: cfg.paths.subagents,
-		QUEUE_CANCELLED: cfg.paths.cancelled,
-		QUEUE_UNLOCK: cfg.paths.unlock,
-	};
-	const r = spawnSync("bun", [closeBin, "queue-close", file], { stdio: "inherit", env: childEnv });
-	return r.status ?? 1;
+	return queueClose([file], cfg);
+	} catch (e) {
+		if (e instanceof AbortCancel) return 1;
+		throw e;
+	}
 }

@@ -7,12 +7,11 @@ import { spawn } from "node:child_process";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import type { LaunchOptions } from "../../core/adapter.ts";
+import type { CompleteRequest, CompleteResult, LaunchOptions } from "../../core/adapter.ts";
 import type { Config } from "../../core/config.ts";
 import { readOwnerAnswers, readOwnerMessages } from "../../core/incidents.ts";
 import { mainStartText } from "../../core/main-start.ts";
 import { appendMetric } from "../../core/metrics.ts";
-import type { CompleteRequest, CompleteResult } from "../../core/owner-topics.ts";
 import { tryLock } from "../../core/file-lock.ts";
 import { MAIN_ID_RE, mainId, mainStateDir } from "../../core/guards.ts";
 import * as q from "../../core/queue/lib.ts";
@@ -448,6 +447,35 @@ function noteReadable(path: string): boolean {
 	}
 }
 
+/**
+ * Runs the CLI `doctor` command without blocking the event loop and returns its combined output.
+ * Invokes the CLI file via its `#!/usr/bin/env bun` shebang rather than `process.execPath` so a
+ * host harness process does not spawn another harness session.
+ *
+ * Returns:
+ *     Promise<string>: Combined stdout, stderr, and any spawn error line from `neurastream doctor`
+ */
+export function runCliDoctor(): Promise<string> {
+	const cli = join(PACKAGE_ROOT, "src", "cli", "main.ts");
+	const { promise, resolve } = Promise.withResolvers<string>();
+	const child = spawn(cli, ["doctor"], { stdio: ["ignore", "pipe", "pipe"] });
+	let stdout = "";
+	let stderr = "";
+	child.stdout?.setEncoding("utf8").on("data", (chunk: string) => {
+		stdout += chunk;
+	});
+	child.stderr?.setEncoding("utf8").on("data", (chunk: string) => {
+		stderr += chunk;
+	});
+	child.on("error", err => {
+		const text = `${stdout}${stderr}`;
+		const body = text.endsWith("\n") || text === "" ? text : `${text}\n`;
+		resolve(`${body}${err.message}\n`);
+	});
+	child.on("close", () => resolve(`${stdout}${stderr}`));
+	return promise;
+}
+
 /** The next run's message: the handoff inline, or the pointer to a file that holds it. */
 async function nextMessage(req: RelaunchRequest, cfg: Config, mainStart: typeof mainStartText): Promise<string | null> {
 	let note: string;
@@ -460,7 +488,7 @@ async function nextMessage(req: RelaunchRequest, cfg: Config, mainStart: typeof 
 	let generated: string;
 	try {
 		generated = [
-			await mainStart([], cfg, { inheritStdin: false }, { source: defaultRunSource(cfg), results: defaultCompletedResults(cfg), providers: ompProviders(cfg), episodesFor: cutoff => ompEpisodes(cfg, cutoff) }),
+			await mainStart([], cfg, { inheritStdin: false }, { source: defaultRunSource(cfg), results: defaultCompletedResults(cfg), providers: ompProviders(cfg), episodesFor: cutoff => ompEpisodes(cfg, cutoff), doctor: runCliDoctor }),
 			holdsBlock(q.ownerHolds(cfg.paths)),
 		].join("\n");
 	} catch (err) {

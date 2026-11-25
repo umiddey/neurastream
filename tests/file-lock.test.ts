@@ -1,8 +1,9 @@
 import { afterAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { closeSync, fstatSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isBusy, tryLock, withFileLock, writeAtomicSync } from "../src/core/file-lock.ts";
 
 const FILE_LOCK = join(import.meta.dir, "..", "src", "core", "file-lock.ts");
 
@@ -30,4 +31,44 @@ import(${JSON.stringify(FILE_LOCK)}).then((m) => {
   expect(r.status).toBe(0);
   expect(r.stdout).toContain("THREW");
   expect(r.stdout).toContain(lib);
+});
+
+test("release() is idempotent and never closes a reused file descriptor", () => {
+  const dir = mkdtempSync(join(tmpdir(), "file-lock-idemp-"));
+  DIRS.push(dir);
+  const lockPath = join(dir, "x.lock");
+  const held = tryLock(lockPath);
+  expect(held).not.toBeNull();
+  held!.release();
+  // Immediately open another file so the OS may reuse the just-closed fd number.
+  const probe = openSync(join(dir, "probe.txt"), "w+");
+  try {
+    expect(() => held!.release()).not.toThrow();
+    // If the second release() had double-closed the fd, fstatSync(probe) would throw EBADF.
+    expect(fstatSync(probe).isFile()).toBe(true);
+  } finally {
+    closeSync(probe);
+  }
+});
+
+test("writeAtomicSync applies mode before rename and leaves no temp file; withFileLock releases on throw", () => {
+  const dir = mkdtempSync(join(tmpdir(), "file-lock-atomic-"));
+  DIRS.push(dir);
+  const target = join(dir, "ro.txt");
+  writeAtomicSync(target, "v1\n", 0o444);
+  expect(readFileSync(target, "utf8")).toBe("v1\n");
+  expect(statSync(target).mode & 0o777).toBe(0o444);
+  // Overwriting a 0444 file atomically succeeds without loosening the existing file.
+  writeAtomicSync(target, "v2\n", 0o444);
+  expect(readFileSync(target, "utf8")).toBe("v2\n");
+  expect(statSync(target).mode & 0o777).toBe(0o444);
+  expect(readdirSync(dir).filter(n => n.endsWith(".tmp"))).toEqual([]);
+
+  const lockPath = join(dir, "err.lock");
+  expect(() =>
+    withFileLock(lockPath, () => {
+      throw new Error("boom");
+    }),
+  ).toThrow("boom");
+  expect(isBusy(lockPath)).toBe(false);
 });

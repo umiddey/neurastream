@@ -8,7 +8,6 @@
 // posts), `neurastream redact` and doctor all call this one module.
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "./config.ts";
 
@@ -187,7 +186,7 @@ interface CachedFile {
 	values: string[];
 }
 
-type FileKind = "npmrc" | "env" | "text";
+type FileKind = "npmrc" | "env-all" | "env-secret" | "text";
 
 const fileCache = new Map<string, CachedFile>();
 let discovered: { roots: string; atMs: number; files: string[] } | null = null;
@@ -211,16 +210,61 @@ function npmrcValues(text: string): string[] {
 	return out;
 }
 
-/** `KEY=value` values of an env-style file (quotes stripped, comments ignored). */
-function envValues(text: string): string[] {
+/**
+ * Parse one dotenv RHS value, handling quoted values (preserving `#` inside quotes and unescaping
+ * `\"`/`\\` inside double quotes) before stripping trailing inline `#` comments.
+ *
+ * Args:
+ *     raw (string): Raw right-hand side of a `KEY=value` line
+ *
+ * Returns:
+ *     string: Unquoted value with any trailing comment removed
+ */
+function parseEnvValue(raw: string): string {
+	const trimmed = raw.trim();
+	if (trimmed.length === 0) return "";
+	if (trimmed[0] === '"') {
+		let out = "";
+		for (let i = 1; i < trimmed.length; i++) {
+			const ch = trimmed[i]!;
+			if (ch === "\\" && i + 1 < trimmed.length) {
+				const next = trimmed[i + 1]!;
+				if (next === '"' || next === "\\") {
+					out += next;
+					i++;
+					continue;
+				}
+			}
+			if (ch === '"') return out;
+			out += ch;
+		}
+		return out;
+	}
+	if (trimmed[0] === "'") {
+		const end = trimmed.indexOf("'", 1);
+		return end === -1 ? trimmed.slice(1) : trimmed.slice(1, end);
+	}
+	const hash = trimmed.search(/\s#/);
+	return (hash === -1 ? trimmed : trimmed.slice(0, hash)).trim();
+}
+
+/**
+ * Extract `KEY=value` values from an env-style file (quotes and inline comments parsed cleanly).
+ *
+ * Args:
+ *     text (string): Full file contents
+ *     secretKeysOnly (boolean): When true, keep only keys matching `SECRET_ENV_NAME`
+ *
+ * Returns:
+ *     string[]: Extracted non-empty values
+ */
+function envValues(text: string, secretKeysOnly: boolean): string[] {
 	const out: string[] = [];
 	for (const line of text.split("\n")) {
-		const m = /^\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=\s*(.+)$/.exec(line);
-		if (!m?.[1]) continue;
-		let value = m[1].trim();
-		if (value.length >= 2 && (value[0] === '"' || value[0] === "'") && value.endsWith(value[0])) value = value.slice(1, -1);
-		const hash = value.search(/\s#/);
-		if (hash !== -1) value = value.slice(0, hash).trim();
+		const m = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$/.exec(line);
+		if (!m?.[1] || !m[2]) continue;
+		if (secretKeysOnly && !SECRET_ENV_NAME.test(m[1])) continue;
+		const value = parseEnvValue(m[2]);
 		if (value !== "") out.push(value);
 	}
 	return out;
@@ -247,7 +291,14 @@ function fileValues(path: string, kind: FileKind): string[] {
 	} catch {
 		return hit?.values ?? [];
 	}
-	const values = kind === "npmrc" ? npmrcValues(text) : kind === "env" ? envValues(text) : [text.trim()];
+	const values =
+		kind === "npmrc"
+			? npmrcValues(text)
+			: kind === "env-all"
+				? envValues(text, false)
+				: kind === "env-secret"
+					? envValues(text, true)
+					: [text.trim()];
 	fileCache.set(key, { mtimeMs, size, values });
 	return values;
 }
@@ -309,9 +360,9 @@ export function loadKnownSecrets(cfg: Config, env: NodeJS.ProcessEnv = process.e
 	for (const [name, value] of Object.entries(env)) {
 		if (typeof value === "string" && SECRET_ENV_NAME.test(name)) add(value);
 	}
-	for (const value of fileValues(join(homedir(), ".npmrc"), "npmrc")) add(value);
-	for (const file of cfg.secrets.known_value_files) for (const value of fileValues(file, "env")) add(value);
-	for (const file of workRootEnvFiles(cfg.paths.work_roots)) for (const value of fileValues(file, "env")) add(value);
+	for (const value of fileValues(join(cfg.paths.home, ".npmrc"), "npmrc")) add(value);
+	for (const file of cfg.secrets.known_value_files) for (const value of fileValues(file, "env-all")) add(value);
+	for (const file of workRootEnvFiles(cfg.paths.work_roots)) for (const value of fileValues(file, "env-secret")) add(value);
 	for (const file of notifyFiles(cfg)) for (const value of fileValues(file, "text")) add(value);
 	return [...out];
 }

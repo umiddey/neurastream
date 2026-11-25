@@ -9,10 +9,11 @@
 // findings (plan-guard: the Findings: items of a subagent's new Progress entry), watch (the
 // src/core/watch.ts watcher: failed/stale heartbeats, failed units).
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { nowSec, strftime } from "./clock.ts";
 import type { Config } from "./config.ts";
+import { withFileLock, writeAtomicSync } from "./file-lock.ts";
 import * as q from "./queue/lib.ts";
 
 export type IncidentSource = "realtime" | "daily" | "weekly" | "main" | "findings" | "traces" | "watch";
@@ -132,9 +133,8 @@ function readStore(file: string): { incidents: IncidentRec[]; resolutions: Resol
 	return { incidents, resolutions, proposals, lines };
 }
 
-function writeFile(cfg: Config, file: string, lines: string[]): void {
-	mkdirSync(dirname(file), { recursive: true });
-	writeFileSync(file, `${lines.join("\n")}\n`);
+function writeIncidentLines(file: string, lines: string[]): void {
+	writeAtomicSync(file, `${lines.join("\n")}\n`);
 }
 
 /** Every incident in file order, each folded with its last resolution record (if any). */
@@ -162,39 +162,40 @@ export function openIncidents(cfg: Config): IncidentView[] {
 /** Records a sighting. Returns the (open) incident; `deduped` says an open one was updated. */
 export function addIncident(cfg: Config, input: IncidentInput, now = nowSec()): { incident: IncidentView; deduped: boolean } {
 	const file = incidentsFile(cfg);
-	const store = readStore(file);
-	const fingerprint = input.fingerprint ?? defaultFingerprint(input);
-	const open = store.incidents.find(
-		i => i.fingerprint === fingerprint && !store.resolutions.some(r => r.id === i.id),
-	);
-	if (open) {
-		open.count += 1;
-		open.lastSeen = now;
-		const lines = store.lines.map(line => {
-			const rec = parseLine(line);
-			return rec && !("type" in rec) && rec.id === open.id ? JSON.stringify(open) : line;
-		});
-		writeFile(cfg, file, lines);
-		return { incident: { ...open, resolution: null, proposal: null }, deduped: true };
-	}
-	const day = strftime(now, "%Y%m%d");
-	const prefix = `I-${day}-`;
-	const used = store.incidents.filter(i => i.id.startsWith(prefix)).map(i => Number(i.id.slice(prefix.length)) || 0);
-	const rec: IncidentRec = {
-		id: `${prefix}${(used.length ? Math.max(...used) : 0) + 1}`,
-		fingerprint,
-		source: input.source,
-		kind: input.kind,
-		summary: input.summary,
-		evidence: input.evidence ?? "",
-		ts: now,
-		count: 1,
-		lastSeen: now,
-		rule: input.rule,
-	};
-	mkdirSync(dirname(file), { recursive: true });
-	appendFileSync(file, `${JSON.stringify(rec)}\n`);
-	return { incident: { ...rec, resolution: null, proposal: null }, deduped: false };
+	return withFileLock(`${file}.lock`, () => {
+		const store = readStore(file);
+		const fingerprint = input.fingerprint ?? defaultFingerprint(input);
+		const open = store.incidents.find(
+			i => i.fingerprint === fingerprint && !store.resolutions.some(r => r.id === i.id),
+		);
+		if (open) {
+			open.count += 1;
+			open.lastSeen = now;
+			const lines = store.lines.map(line => {
+				const rec = parseLine(line);
+				return rec && !("type" in rec) && rec.id === open.id ? JSON.stringify(open) : line;
+			});
+			writeIncidentLines(file, lines);
+			return { incident: { ...open, resolution: null, proposal: null }, deduped: true };
+		}
+		const day = strftime(now, "%Y%m%d");
+		const prefix = `I-${day}-`;
+		const used = store.incidents.filter(i => i.id.startsWith(prefix)).map(i => Number(i.id.slice(prefix.length)) || 0);
+		const rec: IncidentRec = {
+			id: `${prefix}${(used.length ? Math.max(...used) : 0) + 1}`,
+			fingerprint,
+			source: input.source,
+			kind: input.kind,
+			summary: input.summary,
+			evidence: input.evidence ?? "",
+			ts: now,
+			count: 1,
+			lastSeen: now,
+			rule: input.rule,
+		};
+		writeIncidentLines(file, [...store.lines, JSON.stringify(rec)]);
+		return { incident: { ...rec, resolution: null, proposal: null }, deduped: false };
+	});
 }
 
 /**
@@ -204,23 +205,24 @@ export function addIncident(cfg: Config, input: IncidentInput, now = nowSec()): 
  */
 export function planIncident(cfg: Config, id: string, planPath: string): string | null {
 	const file = incidentsFile(cfg);
-	const store = readStore(file);
-	if (!store.incidents.some(i => i.id === id)) return `unknown incident ${id}`;
-	const res = store.resolutions.filter(r => r.id === id).at(-1);
-	if (res) return `incident ${id} already has a ${res.type} record`;
-	const abs = resolve(q.expandHome(planPath));
-	if (!existsSync(abs)) return `plan file not found: ${abs}`;
-	if (!q.readIndex(cfg.paths.queue_index).includes(abs)) return `${abs} is not listed in ${cfg.paths.queue_index}`;
-	let text: string;
-	try {
-		text = readFileSync(abs, "utf8");
-	} catch {
-		return `cannot read ${abs}`;
-	}
-	if (!text.includes(`INCIDENT ${id}`)) return `${abs} must contain "INCIDENT ${id}" so the guards can see the fix names the incident`;
-	mkdirSync(dirname(file), { recursive: true });
-	appendFileSync(file, `${JSON.stringify({ type: "plan", id, plan: abs })}\n`);
-	return null;
+	return withFileLock(`${file}.lock`, () => {
+		const store = readStore(file);
+		if (!store.incidents.some(i => i.id === id)) return `unknown incident ${id}`;
+		const res = store.resolutions.filter(r => r.id === id).at(-1);
+		if (res) return `incident ${id} already has a ${res.type} record`;
+		const abs = resolve(q.expandHome(planPath));
+		if (!existsSync(abs)) return `plan file not found: ${abs}`;
+		if (!q.readIndex(cfg.paths.queue_index).includes(abs)) return `${abs} is not listed in ${cfg.paths.queue_index}`;
+		let text: string;
+		try {
+			text = readFileSync(abs, "utf8");
+		} catch {
+			return `cannot read ${abs}`;
+		}
+		if (!text.includes(`INCIDENT ${id}`)) return `${abs} must contain "INCIDENT ${id}" so the guards can see the fix names the incident`;
+		writeIncidentLines(file, [...store.lines, JSON.stringify({ type: "plan", id, plan: abs })]);
+		return null;
+	});
 }
 
 // The owner's own words, as the inject hook saw them (<queue_state>/owner-messages.jsonl, last
@@ -267,16 +269,45 @@ export function readOwnerAnswers(paths: Pick<q.QueuePaths, "queue_state">): Owne
 	}
 }
 
-/** Rewrites the store: the newest 50 messages, then the newest 20 answers. */
+function writeOwnerStoreUnlocked(messages: OwnerMessage[], answers: OwnerAnswer[], file: string): void {
+	writeAtomicSync(
+		file,
+		`${[...messages.slice(-50).map(m => JSON.stringify(m)), ...answers.slice(-20).map(a => JSON.stringify(a))].join("\n")}\n`,
+	);
+}
+
+/** Rewrites the store atomically under a lock: the newest 50 messages, then the newest 20 answers. */
 export function writeOwnerStore(messages: OwnerMessage[], answers: OwnerAnswer[], paths: Pick<q.QueuePaths, "queue_state">): void {
 	const file = ownerMessagesFile(paths);
-	mkdirSync(dirname(file), { recursive: true });
-	writeFileSync(file, [...messages.slice(-50).map(m => JSON.stringify(m)), ...answers.slice(-20).map(a => JSON.stringify(a))].join("\n") + "\n");
+	withFileLock(`${file}.lock`, () => {
+		writeOwnerStoreUnlocked(messages, answers, file);
+	});
+}
+
+/**
+ * Append one owner message to the owner-messages store under its file lock.
+ *
+ * Args:
+ *     text (string): Owner message text
+ *     paths (Pick<q.QueuePaths, "queue_state">): Queue state directory paths
+ *     at (number): Unix timestamp in seconds (defaults to `nowSec()`)
+ *
+ * Returns:
+ *     void
+ */
+export function appendOwnerMessage(text: string, paths: Pick<q.QueuePaths, "queue_state">, at = nowSec()): void {
+	const file = ownerMessagesFile(paths);
+	withFileLock(`${file}.lock`, () => {
+		writeOwnerStoreUnlocked([...readOwnerMessages(paths), { at, text }], readOwnerAnswers(paths), file);
+	});
 }
 
 /** Records a real Main turn end as an answer in the same store (P5b); throws so the caller logs the failure. */
 export function appendOwnerAnswer(answer: string, paths: Pick<q.QueuePaths, "queue_state">, at = nowSec()): void {
-	writeOwnerStore(readOwnerMessages(paths), [...readOwnerAnswers(paths), { at, answer }], paths);
+	const file = ownerMessagesFile(paths);
+	withFileLock(`${file}.lock`, () => {
+		writeOwnerStoreUnlocked(readOwnerMessages(paths), [...readOwnerAnswers(paths), { at, answer }], file);
+	});
 }
 
 export function ownerSaid(words: string, messages: OwnerMessage[], now: number): boolean {
@@ -292,15 +323,16 @@ const PROOF_REF = /\S+:\d+/;
  *  owner taps it on the phone page or a plan closes it. A newer proposal replaces the older one. */
 export function proposeIncident(cfg: Config, id: string, why: string, now = nowSec()): string | null {
 	const file = incidentsFile(cfg);
-	const store = readStore(file);
-	const rec = store.incidents.find(i => i.id === id);
-	if (!rec) return `unknown incident ${id}`;
-	if (store.resolutions.some(r => r.id === id)) return `incident ${id} already has a resolution record`;
-	if (!isFindingKind(rec.kind)) return `refused: propose is for finding incidents (agent-finding, main-finding); ${id} is ${rec.kind}`;
-	if (!PROOF_REF.test(why)) return "refused: the why must cite the proof as file:line, e.g. src/core/guards.ts:40";
-	mkdirSync(dirname(file), { recursive: true });
-	appendFileSync(file, `${JSON.stringify({ type: "propose", id, why: why.trim(), ts: now })}\n`);
-	return null;
+	return withFileLock(`${file}.lock`, () => {
+		const store = readStore(file);
+		const rec = store.incidents.find(i => i.id === id);
+		if (!rec) return `unknown incident ${id}`;
+		if (store.resolutions.some(r => r.id === id)) return `incident ${id} already has a resolution record`;
+		if (!isFindingKind(rec.kind)) return `refused: propose is for finding incidents (agent-finding, main-finding); ${id} is ${rec.kind}`;
+		if (!PROOF_REF.test(why)) return "refused: the why must cite the proof as file:line, e.g. src/core/guards.ts:40";
+		writeIncidentLines(file, [...store.lines, JSON.stringify({ type: "propose", id, why: why.trim(), ts: now })]);
+		return null;
+	});
 }
 
 /** Records why an incident is not a bug (or not worth fixing); an empty why is refused. A finding
@@ -310,21 +342,22 @@ export function proposeIncident(cfg: Config, id: string, why: string, now = nowS
  *  owner page's authenticated POST /incident ("false alarm" tap); only that handler passes it. */
 export function dismissIncident(cfg: Config, id: string, why: string, owner?: string, tapLogin?: string): string | null {
 	const file = incidentsFile(cfg);
-	const store = readStore(file);
-	const rec = store.incidents.find(i => i.id === id);
-	if (!rec) return `unknown incident ${id}`;
-	const res = store.resolutions.filter(r => r.id === id).at(-1);
-	if (res) return `incident ${id} already has a ${res.type} record`;
-	if (!why.trim()) return "refused: an empty --why would hide the incident without a recorded reason";
-	if (isFindingKind(rec.kind) && tapLogin === undefined) {
-		if (owner === undefined)
-			return `refused: a ${rec.kind} is dismissed only with the owner's words: --owner "<quote>" (part of an owner message of the last 24 h)`;
-		if (!ownerSaid(owner, readOwnerMessages(cfg.paths), nowSec()))
-			return "refused: the --owner quote is not part of an owner message of the last 24 h";
-	}
-	mkdirSync(dirname(file), { recursive: true });
-	appendFileSync(file, `${JSON.stringify({ type: "dismiss", id, why })}\n`);
-	return null;
+	return withFileLock(`${file}.lock`, () => {
+		const store = readStore(file);
+		const rec = store.incidents.find(i => i.id === id);
+		if (!rec) return `unknown incident ${id}`;
+		const res = store.resolutions.filter(r => r.id === id).at(-1);
+		if (res) return `incident ${id} already has a ${res.type} record`;
+		if (!why.trim()) return "refused: an empty --why would hide the incident without a recorded reason";
+		if (isFindingKind(rec.kind) && tapLogin === undefined) {
+			if (owner === undefined)
+				return `refused: a ${rec.kind} is dismissed only with the owner's words: --owner "<quote>" (part of an owner message of the last 24 h)`;
+			if (!ownerSaid(owner, readOwnerMessages(cfg.paths), nowSec()))
+				return "refused: the --owner quote is not part of an owner message of the last 24 h";
+		}
+		writeIncidentLines(file, [...store.lines, JSON.stringify({ type: "dismiss", id, why })]);
+		return null;
+	});
 }
 
 /**
@@ -335,12 +368,13 @@ export function dismissIncident(cfg: Config, id: string, why: string, owner?: st
  */
 export function fixedIncident(cfg: Config, id: string, plan: string, now = nowSec()): string | null {
 	const file = incidentsFile(cfg);
-	const store = readStore(file);
-	if (!store.incidents.some(i => i.id === id)) return `unknown incident ${id}`;
-	const res = store.resolutions.filter(r => r.id === id).at(-1);
-	// A plan record is the normal path (planned, then fixed); dismissed or fixed is final.
-	if (res && res.type !== "plan") return `incident ${id} already has a ${res.type} record`;
-	mkdirSync(dirname(file), { recursive: true });
-	appendFileSync(file, `${JSON.stringify({ type: "fixed", id, plan, ts: now })}\n`);
-	return null;
+	return withFileLock(`${file}.lock`, () => {
+		const store = readStore(file);
+		if (!store.incidents.some(i => i.id === id)) return `unknown incident ${id}`;
+		const res = store.resolutions.filter(r => r.id === id).at(-1);
+		// A plan record is the normal path (planned, then fixed); dismissed or fixed is final.
+		if (res && res.type !== "plan") return `incident ${id} already has a ${res.type} record`;
+		writeIncidentLines(file, [...store.lines, JSON.stringify({ type: "fixed", id, plan, ts: now })]);
+		return null;
+	});
 }

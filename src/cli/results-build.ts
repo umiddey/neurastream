@@ -1,4 +1,4 @@
-// The owner page's Results build, run as its own process by spawnResultsBuild (src/core/owner-ui.ts):
+// The owner page's Results build, run as its own process by spawnResultsBuild (src/cli/workspace.ts):
 // it parses months of sessions (over a minute, GBs of memory), which froze the page when the server
 // did it itself (I-20261030-121). Writes the numbers to resultsCachePath(); the page only reads them.
 

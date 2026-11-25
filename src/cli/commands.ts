@@ -1,3 +1,6 @@
+import { spawn } from "node:child_process";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { agentLedger } from "../core/agent-ledger.ts";
 import { agentScore } from "../core/agent-score.ts";
 import { briefLint } from "../core/brief-lint.ts";
@@ -48,6 +51,34 @@ export const PORTED = [
 	"heavy-run",
 ] as const;
 
+const CLI_MAIN = join(dirname(fileURLToPath(import.meta.url)), "main.ts");
+
+/**
+ * Runs the CLI `doctor` command asynchronously and returns its combined stdout and stderr.
+ *
+ * Returns:
+ *     Promise<string>: Output produced by `neurastream doctor`, including any spawn error message
+ */
+function runCliDoctor(): Promise<string> {
+	const { promise, resolve } = Promise.withResolvers<string>();
+	const child = spawn(CLI_MAIN, ["doctor"], { stdio: ["ignore", "pipe", "pipe"] });
+	let stdout = "";
+	let stderr = "";
+	child.stdout?.setEncoding("utf8").on("data", (chunk: string) => {
+		stdout += chunk;
+	});
+	child.stderr?.setEncoding("utf8").on("data", (chunk: string) => {
+		stderr += chunk;
+	});
+	child.on("error", err => {
+		const text = `${stdout}${stderr}`;
+		const body = text.endsWith("\n") || text === "" ? text : `${text}\n`;
+		resolve(`${body}${err.message}\n`);
+	});
+	child.on("close", () => resolve(`${stdout}${stderr}`));
+	return promise;
+}
+
 export async function runMain(args: string[]): Promise<number> {
 	const cfg = runtime().cfg;
 	return getAdapter(cfg).launchMain(args, cfg);
@@ -87,10 +118,10 @@ export async function runPorted(cmd: string, args: string[]): Promise<number> {
 			return claimCli(args, rt.cfg);
 		case "main-start": {
 			const a = getAdapter(rt.cfg);
-			return mainStart(args, rt.cfg, { source: a.runSource(rt.cfg), results: a.completedResults(rt.cfg), providers: a.providers(rt.cfg), episodesFor: cutoff => a.episodes(rt.cfg, cutoff) });
+			return mainStart(args, rt.cfg, { source: a.runSource(rt.cfg), results: a.completedResults(rt.cfg), providers: a.providers(rt.cfg), episodesFor: cutoff => a.episodes(rt.cfg, cutoff), doctor: runCliDoctor });
 		}
 		case "machine-guard":
-			return machineGuard(args, rt.cfg);
+			return machineGuard(args, rt.cfg, { heavyMain: CLI_MAIN, heavyStatus: process.execPath });
 		case "quota-reset":
 			return quotaReset(args, rt.cfg);
 		case "priority-watch":

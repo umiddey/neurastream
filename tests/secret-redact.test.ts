@@ -10,7 +10,8 @@ import { afterAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { clearKnownSecretsCache, redactSecrets, redactSummary } from "../src/core/secret-redact.ts";
+import { clearKnownSecretsCache, loadKnownSecrets, redactSecrets, redactSummary } from "../src/core/secret-redact.ts";
+import { loadConfig } from "../src/core/config.ts";
 
 const REPO = dirname(dirname(import.meta.path));
 const CORE = join(REPO, "src/core/secret-redact.ts");
@@ -225,4 +226,81 @@ const out = { warm: warm.length, cold: cold.length, text: redactSecrets("value: 
 `) as { warm: number; cold: number; text: string };
 	expect(out.text).toBe("value: [REDACTED:known-value]");
 	expect(out.cold).toBeGreaterThanOrEqual(4);
+});
+
+test("work_roots dotenv files filter by SECRET_ENV_NAME, while known_value_files loads all keys without cache collision", () => {
+	fresh();
+	clearKnownSecretsCache();
+	const envFile = join(HOME, "repos/app/.env.local");
+	writeFileSync(
+		envFile,
+		[
+			"NODE_ENV=production",
+			"DB_HOST=localhost",
+			"TZ=Europe/Berlin",
+			"APP_SECRET=dotenv-secret-only-99",
+			"CUSTOM_SETTING=custom-setting-value-88",
+		].join("\n") + "\n",
+	);
+	const cfg = loadConfig({ file: join(HOME, ".config/neurastream/config.yml"), home: HOME, env: {} });
+	const knownAuto = loadKnownSecrets(cfg, {});
+	expect(knownAuto).toContain("dotenv-secret-only-99");
+	expect(knownAuto).not.toContain("production");
+	expect(knownAuto).not.toContain("localhost");
+	expect(knownAuto).not.toContain("Europe/Berlin");
+	expect(knownAuto).not.toContain("custom-setting-value-88");
+
+	const autoText = redactSecrets("env=production host=localhost tz=Europe/Berlin sec=dotenv-secret-only-99", knownAuto).text;
+	expect(autoText).toBe("env=production host=localhost tz=Europe/Berlin sec=[REDACTED:known-value]");
+
+	// Listing the exact same file in secrets.known_value_files must load all keys despite warm env-secret cache.
+	const cfgWithExplicit = {
+		...cfg,
+		secrets: { ...cfg.secrets, known_value_files: [...cfg.secrets.known_value_files, envFile] },
+	};
+	const knownExplicit = loadKnownSecrets(cfgWithExplicit, {});
+	expect(knownExplicit).toContain("dotenv-secret-only-99");
+	expect(knownExplicit).toContain("custom-setting-value-88");
+	expect(knownExplicit).toContain("production");
+});
+
+test("quoted dotenv values preserve inline #, escaped quotes, and strip trailing comments", () => {
+	fresh();
+	clearKnownSecretsCache();
+	const envFile = join(HOME, "repos/app/.env.local");
+	writeFileSync(
+		envFile,
+		[
+			'DB_PASSWORD="fakehash #2026" # prod comment',
+			'API_KEY="escaped \\"quote\\" #inside" # trailing',
+			"AUTH_TOKEN='single #value' # comment",
+			"SIGNING_SECRET=unquoted-val # inline comment",
+		].join("\n") + "\n",
+	);
+	const cfg = loadConfig({ file: join(HOME, ".config/neurastream/config.yml"), home: HOME, env: {} });
+	const known = loadKnownSecrets(cfg, {});
+	expect(known).toContain("fakehash #2026");
+	expect(known).toContain('escaped "quote" #inside');
+	expect(known).toContain("single #value");
+	expect(known).toContain("unquoted-val");
+
+	const redacted = redactSecrets('a=fakehash #2026 b=escaped "quote" #inside c=single #value d=unquoted-val', known);
+	expect(redacted.text).toBe(
+		"a=[REDACTED:known-value] b=[REDACTED:known-value] c=[REDACTED:known-value] d=[REDACTED:known-value]",
+	);
+});
+
+test("loadKnownSecrets reads .npmrc from cfg.paths.home rather than os.homedir()", () => {
+	fresh();
+	clearKnownSecretsCache();
+	const customHome = join(HOME, "alt-home");
+	mkdirSync(customHome, { recursive: true });
+	const altToken = `alt-npmrc-${fill("Z", 12)}`;
+	writeFileSync(join(customHome, ".npmrc"), `//registry.npmjs.org/:_authToken=${altToken}\n`);
+
+	const cfg = loadConfig({ file: join(HOME, ".config/neurastream/config.yml"), home: HOME, env: {} });
+	const altCfg = { ...cfg, paths: { ...cfg.paths, home: customHome } };
+	const known = loadKnownSecrets(altCfg, {});
+	expect(known).toContain(altToken);
+	expect(known).not.toContain(NPM);
 });

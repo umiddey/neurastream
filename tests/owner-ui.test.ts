@@ -1959,15 +1959,19 @@ test("knowledge tab: the topic view frames the file with every earlier breadcrum
 	const page = await get(svc, "/?tab=knowledge&repo=demo-app&topic=arch");
 	const html = await page.text();
 	expect(html).toContain('<a href="/?tab=knowledge">knowledge-base</a> / <a href="/?tab=knowledge&repo=demo-app">demo-app</a> / arch</p>');
-	expect(html).toContain('<iframe class="knowframe" title="Demo architecture" src="/knowledge/demo-app/arch">');
+	expect(html).toContain('<iframe class="knowframe" sandbox="allow-scripts" title="Demo architecture" src="/knowledge/demo-app/arch">');
+	expect(html).not.toContain("allow-same-origin");
 	expect(page.headers.get("content-security-policy")).toContain("frame-src 'self'");
 });
 
-test("knowledge: the topic route returns the file's own bytes as text/html", async () => {
+test("knowledge: the topic route returns the file's own bytes as text/html with opaque sandbox CSP", async () => {
 	const svc = ui({ cfg: KCFG });
 	const res = await get(svc, "/knowledge/demo-app/arch");
 	expect(res.status).toBe(200);
 	expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
+	expect(res.headers.get("content-security-policy")).toBe("sandbox allow-scripts");
+	expect(res.headers.get("content-security-policy")).not.toContain("allow-same-origin");
+	expect(res.headers.get("x-content-type-options")).toBe("nosniff");
 	expect(await res.text()).toBe(KARCH_HTML);
 	expect(await (await get(svc, "/knowledge/demo-app/nope")).text()).toBe("not found\n");
 	expect((await get(svc, "/knowledge/demo-app/nope")).status).toBe(404);

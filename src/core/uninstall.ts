@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { stripBlock } from "./agents-md.ts";
 import { configFile, loadConfig, type Config } from "./config.ts";
 import { printText } from "./help.ts";
+import { indexLockPath } from "./queue/lib.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = resolve(HERE, "../..");
@@ -162,6 +163,7 @@ function purgeState(cfg: Config, out: UninstallTarget[]): void {
 	const entries: [string, string, boolean][] = [
 		[configFile(cfg.paths.home), "--purge: config file", false],
 		[cfg.paths.queue_index, "--purge: index", false],
+		[indexLockPath(cfg.paths.queue_index), "--purge: index lock", false],
 		[join(cfg.paths.agent_dir, "queue"), "--purge: queue dir", true],
 		[cfg.paths.notes, "--purge: notes dir", true],
 		[cfg.paths.blockers, "--purge: blockers dir", true],

@@ -87,7 +87,7 @@ test("the providers line shows each provider free or out until its local HH:MM, 
 test("main-start prints the providers line", async () => {
 	const cfg = sandbox(true);
 	recordOut(cfg, "zai", nowSec() - 60, "quota-reset");
-	const text = await mainStartText([], cfg, { inheritStdin: false });
+	const text = await mainStartText([], cfg, { inheritStdin: false }, { doctor: () => "doctor: ok\n" });
 	expect(text).toContain("providers: zai free");
 });
 

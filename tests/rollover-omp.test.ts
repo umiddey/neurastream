@@ -421,7 +421,7 @@ test("the relaunch is requested only at a real run end and re-armed at later one
 test("omp still running past exit_grace_s rolls over in-process with the owner's typed message", async () => {
 	resetState();
 	const host = fakeHost();
-	createOmpAdapter(host, graceCfg());
+	createOmpAdapter(host, graceCfg(), undefined, { doctor: () => "doctor: ok\n" });
 	const handedOff = handoffSignal(host);
 	const { ctx, opened } = ctxAwaitingOpen();
 	await armReady(host, ctx, "## In progress\nstep");
@@ -441,7 +441,7 @@ test("omp still running past exit_grace_s rolls over in-process with the owner's
 test("the in-process fallback without an owner message carries the owner-away text", async () => {
 	resetState();
 	const host = fakeHost();
-	createOmpAdapter(host, graceCfg());
+	createOmpAdapter(host, graceCfg(), undefined, { doctor: () => "doctor: ok\n" });
 	const handedOff = handoffSignal(host);
 	const { ctx, opened } = ctxAwaitingOpen();
 	await armReady(host, ctx, "## In progress\nstep");
@@ -461,7 +461,7 @@ test("a handoff after an unanswered owner message starts with the unanswered pre
 	writeFileSync(store, `${JSON.stringify({ at: nowSec() - 30, text: "Who is ARB?" })}\n`);
 	try {
 		const host = fakeHost();
-		createOmpAdapter(host, graceCfg());
+		createOmpAdapter(host, graceCfg(), undefined, { doctor: () => "doctor: ok\n" });
 		const handedOff = handoffSignal(host);
 		const { ctx, opened } = ctxAwaitingOpen();
 		await armReady(host, ctx, "## In progress\nstep");
@@ -480,7 +480,7 @@ test("a handoff after an unanswered owner message starts with the unanswered pre
 test("omp really shutting down (session_shutdown) cancels the in-process fallback", async () => {
 	resetState();
 	const host = fakeHost();
-	createOmpAdapter(host, graceCfg());
+	createOmpAdapter(host, graceCfg(), undefined, { doctor: () => "doctor: ok\n" });
 	const ctx = mainCtx();
 	vi.useFakeTimers();
 	try {
@@ -500,7 +500,7 @@ test("omp really shutting down (session_shutdown) cancels the in-process fallbac
 test("the exit-grace fallback still fires after the hook returns: the event loop keeps running", async () => {
 	resetState();
 	const host = fakeHost();
-	createOmpAdapter(host, graceCfg());
+	createOmpAdapter(host, graceCfg(), undefined, { doctor: () => "doctor: ok\n" });
 	const { ctx, opened } = ctxAwaitingOpen();
 	const handedOff = handoffSignal(host);
 	vi.useFakeTimers();
@@ -523,7 +523,7 @@ test("the exit-grace fallback still fires after the hook returns: the event loop
 test("a terminal run end during the in-process rollover does not request a new relaunch", async () => {
 	resetState();
 	const host = fakeHost();
-	createOmpAdapter(host, graceCfg());
+	createOmpAdapter(host, graceCfg(), undefined, { doctor: () => "doctor: ok\n" });
 	const handedOff = handoffSignal(host);
 	const { promise: idling, resolve: atIdle } = Promise.withResolvers<void>();
 	const { promise: idleGate, resolve: releaseIdle } = Promise.withResolvers<void>();
@@ -594,7 +594,7 @@ test("agent host: a child's stderr is appended to the handoff text, right after 
 	writeFileSync(check, "#!/bin/sh\necho QC-OUT\necho QC-ERR 1>&2\n");
 	chmodSync(check, 0o755);
 	const host = fakeHost();
-	createOmpAdapter(host, graceCfg());
+	createOmpAdapter(host, graceCfg(), undefined, { doctor: () => "doctor: ok\n" });
 	const handedOff = handoffSignal(host);
 	const { ctx, opened } = ctxAwaitingOpen();
 	await armReady(host, ctx, "## In progress\nstep");
@@ -792,7 +792,7 @@ test("the first owner message in the ready state starts the relaunch, its text i
 test("a state change during the fallback's wait stops the rollover before the new session", async () => {
 	resetState();
 	const host = fakeHost();
-	createOmpAdapter(host, graceCfg());
+	createOmpAdapter(host, graceCfg(), undefined, { doctor: () => "doctor: ok\n" });
 	const { promise: idling, resolve: atIdle } = Promise.withResolvers<void>();
 	const { promise: idleGate, resolve: releaseIdle } = Promise.withResolvers<void>();
 	const { promise: aborted, resolve: atAbort } = Promise.withResolvers<void>();
@@ -839,7 +839,7 @@ test("reset clears the armed grace timer so a second createOmpAdapter setup star
 	// First adapter: arm the exit-grace timer via the relaunch path (graceCfg has a 50 ms grace).
 	resetState();
 	const host1 = fakeHost();
-	createOmpAdapter(host1, graceCfg());
+	createOmpAdapter(host1, graceCfg(), undefined, { doctor: () => "doctor: ok\n" });
 	const ctx = mainCtx();
 	vi.useFakeTimers();
 	try {

@@ -52,12 +52,14 @@ function watchBeat(cfg: Config, at: string): void {
 	writeFileSync(join(dir, "watch.json"), JSON.stringify({ name: "watch", ok: true, detail: "", at }));
 }
 
+const STUB_DOCTOR = { doctor: () => "doctor: ok\n" };
+
 test("a stale watch heartbeat prints NOT RUNNING and opens one watch incident", async () => {
 	const { cfg } = sandbox("stale", true);
 	// Default interval is 15 min, so 3 × 15 = 45 min; a 2 h old beat is stale.
 	const stale = new Date(Date.now() - 2 * 3600 * 1000).toISOString();
 	watchBeat(cfg, stale);
-	const lines = (await mainStartText([], cfg, { inheritStdin: false })).split("\n");
+	const lines = (await mainStartText([], cfg, { inheritStdin: false }, STUB_DOCTOR)).split("\n");
 	expect(lines).toContain(`watch: NOT RUNNING since ${stale}`);
 	const open = openIncidents(cfg).filter(i => i.fingerprint === "watch:not-running");
 	expect(open).toHaveLength(1);
@@ -67,7 +69,7 @@ test("a stale watch heartbeat prints NOT RUNNING and opens one watch incident", 
 test("a fresh watch heartbeat prints the healthy last-run line and no incident", async () => {
 	const { cfg } = sandbox("fresh", true);
 	watchBeat(cfg, new Date().toISOString());
-	const lines = (await mainStartText([], cfg, { inheritStdin: false })).split("\n");
+	const lines = (await mainStartText([], cfg, { inheritStdin: false }, STUB_DOCTOR)).split("\n");
 	expect(lines).toContain("watch: last run 0 min ago");
 	expect(lines.some(l => l.includes("NOT RUNNING"))).toBe(false);
 	expect(openIncidents(cfg).some(i => i.fingerprint === "watch:not-running")).toBe(false);
@@ -75,7 +77,7 @@ test("a fresh watch heartbeat prints the healthy last-run line and no incident",
 
 test("with no watch installed the preflight says nothing about the watch", async () => {
 	const { cfg } = sandbox("off", false);
-	const text = await mainStartText([], cfg, { inheritStdin: false });
+	const text = await mainStartText([], cfg, { inheritStdin: false }, STUB_DOCTOR);
 	// The doctor section runs `neurastream doctor`, which always prints its own watch line; only the
 	// main-start health lines (last run / NOT RUNNING) must be absent when nothing is installed.
 	expect(text).not.toMatch(/^watch: (last run|NOT RUNNING)/m);
@@ -90,7 +92,7 @@ test("a failed snapshot run prints its first failure", async () => {
 		join(cfg.paths.alert_state, "wip-last.json"),
 		JSON.stringify({ snapshot: { kind: "snapshot", at, ok: false, failed: ["FAILED: /x: git add -u: boom"], refused: null } }),
 	);
-	const lines = (await mainStartText([], cfg, { inheritStdin: false })).split("\n");
+	const lines = (await mainStartText([], cfg, { inheritStdin: false }, STUB_DOCTOR)).split("\n");
 	expect(lines).toContain(`wip: snapshot failed at ${strftime(at, "%Y-%m-%d %H:%M")}: FAILED: /x: git add -u: boom`);
 });
 
@@ -99,6 +101,7 @@ test("a blocked harness provider is fed into the providers line and the harness 
 	const { cfg } = sandbox("fed", false);
 	const until = Math.floor(Date.UTC(2099, 0, 1, 12, 0, 0) / 1000);
 	const text = await mainStartText([], cfg, { inheritStdin: false }, {
+		...STUB_DOCTOR,
 		providers: [{ provider: "alpha", unusable: null, blockedUntil: until, partial: [] }],
 	});
 	expect(text).toContain(`providers: alpha out until ${strftime(until, "%H:%M")}`);
@@ -108,7 +111,7 @@ test("a blocked harness provider is fed into the providers line and the harness 
 
 test("a null provider list prints unreadable and leaves the recorded state alone", async () => {
 	const { cfg } = sandbox("unread", false);
-	const text = await mainStartText([], cfg, { inheritStdin: false }, { providers: null });
+	const text = await mainStartText([], cfg, { inheritStdin: false }, { ...STUB_DOCTOR, providers: null });
 	expect(text).toContain('harness providers: unreadable — run neurastream doctor');
 	expect(text).not.toContain("provider changes");
 	expect(text).not.toMatch(/^providers: /m);
@@ -116,7 +119,7 @@ test("a null provider list prints unreadable and leaves the recorded state alone
 
 test("no providers key prints neither harness line", async () => {
 	const { cfg } = sandbox("nokey", false);
-	const text = await mainStartText([], cfg, { inheritStdin: false });
+	const text = await mainStartText([], cfg, { inheritStdin: false }, STUB_DOCTOR);
 	expect(text).not.toContain("harness providers:");
 	expect(text).not.toContain("provider changes");
 });

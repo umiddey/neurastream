@@ -102,10 +102,12 @@ test("an owner-edited pin is kept; unknown flags are refused", () => {
 test("--purge removes the config file and the agent-dir state init created", () => {
 	const h = home();
 	setup(h);
+	writeFileSync(join(h, ".config/neurastream/.INDEX.md.lock"), "");
 	const r = run(h, ["--purge", "--yes"]);
 	expect(r.code).toBe(0);
 	expect(existsSync(join(h, ".config/neurastream/config.yml"))).toBe(false);
 	expect(existsSync(join(h, ".config/neurastream/INDEX.md"))).toBe(false);
+	expect(existsSync(join(h, ".config/neurastream/.INDEX.md.lock"))).toBe(false);
 	expect(existsSync(join(h, ".config/neurastream/notes"))).toBe(false);
 	expect(existsSync(join(h, ".config/neurastream/blockers"))).toBe(false);
 	expect(existsSync(join(h, ".config/neurastream/queue"))).toBe(false);

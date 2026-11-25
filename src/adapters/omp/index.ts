@@ -16,47 +16,51 @@
 // Harness payloads are untyped at the boundary: every field read goes through a runtime check.
 
 import { execFileSync, spawn } from "node:child_process";
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { basename, dirname, extname, join, resolve } from "node:path";
-import type { Decision, TraceEvent } from "../../core/adapter.ts";
+import { closeSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { basename, extname, join, resolve } from "node:path";
+import type { TraceEvent } from "../../core/adapter.ts";
 import { AGENTS_TEMPLATE, renderBlock } from "../../core/agents-md.ts";
-import { chatGo, chatPlanner, chatTier, currentPlanner, plannerPin, stampPlannerMode, verifyPlannerMode, type Tier } from "../../core/autonomy.ts";
-import { chatApprove } from "../../core/plan-approval.ts";
-import { burdenRule, repoRules, rulesChanged } from "../../core/repo-rules.ts";
-import { configFile, loadConfig, reloadingConfig, type Config } from "../../core/config.ts";
-import { checkWrite, deferSteer, type WriteCheckConfig } from "../../core/write-check.ts";
-import { nowSec, strftime } from "../../core/clock.ts";
-import { runDetectors, type DetectorInput } from "../../core/incident-detectors.ts";
+import { currentPlanner, plannerPin, stampPlannerMode, verifyPlannerMode } from "../../core/autonomy.ts";
+import { briefPaths } from "../../core/brief-lint.ts";
 import { fileClaimStore, type ClaimStore } from "../../core/claims.ts";
-import { remoteStoreFor } from "../../core/team-client.ts";
-import { appendOwnerAnswer, readOwnerAnswers, readOwnerMessages } from "../../core/incidents.ts";
+import { nowSec } from "../../core/clock.ts";
+import { configFile, loadConfig, reloadingConfig, type Config } from "../../core/config.ts";
+import { tryLock, type HeldLock } from "../../core/file-lock.ts";
+import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, mainId, mainStateDir, newProgressEntries, planReadNote, plannerSpawnPlan, recordMainResult, rekeySpawnFile, resetMainCalls, revertMainEdit, reviewSpawnEnd, STOP_PLAN_OFFER_REFUSAL } from "../../core/guards.ts";
+import { runDetectors, type DetectorInput } from "../../core/incident-detectors.ts";
+import { appendOwnerAnswer } from "../../core/incidents.ts";
+import { mainDetectors } from "../../core/main-start.ts";
+import { notifyProviders, ownerAnswerHandback, ownerAnswerSteer, postReply } from "../../core/notify.ts";
 import { appendedSinceSpawn, markTopicsSpawned, ownerLogDir, recordOwnerLog } from "../../core/owner-log.ts";
 import { topicsDue, topicsLogFile } from "../../core/owner-topics.ts";
-import { checkInject, checkPlanEdit, checkStop, checkTool, findingsValue, MAIN_PLAN_FILE, mainId, mainStateDir, newProgressEntries, planReadNote, plannerSpawnPlan, recordMainResult, resetMainCalls, revertMainEdit, rekeySpawnFile, reviewSpawnEnd, STOP_PLAN_OFFER_REFUSAL } from "../../core/guards.ts";
-import { rateLimited } from "../../core/rate-limit.ts";
-import { backPost, clearLimitState, limitMetric, limitedPost, onLimited, readLimitState, timingOf, writeLimitState } from "../../core/limit-probe.ts";
-import { appendMetric } from "../../core/metrics.ts";
-import { notifyProviders, ownerAnswerHandback, ownerAnswerSteer, postReply } from "../../core/notify.ts";
-import { loadKnownSecrets, redactSecrets, redactSummary } from "../../core/secret-redact.ts";
-import { inboxPath } from "../../core/owner-ui.ts";
-import { realTailscale } from "../../core/tailscale.ts";
-import { briefPaths } from "../../core/brief-lint.ts";
-import { actionsRules, ownedRepoOf, suspiciousActions, unreportedFindings } from "../../core/trace-actions.ts";
-import { mainDetectors, mainStartText } from "../../core/main-start.ts";
-
-import { buildHandoff, holdsBlock, notePath, noteRequest, OWNER_AWAY, ownerText, relaunchPath, rolloverState, spawnRefusal, unansweredOwnerMessages, type RolloverState } from "../../core/rollover.ts";
-import { defaultCompletedResults, defaultRunSource, runIdOf } from "./sessions.ts";
-import { ompProviders } from "./providers.ts";
-import { adapterLog, MAIN_ENV } from "./launch.ts";
-import { parseTraceFile } from "./traces.ts";
-import { packageJsonPath, packageVersion } from "./package-root.ts";
+import { readPressure } from "../../core/pressure.ts";
 import * as q from "../../core/queue/lib.ts";
-import { pinModel, providerOfModel, recordOut, resetEpochFromText } from "../../core/provider-state.ts";
-import { annotateResetTimes } from "../../core/reset-time.ts";
-import { tryLock, type HeldLock } from "../../core/file-lock.ts";
-import { currentHolder, pressureLevel, pressureMessage, pressureTransition, readPressure, type PressureSample, type PressureState } from "../../core/pressure.ts";
+import { burdenRule, repoRules, rulesChanged } from "../../core/repo-rules.ts";
+import { notePath, ownerText, spawnRefusal } from "../../core/rollover.ts";
+import { loadKnownSecrets, redactSecrets, redactSummary } from "../../core/secret-redact.ts";
+import { realTailscale } from "../../core/tailscale.ts";
+import { remoteStoreFor } from "../../core/team-client.ts";
+import { actionsRules, ownedRepoOf, suspiciousActions, unreportedFindings } from "../../core/trace-actions.ts";
+import { checkWrite, deferSteer, type WriteCheckConfig } from "../../core/write-check.ts";
+import { autoClose } from "./auto-close.ts";
+import { registerChatCommands } from "./chat-commands.ts";
+import { CLAIM_BEAT_MS, deliverOwnerInbox, OWNER_INBOX_POLL_MS, ownerInboxCursorPath, ownerInboxMessage, pendingInboxRecords, pressureTick, seedInboxFloor } from "./inbox.ts";
+import { adapterLog, MAIN_ENV } from "./launch.ts";
 // Registers the plugin-command matcher into core's writeTargets (side effect).
 import "./package-ops.ts";
+import { createRateLimitController, limitProbeSpawn, recordProviderOutFromRateLimit, recordProviderOutFromTask } from "./rate-limit-controller.ts";
+import { createRolloverController } from "./rollover-controller.ts";
+import { defaultCompletedResults, defaultRunSource, runIdOf } from "./sessions.ts";
+import { parseTraceFile } from "./traces.ts";
+import { asCtx, asRecord, asRolloverCtx, asString, call, isMain, lastAssistantIn, toExtensionResult, type EventReply, type ExtensionHost, type RolloverCtx } from "./types.ts";
+
+export { adapterLog, autoClose, CLAIM_BEAT_MS, deliverOwnerInbox, limitProbeSpawn, OWNER_INBOX_POLL_MS, ownerInboxCursorPath, ownerInboxMessage, pendingInboxRecords, pressureTick, recordProviderOutFromRateLimit, toExtensionResult, type ExtensionHost };
+
+/** Optional test/caller seams for `createOmpAdapter`. */
+export interface OmpAdapterOptions {
+	/** Overrides the `doctor` runner passed into `mainStartText` during in-process rollover fallback. */
+	doctor?: () => Promise<string> | string;
+}
 
 /**
  * Re-reads the config, then holds the planner mode facts to the owner's baseline (P2 d): a
@@ -87,104 +91,8 @@ function defaultMainEvents(cfg: Config): TraceEvent[] {
 	}
 }
 
-/** Subset of the harness extension host the adapter needs. */
-export interface ExtensionHost {
-	on(event: string, cb: (...args: unknown[]) => unknown): void;
-	registerCommand(name: string, opts: { description?: string; handler: (args: unknown, ctx: unknown) => unknown }): void;
-	sendUserMessage(content: string | ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[]): void;
-	sendMessage(message: { customType: string; content: string; display: boolean }, options: { triggerTurn: boolean; deliverAs: "nextTurn" }): void;
-}
-
-/** The parts of a harness call context the handlers look at. */
-interface HostCtx {
-	hasAgent: boolean;
-	kind?: string;
-	id?: string;
-	cwd?: string;
-	setInterval?: (cb: () => void, ms: number) => unknown;
-	spawnLimitProbe?: () => void;
-}
-
-function asRecord(v: unknown): Record<string, unknown> {
-	return v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
-}
-
-function asString(v: unknown, fallback = ""): string {
-	return typeof v === "string" ? v : fallback;
-}
-
-/** The last assistant message of an omp event's `messages` array, as the adapter needs it: its
- *  joined text-block text and the shape that tells a real hand-back from a mid-run continuation
- *  (plan 20261025_0130). omp sends the reply in `session_stop.last_assistant_message` (falling
- *  back to the last assistant entry of `messages`) and in `agent_end.messages`; reading the
- *  session file instead lags a whole turn because session_stop fires BEFORE agent_end. */
-interface EventReply {
-	text: string;
-	stopReason: string | null;
-	toolCalls: number;
-	/** The provider's error text on a turn that ended on one (`429 … retry-after-ms=…`); null otherwise. */
-	errorMessage: string | null;
-	/** The provider and model fields of the assistant message, when the event carries them; the provider-out recording keys on the provider. */
-	provider: string | null;
-	model: string | null;
-}
-
-function lastAssistantIn(messages: unknown): EventReply | null {
-	const arr = Array.isArray(messages) ? messages : [];
-	for (let i = arr.length - 1; i >= 0; i--) {
-		const m = asRecord(arr[i]);
-		if (m.role !== "assistant") continue;
-		const content = Array.isArray(m.content) ? m.content : [];
-		const text = content
-			.filter(c => asRecord(c).type === "text")
-			.map(c => asString(asRecord(c).text))
-			.join("\n")
-			.trim();
-		return {
-			text,
-			stopReason: typeof m.stopReason === "string" ? m.stopReason : null,
-			toolCalls: content.filter(c => asRecord(c).type === "toolCall").length,
-			errorMessage: typeof m.errorMessage === "string" ? m.errorMessage : null,
-			provider: typeof m.provider === "string" ? m.provider : null,
-			model: typeof m.model === "string" ? m.model : null,
-		};
-	}
-	return null;
-}
-
-function asCtx(v: unknown): HostCtx {
-	const r = asRecord(v);
-	// The agent envelope only ever carries kind/id strings (original extensions read just those);
-	// cast fixes the envelope, every field below is checked before use.
-	const agent = r.agent as { kind?: unknown; id?: unknown } | null | undefined;
-	const out: HostCtx = { hasAgent: agent !== null && agent !== undefined };
-	if (agent) {
-		if (typeof agent.kind === "string") out.kind = agent.kind;
-		if (typeof agent.id === "string") out.id = agent.id;
-	}
-	if (typeof r.cwd === "string") out.cwd = r.cwd;
-	// Harness-injected timer with the original main-guard signature (ctx.setInterval).
-	const interval = r.setInterval as ((cb: () => void, ms: number) => unknown) | undefined;
-	if (typeof interval === "function") out.setInterval = interval;
-	// Harness-injected probe spawner (tests); the default starts the niced probe child.
-	const probe = r.spawnLimitProbe as (() => void) | undefined;
-	if (typeof probe === "function") out.spawnLimitProbe = probe;
-	return out;
-}
-
-/** Map a core decision onto the extension return shapes. */
-export function toExtensionResult(d: Decision): Record<string, unknown> {
-	if (!d.allow) return { block: true, reason: d.reason, decision: "block" };
-	if (d.inject) return { additionalContext: d.inject };
-	return {};
-}
-
 // A push or merge by Main may have landed a completed plan: try closing right away.
 const PUSH_MERGE = /\bgit\b[^\n;|&]*\bpush\b|\b(glab\s+mr|gh\s+pr)\s+merge\b/;
-
-// The installed package and its version: see ./package-root.ts.
-
-export { adapterLog };
 
 /**
  * Paths named inside the one configured method doc (brief.method_read): Main-owned and outside
@@ -237,63 +145,6 @@ function subActionDetectors(cfg: Config, ctx: unknown, planFile: string, before:
 	} catch (err) {
 		adapterLog(cfg, `sub action detectors failed: ${err instanceof Error ? err.message : String(err)}`);
 	}
-}
-
-// Background queue-close for every plan Main marked complete — and (P4, plan 20261031_0911) for
-// every OPEN plan whose work has landed. Ported from the original autoClose: same filter, same
-// "--- auto-close attempt" log line, detached child with stdio on the per-plan close log.
-// QUEUE_CLOSE_BIN overrides the binary (tests); without it the package's own executable
-// bin/queue-close runs (its `#!/usr/bin/env bun` shebang picks bun).
-// Never process.execPath: inside the harness that is the harness binary itself, so the child was
-// a new agent session that loaded this plugin and auto-closed again — a process fork bomb
-// (2026-10-21 OOMs, ~175 processes).
-function closeChildArgs(plan: string, auto: boolean): [string, string[]] {
-	const bin = process.env.QUEUE_CLOSE_BIN;
-	const args = auto ? ["--auto", plan] : [plan];
-	if (bin) return [bin, args];
-	return [join(import.meta.dir, "..", "..", "..", "bin", "queue-close"), args];
-}
-
-export function autoClose(cfg: Config): string[] {
-	const started: string[] = [];
-	let plans: q.Plan[];
-	try {
-		// P4: landed open plans auto-close too (q.autoCloseCandidate) — the child runs queue-close
-		// --auto and writes "Status: complete" itself when the done check passes.
-		plans = q.activePlans(cfg.paths).filter(p => (p.status === "complete" || p.status === "cancelled" || q.autoCloseCandidate(p)) && !p.errors.length);
-	} catch {
-		return started;
-	}
-	try {
-		mkdirSync(cfg.paths.queue_state, { recursive: true });
-	} catch {}
-	for (const p of plans) {
-		try {
-			const outFile = q.closeLog(p.file, cfg.paths);
-			appendFileSync(outFile, `--- ${new Date().toISOString()} auto-close attempt\n`);
-			const out = openSync(outFile, "a");
-			const [bin, args] = closeChildArgs(p.file, p.status === "open");
-			const childEnv: NodeJS.ProcessEnv = {
-				...process.env,
-				HOME: cfg.paths.home,
-				QUEUE_AGENT: cfg.paths.agent_dir,
-				QUEUE_INDEX: cfg.paths.queue_index,
-				QUEUE_BLOCKERS: cfg.paths.blockers,
-				QUEUE_STATE: cfg.paths.queue_state,
-				QUEUE_SUBAGENTS: cfg.paths.subagents,
-				QUEUE_CANCELLED: cfg.paths.cancelled,
-				QUEUE_UNLOCK: cfg.paths.unlock,
-			};
-			const child = spawn(bin, args, { detached: true, stdio: ["ignore", out, out], env: childEnv });
-			child.unref();
-			closeSync(out);
-			started.push(p.file);
-		} catch (err) {
-			adapterLog(cfg, `auto-close: could not start for ${p.file}: ${err}`);
-		}
-	}
-	if (started.length) adapterLog(cfg, `auto-close started: ${started.join(", ")}`);
-	return started;
 }
 
 // Main's stop gate needs the ledger output (original: `agent-ledger --hours 12` through bash -lc,
@@ -375,98 +226,6 @@ function redactToolResult(content: unknown[], cfg: Config): { content: unknown[]
 	return { content: out, note: redactSummary([...hits].map(([type, count]) => ({ type, count }))) };
 }
 
-// Provider out-until from live data (plan 20261025_1700 P1). Two automatic recordings, both
-// keyed on the provider half of an agent pin's `model:` frontmatter, both best effort and
-// logged once. The reset-time case trusts the provider's own words; the no-time case falls
-// back to the armed rate-limit wait, so a provider without a quoted reset time still lands in
-// the file the guards and the ledger read.
-const resetRule = (cfg: Config): { pattern: string; zone: string } => ({ pattern: cfg.quota.reset_pattern, zone: cfg.quota.reset_tz });
-
-/** Task result that quotes a reset time: record it for the sub's provider. A batch naming
- *  several providers cannot attribute the time to one of them, so it records nothing. */
-function recordProviderOutFromTask(e: Record<string, unknown>, content: unknown[], cfg: Config): void {
-	if (asString(e.toolName) !== "task" || e.isError === true) return;
-	const text = content.map(p => asString(asRecord(p).text)).join("\n");
-	const epoch = resetEpochFromText(text, resetRule(cfg));
-	if (epoch === null) return;
-	const tasks = Array.isArray(asRecord(e.input).tasks) ? (asRecord(e.input).tasks as unknown[]) : [];
-	const providers = new Set<string>();
-	for (const t of tasks) {
-		const provider = providerOfModel(pinModel(cfg, asString(asRecord(t).agent)));
-		if (provider) providers.add(provider);
-	}
-	if (providers.size !== 1) return;
-	const provider = [...providers][0]!;
-	recordOut(cfg, provider, epoch, "task-result");
-	adapterLog(cfg, `PROVIDER-OUT recorded: ${provider} out until ${new Date(epoch * 1000).toISOString()} (task result)`);
-}
-
-/** Rate-limited turn end: record the reset time the error text names, else the armed wait. Returns the
- *  named reset in epoch ms (null when the text names none): the one parse of that text, which the call
- *  site passes on to the rate-limit episode (plan 20261027_1500 P2/P3). */
-export function recordProviderOutFromRateLimit(reply: EventReply | null, untilMs: number, cfg: Config): number | null {
-	const named = reply ? resetEpochFromText(reply.errorMessage ?? "", resetRule(cfg)) : null;
-	const provider = reply?.provider ?? providerOfModel(reply?.model ?? null);
-	if (provider) {
-		const epoch = named ?? Math.floor(untilMs / 1000);
-		recordOut(cfg, provider, epoch, named !== null ? "rate-limit-reset" : "rate-limit");
-		adapterLog(cfg, `PROVIDER-OUT recorded: ${provider} out until ${new Date(epoch * 1000).toISOString()} (${named !== null ? "reset time in error text" : "rate limit, no reset time"})`);
-	}
-	return named === null ? null : named * 1000;
-}
-
-// Session rollover helpers: the harness context read through runtime checks, and the file size and
-// mtime reads. The decisions are in src/core/rollover.ts.
-const WAIT_NOTICE_MS = 15 * 60_000;
-
-interface RolloverCtx {
-	sessionId: string;
-	sessionFile: string;
-	runningJobs(): string[];
-	waitForIdle(): unknown;
-	newSession(opts: { parentSession: string }): unknown;
-	notify(message: string): void;
-	draft(): string;
-	shutdown(): void;
-}
-
-/** Call a method on a harness object by name; undefined when it is not a function. */
-function call(obj: Record<string, unknown>, key: string, args: unknown[] = []): unknown {
-	const fn = obj[key];
-	return typeof fn === "function" ? Reflect.apply(fn, obj, args) : undefined;
-}
-
-function asRolloverCtx(v: unknown): RolloverCtx | null {
-	const r = asRecord(v);
-	const sm = asRecord(r.sessionManager);
-	const sessionId = call(sm, "getSessionId");
-	const sessionFile = call(sm, "getSessionFile");
-	if (typeof sessionId !== "string" || typeof sessionFile !== "string") return null;
-	return {
-		sessionId,
-		sessionFile,
-		runningJobs: () => {
-			const running = asRecord(call(r, "getAsyncJobSnapshot")).running;
-			return Array.isArray(running) ? running.map(j => asString(asRecord(j).label, "job")) : [];
-		},
-		waitForIdle: () => call(r, "waitForIdle"),
-		newSession: opts => call(r, "newSession", [opts]),
-		notify: message => call(asRecord(r.ui), "notify", [message]),
-		draft: () => {
-			const text = call(asRecord(r.ui), "getEditorText");
-			return typeof text === "string" ? text : "";
-		},
-		shutdown: () => {
-			call(r, "shutdown");
-		},
-	};
-}
-
-function isMain(ctx: unknown): boolean {
-	const c = asCtx(ctx);
-	return !c.hasAgent || c.kind === "main";
-}
-
 // Owner topics (plan P8): one detached, niced `recall` child, as the limit probe is. The child env drops
 // MAIN_ENV so the child is not Main. Its stdout and stderr append to owner-topics.log (stats and `topics: fail`
 // lines only). A context that injects `spawnTopics` (tests) gets the call instead.
@@ -491,207 +250,8 @@ function spawnTopics(cfg: Config, ctx: unknown, args: string[]): void {
 	}
 }
 
-function mtimeOf(path: string): number | null {
-	try {
-		return statSync(path).mtimeMs;
-	} catch {
-		return null;
-	}
-}
-
-function sizeOf(path: string): number {
-	try {
-		return statSync(path).size;
-	} catch {
-		return 0;
-	}
-}
-
-// ---- owner inbox delivery (plan 20261024_2230 P3b) ----
-// The phone page appends answers to <queue_state>/owner-inbox.jsonl — a protected state file, so
-// no agent can forge an owner answer (guards refuse the write). Main's session delivers each
-// record once as a user message (pi.sendUserMessage, no options: idle → a new turn, streaming →
-// the steer queue), at turn end and on a 15 s timer while idle. The consumed-row count lives in
-// <queue_state>/owner-inbox.cursor; subagent sessions never deliver and never move it.
-
-/** Idle-poll interval for the owner inbox. */
-export const OWNER_INBOX_POLL_MS = 15_000;
-/** How often the adapter heartbeats every claim this Main holds (plan 20261027_1300 P3). */
-export const CLAIM_BEAT_MS = 60_000;
-
-/** The delivered cursor: how many owner-inbox rows this Main's session has consumed (P5: one file per Main, under its mainStateDir). */
-export function ownerInboxCursorPath(cfg: Config | Pick<q.QueuePaths, "queue_state">): string {
-	return `${mainStateDir(cfg)}/inbox-cursor`;
-}
-
-/** Rows this Main starts past when it has never delivered (P5): set at adapter creation so a Main that registers late does not replay old rows. null = adopt the file or 0. */
-let inboxFloor: number | null = null;
-
-function readOwnerInboxCursor(cfg: Config): number {
-	try {
-		const n = Number(readFileSync(ownerInboxCursorPath(cfg), "utf8").trim());
-		return Number.isInteger(n) && n >= 0 ? n : inboxFloor ?? 0;
-	} catch {
-		return inboxFloor ?? 0;
-	}
-}
-
-function writeOwnerInboxCursor(cfg: Config, n: number): void {
-	try {
-		mkdirSync(mainStateDir(cfg), { recursive: true });
-		writeFileSync(ownerInboxCursorPath(cfg), `${n}\n`);
-	} catch {}
-}
-
-/** The user message one inbox record becomes, or null when the record is not one Main can act on.
- * Records without `kind` are page answers (the original shape). */
-export function ownerInboxMessage(rec: Record<string, unknown>, queuePaths?: Pick<q.QueuePaths, "queue_state">): string | ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] | null {
-	const kind = rec.kind === undefined ? "answer" : asString(rec.kind);
-	const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
-	switch (kind) {
-		case "answer": {
-			const plan = asString(rec.plan);
-			const question = asString(rec.question);
-			const answer = asString(rec.answer);
-			if (!plan || !question || !answer) return null;
-			return `Owner answered on the phone page — ${basename(plan)}: ${question} → ${answer}`;
-		}
-		case "unlock": {
-			const minutes = num(rec.minutes);
-			const until = num(rec.until);
-			if (minutes === null || until === null) return null;
-			return `Owner unlocked the guards from the phone page for ${minutes} min (until ${strftime(until, "%H:%M")}). Do the step that waited on the unlock now.`;
-		}
-		case "lock":
-			return "Owner locked the guards from the phone page.";
-		case "approval": {
-			const page = asString(rec.page);
-			const plan = asString(rec.plan);
-			if (page === "" || plan === "") return null;
-			return `Owner approved ${basename(plan)} on page ${page}.`;
-		}
-		case "reorder": {
-			const plan = asString(rec.plan);
-			const from = num(rec.from);
-			const to = num(rec.to);
-			if (!plan || from === null || to === null) return null;
-			return `Owner moved ${basename(plan)} from #${from} to #${to} on the phone page; INDEX.md has the new order — work by it.`;
-		}
-		case "message": {
-			const ts = num(rec.ts);
-			const id = asString(rec.id);
-			if (ts === null || !/^[0-9]+-[0-9a-f]{6}$/.test(id)) return null;
-			const at = strftime(ts, "%H:%M");
-			if (!queuePaths) return null;
-			const dir = join(queuePaths.queue_state, "owner-messages", id);
-			let message: Record<string, unknown>;
-			try {
-				message = JSON.parse(readFileSync(join(dir, "message.json"), "utf8")) as Record<string, unknown>;
-			} catch {
-				return [{ type: "text", text: `Owner sent a message from the phone page at ${at}; it expired (12 h) before delivery.` }];
-			}
-			const text = asString(message.text);
-			const names = Array.isArray(message.images) ? message.images.filter((name): name is string => typeof name === "string" && /^[1-4]\.(png|jpg|gif|webp)$/.test(name)) : [];
-			const parts: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] = [];
-			const paths = names.map(name => join(dir, name));
-			parts.push({
-				type: "text",
-				text: `Owner message from the phone page (${at}): ${text}${paths.length ? `\nImages:\n${paths.map(path => `- ${path}`).join("\n")}` : ""}`,
-			});
-			for (const name of names) {
-				const ext = name.slice(name.lastIndexOf(".") + 1);
-				const mimeType = ext === "jpg" ? "image/jpeg" : `image/${ext}`;
-				try {
-					parts.push({ type: "image", data: readFileSync(join(dir, name)).toString("base64"), mimeType });
-				} catch {
-					return [{ type: "text", text: `Owner sent a message from the phone page at ${at}; it expired (12 h) before delivery.` }];
-				}
-			}
-			return parts;
-		}
-		case "page-note": {
-			// One row per note the owner left on a published page (plan 20261026 P6).
-			const page = asString(rec.page);
-			const quote = asString(rec.quote);
-			const note = asString(rec.note);
-			if (!page || !note) return null;
-			const id = asString(rec.id);
-			const url = asString(rec.url);
-			const where = `Owner note on the page ${page}${id ? ` (${id})` : ""}${url ? ` — ${url}` : ""}: `;
-			return quote ? `${where}on "${quote}" → ${note}` : `${where}${note}`;
-		}
-		default:
-			return null;
-	}
-}
-
-/** The JSONL rows after `cursor` (a row count), as records, plus the new cursor. A torn last row
- * (a page write that has not landed completely) stays unconsumed; a malformed complete row is
- * consumed but skipped, so one bad line cannot wedge delivery. */
-export function pendingInboxRecords(text: string, cursor: number): { records: Record<string, unknown>[]; next: number } {
-	const endsClean = text === "" || text.endsWith("\n");
-	const rows = text.split("\n");
-	if (rows.length && rows[rows.length - 1] === "") rows.pop();
-	const records: Record<string, unknown>[] = [];
-	let next = Math.min(cursor, rows.length);
-	for (let i = cursor; i < rows.length; i++) {
-		const torn = i === rows.length - 1 && !endsClean;
-		try {
-			const rec: unknown = JSON.parse((rows[i] ?? "").trim());
-			if (rec !== null && typeof rec === "object" && !Array.isArray(rec)) records.push(rec as Record<string, unknown>);
-		} catch {}
-		if (!torn) next = i + 1;
-	}
-	return { records, next };
-}
-
-/** Deliver every inbox row past the cursor once, as a user message to Main; then store the cursor.
- * Synchronous, so the turn-end path and the idle timer cannot interleave. */
-export function deliverOwnerInbox(pi: ExtensionHost, cfg: Config): void {
-	let text: string;
-	try {
-		text = readFileSync(inboxPath(cfg.paths), "utf8");
-	} catch {
-		return; // no inbox yet: nothing to deliver
-	}
-	const cursor = readOwnerInboxCursor(cfg);
-	const { records, next } = pendingInboxRecords(text, cursor);
-	if (next === cursor) return;
-	let delivered = 0;
-	for (const rec of records) {
-		// P5: a row addressed to another Main (`to` set and not this Main's id) is consumed but not delivered here.
-		if (typeof rec.to === "string" && rec.to !== "" && rec.to !== mainId()) continue;
-		const msg = ownerInboxMessage(rec, cfg.paths);
-		if (msg === null) continue;
-		pi.sendUserMessage(msg);
-		delivered++;
-	}
-	writeOwnerInboxCursor(cfg, next);
-	adapterLog(cfg, `owner inbox: delivered ${delivered} answer(s) (cursor ${cursor} → ${next})`);
-}
-
 /** The most recently registered createOmpAdapter cleanup, for the exported reset(). */
 let activeAdapterReset: (() => void) | null = null;
-/** Pressure alert tick (plan 20261026_0100 P2): classifies one sample, runs the transition, and tells Main on a RED or GREEN fire. The state lives in <queue_state>/pressure.json and is rewritten only when it changes, so a reloaded session does not re-fire. */
-export function pressureTick(pi: ExtensionHost, cfg: Config, sample: PressureSample, now: number): void {
-	const file = join(cfg.paths.queue_state, "pressure.json");
-	let prev: PressureState | null = null;
-	try {
-		prev = JSON.parse(readFileSync(file, "utf8")) as PressureState;
-	} catch {}
-	const level = pressureLevel(sample, cfg);
-	const r = pressureTransition(prev, level, now, cfg);
-	const next = JSON.stringify(r.state);
-	if (next !== JSON.stringify(prev)) {
-		try {
-			mkdirSync(cfg.paths.queue_state, { recursive: true });
-			writeFileSync(file, next);
-		} catch {}
-	}
-	if (r.fire === "red") {
-		pi.sendUserMessage(pressureMessage("red", sample, currentHolder(cfg, now)));
-	} else if (r.fire === "green") pi.sendUserMessage(pressureMessage("green", sample, null));
-}
 
 /** This process's held Main session lock (plan 20261103_1146 P2): the first main session_start
  * locks `<queue_state>/mains/<id>/session.lock` for the process lifetime — the kernel frees it
@@ -699,51 +259,29 @@ export function pressureTick(pi: ExtensionHost, cfg: Config, sample: PressureSam
  * process take the id, and a new flock of the same file in this process is busy. reset() is the
  * only release, so tests do not leak the flock into the next file. */
 let heldSessionLock: HeldLock | null = null;
-/** The limit tick: one check of the open episode every 30 s (plan 20261027_1500 P3). */
-const LIMIT_TICK_MS = 30_000;
-/** The probe's command line and env. Never process.execPath: inside the harness that is the omp
- * binary, so the child was a full Main session (2026-11-03: stray Mains). bun comes from PATH, as
- * every bin's `#!/usr/bin/env bun` shebang does; the child env drops MAIN_ENV. */
-export function limitProbeSpawn(env: NodeJS.ProcessEnv = process.env): { cmd: string; args: string[]; env: NodeJS.ProcessEnv } {
-	const { [MAIN_ENV]: _main, ...rest } = env;
-	return { cmd: "nice", args: ["-n", "19", "bun", join(import.meta.dir, "../../cli/limit-probe.ts")], env: rest };
-}
-/** One limit probe as a niced child (cli/limit-probe.ts). It writes the episode state itself;
- * a failed start is logged and the next tick tries again. */
-function spawnLimitProbeChild(cfg: Config): void {
-	const p = limitProbeSpawn();
-	const child = spawn(p.cmd, p.args, { detached: true, stdio: "ignore", env: p.env });
-	child.on("error", err => adapterLog(cfg, `RATE-LIMIT probe: could not start: ${err.message}`));
-	child.unref();
-}
+
 /** Register the guard handlers on one extension host. `initial` is injectable for tests; `freshConfig` re-reads the config per guarded call. */
-export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig: () => Config = () => initial): void {
+export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig: () => Config = () => initial, opts: OmpAdapterOptions = {}): void {
 	// Guarded handlers take `cfg = freshConfig()` first, so an edited config.yml reaches the next call (P4e).
 	let cfg = initial;
 	// P2 d: the first seam — a mode fact another writer left behind is reverted before any handler runs.
 	cfg = freshPlannerConfig(freshConfig);
-	// P5: seed the per-Main inbox floor once — a Main that has never delivered starts past rows
-	// that predate its registration; the pre-multi-main cursor file belongs to the default id's
-	// first start. Later reads/writes own the file, so the floor is only a creation-time default.
-	try {
-		if (!existsSync(ownerInboxCursorPath(cfg))) {
-			mkdirSync(mainStateDir(cfg), { recursive: true });
-			if (mainId() === "main") {
-				try {
-					renameSync(`${cfg.paths.queue_state}/owner-inbox.cursor`, ownerInboxCursorPath(cfg));
-				} catch {}
-			}
-			if (!existsSync(ownerInboxCursorPath(cfg))) {
-				try {
-					inboxFloor = pendingInboxRecords(readFileSync(inboxPath(cfg.paths), "utf8"), 0).next;
-				} catch {
-					inboxFloor = 0;
-				}
-			}
-		}
-	} catch {}
+	const getCfg = (): Config => cfg;
+	seedInboxFloor(cfg);
 	// Main's rules ride its system prompt each turn; they are never written into the owner's AGENTS.md.
 	const mainRules = renderBlock(cfg);
+
+	const rateLimit = createRateLimitController(pi, getCfg);
+	const rollover = createRolloverController(pi, getCfg, { doctor: opts.doctor });
+
+	// Clear the previous adapter's armed grace timer before this one overwrites the pointer (P3c).
+	// Do not release heldSessionLock: this runs on every factory re-entry, and the lock is
+	// process-lifetime (plan 20261103_1146 P4). reset() still releases it.
+	activeAdapterReset?.();
+	activeAdapterReset = (): void => {
+		rollover.clearState();
+		rateLimit.stopTick();
+	};
 
 	let callsSinceStop = 0;
 	let idleStops = 0;
@@ -764,26 +302,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 	// emits (sessionStopWillContinue) consumes it and posts nothing — a blocked stop's reply is a
 	// mid-work report, never a hand-back.
 	let stopBlocked = false;
-	// Rate-limit probe loop (plan 20261027_1500 P3). A limited turn end opens one episode in
-	// main-limit.json: a named reset is waited for; otherwise a niced probe child runs every
-	// probe_interval_s until one gets through or max_probes is spent. ONE tick (LIMIT_TICK_MS)
-	// reads the episode: it spawns a due probe, or, once the provider is back, sends Main ONE new
-	// turn. A new Main turn cancels the tick and keeps the episode (probe count kept); a turn that
-	// ends without a limit clears it.
-	let limitTickArmed = false;
-	let limitTick: NodeJS.Timeout | null = null;
-	const rateClock = (ms: number): string => strftime(ms / 1000, "%H:%M");
-	const stopLimitTick = (): void => {
-		limitTickArmed = false;
-		if (limitTick !== null) {
-			clearInterval(limitTick);
-			limitTick = null;
-		}
-	};
-	const disarmRateEpisode = (): void => {
-		stopLimitTick();
-		clearLimitState(cfg);
-	};
+
 	// P5b: a real turn end answers every owner message it followed — the answer (the turn's own
 	// reply, the page's lastAnswerFor shape) rides the same owner-message store. Rate-limited,
 	// blocked and mid-run ends are not turn ends: nothing is recorded.
@@ -800,69 +319,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 			adapterLog(cfg, `OWNER-ANSWER record failed: ${err instanceof Error ? err.message : String(err)}`);
 		}
 	};
-	const limitTickFire = (c: HostCtx): void => {
-		if (!limitTickArmed) return;
-		const state = readLimitState(cfg);
-		if (state === null) {
-			stopLimitTick();
-			adapterLog(cfg, "RATE-LIMIT give up: episode state gone (max_probes spent or unreadable)");
-			return;
-		}
-		const now = Date.now();
-		if (state.back_at !== null) {
-			if (now < state.back_at) return;
-			stopLimitTick();
-			clearLimitState(cfg);
-			// P4: the finished episode is recorded once and the owner hears one back post; both are
-			// times and counts only — the episode's last_error never reaches chat or ledger.
-			appendMetric(cfg, limitMetric(state, now));
-			adapterLog(cfg, `RATE-LIMIT back: provider limit over (back at ${rateClock(state.back_at)}); new turn sent`);
-			void postReply(backPost(state), cfg).then(results => {
-				for (const r of results) if (!r.posted) adapterLog(cfg, `notify: ${r.provider}: ${r.error}`);
-			});
-			pi.sendUserMessage(`main-guard: the provider limit is over (back at ${rateClock(state.back_at)}). Continue the queue where you stopped.`);
-			return;
-		}
-		if (now < state.next_probe_at) return;
-		(c.spawnLimitProbe ?? (() => spawnLimitProbeChild(cfg)))();
-	};
-	const armLimitTick = (c: HostCtx): void => {
-		stopLimitTick();
-		limitTickArmed = true;
-		const t: unknown = c.setInterval ? c.setInterval(() => limitTickFire(c), LIMIT_TICK_MS) : setInterval(() => limitTickFire(c), LIMIT_TICK_MS);
-		if (t && typeof t === "object" && "unref" in t && typeof t.unref === "function") t.unref();
-		limitTick = t as NodeJS.Timeout;
-	};
-	// A turn that ended on a provider rate limit: the episode opens (or continues with its probe
-	// count), the owner chat hears once per episode, and the tick takes over.
-	const onRateLimitedStop = (c: HostCtx, namedResetMs: number | null, errorText: string, model: string): void => {
-		const prev = readLimitState(cfg);
-		const timing = timingOf(cfg);
-		const state = onLimited(prev, namedResetMs, errorText, Date.now(), model, timing);
-		try {
-			writeLimitState(cfg, state);
-		} catch (err) {
-			adapterLog(cfg, `RATE-LIMIT state write failed: ${err instanceof Error ? err.message : String(err)}`);
-			return;
-		}
-		adapterLog(cfg, `RATE-LIMIT stop: ${state.reset_named ? "named reset" : "probe"} at ${rateClock(state.next_probe_at)} (probes ${state.probes} of ${timing.max_probes})`);
-		if (prev === null) {
-			adapterLog(cfg, "notify: posted (rate-limit)");
-			void postReply(limitedPost(state, timing.probe_interval_s), cfg).then(results => {
-				for (const r of results) if (!r.posted) adapterLog(cfg, `notify: ${r.provider}: ${r.error}`);
-			});
-		}
-		armLimitTick(c);
-	};
-	// The rate-limit decision for one turn end, from the event's own last assistant message. The
-	// untilMs is the fallback wait recorded with PROVIDER-OUT when the error text names no reset.
-	const rateLimitOf = (reply: EventReply | null): { untilMs: number } | null => {
-		const rl = cfg.guards.rate_limit;
-		const hit = rateLimited(reply?.stopReason ?? null, reply?.errorMessage ?? null, rl);
-		if (!hit) return null;
-		const waitMs = (hit.retryAfterMs ?? rl.probe_interval_s * 1000) + rl.slack_s * 1000;
-		return { untilMs: Date.now() + waitMs };
-	};
+
 	// One guard-log line per notify decision: `notify: posted|skipped (<why>)`. Fire-and-forget:
 	// the decision never awaits the post; a failed or slow post logs one line and never blocks
 	// or retries.
@@ -1070,14 +527,11 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 			const content = unhanded(asString(c.id) || "sub", plans.find(file => prompt.includes(file)) ?? null);
 			return content ? { message: { customType: "main-guard.rules", content, display: false } } : undefined;
 		}
-		if (limitTickArmed) {
-			stopLimitTick();
-			adapterLog(cfg, "RATE-LIMIT tick cancelled: owner message (probe count kept)");
-		}
+		rateLimit.onOwnerPrompt();
 		const d = checkInject({ inject: prompt, agent: "main" }, cfg);
 		callsSinceStop = d.state?.callsSinceStop ?? callsSinceStop;
 		idleStops = d.state?.idleStops ?? idleStops;
-		const notice = rolloverNotice(ctx);
+		const notice = rollover.notice(ctx);
 		// A turn the harness starts from the guard's own stop continuation is not an owner
 		// message: D4 (owner-correction) only sees real prompts; D1/D3 run either way.
 		// Machine prompts (guard continuation, rollover note request, handoff note) are not owner messages.
@@ -1146,7 +600,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 			const rc = lastMainRc;
 			runningJobs = rc?.runningJobs();
 			if (cfg.rollover.enabled && rc) {
-				const why = spawnRefusal(rolloverSnapshot(rc).state, runningJobs ?? []);
+				const why = spawnRefusal(rollover.snapshot(rc).state, runningJobs ?? []);
 				if (why) {
 					const tasks = Array.isArray(input.tasks) ? input.tasks : [];
 					adapterLog(cfg, `BLOCK spawn ${String(asRecord(tasks[0]).agent ?? "task")}: rollover pending`);
@@ -1203,7 +657,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 			const steer = ownerAnswerSteer(cfg, nowSec());
 			if (steer) pi.sendUserMessage(steer);
 		}
-		onSizeCheck("tool_result", event, ctx);
+		rollover.onSizeCheck("tool_result", event, ctx);
 		const e = asRecord(event);
 		const c = asCtx(ctx);
 		const id = asString(e.toolCallId);
@@ -1320,7 +774,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		const c = asCtx(ctx);
 		if (c.hasAgent && c.kind !== "main") return;
 		// A relaunch is requested: omp shuts down at the next idle, so the stop must not be continued.
-		if (relaunched) {
+		if (rollover.isRelaunched()) {
 			adapterLog(cfg, "notify: skipped (relaunch requested)");
 			return undefined;
 		}
@@ -1333,7 +787,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		// A turn that ended on a provider rate limit waits it out (plan 20261025_0640): ALLOW before
 		// the rollover and queue decisions — any block here would re-ask straight into the limit —
 		// and without touching the idle-stop counters: checkStop is not consulted.
-		const rl = rateLimitOf(reply);
+		const rl = rateLimit.rateLimitOf(reply);
 		if (rl) {
 			// Who is rate-limited is live data (plan 20261025_1700 P1): the error text's own reset
 			// time, else the fallback wait. Best effort — a failed write never changes the stop.
@@ -1343,28 +797,28 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 			} catch (err) {
 				adapterLog(cfg, `PROVIDER-OUT record failed: ${err instanceof Error ? err.message : String(err)}`);
 			}
-			onRateLimitedStop(c, named, reply?.errorMessage ?? "", reply?.model ?? "");
+			rateLimit.onRateLimitedStop(c, named, reply?.errorMessage ?? "", reply?.model ?? "");
 			return undefined;
 		}
 		// Any turn that ends without a rate limit ends the episode and disarms its resume timer.
-		disarmRateEpisode();
+		rateLimit.disarmEpisode();
 		// A pending rollover decides the stop and checkStop is not consulted: its queue, incident and cancel
 		// blocks would hold Main at a wait the new session raises again through main-start, and its "spawn an
 		// agent" text is refused while the rollover is pending.
 		const rc = cfg.rollover.enabled ? asRolloverCtx(ctx) : null;
 		if (rc) {
-			const snap = rolloverSnapshot(rc);
+			const snap = rollover.snapshot(rc);
 			if (snap.state === "need-note") {
 				adapterLog(cfg, "BLOCK stop: rollover need-note");
 				notifyHandback(reply, "blocked session_stop");
 				stopBlocked = true;
-				return { decision: "block", reason: noteRequestFor(rc, snap) };
+				return { decision: "block", reason: rollover.noteRequestFor(rc, snap) };
 			}
 			if (snap.state === "ready" || snap.state === "wait-jobs") {
 				adapterLog(cfg, `ALLOW stop: rollover ${snap.state}`);
 				recordTurnAnswer(reply);
 				// Under the launcher a ready rollover starts now (not a hand-back to the owner).
-				const handsToOwner = !(snap.state === "ready" && requestRelaunch(rc, notePath(rc.sessionId, mainStateDir(cfg))));
+				const handsToOwner = !(snap.state === "ready" && rollover.requestRelaunch(rc, notePath(rc.sessionId, mainStateDir(cfg))));
 				if (handsToOwner) notifyHandback(reply, "allowed session_stop");
 				else adapterLog(cfg, "notify: skipped (relaunch requested)");
 				return undefined;
@@ -1383,221 +837,17 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		return { decision: "block", reason: d.reason };
 	});
 
-	// Session rollover (src/core/rollover.ts). Main's session size decides when a handoff note is
-	// asked for at turn end (a sendMessage that triggers Main's next turn). The owner's next message
-	// then starts a fresh session from that note; under `neurastream main` the launcher starts it at
-	// once. The size and the installed version are re-read at every turn end and tool result; the
-	// note request goes out once per session file and note state.
-	// The version this process loaded at start: the plugin code that is actually running.
-	const loadedVersion = packageVersion(packageJsonPath());
-	let crossed: { file: string; atMs: number } | null = null;
-	// The note request already sent, keyed by session file + note mtime at send time ("none" when
-	// no note exists): a note that expires while jobs run falls back to need-note with a key no
-	// request was sent for, so it gets exactly one new request and never a loop.
-	let asked: string | null = null;
-	let waitNoticeMs = 0;
+	// ---- ordered agent_end pipeline (consolidates all 7 turn-end stages in exact sequence) ----
 
-	const rolloverSnapshot = (c: RolloverCtx): { state: RolloverState; noteMtimeMs: number | null; stale: boolean; liveVersion: string | null } => {
-		const nowMs = Date.now();
-		const bytes = sizeOf(c.sessionFile);
-		const maxMb = cfg.rollover.max_session_mb;
-		const noteMtimeMs = mtimeOf(notePath(c.sessionId, mainStateDir(cfg)));
-		const liveVersion = packageVersion(packageJsonPath());
-		const stale = liveVersion === null || loadedVersion === null || liveVersion !== loadedVersion;
-		if (stale) {
-			// Note freshness is measured against the crossing: a stale session counts as crossed
-			// from the first check that saw it, whatever its size.
-			if (crossed?.file !== c.sessionFile) crossed = { file: c.sessionFile, atMs: nowMs };
-		} else if (bytes < maxMb * 1024 * 1024) crossed = null;
-		else if (crossed?.file !== c.sessionFile) crossed = { file: c.sessionFile, atMs: nowMs };
-		return {
-			state: rolloverState({
-				sessionBytes: bytes,
-				maxMb,
-				runningJobs: c.runningJobs(),
-				crossedAtMs: crossed?.atMs ?? null,
-				noteMtimeMs,
-				nowMs,
-				stale,
-			}),
-			noteMtimeMs,
-			stale,
-			liveVersion,
-		};
-	};
-
-	// The note request for a state. A stale install names both versions in place of the size line.
-	const noteRequestFor = (c: RolloverCtx, snap: { stale: boolean; liveVersion: string | null }): string => {
-		const reason = snap.stale ? `neurastream on disk is ${snap.liveVersion ?? "unknown"}, this session runs ${loadedVersion ?? "unknown"}` : undefined;
-		return noteRequest(notePath(c.sessionId, mainStateDir(cfg)), reason);
-	};
-
-	let relaunched = false;
-	// omp 18.11.1 defers an extension shutdown: it re-checks only when shutdown() is called again or
-	// an owner submission finishes, so a refused exit once left a dead UI that swallowed every owner
-	// message (I-20261024-4). One unref'd timer per request: if omp still has not exited
-	// rollover.exit_grace_s after the request, the adapter rolls over in-process. The timer keeps its
-	// own clearer: session_shutdown cancels the fallback when omp really exits.
-	let clearGrace: (() => void) | null = null;
-	const armGraceTimer = (c: RolloverCtx): void => {
-		clearGrace?.();
-		const t = setTimeout(() => {
-			clearGrace = null;
-			exitGraceElapsed(c);
-		}, cfg.rollover.exit_grace_s * 1000);
-		if (t && typeof t === "object" && "unref" in t && typeof t.unref === "function") t.unref();
-		clearGrace = () => {
-			clearTimeout(t);
-			clearGrace = null;
-		};
-	};
-
-	// One in-process rollover at a time: while it waits for idle, the size check must not start
-	// a relaunch over it.
-	let flight: string[] | null = null;
-
-	// The one in-process rollover, the exit-grace fallback: gather the generated state, wait for
-	// idle, then start a fresh session whose first message is the handoff. A state change during
-	// the wait sends the owner's text to this session as an ordinary message.
-	const rolloverInProcess = async (c: RolloverCtx, owner: string[], notice: string): Promise<void> => {
-		const previous = c.sessionFile;
-		const path = notePath(c.sessionId, mainStateDir(cfg));
-		flight = owner;
-		try {
-			c.notify(notice);
-			const generated = [
-					await mainStartText([], cfg, { inheritStdin: false }, { source: defaultRunSource(cfg), results: defaultCompletedResults(cfg), providers: ompProviders(cfg) }),
-				holdsBlock(q.ownerHolds(cfg.paths)),
-			].join("\n");
-			const note = readFileSync(path, "utf8");
-			adapterLog(cfg, `rollover: new session from ${previous}; note ${path}`);
-			await c.waitForIdle();
-			const again = rolloverSnapshot(c).state;
-			if (relaunched || again !== "ready") {
-				c.notify(`main-rollover: the state changed while waiting for idle (${relaunched ? "relaunch requested" : again}); no new session.`);
-				// The owner's text is not lost: it goes to this session as an ordinary message.
-				const pending = owner.filter(s => s !== "").join("\n");
-				if (pending !== "") pi.sendUserMessage(pending);
-				return;
-			}
-			const r = asRecord(await c.newSession({ parentSession: previous }));
-			if (r.cancelled === true) return;
-			// Read after the await: owner messages that arrived during newSession are part of the handoff.
-			const handoff = buildHandoff({
-				generated,
-				note,
-				previousSessionFile: previous,
-				ownerMessage: owner.filter(s => s !== "").join("\n"),
-				unanswered: unansweredOwnerMessages(readOwnerMessages(cfg.paths), readOwnerAnswers(cfg.paths)),
-			});
-			pi.sendUserMessage(handoff);
-		} finally {
-			flight = null;
-		}
-	};
-
-	// Clear the rollover episode state so a later createOmpAdapter setup in the same
-	// process starts clean: a stale armGraceTimer would otherwise fire with this
-	// closure's cfg and recreate torn-down dirs (P3c).
-	const clearRolloverState = (): void => {
-		clearGrace?.();
-		relaunched = false;
-		flight = null;
-	};
-	// Clear the previous adapter's armed grace timer before this one overwrites the pointer (P3c).
-	// Do not release heldSessionLock: this runs on every factory re-entry, and the lock is
-	// process-lifetime (plan 20261103_1146 P4). reset() still releases it.
-	activeAdapterReset?.();
-	activeAdapterReset = (): void => {
-		clearRolloverState();
-		stopLimitTick();
-	};
-	// The launcher restarts omp: the request file carries the note and the editor draft, and omp
-	// shuts down only after the file is written. A failed write keeps the session running.
-	// Returns whether the request was written.
-	const requestRelaunch = (c: RolloverCtx, note: string, draft = c.draft()): boolean => {
-		const reqFile = relaunchPath(mainStateDir(cfg));
-		try {
-			mkdirSync(dirname(reqFile), { recursive: true });
-			writeFileSync(reqFile, `${JSON.stringify({ previousSessionFile: c.sessionFile, notePath: note, draft })}\n`);
-		} catch (err) {
-			adapterLog(cfg, `rollover: relaunch request not written: ${String(err)}`);
-			return false;
-		}
-		relaunched = true;
-		adapterLog(cfg, `rollover: relaunch requested from ${c.sessionFile}`);
-		c.shutdown();
-		armGraceTimer(c);
-		return true;
-	};
-
-	// An owner message typed while the relaunch is pending joins the request's draft, in order; the
-	// launcher's handoff carries it. The rewrite is atomic, so the launcher never reads a partial file.
-	const appendToRelaunch = (text: string): boolean => {
-		const reqFile = relaunchPath(mainStateDir(cfg));
-		try {
-			const req = asRecord(JSON.parse(readFileSync(reqFile, "utf8")));
-			const draft = [asString(req.draft), text].filter(s => s !== "").join("\n");
-			const tmp = `${reqFile}.tmp`;
-			writeFileSync(tmp, `${JSON.stringify({ ...req, draft })}\n`);
-			renameSync(tmp, reqFile);
-			return true;
-		} catch (err) {
-			adapterLog(cfg, `rollover: owner message not added to the relaunch request: ${String(err)}`);
-			return false;
-		}
-	};
-
-	// The grace elapsed without a session_shutdown: omp refused the exit. Read the request's draft,
-	// drop the request and roll over here, so the owner's messages reach a live session instead of a
-	// dead UI. The owner-away text stands in when nothing was typed.
-	const exitGraceElapsed = (c: RolloverCtx): void => {
-		adapterLog(cfg, `rollover: omp did not exit within ${cfg.rollover.exit_grace_s}s; rolling over in-process`);
-		const reqFile = relaunchPath(mainStateDir(cfg));
-		let draft = "";
-		try {
-			draft = asString(asRecord(JSON.parse(readFileSync(reqFile, "utf8"))).draft);
-		} catch {}
-		rmSync(reqFile, { force: true });
-		relaunched = false;
-		rolloverInProcess(c, [draft.trim() === "" ? OWNER_AWAY : draft], "rollover: omp did not restart; continuing in a new session here").catch((err: unknown) => {
-			adapterLog(cfg, `rollover: in-process rollover failed: ${err instanceof Error ? err.message : String(err)}`);
-		});
-	};
-
-	const onSizeCheck = (kind: "tool_result" | "agent_end", e: unknown, ctx: unknown): void => {
-		const c = asRolloverCtx(ctx);
-		if (!cfg.rollover.enabled || !c || !isMain(ctx)) return;
-		const snap = rolloverSnapshot(c);
-		const key = `${c.sessionFile}:${snap.noteMtimeMs ?? "none"}`;
-		// A terminal run end: omp 18.11.1 sets willContinue on a non-terminal agent_end.
-		const terminal = kind === "agent_end" && asRecord(e).willContinue !== true;
-		if (snap.state === "need-note" && asked !== key) {
-			asked = key;
-			pi.sendMessage(
-				{ customType: "main-guard.rollover", content: noteRequestFor(c, snap), display: false },
-				{ triggerTurn: true, deliverAs: "nextTurn" },
-			);
-		} else if (terminal && snap.state === "ready" && !relaunched && flight === null) {
-			// flight !== null: an in-process rollover (the fallback) owns this session's end.
-			requestRelaunch(c, notePath(c.sessionId, mainStateDir(cfg)));
-		} else if (terminal && relaunched) {
-			// A tool result mid-run never restarts the session (I-20261024-4), and omp's interactive
-			// mode re-runs its deferred exit check only when shutdown() is called again: re-arm at
-			// every later terminal run end instead of waiting for an owner message.
-			c.shutdown();
-		}
-	};
-	pi.on("agent_end", (e, ctx) => onSizeCheck("agent_end", e, ctx));
-	// Hand-back without a session_stop (plan 20261025_0130): while an async job is pending omp
-	// fires agent_end with willContinue:true and SKIPS session_stop — this deferred hand-back
+	// Stage 2: Hand-back without a session_stop (plan 20261025_0130): while an async job is pending
+	// omp fires agent_end with willContinue:true and SKIPS session_stop — this deferred hand-back
 	// posts from the event's own messages. omp also sets willContinue after a BLOCKED stop
 	// (sessionStopWillContinue) and for todo/plan-mode/rewind continuations, so a post here needs
 	// both: no blocked stop just decided (the flag), and an async job really pending. A terminal
 	// end (willContinue unset) is not a hand-back: the session_stop that follows it decides. A
 	// mid-run continuation — tool calls, or a non-"stop" reason such as an auto-retry — posts
 	// nothing.
-	pi.on("agent_end", (e, ctx) => {
+	const onDeferredHandback = (e: unknown, ctx: unknown): void => {
 		if (!isMain(ctx)) return;
 		if (asRecord(e).willContinue !== true) return;
 		if (stopBlocked) {
@@ -1610,7 +860,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		// hand-back opens the episode instead of logging "no reply text" — its reply carries an
 		// error, no text. A mid-run continuation (tool calls, auto-retry) is not a turn end: the
 		// episode state stays as it is.
-		const rl = rateLimitOf(reply);
+		const rl = rateLimit.rateLimitOf(reply);
 		if (rl) {
 			// The same one parse as session_stop (plan 20261027_1500 P1/P3): the error text's own
 			// reset time, else the fallback wait. Best effort — a failed write never changes the stop.
@@ -1620,7 +870,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 			} catch (err) {
 				adapterLog(cfg, `PROVIDER-OUT record failed: ${err instanceof Error ? err.message : String(err)}`);
 			}
-			onRateLimitedStop(asCtx(ctx), named, reply?.errorMessage ?? "", reply?.model ?? "");
+			rateLimit.onRateLimitedStop(asCtx(ctx), named, reply?.errorMessage ?? "", reply?.model ?? "");
 			return;
 		}
 		const jobCount = asRolloverCtx(ctx)?.runningJobs().length ?? 0;
@@ -1630,7 +880,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		}
 		if (!reply || !reply.text) {
 			// A turn that ended on some other no-text outcome is a turn end without a rate limit.
-			disarmRateEpisode();
+			rateLimit.disarmEpisode();
 			adapterLog(cfg, "notify: skipped (no reply text, agent_end hand-back)");
 			return;
 		}
@@ -1642,7 +892,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 			return;
 		}
 		// A real hand-back: the turn ended without a rate limit — the episode is over.
-		disarmRateEpisode();
+		rateLimit.disarmEpisode();
 		recordTurnAnswer(reply);
 		// A deferred hand-back fires no session_stop: reset the per-turn cap here (I-20261030-24),
 		// record the hand-back for the owner-answer wait (P9), and steer a promise like checkStop
@@ -1653,18 +903,12 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 			pi.sendUserMessage(STOP_PLAN_OFFER_REFUSAL);
 		}
 		notifyHandback(reply, "agent_end hand-back");
-	});
-	// Turn end: page answers that arrived during the turn go out (P3b), then open plans that now
-	// WAIT on the owner ping Discord (P3b). Main only.
-	pi.on("agent_end", (_e, ctx) => {
-		if (!isMain(ctx)) return;
-		deliverOwnerInbox(pi, cfg);
-		notifyWaitingPlans();
-	});
-	// Write-check deferral (I-20261028-166): at a session's own turn end its still-present deferred
-	// findings go out — Main by steer (the only session sendUserMessage is proven to reach), a
-	// subagent through the adapter log; cleared per session, so it is never repeated.
-	pi.on("agent_end", (_e, ctx) => {
+	};
+
+	// Stage 4: Write-check deferral (I-20261028-166): at a session's own turn end its still-present
+	// deferred findings go out — Main by steer (the only session sendUserMessage is proven to
+	// reach), a subagent through the adapter log; cleared per session, so it is never repeated.
+	const onDeferredWriteCheck = (ctx: unknown): void => {
 		const c = asCtx(ctx);
 		const wc = cfg.write_check;
 		const key = c.id ?? "main";
@@ -1683,40 +927,45 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		if (steers.length === 0) return;
 		if (!c.hasAgent || c.kind === "main") pi.sendUserMessage(steers.join("\n"));
 		else adapterLog(cfg, `WRITE-CHECK deferred still present: ${steers.join(" | ")}`);
-	});
+	};
 
-	// Terminal hand-back (plan 20261028_1545 P2): a willContinue agent_end keeps the turn going
-	// (blocked stop, todo/plan-mode continuation, deferred hand-back); only its absence ends the
-	// turn — the budget resets here and on the deferred hand-back above (I-20261030-24).
 	pi.on("agent_end", (e, ctx) => {
-		if (!isMain(ctx)) return;
-		if (asRecord(e).willContinue === true) return;
-		resetMainCalls(cfg.paths);
-		ownerAnswerHandback(nowSec(), cfg.paths);
-	});
-	// P4k backstop (plan 20261028_1600): a named review spawn that ends with no verdict recorded at its edit is judged here, from its own plan file; the note tells Main at its next prompt.
-	pi.on("agent_end", (_e, ctx) => {
+		// 1. Session rollover size/version check & relaunch re-arm
+		rollover.onSizeCheck("agent_end", e, ctx);
+		// 2. Deferred hand-back notify / rate-limit handling (when willContinue === true)
+		onDeferredHandback(e, ctx);
+		// 3. Deliver owner inbox & ping Discord on newly waiting plans (Main only)
+		if (isMain(ctx)) {
+			deliverOwnerInbox(pi, cfg);
+			notifyWaitingPlans();
+		}
+		// 4. Report still-present deferred write-check findings for this session
+		onDeferredWriteCheck(ctx);
+		// 5. Terminal hand-back: reset Main's per-turn call budget & record answer hand-back
+		if (isMain(ctx) && asRecord(e).willContinue !== true) {
+			resetMainCalls(cfg.paths);
+			ownerAnswerHandback(nowSec(), cfg.paths);
+		}
+		// 6. P4k backstop: check if a named review subagent ended without recording a verdict
 		const c = asCtx(ctx);
-		if (c.kind !== "sub" || !c.id) return;
-		const note = reviewSpawnEnd(c.id, cfg);
-		if (note) pendingReviewNotes.push(note);
+		if (c.kind === "sub" && c.id) {
+			const note = reviewSpawnEnd(c.id, cfg);
+			if (note) pendingReviewNotes.push(note);
+		}
+		// 7. Recall topics: spawn background segmentation when due (Main only)
+		if (isMain(ctx) && cfg.recall.topics_model !== "" && topicsDue(appendedSinceSpawn(), cfg.recall.topics_every)) {
+			markTopicsSpawned();
+			spawnTopics(cfg, ctx, ["recall", "topics"]);
+		}
 	});
 
-	pi.on("agent_end", (_e, ctx) => {
-		if (!isMain(ctx) || cfg.recall.topics_model === "") return;
-		if (!topicsDue(appendedSinceSpawn(), cfg.recall.topics_every)) return;
-		markTopicsSpawned();
-		spawnTopics(cfg, ctx, ["recall", "topics"]);
-	});
 	pi.on("session_shutdown", (_e, ctx) => {
-		if (!isMain(ctx) || cfg.recall.topics_model === "") return;
-		spawnTopics(cfg, ctx, ["recall", "topics", "--close"]);
-	});
-
-	// omp is really shutting down: the exit-grace fallback must not fire. A clean shutdown is also
-	// the owner's last stamp (P2 d): verify first, then record the state that pass confirmed.
-	pi.on("session_shutdown", () => {
-		clearGrace?.();
+		if (isMain(ctx) && cfg.recall.topics_model !== "") {
+			spawnTopics(cfg, ctx, ["recall", "topics", "--close"]);
+		}
+		// omp is really shutting down: the exit-grace fallback must not fire. A clean shutdown is also
+		// the owner's last stamp (P2 d): verify first, then record the state that pass confirmed.
+		rollover.clearGrace();
 		stampPlannerState(freshConfig);
 	});
 
@@ -1733,184 +982,11 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		};
 	});
 
-	/** Wait-jobs notice for Main's next turn, throttled; null otherwise. The note request goes out at turn end. */
-	const rolloverNotice = (ctx: unknown): string | null => {
-		const c = asRolloverCtx(ctx);
-		if (!cfg.rollover.enabled || !c) return null;
-		const state = rolloverSnapshot(c).state;
-		if (state === "wait-jobs" && Date.now() - waitNoticeMs >= WAIT_NOTICE_MS) {
-			waitNoticeMs = Date.now();
-			const jobs = c.runningJobs().join(", ");
-			return `Session rollover: the handoff note is ready, but own jobs are still running (${jobs}). A rollover would cancel them, so the owner's messages stay in this session until they finish.`;
-		}
-		return null;
-	};
-
-	// Chat unlock + autonomy tiers (guards.chat_unlock): the owner's whole message "unlock"/
-	// "unlock N"/"lock" moves the guard unlock file, "tier <name>" sets the autonomy tier and the
-	// approve phrase (autonomy.go_phrase, default "go push") approves one strict landing
-	// (src/core/queue/lib.ts chatUnlock, src/core/autonomy.ts
-	// chatTier/chatGo). Only prompts the owner really typed
-	// count: the local terminal (input event, source "interactive") and collab guest prompts from
-	// write peers. This handler is registered BEFORE the rollover input handler below, so the unlock
-	// wins while a rollover is ready or in flight (emitInput short-circuits on { handled: true }).
-	// An applied unlock also wakes Main (sendUserMessage: idle → a new turn, mid-turn → the steer
-	// queue), the same message the phone-page unlock sends through the owner inbox.
-	const notifyUnlock = (ctx: unknown, r: { command?: "unlock" | "lock"; minutes?: number; until?: number }): void => {
-		const c = asRolloverCtx(ctx);
-		if (r.command === "unlock" && r.minutes !== undefined && r.until !== undefined) {
-			const hhmm = strftime(r.until, "%H:%M");
-			c?.notify(`guard unlocked for ${r.minutes} min (until ${hhmm})`);
-			pi.sendUserMessage(`Owner unlocked the guards in chat for ${r.minutes} min (until ${hhmm}). Do the step that waited on the unlock now.`);
-		} else if (r.command === "lock") {
-			c?.notify("guard locked again");
-		}
-	};
-	// The tier switch and the one-shot `go` travel the same two owner paths and answer the same way.
-	const notifyTier = (ctx: unknown, r: { tier?: Tier }): void => {
-		const c = asRolloverCtx(ctx);
-		if (!c || r.tier === undefined) return;
-		c.notify(`tier now ${r.tier}`);
-	};
-	const notifyGo = (ctx: unknown, r: { minutes?: number }): void => {
-		const c = asRolloverCtx(ctx);
-		if (!c || r.minutes === undefined) return;
-		c.notify(`${cfg.autonomy.go_phrase}: one push/merge approved for ${r.minutes} min`);
-	};
-	pi.on("input", (event, ctx) => {
-		if (!cfg.guards.chat_unlock || !isMain(ctx)) return undefined;
-		const e = asRecord(event);
-		if (asString(e.source) !== "interactive") return undefined;
-		const text = asString(e.text);
-		const t = chatTier(text, cfg, "interactive");
-		if (t.applied) {
-			notifyTier(ctx, t);
-			return { handled: true };
-		}
-		const p = chatPlanner(text, cfg, "interactive");
-		if (p.applied) {
-			asRolloverCtx(ctx)?.notify(`planner now ${p.planner}`);
-			return { handled: true };
-		}
-		const g = chatGo(text, cfg, "interactive");
-		if (g.applied) {
-			notifyGo(ctx, g);
-			return { handled: true };
-		}
-		const a = chatApprove(text, cfg, "interactive");
-		if (a.applied) {
-			asRolloverCtx(ctx)?.notify(`approved ${basename(a.plan)}`);
-			return { handled: true };
-		}
-		if (a.problem !== undefined) {
-			asRolloverCtx(ctx)?.notify(a.problem);
-			return { handled: true };
-		}
-		const r = q.chatUnlock(asString(e.text), cfg, "interactive");
-		if (!r.applied) return undefined;
-		notifyUnlock(ctx, r);
-		return { handled: true };
-	});
-	// A collab guest prompt (collab/host.ts #handlePrompt, write peers only) is NOT an input event:
-	// it is session.promptCustomMessage({ customType: "collab-prompt", details: { from },
-	// attribution: "user" }), which lands in the agent context — the adapter sees it on the
-	// "context" event (types.ts ContextEvent, the messages about to go to the LLM). The message
-	// stays in the transcript, so later LLM calls replay it: a seen key (timestamp + text) is acted
-	// on once, and a resumed session replaying old prompts is stopped by the age limit.
-	const seenChatPrompts = new Set<string>();
-	const CHAT_PROMPT_MAX_AGE_MS = 10 * 60_000;
-	pi.on("context", (event, ctx) => {
-		if (!isMain(ctx)) return undefined;
-		const messages = asRecord(event).messages;
-		if (!Array.isArray(messages)) return undefined;
-		if (cfg.guards.chat_unlock) {
-			for (const raw of messages) {
-				const m = asRecord(raw);
-				if (m.role !== "custom" || m.customType !== "collab-prompt" || m.attribution !== "user") continue;
-				const from = asString(asRecord(m.details).from);
-				if (from === "") continue;
-				const text =
-					typeof m.content === "string"
-						? m.content
-						: Array.isArray(m.content)
-							? m.content.map(c => asString(asRecord(c).text)).join("")
-							: "";
-				const timestamp = typeof m.timestamp === "number" ? m.timestamp : 0;
-				if (Date.now() - timestamp > CHAT_PROMPT_MAX_AGE_MS) continue;
-				const key = `${timestamp}:${text}`;
-				if (seenChatPrompts.has(key)) continue;
-				seenChatPrompts.add(key);
-				const r = q.chatUnlock(text, cfg, `collab:${from}`);
-				if (r.applied) {
-					notifyUnlock(ctx, r);
-					continue;
-				}
-				const t = chatTier(text, cfg, `collab:${from}`);
-				if (t.applied) {
-					notifyTier(ctx, t);
-					continue;
-				}
-				const g = chatGo(text, cfg, `collab:${from}`);
-				if (g.applied) notifyGo(ctx, g);
-			}
-		}
-		const rule = { pattern: cfg.quota.reset_pattern, zone: cfg.quota.reset_tz };
-		let changed = false;
-		const mapped = messages.map(raw => {
-			const message = asRecord(raw);
-			if (typeof message.content === "string") {
-				const content = annotateResetTimes(message.content, rule);
-				if (content === message.content) return raw;
-				changed = true;
-				return { ...message, content };
-			}
-			if (!Array.isArray(message.content)) return raw;
-			let contentChanged = false;
-			const content = message.content.map(part => {
-				const block = asRecord(part);
-				if (typeof block.text !== "string") return part;
-				const text = annotateResetTimes(block.text, rule);
-				if (text === block.text) return part;
-				contentChanged = true;
-				return { ...block, text };
-			});
-			if (!contentChanged) return raw;
-			changed = true;
-			return { ...message, content };
-		});
-		return changed ? { messages: mapped } : undefined;
-	});
-
-	// The relaunch is the only rollover path: a plain interactive message in the ready state
-	// requests it, and every such message joins the pending request's draft, in order.
-	pi.on("input", (event, ctx) => {
-		const e = asRecord(event);
-		const c = asRolloverCtx(ctx);
-		const text = asString(e.text);
-		if (!cfg.rollover.enabled || !c || !isMain(ctx)) return undefined;
-		if (asString(e.source) !== "interactive" || text === "" || text.startsWith("/")) return undefined;
-		if (!relaunched) {
-			if (rolloverSnapshot(c).state !== "ready") return undefined;
-			// The message is the request's first owner text, so the editor draft is not carried.
-			if (!requestRelaunch(c, notePath(c.sessionId, mainStateDir(cfg)), "")) return undefined;
-		}
-		if (appendToRelaunch(text)) c.notify("rollover in progress: your message goes to the new session");
-		else c.notify("rollover in progress: your message could not be saved and was not sent; send it again after the rollover");
-		// omp re-checks its deferred exit only when shutdown() is called again: re-arm per message.
-		c.shutdown();
-		return { handled: true };
-	});
-
-	// The rollover starts on its own (size + idle), and the owner's next message joins the
-	// pending relaunch; the command only says so.
-	pi.registerCommand("main-rollover", {
-		description: "Start a fresh session from Main's handoff note; the rest of the message is the owner's first message",
-		handler: async (_args: unknown, ctx: unknown) => {
-			const c = asRolloverCtx(ctx);
-			if (!c) return;
-			c.notify("main-rollover: under neurastream main the rollover starts from your next message, not from this command.");
-		},
-	});
+	// Register chat commands (unlock/tier/planner/go/approve + context) BEFORE rollover input
+	// so unlock wins while a rollover is ready or in flight.
+	registerChatCommands(pi, getCfg);
+	pi.on("input", (event, ctx) => rollover.handleInput(event, ctx));
+	rollover.registerCommand();
 }
 
 /** Clear the active adapter's rollover state and release the session lock. Tests call this in

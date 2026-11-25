@@ -1,7 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { RunSource, TraceEvent } from "./adapter.ts";
 import { readEvents } from "./agent-score.ts";
 import type { Config } from "./config.ts";
@@ -78,6 +77,8 @@ export interface MainStartDeps {
 	episodesFor?: (cutoff: number) => Episode[];
 	/** Finished task results parsed from Main's session file (the adapter's format knowledge). */
 	results?: TaskResult[];
+	/** Runs `neurastream doctor` and returns its combined output; absent omits the doctor body. */
+	doctor?: () => Promise<string> | string;
 }
 
 // Real-time detectors at main-start (plan 20261022_2330 P3): best effort, logged, never thrown.
@@ -203,13 +204,14 @@ export async function mainStartText(args: string[], cfg: Config, opts: { inherit
 		if (lines.length) say(lines.join("\n"));
 	} catch {}
 	say("=== doctor");
-	// The CLI file itself (shebang `#!/usr/bin/env bun`), never process.execPath: inside a host
-	// harness that is the harness binary, which would start a new agent session instead.
-	const cli = join(dirname(fileURLToPath(import.meta.url)), "../cli/main.ts");
-	const doctor = await run(cli, ["doctor"]);
-	const text = `${doctor.stdout}${doctor.stderr}`;
-	out.push(text.endsWith("\n") || text === "" ? text : `${text}\n`);
-	if (doctor.error) say(doctor.error.message);
+	if (deps.doctor) {
+		try {
+			const text = await deps.doctor();
+			out.push(text.endsWith("\n") || text === "" ? text : `${text}\n`);
+		} catch (err) {
+			say(err instanceof Error ? err.message : String(err));
+		}
+	}
 	try {
 		const sweep = mrSweep({ paths: cfg.paths });
 		if (sweep.lines.length) {

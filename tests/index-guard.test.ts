@@ -8,12 +8,13 @@
 // exist yet.
 
 import { afterAll, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { ToolEvent } from "../src/core/adapter.ts";
 import { loadConfig, type Config } from "../src/core/config.ts";
 import { checkTool } from "../src/core/guards.ts";
+import { indexLockPath, readIndex, updateIndex } from "../src/core/queue/lib.ts";
 
 // Captured before any test runs: the sentinel this run was started with (heavy-run env), so the
 // preload case can prove the sentinel never survives into a sandboxed loadConfig.
@@ -163,4 +164,41 @@ test("(d) checkTool refuses Main's write/edit/bash on the index path; the owner 
 	writeFileSync(s.cfg.paths.unlock, "");
 	const ok = checkTool(toolEvent(s, "write", { file_path: s.index, content: "hijacked" }, [s.index]), s.cfg);
 	expect(ok.allow).toBe(true);
+});
+
+test("(f) updateIndex serializes concurrent add and close across processes without losing Plan B or leaving .tmp files", async () => {
+	const s = seed();
+	const planA = join(s.toy, "docs/plans/20261020_1200_a.md");
+	const planB = join(s.toy, "docs/plans/20261020_1300_b.md");
+	writeFileSync(planA, "# A\n");
+	writeFileSync(planB, "# B\n");
+	updateIndex(s.index, undefined, () => [planA]);
+
+	const repoRoot = dirname(dirname(import.meta.path));
+	const libPath = join(repoRoot, "src/core/queue/lib.ts");
+	const addScript = `
+import { parseIndex, updateIndex } from ${JSON.stringify(libPath)};
+updateIndex(${JSON.stringify(s.index)}, undefined, (cur) => {
+  const lines = parseIndex(cur);
+  if (!lines.includes(${JSON.stringify(planB)})) lines.push(${JSON.stringify(planB)});
+  return lines;
+});
+`;
+	const closeScript = `
+import { parseIndex, updateIndex } from ${JSON.stringify(libPath)};
+updateIndex(${JSON.stringify(s.index)}, { removed: "close" }, (cur) => {
+  // Hold the lock briefly so both processes overlap on the lock.
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 40);
+  return parseIndex(cur).filter(p => p !== ${JSON.stringify(planA)});
+});
+`;
+	const pClose = Bun.spawn(["bun", "-e", closeScript], { stdout: "pipe", stderr: "pipe" });
+	const pAdd = Bun.spawn(["bun", "-e", addScript], { stdout: "pipe", stderr: "pipe" });
+	expect(await pClose.exited).toBe(0);
+	expect(await pAdd.exited).toBe(0);
+
+	expect(readIndex(s.index)).toEqual([planB]);
+	expect(statSync(s.index).mode & 0o777).toBe(0o444);
+	expect(readdirSync(s.agent).filter(n => n.endsWith(".tmp"))).toEqual([]);
+	expect(indexLockPath(s.index)).toBe(join(s.agent, ".INDEX.md.lock"));
 });

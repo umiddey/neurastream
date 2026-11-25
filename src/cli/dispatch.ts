@@ -31,7 +31,7 @@ import { watchOn, watchOff } from "./watch-setup.ts";
 import { runWip } from "./wip.ts";
 import { runUninstall } from "../core/uninstall.ts";
 import { queueMigrate } from "../core/queue-migrate.ts";
-import { activePlans, allowedAgents, enforceReadOnlyIndex, gitTop, readIndex, writeIndex } from "../core/queue/lib.ts";
+import { activePlans, allowedAgents, enforceReadOnlyIndex, gitTop, parseIndex, updateIndex } from "../core/queue/lib.ts";
 import { defaultRunner } from "../core/mr-sweep.ts";
 import { allowAgents, denyAgents, invalidSlugs } from "../core/subagents.ts";
 import { runLabels } from "./labels.ts";
@@ -339,15 +339,27 @@ function runQueueAdd(args: string[], cfg: Config): number {
 		return 1;
 	}
 	const index = cfg.paths.queue_index;
-	const lines = readIndex(index);
-	if (lines.includes(abs)) {
-		console.error(`queue add: ${abs} is already listed at rank ${lines.indexOf(abs) + 1} (queue move reorders it)`);
+	let existingRank = -1;
+	let insertedAt = -1;
+	let total = 0;
+	const wrote = updateIndex(index, undefined, (currentText) => {
+		const lines = parseIndex(currentText);
+		const found = lines.indexOf(abs);
+		if (found !== -1) {
+			existingRank = found + 1;
+			return null;
+		}
+		const at = rank === null ? lines.length : Math.min(rank - 1, lines.length);
+		lines.splice(at, 0, abs);
+		insertedAt = at + 1;
+		total = lines.length;
+		return lines;
+	});
+	if (!wrote) {
+		console.error(`queue add: ${abs} is already listed at rank ${existingRank} (queue move reorders it)`);
 		return 1;
 	}
-	const at = rank === null ? lines.length : Math.min(rank - 1, lines.length);
-	lines.splice(at, 0, abs);
-	writeIndex(lines, undefined, index);
-	console.log(`queue add: ${abs} at rank ${at + 1} of ${lines.length} in ${index}`);
+	console.log(`queue add: ${abs} at rank ${insertedAt} of ${total} in ${index}`);
 	return 0;
 }
 
@@ -361,17 +373,26 @@ function runQueueMove(args: string[], cfg: Config): number {
 	}
 	const abs = path.resolve(fileArg!);
 	const index = cfg.paths.queue_index;
-	const lines = readIndex(index);
-	const from = lines.indexOf(abs);
-	if (from === -1) {
+	let fromRank = -1;
+	let toRank = -1;
+	let total = 0;
+	const wrote = updateIndex(index, undefined, (currentText) => {
+		const lines = parseIndex(currentText);
+		const from = lines.indexOf(abs);
+		if (from === -1) return null;
+		lines.splice(from, 1);
+		const to = Math.min(rank - 1, lines.length);
+		lines.splice(to, 0, abs);
+		fromRank = from + 1;
+		toRank = to + 1;
+		total = lines.length;
+		return lines;
+	});
+	if (!wrote) {
 		console.error(`queue move: ${abs} is not in ${index}`);
 		return 1;
 	}
-	lines.splice(from, 1);
-	const to = Math.min(rank - 1, lines.length);
-	lines.splice(to, 0, abs);
-	writeIndex(lines, undefined, index);
-	console.log(`queue move: ${abs} rank ${from + 1} → ${to + 1} of ${lines.length} in ${index}`);
+	console.log(`queue move: ${abs} rank ${fromRank} → ${toRank} of ${total} in ${index}`);
 	return 0;
 }
 

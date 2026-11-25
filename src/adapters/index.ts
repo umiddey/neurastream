@@ -3,14 +3,13 @@
 // is one folder under src/adapters plus one entry in ADAPTERS below — zero core changes
 // (docs/adapter.md, "Adding a harness").
 
-import type { DumpRef, LaunchOptions, OwnerTurn, RelatedTrace, RunSource, TaskResult, TraceRun, TraceSource } from "../core/adapter.ts";
+import type { CompleteRequest, CompleteResult, DumpRef, LaunchOptions, OwnerTurn, RelatedTrace, RunSource, TaskResult, TraceRun, TraceSource } from "../core/adapter.ts";
 import type { Config } from "../core/config.ts";
 import type { ProviderStatus } from "../core/provider-state.ts";
 import type { Episode } from "../core/episodes.ts";
 import type { DumpParts, DumpTokens } from "../core/trace-bloat.ts";
 import type { SpawnBrief } from "../core/trace-briefs.ts";
 import { ompAdapter } from "./omp/adapter.ts";
-export { ompComplete } from "./omp/launch.ts";
 
 export interface HarnessAdapter {
 	name: string;
@@ -50,6 +49,8 @@ export interface HarnessAdapter {
 	doctor(): number;
 	/** Providers the harness knows and their state now; null = its store could not be read (doctor names why); [] = the harness has no such data. */
 	providers(cfg: Config): ProviderStatus[] | null;
+	/** One stateless text completion through the harness's configured gateway. */
+	complete(req: CompleteRequest): Promise<CompleteResult>;
 }
 
 const ADAPTERS: Record<string, HarnessAdapter> = {

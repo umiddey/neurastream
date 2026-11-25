@@ -185,6 +185,22 @@ export interface TaskResult {
 	ts: number;
 }
 
+/** One completion request sent through the active harness adapter's completion gateway. */
+export interface CompleteRequest {
+	model: string;
+	system: string;
+	prompt: string;
+	maxTokens: number;
+	/** Reasoning effort for the model ("" or absent = none). */
+	effort?: string;
+}
+
+/** Plain-text result and token usage returned by a harness adapter's completion call. */
+export interface CompleteResult {
+	text: string;
+	usage: { prompt_tokens: number; completion_tokens: number };
+}
+
 /** Options for launching the harness binary; tests inject another path and a failing generator. */
 export interface LaunchOptions {
 	harness?: string;

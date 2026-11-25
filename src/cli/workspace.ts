@@ -14,7 +14,7 @@ import { homedir } from "node:os";
 import { getAdapter } from "../adapters/index.ts";
 import { ConfigError, loadConfig, type Config } from "../core/config.ts";
 import { beat, errorLine } from "../core/heartbeat.ts";
-import { startOwnerUi, type OwnerUiOptions, type OwnerUiServer } from "../core/owner-ui.ts";
+import { startOwnerUi, type OwnerUiOptions, type OwnerUiServer, type ResultsBuild } from "../core/owner-ui.ts";
 import { realTailscale, type Tailscale, untilIp4Changes } from "../core/tailscale.ts";
 import { TEAM_NAME_HINT, TEAM_NAME_RE } from "../core/team-labels.ts";
 import { addTeamMember, listTeamMembers, removeTeamMember, startTeamServer, type TeamServer, type TeamServerConfig, type TeamServerOptions } from "../core/team-server.ts";
@@ -92,6 +92,17 @@ function runWorkspaceSetup(args: string[], deps: WorkspaceDeps): number {
 	return uiOn({ ...setup, login, admin, repos, port, terminal });
 }
 
+/**
+ * Spawns the standalone Results cache builder process at low CPU priority and notifies `done` on exit.
+ *
+ * Args:
+ *     done (() => void): Callback invoked when the child build process finishes or fails
+ */
+export const spawnResultsBuild: ResultsBuild = done => {
+	const proc = Bun.spawn(["nice", "-n", "19", process.execPath, `${import.meta.dir}/results-build.ts`], { stdout: "ignore", stderr: "inherit" });
+	void proc.exited.then(done, done);
+};
+
 export async function runWorkspace(args: string[] = [], deps: WorkspaceDeps = {}): Promise<number> {
 	if (args[0] === "on" || args[0] === "off") return runWorkspaceSetup(args, deps);
 	if (args[0] === "members") return runMembers(args.slice(1), deps);
@@ -120,7 +131,7 @@ export async function runWorkspace(args: string[] = [], deps: WorkspaceDeps = {}
 	const tailscale = deps.tailscale ?? realTailscale;
 	let server: OwnerUiServer;
 	try {
-		server = (deps.start ?? startOwnerUi)({ cfg, tailscale, source: getAdapter(cfg).runSource(cfg) });
+		server = (deps.start ?? startOwnerUi)({ cfg, tailscale, source: getAdapter(cfg).runSource(cfg), resultsBuild: spawnResultsBuild });
 	} catch (e) {
 		beat(cfg, "workspace", { ok: false, detail: errorLine(e) });
 		throw e;

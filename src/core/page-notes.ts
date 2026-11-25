@@ -107,6 +107,31 @@ export function stripPageNotes(html: string): string {
 	return [STYLE_RE, PANEL_RE, APPROVE_RE, ANSWERED_RE, FAB_RE, SCRIPT_RE].reduce((text, re) => text.replace(re, ""), html);
 }
 
+/**
+ * Strip only the interactive baked chrome (style, notes panel, approve bar, fab, script) while
+ * deliberately preserving `#ns-answered`, so sandboxed raw HTML pages keep answered notes visible
+ * without duplicating broken interactive controls that now live in the trusted viewer shell.
+ */
+export function stripInteractiveChrome(html: string): string {
+	return [STYLE_RE, PANEL_RE, APPROVE_RE, FAB_RE, SCRIPT_RE].reduce((text, re) => text.replace(re, ""), html);
+}
+
+/**
+ * Minimal read-only selection relay appended to sandboxed `/_raw/<name>` HTML responses.
+ * Relays selected text to the trusted parent viewer shell via `postMessage`; guarded so stubbed
+ * DOM environments where `window.parent` is undefined never throw.
+ */
+export const QUOTE_RELAY_SCRIPT = `<script>(function(){
+ function relay(){
+  if(!window.parent||window.parent===window)return;
+  var s=window.getSelection?window.getSelection():null;
+  var q=s?s.toString().replace(/\\s+/g," ").trim().slice(0,600):"";
+  if(q)window.parent.postMessage({type:"ns-quote",quote:q},"*");
+ }
+ document.addEventListener("mouseup",relay);
+ document.addEventListener("selectionchange",relay);
+})();</script>`;
+
 /** What the Approve bar needs: the page it approves, the notes still open on it and what the
  * diagram check found (P9, P10). */
 export interface ApproveChrome {

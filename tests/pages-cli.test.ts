@@ -125,6 +125,7 @@ test("list removes an expired page and the server answers 404", async () => {
  const cfg = loadConfig({ home, env: {} });
  expect(existsSync(join(cfg.pages.dir, "diagram.html"))).toBe(false);
  cfg.workspace.owner_login = "owner@example.test";
+ cfg.workspace.allow_this_machine = true;
  const server = startPagesServer({ cfg, tailscale, source: { listRuns: () => [], mainSession: () => null }, hostname: "127.0.0.1", port: 0, root: cfg.pages.dir, peerOf: () => "127.0.0.1" });
  try { expect((await fetch(`http://127.0.0.1:${server.port}/diagram.html`)).status).toBe(404); }
  finally { server.stop(); }

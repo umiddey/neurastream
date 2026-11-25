@@ -29,11 +29,13 @@ function stubBins(home: string): void {
 	}
 }
 
+const STUB_DOCTOR = { doctor: () => "doctor: ok\n" };
+
 test("main-start prints the load line after the machine-guard line, with no /proc/loadavg needed", async () => {
 	const home = join(TMP, "home");
 	stubBins(home);
 	const cfg = loadConfig({ home, env: {} });
-	const text = await mainStartText([], cfg, { inheritStdin: false });
+	const text = await mainStartText([], cfg, { inheritStdin: false }, STUB_DOCTOR);
 	const lines = text.split("\n");
 	const at = lines.indexOf(MG_LINE);
 	expect(at).toBeGreaterThan(-1);
@@ -52,7 +54,7 @@ test("main-start prints one notice line per config notice, near the top", async 
 	const file = join(home, ".config/neurastream/config.yml");
 	writeFileSync(file, 'glm:\n  label: "GLM"\npm:\n  fail_lines: 25\n');
 	const cfg = loadConfig({ home, env: {} });
-	const text = await mainStartText([], cfg, { inheritStdin: false });
+	const text = await mainStartText([], cfg, { inheritStdin: false }, STUB_DOCTOR);
 	const lines = text.split("\n");
 	const glm = `notice: config "glm:" is now "quota:"; rename it in ${file}`;
 	const pm = `notice: config "pm:" was removed; delete it from ${file}`;

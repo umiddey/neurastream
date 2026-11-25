@@ -1,7 +1,7 @@
 // `neurastream recall`: searches the owner's messages and Main's answers (the recall log, see
 // core/owner-log.ts) and shows an entry with the entry it pairs with. Read-only.
 
-import { getAdapter, ompComplete } from "../adapters/index.ts";
+import { getAdapter } from "../adapters/index.ts";
 import { nowSec } from "../core/clock.ts";
 import { ConfigError, loadConfig, type Config } from "../core/config.ts";
 import { helpDoc, printText } from "../core/help.ts";
@@ -116,7 +116,8 @@ async function topicsCli(args: string[], cfg: Config): Promise<number> {
 		return 2;
 	}
 	try {
-		const run: TopicsRun = await runTopics(cfg, ompComplete, { close: args.includes("--close") });
+		const adapter = getAdapter(cfg);
+		const run: TopicsRun = await runTopics(cfg, req => adapter.complete(req), { close: args.includes("--close") });
 		for (const line of run.lines) console.log(line);
 		return run.failures === 0 ? 0 : 1;
 	} catch {
