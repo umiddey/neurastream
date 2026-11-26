@@ -372,7 +372,14 @@ export function readConfined(abs: string, roots: string[], beforeOpen: () => voi
 	} catch {
 		return null;
 	}
-	const root = roots.find((r) => inside(r, real));
+	// Roots are compared resolved, like `real`: a symlinked root (macOS tmpdir is /var → /private/var) still contains its files.
+	const root = roots.flatMap((r) => {
+		try {
+			return [realpathSync(r)];
+		} catch {
+			return [];
+		}
+	}).find((r) => inside(r, real));
 	if (root === undefined) return null;
 	if (spawnSync("git", ["-C", root, "cat-file", "-e", `HEAD:${path.relative(root, real)}`]).status !== 0) return null;
 	beforeOpen();
