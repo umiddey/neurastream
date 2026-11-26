@@ -290,7 +290,7 @@ export function freshGraph(
 	if (reuseStamp(repo) === null) return [`graphify: ${repo} is not a git repository — run \`neurastream reuse on\` from a git repo`];
 	if (readStamp(repo) === reuseStamp(repo) && parseableGraph(graphFile)) return [];
 	if (!build) {
-		// `existsSync` first: isBusy would create the graphify-out directory, and the spawn check writes nothing.
+		// `existsSync` first: isBusy would create the graphify-out directory, and the spawn check writes at most the empty lock file.
 		const rebuilding = existsSync(path.join(repo, GRAPH_DIR)) && isBusy(lockFile);
 		return [
 			rebuilding
