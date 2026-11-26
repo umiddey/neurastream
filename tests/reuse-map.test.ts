@@ -2,10 +2,11 @@
 // helpers, and freshGraph's rebuild rules against a fake seam in a sandbox git repo.
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { lock } from "../src/core/file-lock.ts";
 import {
 	GRAPHIFY_VERSION,
 	checkedCite,
@@ -18,6 +19,8 @@ import {
 	parseMapLine,
 	parseNoneLine,
 	searchTerms,
+	citeRoots,
+	readConfined,
 	type GraphifyResult,
 	type ReuseGraph,
 	type TermResult,
@@ -220,5 +223,112 @@ describe("freshGraph", () => {
 		const fake = fakeGraphify();
 		expect(freshGraph(repo, [], fake.graph)[0]).toMatch(/is not a git repository — run `neurastream reuse on`/);
 		expect(fake.builds()).toBe(0);
+	});
+});
+
+describe("P2b: readConfined", () => {
+	test("a regular committed file inside the root is read; a directory is refused", () => {
+		const repo = sandboxRepo();
+		expect(readConfined(join(repo, "src/a.ts"), [repo])).toBe("export const a = 1;\n");
+		expect(readConfined(join(repo, "src"), [repo])).toBeNull();
+	});
+
+	test("a file outside every root is refused unread", () => {
+		const repo = sandboxRepo();
+		const outside = mkdtempSync(join(tmpdir(), "neurastream-reuse-out-"));
+		roots.push(outside);
+		writeFileSync(join(outside, "x.txt"), "x\n");
+		expect(readConfined(join(outside, "x.txt"), [repo])).toBeNull();
+	});
+
+	test("an intermediate directory swapped for a symlink after the resolve is refused by the descriptor re-check", () => {
+		const repo = sandboxRepo();
+		mkdirSync(join(repo, "sub"));
+		writeFileSync(join(repo, "sub/f.ts"), "in repo\n");
+		git(["add", "sub/f.ts"], repo);
+		git(["commit", "-qm", "sub"], repo);
+		expect(readConfined(join(repo, "sub/f.ts"), [repo])).toBe("in repo\n");
+		const outside = mkdtempSync(join(tmpdir(), "neurastream-reuse-out-"));
+		roots.push(outside);
+		writeFileSync(join(outside, "f.ts"), "outside\n");
+		const swap = (): void => {
+			renameSync(join(repo, "sub"), join(repo, "sub.bak"));
+			symlinkSync(outside, join(repo, "sub"));
+		};
+		expect(readConfined(join(repo, "sub/f.ts"), [repo], swap)).toBeNull();
+	});
+
+	test("a tracked file in a registered worktree of the plan's repo is read: the worktree is a root", () => {
+		const repo = sandboxRepo();
+		mkdirSync(join(repo, "docs/plans"), { recursive: true });
+		const wt = join(mkdtempSync(join(tmpdir(), "neurastream-reuse-wt-")), "wt");
+		roots.push(dirname(wt));
+		git(["worktree", "add", "-q", "-b", "wt-branch", wt], repo);
+		const found = citeRoots(join(repo, "docs/plans"), []);
+		expect(found).toContain(realpathSync(wt));
+		expect(readConfined(join(wt, "src/a.ts"), found)).toBe("export const a = 1;\n");
+	});
+});
+
+describe("P2b: the query budget and the build-free freshness check", () => {
+	test("each query gets min(30 s, time left); a later query gets only what is left", () => {
+		const repo = sandboxRepo();
+		const budget = { until: Date.now() + 40_000 };
+		const seen: number[] = [];
+		const graph: ReuseGraph = {
+			version: () => ({ status: 0, stdout: `graphify ${GRAPHIFY_VERSION}`, stderr: "" }),
+			build: () => ({ status: 0, stdout: "", stderr: "" }),
+			query: (_repo, _term, timeoutMs = 0) => {
+				seen.push(timeoutMs);
+				if (seen.length === 1) budget.until = Date.now() + 10_000;
+				return { status: 0, stdout: "NODE x() [src=src/a.ts loc=L1]", stderr: "" };
+			},
+		};
+		searchTerms(graph, repo, ["budgetA", "budgetB"], new Map(), budget);
+		expect(seen[0]).toBe(30_000);
+		expect(seen[1]).toBeGreaterThan(0);
+		expect(seen[1]).toBeLessThanOrEqual(10_000);
+	});
+
+	test("a query that spends the budget makes it and every later term slow, none memoised", () => {
+		const repo = sandboxRepo();
+		const budget = { until: Date.now() + 1_000 };
+		let queries = 0;
+		const graph: ReuseGraph = {
+			version: () => ({ status: 0, stdout: "", stderr: "" }),
+			build: () => ({ status: 0, stdout: "", stderr: "" }),
+			query: () => {
+				queries++;
+				budget.until = Date.now();
+				return { status: null, stdout: "", stderr: "" };
+			},
+		};
+		const memo = new Map<string, TermResult>();
+		const res = searchTerms(graph, repo, ["slowA", "slowB", "slowC"], memo, budget);
+		expect(res.map((r) => r.status)).toEqual(["slow", "slow", "slow"]);
+		expect(queries).toBe(1);
+		expect(memo.size).toBe(0);
+	});
+
+	test("freshGraph with build: false on a stale map refuses the stale fix and never builds", () => {
+		const repo = sandboxRepo();
+		const fake = fakeGraphify();
+		const problems = freshGraph(repo, [], fake.graph, { build: false });
+		expect(problems.length).toBe(1);
+		expect(problems[0]).toContain("is stale");
+		expect(fake.builds()).toBe(0);
+	});
+
+	test("freshGraph with build: false while the graph lock is held refuses at once with the rebuilding fix", () => {
+		const repo = sandboxRepo();
+		mkdirSync(join(repo, "graphify-out"), { recursive: true });
+		const held = lock(join(repo, "graphify-out/.neurastream.lock"));
+		try {
+			const fake = fakeGraphify();
+			expect(freshGraph(repo, [], fake.graph, { build: false })).toEqual([`the map of ${repo} is rebuilding — retry`]);
+			expect(fake.builds()).toBe(0);
+		} finally {
+			held.release();
+		}
 	});
 });

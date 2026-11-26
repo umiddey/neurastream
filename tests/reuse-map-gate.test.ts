@@ -4,7 +4,7 @@
 // git repo because freshGraph stamps from HEAD/diff.
 
 import { afterAll, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -13,7 +13,8 @@ import { loadConfig, type Config } from "../src/core/config.ts";
 import { checkPlanEdit, spawnProblem } from "../src/core/guards.ts";
 import { recordMainReads } from "../src/core/guards/state.ts";
 import { parsePlan } from "../src/core/queue/lib.ts";
-import { GRAPHIFY_VERSION, type GraphifyResult, type ReuseGraph } from "../src/core/reuse-map.ts";
+import { reuseMapWriteProblems } from "../src/core/guards/plan-edit.ts";
+import { GRAPHIFY_VERSION, SLOW_RETRY, type GraphifyResult, type ReuseGraph } from "../src/core/reuse-map.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "reuse-gate-"));
 const REPO = join(TMP, "repo");
@@ -235,4 +236,75 @@ test("parsePlan text gate: a none line under 3 terms is a problem without any gr
 	const file = join(REPO, "docs/plans/20261126_0902_none.md");
 	const p = parsePlan(REPO, file, body('## Reuse\n- new: none to reuse — searched: "only-one"\n\n'), join(TMP, "blockers"), ["reviewer"]);
 	expect(p.errors.join("\n")).toContain("search at least 3 distinct terms");
+});
+
+// --- P2b: cite confinement, dash terms, one shared budget per check ---
+
+const NONE_LINE = `- new: none to reuse — searched: "nothing1", "nothing2", "nothing3"`;
+const citeLine = (file: string, quote: string): string => `- new: the gate — checked: ${file}:1 "${quote}" — reuse: existing`;
+const planWith = (reuse: string, worktree = "-"): string => body(reuse).replace("Worktree: -", `Worktree: ${worktree}`);
+const PLAN2 = join(REPO, "docs/plans/20261126_1000_p2b_judge.md");
+// bindPlanner() above leaves the planner file at "delegated" for the rest of this file; these are
+// Main's checks, so each one sets the mode back to main first.
+const judge = (text: string, graph: ReuseGraph = fakeGraphify().graph) => {
+	writeFileSync(plannerFile(cfg.paths), "main\n");
+	return checkPlanEdit({ path: PLAN2, before: "", after: text, agent: "main", agentId: "main" }, cfg, graph);
+};
+const OUTSIDE = join(TMP, "outside.txt");
+writeFileSync(OUTSIDE, "TOPSECRET=42\n");
+
+test("P2b: a cite outside the repo is refused unread: absolute, ../ and an in-repo symlink", () => {
+	symlinkSync(OUTSIDE, join(REPO, "src/link.txt"));
+	try {
+		for (const file of [OUTSIDE, "../outside.txt", "src/link.txt"]) {
+			const d = judge(planWith(`## Reuse\n${NONE_LINE}\n${citeLine(file, "TOPSECRET=42")}\n\n`));
+			expect(d.allow).toBe(false);
+			expect(d.reason).toContain("is outside");
+			expect(d.reason).not.toContain("TOPSECRET");
+		}
+	} finally {
+		rmSync(join(REPO, "src/link.txt"));
+	}
+});
+
+test("P2b: Worktree: / cannot widen the roots: a file outside the plan's repo is refused", () => {
+	const d = judge(planWith(`## Reuse\n${NONE_LINE}\n${citeLine(OUTSIDE, "TOPSECRET=42")}\n\n`, "/"));
+	expect(d.allow).toBe(false);
+	expect(d.reason).toContain("is outside");
+	expect(d.reason).not.toContain("TOPSECRET");
+});
+
+test("P2b: an untracked, gitignored .env with a matching quote is refused unread, staged or not", () => {
+	writeFileSync(join(REPO, ".gitignore"), ".env\n");
+	writeFileSync(join(REPO, ".env"), "SECRET=1\n");
+	try {
+		const text = planWith(`## Reuse\n${NONE_LINE}\n${citeLine(".env", "SECRET=1")}\n\n`);
+		const unstaged = judge(text);
+		expect(unstaged.allow).toBe(false);
+		expect(unstaged.reason).toContain("not committed");
+		spawnSync("git", ["-C", REPO, "add", "-f", ".env"], { encoding: "utf8" });
+		const staged = judge(text);
+		expect(staged.allow).toBe(false);
+		expect(staged.reason).toContain("not committed");
+		expect(staged.reason).not.toContain("SECRET=1");
+	} finally {
+		spawnSync("git", ["-C", REPO, "rm", "--cached", "-q", "-f", ".env"], { encoding: "utf8" });
+		rmSync(join(REPO, ".env"));
+		rmSync(join(REPO, ".gitignore"));
+	}
+});
+
+test("P2b: a dashed term in a none line is refused naming the term, the seam never called", () => {
+	const fake = fakeGraphify();
+	const d = judge(planWith(`## Reuse\n- new: none to reuse — searched: "-h", "nothing1", "nothing2"\n\n`), fake.graph);
+	expect(d.allow).toBe(false);
+	expect(d.reason).toContain('"-h"');
+	expect(fake.queries()).toBe(0);
+});
+
+test("P2b: a plan check whose query budget is spent refuses reuse map slow — retry, never passes", () => {
+	const fake = fakeGraphify();
+	const text = planWith(`## Reuse\n- new: none to reuse — searched: "slowA", "slowB", "slowC"\n\n`);
+	expect(reuseMapWriteProblems(text, PLAN, cfg, fake.graph, { until: 0 })).toEqual([SLOW_RETRY]);
+	expect(fake.queries()).toBe(0);
 });

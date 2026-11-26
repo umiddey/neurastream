@@ -6,7 +6,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { loadConfig } from "../core/config.ts";
-import { MAX_TERMS, NONE_TERMS_MIN, freshGraph, mapLine, noneLine, realGraphify, reuseOff, reuseOn, reuseStatus, searchTerms, versionProblem, type ReuseDeps, type ReuseOutcome } from "../core/reuse-map.ts";
+import { MAX_TERMS, NONE_TERMS_MIN, SLOW_RETRY, freshGraph, mapLine, noneLine, optionTermProblems, realGraphify, reuseOff, reuseOn, reuseStatus, searchTerms, versionProblem, type ReuseDeps, type ReuseOutcome } from "../core/reuse-map.ts";
 import { planRoots } from "../core/guards/plan-edit.ts";
 import { expandHome } from "../core/queue/lib.ts";
 import { askLine } from "./init.ts";
@@ -41,6 +41,8 @@ function runMap(plan: string, terms: string[], deps: ReuseDeps): ReuseOutcome {
 	const err: string[] = [];
 	if (!plan || !terms.length) return { code: 2, out, err: ['usage: neurastream reuse map <plan.md> "<term>"...'] };
 	if (terms.length > MAX_TERMS) return { code: 1, out, err: [`reuse map: ${terms.length} terms (at most ${MAX_TERMS} — each term is one graphify query)`] };
+	const options = optionTermProblems(terms);
+	if (options.length) return { code: 1, out, err: options };
 	const planPath = path.resolve(plan);
 	const repo = planRoots(planPath, existsSync(planPath) ? readFileSync(planPath, "utf8") : "").at(-1)!;
 	const cfg = loadConfig({ home: deps.home, env: deps.env }).reuse_map;
@@ -52,6 +54,7 @@ function runMap(plan: string, terms: string[], deps: ReuseDeps): ReuseOutcome {
 	const fresh = freshGraph(repo, cfg.exclude);
 	if (fresh.length) return { code: 1, out, err: fresh.map((p) => `reuse map: ${p}`) };
 	const res = searchTerms(realGraphify, repo, terms);
+	if (res.some((r) => r.status === "slow")) return { code: 1, out, err: [SLOW_RETRY] };
 	const bad = res.filter((r) => r.problem);
 	if (bad.length) return { code: 1, out, err: bad.map((r) => `reuse map: ${r.problem}`) };
 	const files = [...new Set(res.flatMap((r) => r.files))];

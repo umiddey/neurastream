@@ -1,6 +1,6 @@
 // Plan edit verification: subagent Progress-only / planner-body / Findings / review rules, and Main read-evidence checks.
 
-import { readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import type { PlanEditEvent } from "../adapter.ts";
 import { currentPlanner } from "../autonomy.ts";
@@ -12,18 +12,25 @@ import { claimStoreFor } from "../team-client.ts";
 import {
 	MAX_TERMS,
 	NONE_TERMS_MIN,
+	SLOW_RETRY,
+	citeRoots,
 	citedQuotes,
 	freshGraph,
 	hasBareChecked,
 	isMapOrNoneLine,
 	mapLine,
 	normRel,
+	optionTermProblems,
 	parseMapLine,
 	parseNoneLine,
+	planTerms,
+	queryBudget,
+	readConfined,
 	realGraphify,
 	searchTerms,
 	versionProblem,
 	type CitedQuote,
+	type QueryBudget,
 	type ReuseGraph,
 } from "../reuse-map.ts";
 import { plannerBody, plannerSpawnPlan } from "./planner.ts";
@@ -112,7 +119,7 @@ export function checkPlanEdit(e: PlanEditEvent, cfg: Config, graph: ReuseGraph =
 				restore: { path: e.path, text: e.before || null },
 			};
 		}
-		// Reuse map (plan 20261122_1828_reuse_map P2c): the planner's plan body carries the map
+		// Reuse map (plan 20261122_1828_reuse_map P2): the planner's plan body carries the map
 		// line or none line too — the same write-time check Main's plan text faces.
 		const reuse = reuseMapWriteProblems(e.after, e.path, cfg, graph);
 		if (reuse.length) {
@@ -220,13 +227,15 @@ function checkMainPlan(e: PlanEditEvent, cfg: Config, graph: ReuseGraph): PlanEd
 	const fixed = fix ? fix.text : e.after;
 	// Refuse only what this edit adds: a problem the plan already had is not Main's doing now.
 	// The missing-section problem is always refused: a plan with no read list has no evidence behind its text.
-	// Reuse map (plan 20261122_1828_reuse_map P2c): its problems join the same refusal, likewise
-	// only the ones this edit adds (search results are memoised, so the before/after pair is cheap).
+	// Reuse map (plan 20261122_1828_reuse_map P2b): its problems join the same refusal, likewise
+	// only the ones this edit adds. Both passes share one query budget (and memoised search results), so a slow
+	// check is never filtered as known: SLOW_RETRY always refuses.
+	const budget = queryBudget();
 	const known = new Set(e.before ? planReadProblems(e.before, e.path, cfg) : []);
-	const knownReuse = new Set(e.before ? reuseMapWriteProblems(e.before, e.path, cfg, graph) : []);
+	const knownReuse = new Set(e.before ? reuseMapWriteProblems(e.before, e.path, cfg, graph, budget) : []);
 	const problems = [
 		...planReadProblems(fixed, e.path, cfg).filter((p) => p === NO_SECTION || !known.has(p)),
-		...reuseMapWriteProblems(fixed, e.path, cfg, graph).filter((p) => !knownReuse.has(p)),
+		...reuseMapWriteProblems(fixed, e.path, cfg, graph, budget).filter((p) => p === SLOW_RETRY || !knownReuse.has(p)),
 	];
 	if (!problems.length) {
 		if (!fix) return ALLOW;
@@ -255,17 +264,26 @@ function checkMainPlan(e: PlanEditEvent, cfg: Config, graph: ReuseGraph): PlanEd
  * (planReadNote runs that on every plan read, so a graphify call there would sit on the hot path).
  * Every failure refuses with a one-line fix; a disabled feature never reaches the seam.
  */
-export function reuseMapWriteProblems(text: string, planPath: string, cfg: Config, graph: ReuseGraph = realGraphify): string[] {
+export function reuseMapWriteProblems(
+	text: string,
+	planPath: string,
+	cfg: Config,
+	graph: ReuseGraph = realGraphify,
+	budget: QueryBudget = queryBudget(),
+): string[] {
 	if (!cfg.reuse_map.enabled) return [];
 	const roots = planRoots(planPath, text);
 	const repo = roots[roots.length - 1]!;
 	if (!cfg.reuse_map.repos.map((r) => path.resolve(q.expandHome(r))).includes(path.resolve(repo)))
 		return [`reuse map: ${repo} is not mapped — run \`neurastream reuse on ${repo}\` first`];
+	const lines = (q.sections(text).get("reuse") ?? "").split("\n").map((l) => l.trim()).filter(Boolean);
+	// A dashed term is refused before the seam runs: graphify would read it as an option.
+	const options = optionTermProblems(planTerms(lines));
+	if (options.length) return options;
 	const vp = versionProblem(graph);
 	if (vp) return [`reuse map: ${vp}`];
 	const fresh = freshGraph(repo, cfg.reuse_map.exclude, graph);
 	if (fresh.length) return fresh.map((p) => `reuse map: ${p}`);
-	const lines = (q.sections(text).get("reuse") ?? "").split("\n").map((l) => l.trim()).filter(Boolean);
 	const map = lines.map(parseMapLine).find((m) => m !== null) ?? null;
 	const none = lines.map(parseNoneLine).find((n) => n !== null) ?? null;
 	if (!map && !none)
@@ -275,11 +293,12 @@ export function reuseMapWriteProblems(text: string, planPath: string, cfg: Confi
 		if (none.terms.length < NONE_TERMS_MIN)
 			return [`reuse map: the none line searches ${none.terms.length} terms (search at least ${NONE_TERMS_MIN} distinct terms)`];
 		if (none.terms.length > MAX_TERMS) return [`reuse map: ${none.terms.length} terms on the none line (at most ${MAX_TERMS})`];
-		const res = searchTerms(graph, repo, none.terms);
+		const res = searchTerms(graph, repo, none.terms, undefined, budget);
+		if (res.some((r) => r.status === "slow")) return [SLOW_RETRY];
 		const bad = res.filter((r) => r.problem);
 		if (bad.length) return bad.map((r) => `reuse map: ${r.problem}`);
 		const hits = none.terms.map((t, i) => ({ term: t, r: res[i]! })).filter((x) => x.r.status === "hit");
-		const quote = quoteProblems(lines, planPath, text);
+		const quote = quoteProblems(lines, planPath, text, cfg);
 		if (hits.length) {
 			const found = hits.map((x) => `"${x.term}" finds ${x.r.files.join(", ")}`).join("; ");
 			return [...(quote ? [quote] : []), `reuse map: not none to reuse — ${found}; cite it under ## Reuse instead`];
@@ -290,14 +309,15 @@ export function reuseMapWriteProblems(text: string, planPath: string, cfg: Confi
 	// (Unreachable when map is null — both-null and none-only already returned — but it narrows.)
 	if (!map) return [];
 	if (map.terms.length > MAX_TERMS) return [`reuse map: ${map.terms.length} terms on the map line (at most ${MAX_TERMS})`];
-	const res = searchTerms(graph, repo, map.terms);
+	const res = searchTerms(graph, repo, map.terms, undefined, budget);
+	if (res.some((r) => r.status === "slow")) return [SLOW_RETRY];
 	const bad = res.filter((r) => r.problem);
 	if (bad.length) return bad.map((r) => `reuse map: ${r.problem}`);
 	const files = [...new Set(res.flatMap((r) => r.files))];
 	const wantCite = Math.min(cfg.reuse_map.min_cited, files.length);
 	if (map.cite !== wantCite || [...map.files].map(normRel).toSorted().join("\n") !== [...files].map(normRel).toSorted().join("\n"))
 		return [`reuse map: the map moved — replace the ## Reuse map line with: ${mapLine(map.terms, files, cfg.reuse_map.min_cited)}`];
-	const quote = quoteProblems(lines, planPath, text);
+	const quote = quoteProblems(lines, planPath, text, cfg);
 	if (quote) return [quote];
 	const cited = new Set<string>();
 	const matched = new Set(files.map(normRel));
@@ -310,27 +330,29 @@ export function reuseMapWriteProblems(text: string, planPath: string, cfg: Confi
 	return [];
 }
 
-/** Every `new:` citation carries a quote equal to the cited file's line, resolved by planFile. */
-function quoteProblems(lines: string[], planPath: string, text: string): string | null {
+/** Every `new:` citation carries a quote equal to the cited file's line; the file is read only through readConfined. */
+function quoteProblems(lines: string[], planPath: string, text: string, cfg: Config): string | null {
+	const scope = {
+		roots: citeRoots(path.dirname(planPath), cfg.reuse_map.repos.map((r) => q.expandHome(r))),
+		repo: planRoots(planPath, text).at(-1) ?? "",
+	};
 	for (const line of lines) {
 		if (isMapOrNoneLine(line) || !line.includes("new:")) continue;
 		if (hasBareChecked(line))
 			return `reuse map: citation without a quoted line ("checked: <path>:<n> \\"the file's text at that line\\""): ${line.slice(0, 80)}`;
 		for (const c of citedQuotes(line)) {
-			const problem = quoteMismatch(c, planPath, text);
+			const problem = quoteMismatch(c, planPath, text, scope);
 			if (problem) return problem;
 		}
 	}
 	return null;
 }
 
-function quoteMismatch(c: CitedQuote, planPath: string, text: string): string | null {
-	let body: string;
-	try {
-		body = readFileSync(planFile(c.file, planPath, text), "utf8");
-	} catch {
-		return `reuse map: cited file ${c.file} does not exist — rerun \`neurastream reuse map\` and re-cite`;
-	}
+function quoteMismatch(c: CitedQuote, planPath: string, text: string, scope: { roots: string[]; repo: string }): string | null {
+	const abs = planFile(c.file, planPath, text);
+	if (!existsSync(abs)) return `reuse map: cited file ${c.file} does not exist — rerun \`neurastream reuse map\` and re-cite`;
+	const body = readConfined(abs, scope.roots);
+	if (body === null) return `reuse map: cited file ${c.file} is outside ${scope.repo} or not committed — cite a committed path inside the plan's repo`;
 	const actual = (body.split("\n")[c.n - 1] ?? "").trim();
 	if (!actual) return `reuse map: ${c.file} has no line ${c.n} — rerun \`neurastream reuse map\` and re-cite`;
 	if (actual !== c.quote) return `reuse map: ${c.file}:${c.n} is not "${c.quote.slice(0, 60)}" — quote that line exactly as the file has it`;

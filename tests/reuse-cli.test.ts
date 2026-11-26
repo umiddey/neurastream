@@ -445,6 +445,14 @@ describe("reuse map", () => {
 		expect(many.code).toBe(1);
 		expect(many.stderr).toContain("at most 8");
 	}, 60_000);
+
+	test("a dashed term is refused naming the term before any graphify query", () => {
+		const h = sandbox("map-dash");
+		const { bin, plan } = mapped(h);
+		const r = run(h, bin, ["map", plan, "-x", "zzz1", "zzz2"]);
+		expect(r.code).toBe(1);
+		expect(r.stderr).toContain('"-x"');
+	}, 60_000);
 });
 
 describe("reuse usage and doctor lines", () => {

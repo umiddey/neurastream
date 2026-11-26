@@ -13,7 +13,7 @@ import { helpText } from "../src/cli/dispatch.ts";
 import type { ToolEvent } from "../src/core/adapter.ts";
 import { CANCEL_TODO, MAIN_PLAN_FILE, planGate, reviewHash } from "../src/core/guards.ts";
 import { autoClose } from "../src/adapters/omp/index.ts";
-import { lastCloseResult, touchedPaths } from "../src/core/queue/lib.ts";
+import { lastCloseResult, protectedHit, touchedPaths } from "../src/core/queue/lib.ts";
 import { loadConfig } from "../src/core/config.ts";
 import { recordPagePlan } from "../src/core/plan-approval.ts";
 
@@ -811,3 +811,14 @@ test("P6 removal check: Main's commit is not gated", () => {
 	expect(main.d.allow).toBe(true);
 });
 
+
+describe("P2b: the reuse map's own directories are protected", () => {
+	const paths = loadConfig({ home: HOME, env: {} }).paths;
+	test("graphify-out and the worktree registry are refused, and files under them", () => {
+		for (const p of ["/r/repo/graphify-out", "/r/repo/graphify-out/graph.json", "/r/repo/.git/worktrees", "/r/repo/.git/worktrees/x/HEAD"])
+			expect(protectedHit([p], paths)).toBe(p);
+	});
+	test("a sibling name is not protected", () => {
+		expect(protectedHit(["/r/repo/graphify-outx/a"], paths)).toBeNull();
+	});
+});

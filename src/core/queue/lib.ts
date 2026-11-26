@@ -986,9 +986,16 @@ export function chatUnlock(text: string, cfg: Config, source: string, word: "cha
 	return { applied: true, command: "unlock", minutes: n, until: Math.floor(past + minutes * 60) };
 }
 
+// P2b (plan 20261122_1828_reuse_map): the reuse map's own directory and the worktree registry are
+// protected in any repo, the directory itself included (`rm -rf graphify-out`, `ln -s … graphify-out`).
+const PROTECTED_SEGMENTS = [/(^|\/)graphify-out(\/|$)/, /(^|\/)\.git\/worktrees(\/|$)/];
+
 export function protectedHit(targetPaths: string[], paths: QueuePaths): string | null {
 	const guarded = protectedPaths(paths);
-	for (const p of targetPaths) for (const g of guarded) if (g.endsWith("/") ? p.startsWith(g) || `${p}/` === g : p === g) return p;
+	for (const p of targetPaths) {
+		if (PROTECTED_SEGMENTS.some((re) => re.test(p))) return p;
+		for (const g of guarded) if (g.endsWith("/") ? p.startsWith(g) || `${p}/` === g : p === g) return p;
+	}
 	return null;
 }
 

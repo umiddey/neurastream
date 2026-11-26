@@ -4,11 +4,11 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, constants as fsConstants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync, type Stats } from "node:fs";
 import path from "node:path";
 import { configFile, loadConfig, type Config } from "./config.ts";
 import { checkEdited, setConfigKeys, yamlValue } from "./config-edit.ts";
-import { writeAtomicSync, withFileLock } from "./file-lock.ts";
+import { isBusy, writeAtomicSync, withFileLock } from "./file-lock.ts";
 import { repoDirs } from "./setup-detect.ts";
 
 /** The only pinned mapping tool (PyPI `graphifyy`; other `graphify*` names are typosquats). */
@@ -29,6 +29,12 @@ export function normRel(p: string): string {
 const QUERY_TIMEOUT_MS = 30_000;
 const BUILD_TIMEOUT_MS = 600_000;
 
+/** The time one plan check may spend on graphify queries in all: its before and after passes share it. */
+export const QUERY_BUDGET_MS = 120_000;
+
+/** The refusal when the budget ran out: retry the edit; a slow check never passes. */
+export const SLOW_RETRY = "reuse map slow — retry";
+
 const GRAPH_DIR = "graphify-out";
 const STAMP_FILE = path.join(GRAPH_DIR, ".neurastream-stamp");
 const LOCK_FILE = path.join(GRAPH_DIR, ".neurastream.lock");
@@ -47,7 +53,7 @@ export interface GraphifyResult {
 export interface ReuseGraph {
 	version(): GraphifyResult;
 	build(repo: string, exclude: string[]): GraphifyResult;
-	query(repo: string, term: string): GraphifyResult;
+	query(repo: string, term: string, timeoutMs?: number): GraphifyResult;
 }
 
 function runGraphify(repo: string, args: string[], timeoutMs: number): GraphifyResult {
@@ -59,7 +65,7 @@ export const realGraphify: ReuseGraph = {
 	version: () => runGraphify("", ["--version"], QUERY_TIMEOUT_MS),
 	build: (repo, exclude) =>
 		runGraphify(repo, ["extract", ".", "--code-only", ...exclude.flatMap((g) => ["--exclude", g])], BUILD_TIMEOUT_MS),
-	query: (repo, term) => runGraphify(repo, ["query", term, "--budget", "2000"], QUERY_TIMEOUT_MS),
+	query: (repo, term, timeoutMs = QUERY_TIMEOUT_MS) => runGraphify(repo, ["query", term, "--budget", "2000"], timeoutMs),
 };
 
 /** Null when graphify is the pinned version on PATH; else the one-line install fix. */
@@ -150,7 +156,8 @@ export function hasBareChecked(line: string): boolean {
 // --- searchTerms: one `graphify query <term>` per term, memoised by (repo, graph mtime, term) ---
 
 export interface TermResult {
-	status: "hit" | "none";
+	/** `slow`: the plan check's budget ran out before this term got a verdict; retry, never a pass. */
+	status: "hit" | "none" | "slow";
 	/** Repo-relative files the term matched; on an ambiguous hit, the candidates named. */
 	files: string[];
 	/** Set when graphify failed or named no files: the one-line problem, never a silent pass. */
@@ -187,12 +194,30 @@ function firstLine(text: string): string {
 	return (text.trim().split("\n")[0] ?? "").slice(0, 120);
 }
 
-export function searchTerms(graph: ReuseGraph, repo: string, terms: string[], memo: Map<string, TermResult> = queryMemo): TermResult[] {
+/** Returned for a term the budget never reached; never memoised, so a retry queries it again. */
+const SLOW: TermResult = { status: "slow", files: [] };
+
+/**
+ * One query per uncached term, each capped at the budget's time left. Once the budget is spent the
+ * rest come back `slow`: the plan check refuses and is retried, rather than running past its budget.
+ */
+export function searchTerms(
+	graph: ReuseGraph,
+	repo: string,
+	terms: string[],
+	memo: Map<string, TermResult> = queryMemo,
+	budget: QueryBudget = queryBudget(),
+): TermResult[] {
 	return terms.map((term) => {
 		const key = `${repo}|${graphMtime(repo)}|${term}`;
 		const hit = memo.get(key);
 		if (hit) return hit;
-		const result = termResult(term, graph.query(repo, term));
+		const left = budget.until - Date.now();
+		if (left <= 0) return SLOW;
+		const r = graph.query(repo, term, Math.min(QUERY_TIMEOUT_MS, left));
+		// A timeout that ran into the budget is the budget's doing, not graphify's: slow, not memoised.
+		if (r.status === null && Date.now() >= budget.until) return SLOW;
+		const result = termResult(term, r);
 		memo.set(key, result);
 		return result;
 	});
@@ -251,14 +276,30 @@ function parseableGraph(graphFile: string): boolean {
  * The repo's code map, current before this returns: `extract . --code-only` runs when graph.json
  * is missing or unparseable or the freshness stamp differs (a commit, dirty code, or a foreign
  * rewrite of graph.json — its mtime is in the stamp). Under the graphify-out lock; any failure is
- * a one-line problem, never a silent pass.
+ * a one-line problem, never a silent pass. `build: false` (the spawn check) never builds: a held
+ * lock means a rebuild is running now, else the map is stale until the owner's `reuse map` runs.
  */
-export function freshGraph(repo: string, exclude: string[], graph: ReuseGraph = realGraphify): string[] {
+export function freshGraph(
+	repo: string,
+	exclude: string[],
+	graph: ReuseGraph = realGraphify,
+	{ build = true }: { build?: boolean } = {},
+): string[] {
 	const graphFile = path.join(repo, GRAPH_DIR, "graph.json");
+	const lockFile = path.join(repo, LOCK_FILE);
 	if (reuseStamp(repo) === null) return [`graphify: ${repo} is not a git repository — run \`neurastream reuse on\` from a git repo`];
 	if (readStamp(repo) === reuseStamp(repo) && parseableGraph(graphFile)) return [];
+	if (!build) {
+		// `existsSync` first: isBusy would create the graphify-out directory, and the spawn check writes nothing.
+		const rebuilding = existsSync(path.join(repo, GRAPH_DIR)) && isBusy(lockFile);
+		return [
+			rebuilding
+				? `the map of ${repo} is rebuilding — retry`
+				: `the map of ${repo} is stale — run \`neurastream reuse map <plan> "<term>"...\` (rebuilds it) and paste its line`,
+		];
+	}
 	mkdirSync(path.join(repo, GRAPH_DIR), { recursive: true });
-	return withFileLock(path.join(repo, LOCK_FILE), () => {
+	return withFileLock(lockFile, () => {
 		// Another holder may have built while this call waited for the lock: re-check before building.
 		if (readStamp(repo) === reuseStamp(repo) && parseableGraph(graphFile)) return [];
 		const r = graph.build(repo, exclude);
@@ -272,6 +313,89 @@ export function freshGraph(repo: string, exclude: string[], graph: ReuseGraph = 
 		writeAtomicSync(path.join(repo, STAMP_FILE), `${reuseStamp(repo) ?? ""}\n`);
 		return [];
 	});
+}
+
+/** The budget one plan check spends across its queries; a before and an after pass pass the same one. */
+export interface QueryBudget {
+	until: number;
+}
+
+export function queryBudget(): QueryBudget {
+	return { until: Date.now() + QUERY_BUDGET_MS };
+}
+
+/** graphify has no end-of-options marker, so a term starting with "-" would be read as an option: refused before any query. */
+export function optionTermProblems(terms: string[]): string[] {
+	return terms
+		.filter((t) => t.startsWith("-"))
+		.map((t) => `reuse map: term "${t}" starts with "-" — graphify reads it as an option; search a word that does not start with "-"`);
+}
+
+/** Every term a plan's map or none lines name, in order. */
+export function planTerms(lines: string[]): string[] {
+	return lines.flatMap((l) => parseMapLine(l)?.terms ?? parseNoneLine(l)?.terms ?? []);
+}
+
+/**
+ * The roots a `new:` citation may read under: the plan's repo, its registered worktrees, and every
+ * mapped repo, all realpath'd. The plan's own `Worktree:` line is never a root: the plan text is not trusted.
+ */
+export function citeRoots(planDir: string, mapped: string[]): string[] {
+	const top = gitOut(planDir, ["rev-parse", "--show-toplevel"])?.trim() ?? "";
+	const trees = [...(top ? (gitOut(top, ["worktree", "list", "--porcelain"]) ?? "") : "").matchAll(/^worktree (.+)$/gm)].map((m) => m[1] ?? "");
+	const found = [top, ...trees, ...mapped].filter(Boolean).flatMap((p) => {
+		try {
+			return [realpathSync(p)];
+		} catch {
+			return [];
+		}
+	});
+	return [...new Set(found)];
+}
+
+/** Inside `root` by path arithmetic: not the root itself, not above it, not on another drive. */
+function inside(root: string, p: string): boolean {
+	const rel = path.relative(root, p);
+	return rel !== "" && rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
+}
+
+/**
+ * A cited file's text, or null with nothing read. It must resolve (through symlinks) inside a root,
+ * be committed in that root's HEAD, and still be a regular file inside the root once opened
+ * (O_NOFOLLOW, an fstat check, then the open descriptor re-resolved). `beforeOpen` is the test seam
+ * for a swap between the resolve and the open.
+ */
+export function readConfined(abs: string, roots: string[], beforeOpen: () => void = () => {}): string | null {
+	let real: string;
+	try {
+		real = realpathSync(abs);
+	} catch {
+		return null;
+	}
+	const root = roots.find((r) => inside(r, real));
+	if (root === undefined) return null;
+	if (spawnSync("git", ["-C", root, "cat-file", "-e", `HEAD:${path.relative(root, real)}`]).status !== 0) return null;
+	beforeOpen();
+	let fd: number;
+	try {
+		fd = openSync(real, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+	} catch {
+		return null;
+	}
+	try {
+		const st = fstatSync(fd);
+		return st.isFile() && openedInside(fd, real, st, root) ? readFileSync(fd, "utf8") : null;
+	} finally {
+		closeSync(fd);
+	}
+}
+
+/** Whether the open descriptor still names a file inside `root`: /proc on Linux, else dev/ino against the re-resolved path. */
+function openedInside(fd: number, real: string, st: Stats, root: string): boolean {
+	if (process.platform === "linux") return inside(root, realpathSync(`/proc/self/fd/${fd}`));
+	const now = realpathSync(real);
+	const same = statSync(now);
+	return inside(root, now) && same.dev === st.dev && same.ino === st.ino;
 }
 
 // --- P3 (plan 20261122_1828_reuse_map): the routines behind `neurastream reuse` ---
