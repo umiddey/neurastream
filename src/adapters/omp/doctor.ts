@@ -13,6 +13,7 @@ import { stripBlock } from "../../core/agents-md.ts";
 import { loadConfig } from "../../core/config.ts";
 import { notifyFindings } from "../../core/notify.ts";
 import { loadKnownSecrets, proxyOnPath } from "../../core/secret-redact.ts";
+import { reuseMapDoctor } from "../../core/reuse-map.ts";
 import { allowedAgents, readIndex, reviewAgentsProblem } from "../../core/queue/lib.ts";
 import { systemRunner, type Runner } from "../../core/pages-setup.ts";
 import { packageJsonPath } from "./package-root.ts";
@@ -243,6 +244,11 @@ export function doctorReport(home: string, env: NodeJS.ProcessEnv = process.env,
 		if (!cfg.workspace.owner_login) problems.push("workspace.enabled but workspace.owner_login is empty");
 		else if (state === "running") ok.push(`workspace owner page: login ${cfg.workspace.owner_login}`);
 	}
+	// Reuse map (plan 20261122_1828_reuse_map P3): the map's health beside tailscale's; off is one
+	// ok line and never runs graphify, a version other than the pin is a problem.
+	const reuse = reuseMapDoctor(cfg);
+	ok.push(...reuse.ok);
+	problems.push(...reuse.problems);
 	// Teams (plan 20261027_1305 P6): each teams: entry must answer its view for this login. A team that
 	// is down, or refuses this login (not a member), is a problem; a reachable one shows the claims held here.
 	for (const [teamName, view] of teamViews(cfg)) {

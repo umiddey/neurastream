@@ -374,8 +374,8 @@ export function planFile(p: string, planPath: string, text: string): string {
 	return path.join(root, home);
 }
 
-/** The roots a plan-relative path resolves against: the plan's Worktree (when set), then its repo (the text before /docs/plans/, so a docs/plans/<subdir>/ plan still resolves repo-relative paths against <repo>). */
-function planRoots(planPath: string, text: string): string[] {
+/** The roots a plan-relative path resolves against: the plan's Worktree (when set), then its repo (the text before /docs/plans/, so a docs/plans/<subdir>/ plan still resolves repo-relative paths against <repo>). Exported for `neurastream reuse map`, which resolves the plan's repo exactly like the write gate. */
+export function planRoots(planPath: string, text: string): string[] {
 	const wt = /^Worktree:\s*(\S+)/m.exec(text)?.[1];
 	const cut = planPath.indexOf("/docs/plans/");
 	const repo = cut >= 0 ? planPath.slice(0, cut) : path.dirname(path.dirname(path.dirname(planPath)));

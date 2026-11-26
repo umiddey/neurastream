@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { doctorReport, pagesServiceStartMs } from "../src/adapters/omp/doctor.ts";
 import { installOmp } from "../src/adapters/omp/install.ts";
 import { configFile } from "../src/core/config.ts";
+import { setConfigKeys } from "../src/core/config-edit.ts";
 import { initHome } from "../src/cli/init.ts";
 
 const HOME = "/tmp/neurastream-home-doctor";
@@ -118,3 +119,35 @@ test("a pages server older than the installed package fails doctor", () => {
 		delete process.env.NEURASTREAM_PACKAGE_JSON;
 	}
 });
+
+// Reuse map (plan 20261122_1828_reuse_map P3): the map's health beside tailscale's — formatDoctor
+// prints problems, not ok lines, so: off is doctor-ok even with no graphify reachable (the seam
+// never ran), stale-but-readable is doctor-ok, and another version is a printed problem.
+test("reuse map health joins doctor: off ok, stale ok, wrong version a problem", () => {
+	install();
+	let ran = doctor(npmStub(`#!/bin/sh\necho ${INSTALLED}\n`));
+	expect(ran.status).toBe(0);
+	expect(ran.stdout).toContain("neurastream doctor: ok");
+
+	const repo = join(HOME, "mapped-repo");
+	mkdirSync(join(repo, "src"), { recursive: true });
+	writeFileSync(join(repo, "src/a.ts"), "export const a = 1;\n");
+	for (const args of [["init", "-q"], ["add", "src/a.ts"], ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"]])
+		spawnSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+	mkdirSync(join(repo, "graphify-out"), { recursive: true });
+	writeFileSync(join(repo, "graphify-out/graph.json"), '{"nodes": []}');
+	const stub = npmStub(`#!/bin/sh\necho ${INSTALLED}\n`);
+	const graphify = join(stub, "graphify");
+	writeFileSync(graphify, '#!/bin/sh\necho "graphify 0.9.100"\n');
+	chmodSync(graphify, 0o755);
+	writeFileSync(configFile(HOME), setConfigKeys(readFileSync(configFile(HOME), "utf8"), { "reuse_map.enabled": "true", "reuse_map.repos": `["${repo}"]` }));
+
+	ran = doctor(stub);
+	expect(ran.status).toBe(0);
+	expect(ran.stdout).toContain("neurastream doctor: ok");
+
+	writeFileSync(graphify, '#!/bin/sh\necho "graphify 0.9.99"\n');
+	ran = doctor(stub);
+	expect(ran.status).toBe(1);
+	expect(ran.stdout).toContain("graphify 0.9.100 is not on PATH (found: graphify 0.9.99)");
+}, 60_000);

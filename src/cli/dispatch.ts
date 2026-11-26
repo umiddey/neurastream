@@ -29,6 +29,7 @@ import { runNotes } from "./notes.ts";
 import { runPages } from "./pages.ts";
 import { watchOn, watchOff } from "./watch-setup.ts";
 import { runWip } from "./wip.ts";
+import { runReuse } from "./reuse.ts";
 import { runUninstall } from "../core/uninstall.ts";
 import { queueMigrate } from "../core/queue-migrate.ts";
 import { activePlans, allowedAgents, enforceReadOnlyIndex, gitTop, parseIndex, updateIndex } from "../core/queue/lib.ts";
@@ -103,6 +104,11 @@ export function helpText(): string {
 		"  neurastream wip add|remove|list [path]          add or remove a root in wip.roots, or list them",
 		"  neurastream wip on [--backup-url <url>]|off     hourly snapshot (+ nightly private backup) on or off",
 		"  neurastream wip restore [<worktree>] [--pick N] list the hidden saves, or put one back",
+		"  neurastream reuse on [<repo>...]|off [--purge]|status [--json]|map <plan.md> <term>...",
+		"                                opt-in Graphify code map: `on` installs graphifyy (uv or pipx) and",
+		"                                builds a code map per chosen repo (asks y/N per repo on a terminal);",
+		"                                from then on new plans in mapped repos must cite the map under ## Reuse;",
+		"                                `off --purge` also deletes graphify-out/ and uninstalls graphifyy",
 		"  neurastream guard <event> --json",
 		`                                (${GUARD_USAGE.slice(GUARD_USAGE.indexOf("(") + 1, -1)})`,
 		"  neurastream main [args]       run omp under the launcher (automatic session rollover)",
@@ -192,6 +198,7 @@ export async function run(cmd: string, args: string[]): Promise<number> {
 	if (cmd === "setup") return runSetup(args, realSetupDeps(async () => runNotify(["test"])));
 	if (cmd === "config" && ["set", "get", "list"].includes(args[0] ?? "")) return runConfigKeys(args);
 	if (cmd === "wip") return runWip(args);
+	if (cmd === "reuse") return runReuse(args);
 	if (cmd === "config") {
 		try {
 			const cfg = loadConfig();

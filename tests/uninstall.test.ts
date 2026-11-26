@@ -9,6 +9,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { installOmp } from "../src/adapters/omp/install.ts";
+import { setConfigKeys } from "../src/core/config-edit.ts";
+import { addExclude } from "../src/core/reuse-map.ts";
 import { initHome } from "../src/cli/init.ts";
 
 const REPO = dirname(dirname(import.meta.path));
@@ -146,4 +148,29 @@ test("an identical shipped skill is removed; a skill dir with an owner file is k
 	expect(r.code).toBe(0);
 	expect(r.stdout).toContain("kept:");
 	expect(readFileSync(join(editedDir, "notes.md"), "utf8")).toBe("mine\n");
+}, 60_000);
+
+test("uninstall --yes with the reuse map on runs the off routine first (plan 20261122_1828_reuse_map P3)", () => {
+	const h = home();
+	setup(h);
+	const mapped = join(h, "mapped-repo");
+	mkdirSync(join(mapped, ".git/info"), { recursive: true });
+	spawnSync("git", ["init", "-q"], { cwd: mapped, encoding: "utf8" });
+	const exclude = join(mapped, ".git/info/exclude");
+	mkdirSync(dirname(exclude), { recursive: true });
+	writeFileSync(exclude, "user-owns-this\n");
+	expect(addExclude(mapped)).toBe(true);
+	const cfg = join(h, ".config/neurastream/config.yml");
+	writeFileSync(cfg, setConfigKeys(readFileSync(cfg, "utf8"), { "reuse_map.enabled": "true", "reuse_map.repos": `["${mapped}"]` }));
+
+	const r = run(h, ["--yes"]);
+	expect(r.code).toBe(0);
+	expect(r.stdout).toContain(`unmapped ${mapped}`);
+	// Our marked block is gone; the owner's own line survives.
+	const left = readFileSync(exclude, "utf8");
+	expect(left).toContain("user-owns-this");
+	expect(left).not.toContain("# neurastream reuse map");
+	expect(left).not.toContain("graphify-out/");
+	expect(readFileSync(cfg, "utf8")).toContain("enabled: false");
+	expect(readFileSync(cfg, "utf8")).toContain("repos: []");
 }, 60_000);
