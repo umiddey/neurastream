@@ -240,6 +240,13 @@ tuning:                      # the tuner steps existing rules down and back up (
   guards: false              # guard ids are scored and stepped only when this is true
   keep_off: []               # rule ids probation never raises
 
+reuse_map:                   # the opt-in Graphify code map gating new plans (src/core/reuse-map.ts)
+  enabled: false             # off: no graphify/uv/pipx process, no graphify-out/ read, nothing changes
+  tool: graphify             # the mapping tool; only "graphify" (PyPI: graphifyy) is implemented
+  min_cited: 2               # distinct matched files a plan's `## Reuse` map line must have cited
+  repos: []                  # repos `neurastream reuse on` mapped; set only by `reuse on`/`reuse off`
+  exclude: []                # globs `graphify extract` skips in every mapped repo
+
 machine:
   load_over_cores: 4   # load above the core count that draws a warning (used when load_max is 0)
   load_max: 0   # load ceiling; 0 = core count + load_over_cores

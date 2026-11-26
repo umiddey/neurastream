@@ -1,0 +1,7 @@
+[graphify extract] incremental scan of /tmp/gfy-p1-panm/repo
+[graphify extract] --code-only: skipping 2 non-code file(s) (2 docs, 0 papers, 0 images) — no LLM extraction
+[graphify extract] 0 code, 0 docs, 0 papers, 0 images changed; 3 unchanged; 0 deleted
+[graphify extract] wrote /tmp/gfy-p1-panm/repo/graphify-out/graph.json: 7 nodes, 4 edges, 3 communities
+[graphify extract] wrote /tmp/gfy-p1-panm/repo/graphify-out/.graphify_analysis.json
+[graphify extract] incremental summary: 3 files cached/unchanged, 0 re-extracted, 0 deleted
+[graphify extract] next: run `graphify cluster-only /tmp/gfy-p1-panm/repo` to generate GRAPH_REPORT.md and name communities

@@ -1,0 +1,6 @@
+Ambiguous: 'unique_loader' matches 2 nodes in different files.
+  src/a.py
+    id: src_a_unique_loader
+  src/c.py
+    id: src_c_unique_loader
+Retry with path::symbol using one of the paths above (e.g. <path>::unique_loader()) or the full node id.

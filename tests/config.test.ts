@@ -295,3 +295,48 @@ describe("tuning config", () => {
 		expect(() => loadConfig({ file: withFile("tuning:\n  keep_off: [1]\n"), home, env: {} })).toThrow(/tuning\.keep_off/);
 	});
 });
+
+// Reuse map config (plan 20261122_1828_reuse_map P1b): default off, validation beside tuning's.
+describe("reuse_map config", () => {
+	test("defaults load when the block is absent: off, graphify, min_cited 2, empty lists", () => {
+		const cfg = loadConfig({ file: withFile("{}\n"), home, env: {} });
+		expect(cfg.reuse_map).toEqual({ enabled: false, tool: "graphify", min_cited: 2, repos: [], exclude: [] });
+	});
+
+	test("a full block round-trips", () => {
+		const yaml = 'reuse_map:\n  enabled: true\n  tool: graphify\n  min_cited: 3\n  repos: ["/repos/a"]\n  exclude: ["vendor/**"]\n';
+		expect(loadConfig({ file: withFile(yaml), home, env: {} }).reuse_map).toEqual({
+			enabled: true,
+			tool: "graphify",
+			min_cited: 3,
+			repos: ["/repos/a"],
+			exclude: ["vendor/**"],
+		});
+	});
+
+	test.each([
+		["tool typo-squat", 'reuse_map:\n  tool: graphify-pro\n', /reuse_map\.tool must be "graphify"/],
+		["min_cited 0", "reuse_map:\n  min_cited: 0\n", /reuse_map\.min_cited must be an integer >= 1/],
+		["min_cited as a string", 'reuse_map:\n  min_cited: "2"\n', /reuse_map\.min_cited/],
+		["repos with a number", "reuse_map:\n  repos: [1]\n", /reuse_map\.repos must be a list of repo paths/],
+		["exclude with an empty string", 'reuse_map:\n  exclude: [""]\n', /reuse_map\.exclude must be a list of non-empty glob strings/],
+	])("%s is rejected", (_name, yaml, re) => {
+		expect(() => loadConfig({ file: withFile(yaml), home, env: {} })).toThrow(re);
+	});
+
+	test("enabled with an empty repos list names the reuse on fix", () => {
+		expect(() => loadConfig({ file: withFile("reuse_map:\n  enabled: true\n"), home, env: {} })).toThrow(
+			/reuse_map\.enabled is true with an empty reuse_map\.repos — run `neurastream reuse on <repo>`/,
+		);
+	});
+
+	test("enabled with an empty review.agents list names the ## Reuse conflict", () => {
+		const yaml = "review:\n  agents: []\nreuse_map:\n  enabled: true\n  repos: [\"/repos/a\"]\n";
+		expect(() => loadConfig({ file: withFile(yaml), home, env: {} })).toThrow(/review\.agents is empty/);
+	});
+
+	test("enabled with a repo and a review agent loads", () => {
+		const yaml = 'review:\n  agents: [reviewer]\nreuse_map:\n  enabled: true\n  repos: ["/repos/a"]\n';
+		expect(loadConfig({ file: withFile(yaml), home, env: {} }).reuse_map.enabled).toBe(true);
+	});
+});

@@ -262,6 +262,19 @@ export interface Config {
 		/** Rule ids probation never raises. */
 		keep_off: string[];
 	};
+	/** Reuse map (plan 20261122_1828_reuse_map): the opt-in Graphify code map a new plan's `## Reuse` must cite. Off changes nothing. */
+	reuse_map: {
+		/** The whole feature runs only when this is true. */
+		enabled: boolean;
+		/** The mapping tool; only "graphify" is implemented. */
+		tool: string;
+		/** Distinct matched files a map line must have cited (plan owner: 2). */
+		min_cited: number;
+		/** Repos `reuse on` mapped (set only by `reuse on`/`reuse off`); a plan outside them is refused. */
+		repos: string[];
+		/** Globs `graphify extract` skips in every mapped repo. */
+		exclude: string[];
+	};
 	machine: {
 		load_over_cores: number;
 		load_max: number;
@@ -718,6 +731,22 @@ function check(cfg: Config): void {
 	if (typeof cfg.tuning.guards !== "boolean") throw new ConfigError("tuning.guards must be a boolean");
 	if (!Array.isArray(cfg.tuning.keep_off) || cfg.tuning.keep_off.some((id) => typeof id !== "string")) {
 		throw new ConfigError("tuning.keep_off must be a list of strings");
+	}
+	if (cfg.reuse_map.tool !== "graphify") throw new ConfigError('reuse_map.tool must be "graphify" (PyPI: graphifyy; the only implemented mapping tool)');
+	if (!Number.isInteger(cfg.reuse_map.min_cited) || cfg.reuse_map.min_cited < 1) {
+		throw new ConfigError("reuse_map.min_cited must be an integer >= 1 (distinct matched files a map line must have cited)");
+	}
+	if (!Array.isArray(cfg.reuse_map.repos) || cfg.reuse_map.repos.some((r) => typeof r !== "string" || !r.trim())) {
+		throw new ConfigError("reuse_map.repos must be a list of repo paths (set by `neurastream reuse on`, never by hand)");
+	}
+	if (!Array.isArray(cfg.reuse_map.exclude) || cfg.reuse_map.exclude.some((e) => typeof e !== "string" || !e.trim())) {
+		throw new ConfigError("reuse_map.exclude must be a list of non-empty glob strings");
+	}
+	if (cfg.reuse_map.enabled && !cfg.reuse_map.repos.length) {
+		throw new ConfigError("reuse_map.enabled is true with an empty reuse_map.repos — run `neurastream reuse on <repo>` first, or set reuse_map.enabled: false");
+	}
+	if (cfg.reuse_map.enabled && !cfg.review.agents.length) {
+		throw new ConfigError("reuse_map.enabled is true but review.agents is empty, which turns the ## Reuse gate off — name an agent in review.agents or set reuse_map.enabled: false");
 	}
 	for (const p of cfg.metrics.correction_patterns) {
 		try {
