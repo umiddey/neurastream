@@ -127,7 +127,7 @@ function bindPlanner(): void {
 	mkdirSync(dirname(cfg.paths.subagents), { recursive: true });
 	writeFileSync(cfg.paths.subagents, "## Allowed\n\n- `task`\n");
 	expect(
-		spawnProblem({ context: "# Goal\nRoute the planning.\n", tasks: [{ name: "GatePlanner", agent: "task", task: `Planner role for ${PLAN}\n\nDraft the plan.` }] }, cfg),
+		spawnProblem({ context: "# Goal\nRoute the planning.\n", tasks: [{ name: "GatePlanner", agent: "task", task: `Planner role for ${PLAN}\n\nDraft the plan.` }] }, cfgOff),
 	).toBeNull();
 }
 

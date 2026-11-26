@@ -272,23 +272,68 @@ export function reuseMapWriteProblems(
 	budget: QueryBudget = queryBudget(),
 ): string[] {
 	if (!cfg.reuse_map.enabled) return [];
+	const lines = (q.sections(text).get("reuse") ?? "").split("\n").map((l) => l.trim()).filter(Boolean);
+	const base = reuseMapBase(text, planPath, cfg, graph, lines, true);
+	if (base.problems.length) return base.problems;
+	return reuseMapLineProblems(lines, base.repo, cfg, graph, budget, "under ## Reuse", { planPath, text });
+}
+
+/**
+ * The spawn-time half (plan 20261122_1828_reuse_map P4b): a delegated planner's brief must carry
+ * its plan's map or none line, judged by the same re-run/compare as the write gate. It builds
+ * nothing (`build: false`): a stale or busy map is refused with the command that fixes it, so a
+ * spawn never waits on a 600 s graphify run. The brief carries no `new:` citations yet, so only
+ * the line itself is judged. Off: [].
+ */
+export function reuseMapBriefProblems(
+	brief: string,
+	planPath: string,
+	cfg: Config,
+	graph: ReuseGraph = realGraphify,
+	budget: QueryBudget = queryBudget(),
+): string[] {
+	if (!cfg.reuse_map.enabled) return [];
+	const lines = brief.split("\n").map((l) => l.trim()).filter(Boolean);
+	const base = reuseMapBase(brief, planPath, cfg, graph, lines, false);
+	if (base.problems.length) return base.problems;
+	return reuseMapLineProblems(lines, base.repo, cfg, graph, budget, "in the brief");
+}
+
+/** The prelude both halves share: the plan's repo must be mapped, its terms well formed, graphify at the pin, and the graph fresh (`build` false: stale is refused, never rebuilt). */
+function reuseMapBase(
+	text: string,
+	planPath: string,
+	cfg: Config,
+	graph: ReuseGraph,
+	lines: string[],
+	build: boolean,
+): { repo: string; problems: string[] } {
 	const roots = planRoots(planPath, text);
 	const repo = roots[roots.length - 1]!;
 	if (!cfg.reuse_map.repos.map((r) => path.resolve(q.expandHome(r))).includes(path.resolve(repo)))
-		return [`reuse map: ${repo} is not mapped — run \`neurastream reuse on ${repo}\` first`];
-	const lines = (q.sections(text).get("reuse") ?? "").split("\n").map((l) => l.trim()).filter(Boolean);
+		return { repo, problems: [`reuse map: ${repo} is not mapped — run \`neurastream reuse on ${repo}\` first`] };
 	// A dashed term is refused before the seam runs: graphify would read it as an option.
 	const options = optionTermProblems(planTerms(lines));
-	if (options.length) return options;
+	if (options.length) return { repo, problems: options };
 	const vp = versionProblem(graph);
-	if (vp) return [`reuse map: ${vp}`];
-	const fresh = freshGraph(repo, cfg.reuse_map.exclude, graph);
-	if (fresh.length) return fresh.map((p) => `reuse map: ${p}`);
+	if (vp) return { repo, problems: [`reuse map: ${vp}`] };
+	return { repo, problems: freshGraph(repo, cfg.reuse_map.exclude, graph, { build }).map((p) => `reuse map: ${p}`) };
+}
+
+/** The map/none line half both checks share: the line is re-run against the fresh graph (a none line must not hit; a map line's files and cite: N must match). With `body`, the plan's own `new:` citations are judged too (each quoted, N matched files cited); the brief check passes none and stops at the line. */
+function reuseMapLineProblems(
+	lines: string[],
+	repo: string,
+	cfg: Config,
+	graph: ReuseGraph,
+	budget: QueryBudget,
+	where: string,
+	body?: { planPath: string; text: string },
+): string[] {
 	const map = lines.map(parseMapLine).find((m) => m !== null) ?? null;
 	const none = lines.map(parseNoneLine).find((n) => n !== null) ?? null;
-	if (!map && !none)
-		return [`reuse map: no map line under ## Reuse — run \`neurastream reuse map <plan> "<term>"...\` and paste its - map: line`];
-	if (map && none) return ["reuse map: either a - map: line or a none-to-reuse line under ## Reuse, not both"];
+	if (!map && !none) return [`reuse map: no map line ${where} — run \`neurastream reuse map <plan> "<term>"...\` and paste its - map: line`];
+	if (map && none) return [`reuse map: either a - map: line or a none-to-reuse line ${where}, not both`];
 	if (none) {
 		if (none.terms.length < NONE_TERMS_MIN)
 			return [`reuse map: the none line searches ${none.terms.length} terms (search at least ${NONE_TERMS_MIN} distinct terms)`];
@@ -298,14 +343,14 @@ export function reuseMapWriteProblems(
 		const bad = res.filter((r) => r.problem);
 		if (bad.length) return bad.map((r) => `reuse map: ${r.problem}`);
 		const hits = none.terms.map((t, i) => ({ term: t, r: res[i]! })).filter((x) => x.r.status === "hit");
-		const quote = quoteProblems(lines, planPath, text, cfg);
+		const quote = body ? quoteProblems(lines, body.planPath, body.text, cfg) : null;
 		if (hits.length) {
 			const found = hits.map((x) => `"${x.term}" finds ${x.r.files.join(", ")}`).join("; ");
 			return [...(quote ? [quote] : []), `reuse map: not none to reuse — ${found}; cite it under ## Reuse instead`];
 		}
 		return quote ? [quote] : [];
 	}
-	// A map line: re-run its terms; the fresh files and cite: N must match what the plan wrote.
+	// A map line: re-run its terms; the fresh files and cite: N must match what the line wrote.
 	// (Unreachable when map is null — both-null and none-only already returned — but it narrows.)
 	if (!map) return [];
 	if (map.terms.length > MAX_TERMS) return [`reuse map: ${map.terms.length} terms on the map line (at most ${MAX_TERMS})`];
@@ -316,8 +361,9 @@ export function reuseMapWriteProblems(
 	const files = [...new Set(res.flatMap((r) => r.files))];
 	const wantCite = Math.min(cfg.reuse_map.min_cited, files.length);
 	if (map.cite !== wantCite || [...map.files].map(normRel).toSorted().join("\n") !== [...files].map(normRel).toSorted().join("\n"))
-		return [`reuse map: the map moved — replace the ## Reuse map line with: ${mapLine(map.terms, files, cfg.reuse_map.min_cited)}`];
-	const quote = quoteProblems(lines, planPath, text, cfg);
+		return [`reuse map: the map moved — replace the map line ${where} with: ${mapLine(map.terms, files, cfg.reuse_map.min_cited)}`];
+	if (!body) return [];
+	const quote = quoteProblems(lines, body.planPath, body.text, cfg);
 	if (quote) return [quote];
 	const cited = new Set<string>();
 	const matched = new Set(files.map(normRel));

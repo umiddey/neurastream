@@ -12,6 +12,7 @@ import { isPlannerModeKey, stampPlannerMode, verifyPlannerMode } from "../core/a
 import { TEMPLATE_PATH, configFile } from "../core/config.ts";
 import { checkEdited, leafKeys, setConfigKeys, valueAt, yamlValue } from "../core/config-edit.ts";
 import { pagesDoctor } from "../core/pages-doctor.ts";
+import { reuseOn, type ReuseOutcome } from "../core/reuse-map.ts";
 import { detect, realSeams, type SetupFacts, type SetupSeams } from "../core/setup-detect.ts";
 import { invalidSlugs } from "../core/subagents.ts";
 import { TAILSCALE_MISSING, TAILSCALE_STOPPED } from "../core/ui-setup.ts";
@@ -45,6 +46,9 @@ export interface SetupDeps {
 	say: (line: string) => void;
 	// `neurastream notify test`, injected by dispatch (setup.ts does not import dispatch.ts).
 	notifyTest: () => Promise<number>;
+	// The P3 on-routine (`reuse on` with no args: install, per-repo y/N, build, config last),
+	// injected so tests never install or build anything (plan 20261122_1828_reuse_map P4a).
+	reuseOn: () => ReuseOutcome;
 }
 
 /** The production deps: the real home, terminal, PATH, Tailscale, adapter install and doctor. */
@@ -64,6 +68,7 @@ export function realSetupDeps(notifyTest: () => Promise<number>): SetupDeps {
 		},
 		say: (line) => console.log(line),
 		notifyTest,
+		reuseOn: () => reuseOn([], { home, env: process.env, terminal: process.stdin.isTTY === true, ask: askLine }),
 	};
 }
 
@@ -149,11 +154,13 @@ export async function runSetup(args: string[], deps: SetupDeps): Promise<number>
 		if (runGroup(ctx, group.name, group.keys) !== 0) return 1;
 	}
 	if (ctx.auto === "none") {
-		const advanced = VALID_KEYS.filter((k) => !GROUPS.some((g) => g.keys.includes(k)));
+		// reuse_map.* is never asked here: `reuse on`/`reuse off` write it (plan 20261122_1828_reuse_map P4a).
+		const advanced = VALID_KEYS.filter((k) => !GROUPS.some((g) => g.keys.includes(k)) && !k.startsWith("reuse_map."));
 		const open = deps.ask(`Show the ${advanced.length} advanced settings? [y/N]: `).trim();
 		if (/^y(es)?$/i.test(open) && runGroup(ctx, "Advanced", advanced) !== 0) return 1;
 	}
 	if (ctx.testOffer) await offerTest(ctx);
+	offerReuse(ctx, yes);
 	const installed = deps.install();
 	if (installed !== 0) {
 		deps.say("adapter install failed");
@@ -236,6 +243,23 @@ function runGroup(ctx: Ctx, name: string, keys: string[]): number {
 async function offerTest(ctx: Ctx): Promise<void> {
 	const answer = ctx.deps.ask("send a test message now? [y/N]: ").trim();
 	if (/^y(es)?$/i.test(answer)) await ctx.deps.notifyTest();
+}
+
+// The reuse-map offer (plan 20261122_1828_reuse_map P4a), after the notify test offer: asked only
+// at a terminal (never --yes) and only while the feature is off — `reuse on`/`reuse off` own the
+// keys. A yes runs the P3 on-routine through the injected seam, which asks y/N per candidate repo
+// itself; a failure prints and setup continues with the feature off (the doctor reports it).
+function offerReuse(ctx: Ctx, yes: boolean): void {
+	if (yes) return;
+	const now = Bun.YAML.parse(ctx.text) as { reuse_map?: { enabled?: boolean } } | null;
+	if (now?.reuse_map?.enabled === true) return;
+	const answer = ctx.deps
+		.ask("Check every new plan against a Graphify code map? It installs graphifyy (uv) and builds a code map in each chosen repo. [y/N] ")
+		.trim();
+	if (!/^y(es)?$/i.test(answer)) return;
+	const r = ctx.deps.reuseOn();
+	for (const line of r.out) ctx.deps.say(line);
+	for (const line of r.err) ctx.deps.say(line);
 }
 
 // The value offered for Enter. A fresh home offers what this machine has; a re-run offers the
