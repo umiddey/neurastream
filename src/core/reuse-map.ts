@@ -14,6 +14,14 @@ export const GRAPHIFY_VERSION = "0.9.100";
 /** Terms per map/none line: each is one `graphify query` spawn, so a bloated line is capped (reviewer 2026-11-26). */
 export const MAX_TERMS = 8;
 
+/** Distinct terms a none line must search before "none to reuse" counts (plan Done 3). */
+export const NONE_TERMS_MIN = 3;
+
+/** A repo-relative path as the map names it: no leading ./, no double slashes. */
+export function normRel(p: string): string {
+	return path.posix.normalize(p.replace(/^\.\//, ""));
+}
+
 /** `graphify query` and `--version` bounds; a build (`extract . --code-only`) may take 10 minutes. */
 const QUERY_TIMEOUT_MS = 30_000;
 const BUILD_TIMEOUT_MS = 600_000;
@@ -51,6 +59,14 @@ export const realGraphify: ReuseGraph = {
 	query: (repo, term) => runGraphify(repo, ["query", term, "--budget", "2000"], QUERY_TIMEOUT_MS),
 };
 
+/** Null when graphify is the pinned version on PATH; else the one-line install fix. */
+export function versionProblem(graph: ReuseGraph = realGraphify): string | null {
+	const r = graph.version();
+	const found = r.stdout.trim() || r.stderr.trim().split("\n")[0] || "(no output)";
+	if (r.status === 0 && found === `graphify ${GRAPHIFY_VERSION}`) return null;
+	return `graphify ${GRAPHIFY_VERSION} is not on PATH (found: ${found.slice(0, 80)}) — install the pinned tool: uv tool install graphifyy==0.9.100`;
+}
+
 // --- line helpers: the exact strings a plan's `## Reuse` must carry when the map is on ---
 
 /** `- map: graphify "t1", "t2" → a.ts, b.ts — cite: N` (N = min(minCited, files)). */
@@ -84,7 +100,7 @@ const QUOTED_WORD = /"([^"]*)"/g;
 
 /** Parses a `- map: graphify "t1", "t2" → a.ts, b.ts — cite: N` line; null when the line is not one. */
 export function parseMapLine(line: string): ParsedMapLine | null {
-	const m = /^-\s*map:\s*graphify\s+(.+?)\s*→\s*(.+?)\s*—\s*cite:\s*(\d+)\s*$/.exec(line.trim());
+	const m = /^-?\s*map:\s*graphify\s+(.+?)\s*→\s*(.+?)\s*—\s*cite:\s*(\d+)\s*$/.exec(line.trim());
 	if (!m) return null;
 	const terms = [...(m[1] ?? "").matchAll(QUOTED_WORD)].map((q) => q[1] ?? "").filter(Boolean);
 	const files = (m[2] ?? "")
@@ -97,7 +113,7 @@ export function parseMapLine(line: string): ParsedMapLine | null {
 
 /** Parses a `- new: none to reuse — searched: "t1", "t2", "t3"` line; null when the line is not one. */
 export function parseNoneLine(line: string): ParsedNoneLine | null {
-	const m = /^-\s*new:\s*none to reuse\s*—\s*searched:\s*(.+)$/.exec(line.trim());
+	const m = /^-?\s*new:\s*none to reuse\s*—\s*searched:\s*(.+)$/.exec(line.trim());
 	if (!m) return null;
 	const terms = [...(m[1] ?? "").matchAll(QUOTED_WORD)].map((q) => q[1] ?? "").filter(Boolean);
 	return terms.length ? { terms } : null;
