@@ -9,6 +9,7 @@ import type { Config } from "../config.ts";
 import type { ClaimStore } from "../claims.ts";
 import { strftime } from "../clock.ts";
 import { withFileLock, writeAtomicSync } from "../file-lock.ts";
+import { MAX_TERMS, NONE_TERMS_MIN, citedQuotes, hasBareChecked, isMapOrNoneLine, normRel, parseMapLine, parseNoneLine, type ParsedMapLine, type ParsedNoneLine } from "../reuse-map.ts";
 
 // --- landing detection (plan 20261031_0911 P4/P5): lives here, not queue-close.ts, because
 // queueProblems' landed lock needs it and lib must not import the closer that imports lib ---
@@ -403,18 +404,64 @@ export function headerField(text: string, name: string): string | null {
  * P1 (plan 20261028_1600): every new thing a plan adds carries a reuse line with a checked
  * `path:line` citation that exists relative to the plan's repo. Applies to every plan (P5
  * removed the cutover); an empty `review.agents` list turns the gate off (P5c).
+ *
+ * P2 (plan 20261122_1828_reuse_map): text only. When a map or none line is present the section
+ * follows the map rule instead: those lines skip the plain `checked:` rule, every `new:` citation
+ * carries a quoted line, the map's matched files are cited on >= N distinct lines, a none line
+ * searches >= 3 and at most MAX_TERMS distinct terms. Quote equality and the graphify re-run live
+ * in plan-edit's reuseMapWriteProblems — this function stays on the hot path, so it never reads
+ * a graph or runs graphify.
  */
 function reuseProblems(repo: string, file: string, secs: Map<string, string>, reviewAgents: string[]): string[] {
 	if (!reviewAgents.length) return [];
 	const lines = items(secs.get("reuse") ?? "");
 	if (!lines.length)
 		return [`missing or empty "## Reuse" section (one line per new thing: - new: <thing> — checked: <path>:<line> — reuse: <how, or why not>; "- new: none — ..." when nothing is new)`];
-	const probs: string[] = [];
-	for (const line of lines) {
-		const m = /checked:\s*`?([^`\s—]+):(\d+)(?:-\d+)?`?/.exec(line);
-		if (!m) probs.push(`reuse line without "checked: <path>:<line>": ${line.slice(0, 80)}`);
-		else if (!existsSync(path.resolve(repo, m[1]!))) probs.push(`reuse citation does not exist: ${m[1]}`);
+	const map = lines.map(parseMapLine).find((m) => m !== null) ?? null;
+	const none = lines.map(parseNoneLine).find((n) => n !== null) ?? null;
+	if (!map && !none) {
+		const probs: string[] = [];
+		for (const line of lines) {
+			const m = /checked:\s*`?([^`\s—]+):(\d+)(?:-\d+)?`?/.exec(line);
+			if (!m) probs.push(`reuse line without "checked: <path>:<line>": ${line.slice(0, 80)}`);
+			else if (!existsSync(path.resolve(repo, m[1]!))) probs.push(`reuse citation does not exist: ${m[1]}`);
+		}
+		return probs;
 	}
+	return mapGateProblems(repo, lines, map, none);
+}
+
+/** Text half of the map gate (plan 20261122_1828_reuse_map P2a): shapes only, never a graphify run. */
+function mapGateProblems(repo: string, lines: string[], map: ParsedMapLine | null, none: ParsedNoneLine | null): string[] {
+	const probs: string[] = [];
+	if (map && none) probs.push("either a - map: line or a none-to-reuse line under ## Reuse, not both");
+	for (const line of lines) {
+		if (isMapOrNoneLine(line) || !/map:|none to reuse/.test(line)) continue;
+		probs.push(`a "- map:" or "none to reuse" line that does not parse — rerun \`neurastream reuse map\`: ${line.slice(0, 80)}`);
+	}
+	if (map && map.terms.length > MAX_TERMS)
+		probs.push(`${map.terms.length} terms on the map line (at most ${MAX_TERMS} — each term is one graphify query)`);
+	if (none) {
+		if (none.terms.length < NONE_TERMS_MIN)
+			probs.push(`the none line searches ${none.terms.length} terms (search at least ${NONE_TERMS_MIN} distinct terms: - new: none to reuse — searched: "t1", "t2", "t3")`);
+		if (none.terms.length > MAX_TERMS)
+			probs.push(`${none.terms.length} terms on the none line (at most ${MAX_TERMS} — each term is one graphify query)`);
+	}
+	const matched = map ? new Set(map.files.map(normRel)) : null;
+	const cited = new Set<string>();
+	for (const line of lines) {
+		if (isMapOrNoneLine(line) || !line.includes("new:")) continue;
+		if (hasBareChecked(line)) {
+			probs.push(`reuse citation without a quoted line ("checked: <path>:<n> \\"the file's text at that line\\""): ${line.slice(0, 80)}`);
+			continue;
+		}
+		for (const c of citedQuotes(line)) {
+			if (!existsSync(path.resolve(repo, c.file))) probs.push(`reuse citation does not exist: ${c.file}`);
+			if (matched) cited.add(normRel(c.file));
+		}
+	}
+	if (matched && cited.size < map!.cite)
+		probs.push(`${cited.size} of the map's ${map!.cite} matched files cited — cite ${map!.cite} of ${[...matched].join(", ")} as "checked: <path>:<n> \\"the file's text at that line\\""`);
 	return probs;
 }
 
@@ -939,9 +986,16 @@ export function chatUnlock(text: string, cfg: Config, source: string, word: "cha
 	return { applied: true, command: "unlock", minutes: n, until: Math.floor(past + minutes * 60) };
 }
 
+// P2b (plan 20261122_1828_reuse_map): the reuse map's own directory and the worktree registry are
+// protected in any repo, the directory itself included (`rm -rf graphify-out`, `ln -s … graphify-out`).
+const PROTECTED_SEGMENTS = [/(^|\/)graphify-out(\/|$)/, /(^|\/)\.git\/worktrees(\/|$)/];
+
 export function protectedHit(targetPaths: string[], paths: QueuePaths): string | null {
 	const guarded = protectedPaths(paths);
-	for (const p of targetPaths) for (const g of guarded) if (g.endsWith("/") ? p.startsWith(g) || `${p}/` === g : p === g) return p;
+	for (const p of targetPaths) {
+		if (PROTECTED_SEGMENTS.some((re) => re.test(p))) return p;
+		for (const g of guarded) if (g.endsWith("/") ? p.startsWith(g) || `${p}/` === g : p === g) return p;
+	}
 	return null;
 }
 

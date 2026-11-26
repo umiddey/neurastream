@@ -2,12 +2,13 @@
 // injected seams only. Every test runs against a temp HOME fixture with a fake PATH lookup, a
 // fake Tailscale and fixed os facts, so nothing reads the real home, the real PATH or the tailnet.
 
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { configFile, loadConfig } from "../src/core/config.ts";
-import { detect, realSeams, type SetupSeams } from "../src/core/setup-detect.ts";
+import { reuseCandidates } from "../src/core/reuse-map.ts";
+import { detect, realSeams, repoDirs, type SetupSeams } from "../src/core/setup-detect.ts";
 import type { Tailscale, TailscaleState } from "../src/core/tailscale.ts";
 
 const TMP = mkdtempSync(join(tmpdir(), "setup-detect-"));
@@ -167,4 +168,42 @@ test("realSeams.onPath looks only in the PATH it is given", () => {
 	expect(real.onPath("alpha-bin")).toBe(true);
 	expect(real.onPath("missing-bin")).toBe(false);
 	expect(real.harnesses).toEqual([{ name: "alpha", bin: "alpha-bin" }]);
+});
+
+// Reuse map (plan 20261122_1828_reuse_map P3): the exported walk — one walk shared by
+// hasRepoBelow above and `reuse on`'s candidates — plus the candidates filter that consumes it.
+
+describe("repoDirs (P3 export)", () => {
+	test("lists direct children holding .git (dir or worktree file), nothing else", () => {
+		const root = join(TMP, "walk");
+		mkdirSync(join(root, "a-repo/.git"), { recursive: true });
+		mkdirSync(join(root, "b-worktree"), { recursive: true });
+		writeFileSync(join(root, "b-worktree/.git"), "gitdir: /elsewhere/.git/worktrees/b\n");
+		mkdirSync(join(root, "c-plain"), { recursive: true });
+		writeFileSync(join(root, "d-file"), "x\n");
+		const found = repoDirs(root);
+		expect(found).toContain(join(root, "a-repo"));
+		expect(found).toContain(join(root, "b-worktree"));
+		expect(found).toHaveLength(2);
+	});
+
+	test("a missing directory is empty, never a throw", () => {
+		expect(repoDirs(join(TMP, "missing-dir"))).toEqual([]);
+	});
+});
+
+describe("reuseCandidates (P3)", () => {
+	test("git repos with docs/plans one level below the work roots, sorted, deduplicated", () => {
+		const w1 = join(TMP, "w1");
+		const w2 = join(TMP, "w2");
+		const withPlans = join(w1, "a-plans");
+		mkdirSync(join(withPlans, "docs/plans"), { recursive: true });
+		mkdirSync(join(withPlans, ".git"), { recursive: true });
+		const noPlans = join(w1, "b-noplans");
+		mkdirSync(join(noPlans, ".git"), { recursive: true });
+		const other = join(w2, "c-plans");
+		mkdirSync(join(other, "docs/plans"), { recursive: true });
+		mkdirSync(join(other, ".git"), { recursive: true });
+		expect(reuseCandidates([w1, w2, join(w1, "missing")])).toEqual([withPlans, other].toSorted());
+	});
 });

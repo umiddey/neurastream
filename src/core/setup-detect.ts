@@ -53,12 +53,17 @@ export interface SetupFacts {
 	current: Config | null;
 }
 
-function hasRepoBelow(dir: string): boolean {
+/** Direct children of dir that are git repositories (`.git` file = worktree), unsorted (plan 20261122_1828_reuse_map P3: the one walk `reuse on` candidates reuse). */
+export function repoDirs(dir: string): string[] {
 	try {
-		return readdirSync(dir, { withFileTypes: true }).some(c => c.isDirectory() && existsSync(join(dir, c.name, ".git")));
+		return readdirSync(dir, { withFileTypes: true }).filter(c => c.isDirectory() && existsSync(join(dir, c.name, ".git"))).map(c => join(dir, c.name));
 	} catch {
-		return false;
+		return [];
 	}
+}
+
+function hasRepoBelow(dir: string): boolean {
+	return repoDirs(dir).length > 0;
 }
 
 function workRoots(home: string): string[] {

@@ -14,8 +14,10 @@ import { approvalProblem } from "../plan-approval.ts";
 import { outUntil, pinModel, providerOfModel, readOut } from "../provider-state.ts";
 import * as q from "../queue/lib.ts";
 import type { Plan } from "../queue/lib.ts";
+import { realGraphify, type ReuseGraph } from "../reuse-map.ts";
 import { claimStoreFor, pathId, routeTeam, teamDir, type TeamEntry } from "../team-client.ts";
 import { plannerPlanProblem, plannerRolePlan, recordPlannerSpawn } from "./planner.ts";
+import { reuseMapBriefProblems } from "./plan-edit.ts";
 import { isReviewSpawn, pendingWorkProblem, readMrCache, recordReviewSpawn, reviewPassProblem, reviewRole } from "./review.ts";
 import {
 	ALLOW,
@@ -439,6 +441,7 @@ export function spawnProblem(
 	runningJobs?: string[],
 	runner: CommandRunner = defaultRunner,
 	spawner: Spawner = "main",
+	graph: ReuseGraph = realGraphify,
 ): string | null {
 	const roles: Record<string, string | null> = {};
 	const plannerRoles: Record<string, string> = {};
@@ -477,6 +480,9 @@ export function spawnProblem(
 				problems.push(`${label}: agent "${agent}" is not in "## Allowed" of ${cfg.paths.subagents} (no expensive or unpinned models).`);
 				continue;
 			}
+			// Reuse map (plan 20261122_1828_reuse_map P4b): the brief carries its plan's map or none
+			// line — the write gate's re-run/compare judges it before the planner ever runs.
+			for (const p of reuseMapBriefProblems(text, plannerFor, cfg, graph)) problems.push(`${label}: ${p}`);
 			plannerRoles[label] = plannerFor;
 			continue;
 		}
@@ -631,11 +637,11 @@ export function bypassLaunch(command: string, cfg: Config, spawner: Spawner, run
  * spawn: the allow-list, task-only and open-plan gates for one implementer launch. Covers both
  * original paths (the extension spawn event and a `task` tool call); the brief names the plan.
  */
-export function checkSpawn(e: SpawnEvent, cfg: Config, runner: CommandRunner = defaultRunner, runs?: RunSource): Decision {
-	return tuned(checkSpawnRules(e, cfg, runner, runs), cfg);
+export function checkSpawn(e: SpawnEvent, cfg: Config, runner: CommandRunner = defaultRunner, runs?: RunSource, graph: ReuseGraph = realGraphify): Decision {
+	return tuned(checkSpawnRules(e, cfg, runner, runs, graph), cfg);
 }
 
-function checkSpawnRules(e: SpawnEvent, cfg: Config, runner: CommandRunner = defaultRunner, runs?: RunSource): Decision {
+function checkSpawnRules(e: SpawnEvent, cfg: Config, runner: CommandRunner = defaultRunner, runs?: RunSource, graph: ReuseGraph = realGraphify): Decision {
 	const pending = q.cancelPending(cfg.paths);
 	if (pending) {
 		log(cfg.paths.guard_log, `BLOCK spawn ${e.agent}: cancel pending (${pending.words}) rule=spawn.cancel-pending`);
@@ -659,6 +665,10 @@ function checkSpawnRules(e: SpawnEvent, cfg: Config, runner: CommandRunner = def
 		problems.push(`${e.agent}: planner mode is main — a Planner-role spawn needs the owner's \`planner delegated\` switch.`);
 	else if (delegatedPlanner && plannerPlanProblem(plannerFor)) problems.push(`${e.agent}: ${plannerPlanProblem(plannerFor)}`);
 	else if (delegatedPlanner && !e.name) problems.push(`${e.agent}: a planner spawn needs a name (the task name keys its planner role).`);
+	// Reuse map (plan 20261122_1828_reuse_map P4b): a delegated planner's brief carries its plan's
+	// map or none line; judged here, not in the else-if chain, so an earlier refusal never hides it.
+	if (delegatedPlanner && plannerFor)
+		for (const p of reuseMapBriefProblems(e.brief, plannerFor, cfg, graph)) problems.push(`${e.agent}: ${p}`);
 	const [why, named] = delegatedPlanner ? [null, [] as string[]] : planGate(e.brief, e.agent, cfg);
 	if (why) problems.push(why);
 	const gate = priorityGate(named, e.runningJobs, e.brief, cfg, e.agent, e.agent, "main");

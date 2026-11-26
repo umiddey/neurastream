@@ -1,6 +1,6 @@
 // Plan edit verification: subagent Progress-only / planner-body / Findings / review rules, and Main read-evidence checks.
 
-import { readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import type { PlanEditEvent } from "../adapter.ts";
 import { currentPlanner } from "../autonomy.ts";
@@ -9,6 +9,30 @@ import type { Config } from "../config.ts";
 import { MAIN_ONLY_LINE } from "../plan-approval.ts";
 import * as q from "../queue/lib.ts";
 import { claimStoreFor } from "../team-client.ts";
+import {
+	MAX_TERMS,
+	NONE_TERMS_MIN,
+	SLOW_RETRY,
+	citeRoots,
+	citedQuotes,
+	freshGraph,
+	hasBareChecked,
+	isMapOrNoneLine,
+	mapLine,
+	normRel,
+	optionTermProblems,
+	parseMapLine,
+	parseNoneLine,
+	planTerms,
+	queryBudget,
+	readConfined,
+	realGraphify,
+	searchTerms,
+	versionProblem,
+	type CitedQuote,
+	type QueryBudget,
+	type ReuseGraph,
+} from "../reuse-map.ts";
 import { plannerBody, plannerSpawnPlan } from "./planner.ts";
 import { codeReviewProblem, matchReviewSpawn, readReviewSpawns, recordReviews, REVIEW_LINE, REVIEW_LOOKALIKE } from "./review.ts";
 import {
@@ -67,8 +91,8 @@ function mainOnlyLines(text: string): string {
  * `restore` hands back the untouched text for the caller to write (the original restored the
  * file itself before reporting).
  */
-export function checkPlanEdit(e: PlanEditEvent, cfg: Config): PlanEditDecision {
-	if (e.agent === "main") return checkMainPlan(e, cfg);
+export function checkPlanEdit(e: PlanEditEvent, cfg: Config, graph: ReuseGraph = realGraphify): PlanEditDecision {
+	if (e.agent === "main") return checkMainPlan(e, cfg, graph);
 	// planner mode P2 (b): the plan bound to this sub by its approved spawn (the `Planner role for`
 	// line) is the planner agent's to write — body freedom, but never the Main-only lines, and the
 	// header names its agent. Only while delegated: in main mode the spawn gate refused the
@@ -92,6 +116,17 @@ export function checkPlanEdit(e: PlanEditEvent, cfg: Config): PlanEditDecision {
 			return {
 				allow: false,
 				reason: `plan-guard: ${e.path} carries no "Planner: ${name}" header — a planner agent's plan names its agent above the first section. The file was restored.`,
+				restore: { path: e.path, text: e.before || null },
+			};
+		}
+		// Reuse map (plan 20261122_1828_reuse_map P2): the planner's plan body carries the map
+		// line or none line too — the same write-time check Main's plan text faces.
+		const reuse = reuseMapWriteProblems(e.after, e.path, cfg, graph);
+		if (reuse.length) {
+			log(cfg.paths.plan_guard_log, `RESTORE ${e.path} (reuse map)`);
+			return {
+				allow: false,
+				reason: `plan-guard: ${e.path} fails the reuse map gate:\n- ${reuse.join("\n- ")}\nThe file was restored.`,
 				restore: { path: e.path, text: e.before || null },
 			};
 		}
@@ -131,7 +166,7 @@ export function checkPlanEdit(e: PlanEditEvent, cfg: Config): PlanEditDecision {
 
 // Main's plan text outside "## Progress" must rest on files Main read itself (planReadProblems).
 // An empty `before` means the plan file did not exist yet; a refusal then deletes it.
-function checkMainPlan(e: PlanEditEvent, cfg: Config): PlanEditDecision {
+function checkMainPlan(e: PlanEditEvent, cfg: Config, graph: ReuseGraph): PlanEditDecision {
 	// planner mode P2 (a): while delegated, Main plans nothing — a new plan file or a rewrite of
 	// the text outside "## Progress" is the planner agent's work. Main keeps its Progress entries,
 	// the Main-only lines (Status / WAITING on owner / Waits on / Cancelled by owner / False
@@ -192,8 +227,16 @@ function checkMainPlan(e: PlanEditEvent, cfg: Config): PlanEditDecision {
 	const fixed = fix ? fix.text : e.after;
 	// Refuse only what this edit adds: a problem the plan already had is not Main's doing now.
 	// The missing-section problem is always refused: a plan with no read list has no evidence behind its text.
+	// Reuse map (plan 20261122_1828_reuse_map P2b): its problems join the same refusal, likewise
+	// only the ones this edit adds. Both passes share one query budget (and memoised search results), so a slow
+	// check is never filtered as known: SLOW_RETRY always refuses.
+	const budget = queryBudget();
 	const known = new Set(e.before ? planReadProblems(e.before, e.path, cfg) : []);
-	const problems = planReadProblems(fixed, e.path, cfg).filter(p => p === NO_SECTION || !known.has(p));
+	const knownReuse = new Set(e.before ? reuseMapWriteProblems(e.before, e.path, cfg, graph, budget) : []);
+	const problems = [
+		...planReadProblems(fixed, e.path, cfg).filter((p) => p === NO_SECTION || !known.has(p)),
+		...reuseMapWriteProblems(fixed, e.path, cfg, graph, budget).filter((p) => p === SLOW_RETRY || !knownReuse.has(p)),
+	];
 	if (!problems.length) {
 		if (!fix) return ALLOW;
 		const list = fix.paths.join(", ");
@@ -211,6 +254,155 @@ function checkMainPlan(e: PlanEditEvent, cfg: Config): PlanEditDecision {
 		reason: `plan-guard: ${e.path} cites code Main has not read for this plan:\n- ${problems.join("\n- ")}\nRead each file (read or grep it), list it under "## Code read by Main", then edit again. ${e.before ? "The file was restored." : "The new file was removed."}`,
 		restore: { path: e.path, text: e.before || null },
 	};
+}
+
+/**
+ * The write-time half of the reuse map gate (plan 20261122_1828_reuse_map P2b): the plan's
+ * map/none line is compared against a fresh `graphify` run, and every quoted citation against
+ * the cited file's actual line. Runs only at plan write (checkMainPlan and the delegated planner
+ * branch) — never on the parsePlan/queue-check/stop paths, and never inside planReadProblems
+ * (planReadNote runs that on every plan read, so a graphify call there would sit on the hot path).
+ * Every failure refuses with a one-line fix; a disabled feature never reaches the seam.
+ */
+export function reuseMapWriteProblems(
+	text: string,
+	planPath: string,
+	cfg: Config,
+	graph: ReuseGraph = realGraphify,
+	budget: QueryBudget = queryBudget(),
+): string[] {
+	if (!cfg.reuse_map.enabled) return [];
+	const lines = (q.sections(text).get("reuse") ?? "").split("\n").map((l) => l.trim()).filter(Boolean);
+	const base = reuseMapBase(text, planPath, cfg, graph, lines, true);
+	if (base.problems.length) return base.problems;
+	return reuseMapLineProblems(lines, base.repo, cfg, graph, budget, "under ## Reuse", { planPath, text });
+}
+
+/**
+ * The spawn-time half (plan 20261122_1828_reuse_map P4b): a delegated planner's brief must carry
+ * its plan's map or none line, judged by the same re-run/compare as the write gate. It builds
+ * nothing (`build: false`): a stale or busy map is refused with the command that fixes it, so a
+ * spawn never waits on a 600 s graphify run. The brief carries no `new:` citations yet, so only
+ * the line itself is judged. Off: [].
+ */
+export function reuseMapBriefProblems(
+	brief: string,
+	planPath: string,
+	cfg: Config,
+	graph: ReuseGraph = realGraphify,
+	budget: QueryBudget = queryBudget(),
+): string[] {
+	if (!cfg.reuse_map.enabled) return [];
+	const lines = brief.split("\n").map((l) => l.trim()).filter(Boolean);
+	const base = reuseMapBase(brief, planPath, cfg, graph, lines, false);
+	if (base.problems.length) return base.problems;
+	return reuseMapLineProblems(lines, base.repo, cfg, graph, budget, "in the brief");
+}
+
+/** The prelude both halves share: the plan's repo must be mapped, its terms well formed, graphify at the pin, and the graph fresh (`build` false: stale is refused, never rebuilt). */
+function reuseMapBase(
+	text: string,
+	planPath: string,
+	cfg: Config,
+	graph: ReuseGraph,
+	lines: string[],
+	build: boolean,
+): { repo: string; problems: string[] } {
+	const roots = planRoots(planPath, text);
+	const repo = roots[roots.length - 1]!;
+	if (!cfg.reuse_map.repos.map((r) => path.resolve(q.expandHome(r))).includes(path.resolve(repo)))
+		return { repo, problems: [`reuse map: ${repo} is not mapped — run \`neurastream reuse on ${repo}\` first`] };
+	// A dashed term is refused before the seam runs: graphify would read it as an option.
+	const options = optionTermProblems(planTerms(lines));
+	if (options.length) return { repo, problems: options };
+	const vp = versionProblem(graph);
+	if (vp) return { repo, problems: [`reuse map: ${vp}`] };
+	return { repo, problems: freshGraph(repo, cfg.reuse_map.exclude, graph, { build }).map((p) => `reuse map: ${p}`) };
+}
+
+/** The map/none line half both checks share: the line is re-run against the fresh graph (a none line must not hit; a map line's files and cite: N must match). With `body`, the plan's own `new:` citations are judged too (each quoted, N matched files cited); the brief check passes none and stops at the line. */
+function reuseMapLineProblems(
+	lines: string[],
+	repo: string,
+	cfg: Config,
+	graph: ReuseGraph,
+	budget: QueryBudget,
+	where: string,
+	body?: { planPath: string; text: string },
+): string[] {
+	const map = lines.map(parseMapLine).find((m) => m !== null) ?? null;
+	const none = lines.map(parseNoneLine).find((n) => n !== null) ?? null;
+	if (!map && !none) return [`reuse map: no map line ${where} — run \`neurastream reuse map <plan> "<term>"...\` and paste its - map: line`];
+	if (map && none) return [`reuse map: either a - map: line or a none-to-reuse line ${where}, not both`];
+	if (none) {
+		if (none.terms.length < NONE_TERMS_MIN)
+			return [`reuse map: the none line searches ${none.terms.length} terms (search at least ${NONE_TERMS_MIN} distinct terms)`];
+		if (none.terms.length > MAX_TERMS) return [`reuse map: ${none.terms.length} terms on the none line (at most ${MAX_TERMS})`];
+		const res = searchTerms(graph, repo, none.terms, undefined, budget);
+		if (res.some((r) => r.status === "slow")) return [SLOW_RETRY];
+		const bad = res.filter((r) => r.problem);
+		if (bad.length) return bad.map((r) => `reuse map: ${r.problem}`);
+		const hits = none.terms.map((t, i) => ({ term: t, r: res[i]! })).filter((x) => x.r.status === "hit");
+		const quote = body ? quoteProblems(lines, body.planPath, body.text, cfg) : null;
+		if (hits.length) {
+			const found = hits.map((x) => `"${x.term}" finds ${x.r.files.join(", ")}`).join("; ");
+			return [...(quote ? [quote] : []), `reuse map: not none to reuse — ${found}; cite it under ## Reuse instead`];
+		}
+		return quote ? [quote] : [];
+	}
+	// A map line: re-run its terms; the fresh files and cite: N must match what the line wrote.
+	// (Unreachable when map is null — both-null and none-only already returned — but it narrows.)
+	if (!map) return [];
+	if (map.terms.length > MAX_TERMS) return [`reuse map: ${map.terms.length} terms on the map line (at most ${MAX_TERMS})`];
+	const res = searchTerms(graph, repo, map.terms, undefined, budget);
+	if (res.some((r) => r.status === "slow")) return [SLOW_RETRY];
+	const bad = res.filter((r) => r.problem);
+	if (bad.length) return bad.map((r) => `reuse map: ${r.problem}`);
+	const files = [...new Set(res.flatMap((r) => r.files))];
+	const wantCite = Math.min(cfg.reuse_map.min_cited, files.length);
+	if (map.cite !== wantCite || [...map.files].map(normRel).toSorted().join("\n") !== [...files].map(normRel).toSorted().join("\n"))
+		return [`reuse map: the map moved — replace the map line ${where} with: ${mapLine(map.terms, files, cfg.reuse_map.min_cited)}`];
+	if (!body) return [];
+	const quote = quoteProblems(lines, body.planPath, body.text, cfg);
+	if (quote) return [quote];
+	const cited = new Set<string>();
+	const matched = new Set(files.map(normRel));
+	for (const line of lines) {
+		if (isMapOrNoneLine(line) || !line.includes("new:")) continue;
+		for (const c of citedQuotes(line)) if (matched.has(normRel(c.file))) cited.add(normRel(c.file));
+	}
+	if (cited.size < wantCite)
+		return [`reuse map: ${cited.size} of ${wantCite} matched files cited — cite ${wantCite} of ${files.join(", ")} with quoted lines`];
+	return [];
+}
+
+/** Every `new:` citation carries a quote equal to the cited file's line; the file is read only through readConfined. */
+function quoteProblems(lines: string[], planPath: string, text: string, cfg: Config): string | null {
+	const scope = {
+		roots: citeRoots(path.dirname(planPath), cfg.reuse_map.repos.map((r) => q.expandHome(r))),
+		repo: planRoots(planPath, text).at(-1) ?? "",
+	};
+	for (const line of lines) {
+		if (isMapOrNoneLine(line) || !line.includes("new:")) continue;
+		if (hasBareChecked(line))
+			return `reuse map: citation without a quoted line ("checked: <path>:<n> \\"the file's text at that line\\""): ${line.slice(0, 80)}`;
+		for (const c of citedQuotes(line)) {
+			const problem = quoteMismatch(c, planPath, text, scope);
+			if (problem) return problem;
+		}
+	}
+	return null;
+}
+
+function quoteMismatch(c: CitedQuote, planPath: string, text: string, scope: { roots: string[]; repo: string }): string | null {
+	const abs = planFile(c.file, planPath, text);
+	if (!existsSync(abs)) return `reuse map: cited file ${c.file} does not exist — rerun \`neurastream reuse map\` and re-cite`;
+	const body = readConfined(abs, scope.roots);
+	if (body === null) return `reuse map: cited file ${c.file} is outside ${scope.repo} or not committed — cite a committed path inside the plan's repo`;
+	const actual = (body.split("\n")[c.n - 1] ?? "").trim();
+	if (!actual) return `reuse map: ${c.file} has no line ${c.n} — rerun \`neurastream reuse map\` and re-cite`;
+	if (actual !== c.quote) return `reuse map: ${c.file}:${c.n} is not "${c.quote.slice(0, 60)}" — quote that line exactly as the file has it`;
+	return null;
 }
 
 const READ_SECTION = /^## Code read by Main[^\n]*\n([\s\S]*?)(?=^## |(?![\s\S]))/m;
@@ -242,7 +434,7 @@ function planReadProblems(text: string, planPath: string, cfg: Config): string[]
 }
 
 /** A plan-cited path: absolute, else under the plan's Worktree (when set) or its repo root. */
-function planFile(p: string, planPath: string, text: string): string {
+export function planFile(p: string, planPath: string, text: string): string {
 	const home = q.expandHome(p);
 	if (path.isAbsolute(home)) return home;
 	const roots = planRoots(planPath, text);
@@ -250,8 +442,8 @@ function planFile(p: string, planPath: string, text: string): string {
 	return path.join(root, home);
 }
 
-/** The roots a plan-relative path resolves against: the plan's Worktree (when set), then its repo (the text before /docs/plans/, so a docs/plans/<subdir>/ plan still resolves repo-relative paths against <repo>). */
-function planRoots(planPath: string, text: string): string[] {
+/** The roots a plan-relative path resolves against: the plan's Worktree (when set), then its repo (the text before /docs/plans/, so a docs/plans/<subdir>/ plan still resolves repo-relative paths against <repo>). Exported for `neurastream reuse map`, which resolves the plan's repo exactly like the write gate. */
+export function planRoots(planPath: string, text: string): string[] {
 	const wt = /^Worktree:\s*(\S+)/m.exec(text)?.[1];
 	const cut = planPath.indexOf("/docs/plans/");
 	const repo = cut >= 0 ? planPath.slice(0, cut) : path.dirname(path.dirname(path.dirname(planPath)));

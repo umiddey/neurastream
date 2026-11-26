@@ -29,6 +29,7 @@ This document covers the core enforcement rules implemented in `src/core/guards.
   - With `review.code: true`, ticking a phase requires a `CODE REVIEW: PASS` covering that phase after the last implementer entry.
   - Spawns are also refused if the plan's repo has unmerged MRs/branches not named in the brief (`MR !N:` / `Branch <name>:`).
 - **Brief lint (`brief-lint`)**: Enforces required brief sections (acceptance criteria, stop condition, no push, call budget, unticked phase id, main-checkout plan path, and allowed file paths).
+- **Reuse map gate (`reuse_map`, opt-in via `neurastream reuse on`)**: A plan's `## Reuse` section needs either a map line or a none line, not both. The map line is `- map: graphify "t1", "t2" → a.ts, b.ts — cite: N` (N = min(min_cited, files)); the none line is `- new: none to reuse — searched: "t1", "t2", "t3"` (at least 3 distinct terms, and no term may match a file). Each `new:` citation quotes the file's line as `checked: <path>:<n> "<exact text>"`. At most 8 terms per line. Refusals name the fix: run `neurastream reuse map <plan> "<term>"...` and paste its line when the map moved or is stale; run `neurastream reuse on <repo>` when the repo is not mapped; `uv tool install graphifyy==0.9.100` when the pinned graphify is missing; `neurastream reuse off` to drop the gate. A term starting with `-` is refused because graphify reads it as an option.
 
 ## Queue holds and live re-check
 

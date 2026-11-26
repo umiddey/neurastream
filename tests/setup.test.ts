@@ -54,6 +54,7 @@ async function run(
 		install?: () => number;
 		doctor?: () => number;
 		notifyTest?: () => Promise<number>;
+		reuseOn?: () => { code: number; out: string[]; err: string[] };
 	} = {},
 ) {
 	const out: string[] = [];
@@ -67,13 +68,16 @@ async function run(
 		terminal: opts.terminal ?? true,
 		ask: (question) => {
 			asked.push(question);
-			const key = Object.keys(rules).find((k) => question.startsWith(`${k}:`) && (rules[k]?.length ?? 0) > 0);
+			// Key-form prompts carry the key + ":"; whole-text offers (notify test, reuse map) key on
+			// their first words, which no key-form prompt begins with.
+			const key = Object.keys(rules).find((k) => (question.startsWith(`${k}:`) || question.startsWith(k)) && (rules[k]?.length ?? 0) > 0);
 			return key ? (rules[key]?.shift() ?? "") : "";
 		},
 		seams: seams(home, opts.state),
 		install: opts.install ?? (() => 0),
 		doctor: opts.doctor ?? (() => 0),
 		notifyTest: opts.notifyTest ?? (async () => 0),
+		reuseOn: opts.reuseOn ?? (() => ({ code: 0, out: [], err: [] })),
 		say: (line) => out.push(line),
 	});
 	return { code, out: out.join("\n"), asked };
@@ -196,6 +200,43 @@ test("a set webhook file offers the notify test: yes runs it through the seam, n
 	expect(auto.code).toBe(0);
 	expect(auto.asked).toEqual([]);
 	expect(posts).toBe(1);
+});
+
+test("the reuse-map offer: yes runs reuseOn once and prints its lines; no and --yes never do; a failed run still reaches doctor", async () => {
+	const offer = "Check every new plan against a Graphify code map?";
+	let reuseRuns = 0;
+	const reuseOn = () => {
+		reuseRuns++;
+		return { code: 0, out: ["reuse on: done"], err: [] };
+	};
+
+	const yesHome = fixtureHome();
+	const yes = await run([], yesHome, { answers: { [offer]: ["y"] }, reuseOn });
+	expect(yes.code).toBe(0);
+	expect(yes.asked.some((q) => q.startsWith(offer))).toBe(true);
+	expect(yes.out).toContain("reuse on: done");
+	expect(reuseRuns).toBe(1);
+
+	const noHome = fixtureHome();
+	await run([], noHome, { answers: { [offer]: ["n"] }, reuseOn });
+	expect(reuseRuns).toBe(1);
+
+	const autoHome = fixtureHome();
+	await run(["--yes"], autoHome, { terminal: false, reuseOn });
+	expect(reuseRuns).toBe(1);
+
+	let doctorRuns = 0;
+	const failHome = fixtureHome();
+	const failed = await run([], failHome, {
+		answers: { [offer]: ["y"] },
+		reuseOn: () => ({ code: 1, out: [], err: ["reuse on: install failed"] }),
+		doctor: () => {
+			doctorRuns++;
+			return 0;
+		},
+	});
+	expect(failed.out).toContain("reuse on: install failed");
+	expect(doctorRuns).toBe(1);
 });
 
 test("every key setup can ask has a non-empty trailing comment in templates/config.yml", () => {

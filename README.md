@@ -99,6 +99,7 @@ Put your own Main-only instructions in `MAIN.md` inside `paths.agent_dir` (defau
 | **WIP safety net** (`neurastream wip`) | Hourly hidden-ref git snapshots (`refs/wip/...`) and nightly push to a verified-private backup repo. | [docs/operations.md](docs/operations.md#saving-unsaved-work-wip) |
 | **Trace forensics, metrics & self-pruning** (`traces`, `labels`, `metrics`, `incident`, `rules`) | Audits unbacked claims, suspicious actions, provider honesty, prompt bloat, and wasted calls; tracks weekly `M1`–`M5` metrics, opens incidents, and tunes noisy rules down automatically. | [docs/traces-and-metrics.md](docs/traces-and-metrics.md) |
 | **Conversation recall** (`neurastream recall`) | Append-only redacted log of owner messages and Main answers with word search and optional LLM topic segmentation. | [docs/operations.md](docs/operations.md#recall) |
+| **Reuse map** (`neurastream reuse on`, `map`, `off`, `status`) | Opt-in per-repo graphify map that the plan write gate reads, so a `## Reuse` section cites existing code or a none-to-reuse search before a plan is written. Off by default. | [docs/guards.md](docs/guards.md#review-read-and-brief-gates) |
 
 ## CLI & compatibility bins
 

@@ -12,6 +12,7 @@ import { stripBlock } from "./agents-md.ts";
 import { configFile, loadConfig, type Config } from "./config.ts";
 import { printText } from "./help.ts";
 import { indexLockPath } from "./queue/lib.ts";
+import { reuseOff } from "./reuse-map.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = resolve(HERE, "../..");
@@ -247,6 +248,19 @@ export function runUninstall(args: string[]): number {
 	if (!yes) {
 		printText("dry run: re-run with --yes to remove these");
 		return 1;
+	}
+	// Reuse map (plan 20261122_1828_reuse_map P3): uninstalling with the map on runs the off
+	// routine first (exclude lines, config); --purge passes through, so graphify-out/ goes and
+	// graphifyy is uninstalled too. A failed off stops the uninstall: the gate must not stay on
+	// while its config is being removed.
+	if (cfg.reuse_map.enabled) {
+		const off = reuseOff(args.filter((a) => a === "--purge"), { home: homedir(), env: process.env, terminal: false, ask: () => "n" });
+		for (const l of off.out) printText(l);
+		if (off.code !== 0) {
+			for (const l of off.err) printText(l);
+			printText("uninstall stopped: the reuse map could not be turned off");
+			return 1;
+		}
 	}
 	applyUninstall(cfg, plan);
 	printText(`uninstalled ${plan.targets.length} target${plan.targets.length === 1 ? "" : "s"}${purge ? " (purged)" : ""}`);

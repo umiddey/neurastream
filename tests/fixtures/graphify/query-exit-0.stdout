@@ -1,0 +1,10 @@
+Graph: graphify-out/graph.json (7 nodes) | Traversal: BFS depth=2 | Start: ['unique_loader()', 'b.py'] | 5 nodes found
+
+NODE unique_loader() [src=src/a.py loc=L1 community=1]
+NODE b.py [src=src/b.py loc=L1 community=0]
+NODE a.py [src=src/a.py loc=L1 community=1]
+NODE parse_frame() [src=src/b.py loc=L1 community=0]
+NODE parse_header() [src=src/b.py loc=L4 community=0]
+EDGE a.py --contains [EXTRACTED]--> unique_loader() at=src/a.py:L1
+EDGE b.py --contains [EXTRACTED]--> parse_frame() at=src/b.py:L1
+EDGE b.py --contains [EXTRACTED]--> parse_header() at=src/b.py:L4
