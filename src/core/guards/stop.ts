@@ -1,5 +1,6 @@
 // Prompt injection, cancel-word flagging, and keep-working stop rules.
 
+import path from "node:path";
 import type { Decision, InjectEvent, StopEvent } from "../adapter.ts";
 import { currentTier } from "../autonomy.ts";
 import type { Config } from "../config.ts";
@@ -12,6 +13,7 @@ import {
 	incidentLine,
 	isOwnerProse,
 	log,
+	mainCallsCapOn,
 	mainCallsExpired,
 	openIncidentList,
 	readStaffing,
@@ -42,6 +44,15 @@ export function flagCancel(text: string, cfg: Config): string {
 	return `\nmain-guard: ${CANCEL_TODO} Flagged: "${words}"`;
 }
 
+/** The owner prompt's Tools-and-limits card: the call cap and the open plans' deny-command blockers, three lines at most. */
+function toolsCard(cfg: Config, tier: string, plans: q.Plan[]): string[] {
+	const calls = mainCallsCapOn(cfg, tier) ? `Calls: ${cfg.guards.main_max_calls} per turn (warn at ${cfg.guards.main_warn_calls})` : "Calls: off";
+	const denies = plans.flatMap(p => p.blockers.filter(b => path.basename(b.script) === "deny-command").map(b => `${path.basename(p.file)}: ${b.args.join(" ")}`));
+	if (!denies.length) return ["Tools and limits", calls];
+	const more = denies.length > 3 ? ` | +${denies.length - 3} more` : "";
+	return ["Tools and limits", calls, `Deny-commands (open plans): ${denies.slice(0, 3).join(" | ")}${more}`];
+}
+
 /**
  * prompt/owner message: inject the queue summary, flag cancel wording, list open incidents, reset
  * Main's edit window and the stop counters (the original resets them at every user message). A
@@ -57,6 +68,7 @@ export function checkInject(e: InjectEvent, cfg: Config): Decision {
 	if (!continuation) writeWindow({ used: [], windowStart: 0, mainCalls: 0 }, cfg.paths);
 	recordOwnerMessage(e.inject, cfg);
 	let summary: string;
+	let open: q.Plan[] = [];
 	try {
 		// P4 (20261027_1305): one GET /view per team, read once and handed to the holder and the
 		// team lines, so the summary costs one request per team and never a second GET /claims.
@@ -64,6 +76,7 @@ export function checkInject(e: InjectEvent, cfg: Config): Decision {
 		summary = q.queueSummary(cfg.paths, cfg.review.agents, summaryHolder(cfg, {}, views));
 		const teamLines = teamSummaryLines(cfg, views, q.SUMMARY_CAP);
 		if (teamLines.length) summary += `\n${teamLines.join("\n")}`;
+		open = q.activePlans(cfg.paths).filter(p => !p.waiting && !q.awaitingMerge(p, cfg.paths));
 	} catch (err) {
 		summary = `Queue unreadable (${cfg.paths.queue_index}): ${err}`;
 	}
@@ -85,10 +98,11 @@ export function checkInject(e: InjectEvent, cfg: Config): Decision {
 	const unlockNote = continuation ? "" : unlockLine(cfg);
 	const mayNote = ` Main may edit Status/WAITING/Waits on/False positive lines. Test before saying "cannot".`;
 	const editLimit = continuation ? "" : `\nautonomy: ${tier} — ${tierNote}${mayNote}${unlockNote}`;
+	const card = continuation ? "" : `\n${toolsCard(cfg, tier, open).join("\n")}`;
 	return {
 		allow: true,
 		reason: "",
-		inject: `${summary}\n(main-guard: read ${cfg.paths.queue_index}; the listed plans are summarised above; work the open plans, close finished ones with queue-close.)${editLimit}${cancel}${incidentText}`,
+		inject: `${summary}\n(main-guard: read ${cfg.paths.queue_index}; the listed plans are summarised above; work the open plans, close finished ones with queue-close.)${editLimit}${card}${cancel}${incidentText}`,
 		...(continuation ? {} : { state: { callsSinceStop: 0, idleStops: 0 } }),
 	};
 }

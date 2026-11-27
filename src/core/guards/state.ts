@@ -66,6 +66,11 @@ export interface EditWindow {
 	mainCallsStart?: number;
 }
 
+/** When the edit window's `used` list clears (ms since epoch): main_window_min after windowStart. */
+export function editWindowEndMs(w: EditWindow, cfg: Config): number {
+	return w.windowStart + cfg.guards.main_window_min * 60_000;
+}
+
 // --- this Main's identity (plan 20261027_1300_multi_main P2) ---
 
 /** What `neurastream main --name` accepts and what `NEURASTREAM_MAIN_ID` may hold. */
@@ -155,6 +160,22 @@ export const MAIN_CALLS_RESET_SEC = 15 * 60;
 
 export function mainCallsExpired(w: EditWindow): boolean {
 	return w.mainCalls > 0 && nowSec() - (w.mainCallsStart ?? 0) >= MAIN_CALLS_RESET_SEC;
+}
+
+/** The edit cap per window for a tier: Infinity in tier full (no cap). */
+export function mainEditLimit(cfg: Config, tier: string): number {
+	if (tier === "full") return Infinity;
+	return tier === "strict" ? cfg.autonomy.strict_edit_limit : cfg.guards.main_edit_limit;
+}
+
+/** The per-turn call cap is on: main_max_calls set and not tier full (exempt tools are the caller's check). */
+export function mainCallsCapOn(cfg: Config, tier: string): boolean {
+	return cfg.guards.main_max_calls > 0 && tier !== "full";
+}
+
+/** When the counted calls expire, in ms since epoch (the wake arms on this clock); null when none are counted. */
+export function mainCallsResetMs(w: EditWindow): number | null {
+	return w.mainCalls > 0 ? ((w.mainCallsStart ?? 0) + MAIN_CALLS_RESET_SEC) * 1000 : null;
 }
 
 /** Main's terminal hand-back (the adapter's agent_end without willContinue): the turn is over, so

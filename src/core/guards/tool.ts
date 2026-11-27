@@ -18,10 +18,13 @@ import {
 	bypassRegExp,
 	changedProjectFiles,
 	deny,
+	editWindowEndMs,
 	log,
 	MAIN_CALLS_RESET_SEC,
 	MAIN_PLAN_FILE,
+	mainCallsCapOn,
 	mainCallsExpired,
+	mainEditLimit,
 	mainStateDir,
 	readStaffing,
 	readWindow,
@@ -320,13 +323,13 @@ function editWindow(e: ToolEvent, input: Record<string, unknown>, cfg: Config): 
 	if (!files.length) return ALLOW;
 	const tier = currentTier(cfg);
 	if (tier === "full") return ALLOW; // no cap: Main works unattended
-	const limit = tier === "strict" ? cfg.autonomy.strict_edit_limit : cfg.guards.main_edit_limit;
+	const limit = mainEditLimit(cfg, tier);
 	const limitName = tier === "strict" ? "autonomy.strict_edit_limit" : "owner limit";
 	const now = Date.now();
 	return updateWindow(cfg.paths, (w) => {
-		if (w.used.length && now - w.windowStart >= cfg.guards.main_window_min * 60_000) w.used = [];
+		if (w.used.length && now >= editWindowEndMs(w, cfg)) w.used = [];
 		if (w.used.length >= limit) {
-			const mins = Math.ceil((w.windowStart + cfg.guards.main_window_min * 60_000 - now) / 60_000);
+			const mins = Math.ceil((editWindowEndMs(w, cfg) - now) / 60_000);
 			log(cfg.paths.guard_log, `BLOCK tool=${e.tool} after ${w.used.length} edits (tier ${tier}): ${files.join(",")} rule=main.edit-window`);
 			return {
 				write: false,
@@ -385,7 +388,7 @@ function mainTool(e: ToolEvent, input: Record<string, unknown>, cfg: Config, run
 
 /** The per-turn call cap applies to this call: on, not tier full, and the tool is not exempt. */
 function mainCallApplies(e: ToolEvent, cfg: Config): boolean {
-	return cfg.guards.main_max_calls > 0 && currentTier(cfg) !== "full" && !cfg.guards.main_call_exempt_tools.includes(e.tool);
+	return mainCallsCapOn(cfg, currentTier(cfg)) && !cfg.guards.main_call_exempt_tools.includes(e.tool);
 }
 
 /** Refusal once this turn has spent main_max_calls, or null. */
