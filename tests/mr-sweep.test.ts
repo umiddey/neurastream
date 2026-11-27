@@ -152,22 +152,29 @@ test("a mention in another repo, a longer number, or a complete plan does not tr
 	expect(mentioned("!206", "feat/lost", ["see !2060 and !20"])).toBe(false);
 	expect(mentioned("!206", "feat/lost", ["MR !206: ignored (stale)"])).toBe(true);
 
-	const repoA = path.join(TMP, "split", "a");
-	const repoB = path.join(TMP, "split", "b");
-	for (const repo of [repoA, repoB]) {
-		mkdirSync(path.join(repo, "docs/plans"), { recursive: true });
-		spawnSync("git", ["init", "-q", "-b", "main"], { cwd: repo });
-		spawnSync("git", ["remote", "add", "origin", "https://gitlab.example/group/pm.git"], { cwd: repo });
-	}
-	const fileA = path.join(repoA, "docs/plans/a.md");
-	const fileB = path.join(repoB, "docs/plans/b.md");
-	writeFileSync(fileA, plan("open", "nothing"));
-	writeFileSync(fileB, plan("open", "!206 lives in the other repo"));
-	const openIndex = path.join(TMP, "split", "INDEX.md");
-	writeFileSync(openIndex, `${fileA}\n${fileB}\n`);
-	const split = mrSweep({ index: openIndex, runner: runner(GL(206, "feat/lost")) });
-	expect(split.mrs.find(m => m.repo === repoA)?.tracked).toBe(false);
-	expect(split.mrs.find(m => m.repo === repoB)?.tracked).toBe(true);
+	const split = (dir: string, originB: string) => {
+		const repoA = path.join(TMP, dir, "a");
+		const repoB = path.join(TMP, dir, "b");
+		for (const [repo, origin] of [[repoA, "https://gitlab.example/group/pm.git"], [repoB, originB]] as const) {
+			mkdirSync(path.join(repo, "docs/plans"), { recursive: true });
+			spawnSync("git", ["init", "-q", "-b", "main"], { cwd: repo });
+			spawnSync("git", ["remote", "add", "origin", origin], { cwd: repo });
+		}
+		writeFileSync(path.join(repoA, "docs/plans/a.md"), plan("open", "nothing"));
+		writeFileSync(path.join(repoB, "docs/plans/b.md"), plan("open", "!206 lives in the other repo"));
+		const openIndex = path.join(TMP, dir, "INDEX.md");
+		writeFileSync(openIndex, `${path.join(repoA, "docs/plans/a.md")}\n${path.join(repoB, "docs/plans/b.md")}\n`);
+		return { repoA, repoB, sweep: mrSweep({ index: openIndex, runner: runner(GL(206, "feat/lost")) }) };
+	};
+	const other = split("split", "https://gitlab.example/group/other.git");
+	expect(other.sweep.mrs.find(m => m.repo === other.repoA)?.tracked).toBe(false);
+	expect(other.sweep.mrs.find(m => m.repo === other.repoB)?.tracked).toBe(true);
+
+	// Two checkouts of one project (ssh vs https origin): the MR is listed once, and a plan in either checkout tracks it.
+	const same = split("same", "git@gitlab.example:group/pm.git");
+	expect(same.sweep.mrs.length).toBe(1);
+	expect(same.sweep.mrs[0]?.tracked).toBe(true);
+	expect(same.sweep.fail).toBe(false);
 
 	const { index } = plant("closed", "https://gitlab.example/group/pm.git", plan("complete", "!206 and feat/lost"));
 	const closed = mrSweep({ index, runner: runner(GL(206, "feat/lost")) });

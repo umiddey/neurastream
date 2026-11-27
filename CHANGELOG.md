@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- MR sweep: checkouts of one forge project (same origin, ssh or https) list its MRs once, and an open plan in any of them tracks the MR; before, every other checkout reported it UNTRACKED and failed `queue-check`.
+
 ## 0.3.23
 
 ### Added
