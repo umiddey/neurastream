@@ -66,6 +66,11 @@ export interface EditWindow {
 	mainCallsStart?: number;
 }
 
+/** When the edit window's `used` list clears (ms since epoch): main_window_min after windowStart. */
+export function editWindowEndMs(w: EditWindow, cfg: Config): number {
+	return w.windowStart + cfg.guards.main_window_min * 60_000;
+}
+
 // --- this Main's identity (plan 20261027_1300_multi_main P2) ---
 
 /** What `neurastream main --name` accepts and what `NEURASTREAM_MAIN_ID` may hold. */

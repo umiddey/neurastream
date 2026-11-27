@@ -18,6 +18,7 @@ import {
 	bypassRegExp,
 	changedProjectFiles,
 	deny,
+	editWindowEndMs,
 	log,
 	MAIN_CALLS_RESET_SEC,
 	MAIN_PLAN_FILE,
@@ -326,9 +327,9 @@ function editWindow(e: ToolEvent, input: Record<string, unknown>, cfg: Config): 
 	const limitName = tier === "strict" ? "autonomy.strict_edit_limit" : "owner limit";
 	const now = Date.now();
 	return updateWindow(cfg.paths, (w) => {
-		if (w.used.length && now - w.windowStart >= cfg.guards.main_window_min * 60_000) w.used = [];
+		if (w.used.length && now >= editWindowEndMs(w, cfg)) w.used = [];
 		if (w.used.length >= limit) {
-			const mins = Math.ceil((w.windowStart + cfg.guards.main_window_min * 60_000 - now) / 60_000);
+			const mins = Math.ceil((editWindowEndMs(w, cfg) - now) / 60_000);
 			log(cfg.paths.guard_log, `BLOCK tool=${e.tool} after ${w.used.length} edits (tier ${tier}): ${files.join(",")} rule=main.edit-window`);
 			return {
 				write: false,

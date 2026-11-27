@@ -47,6 +47,7 @@ import { registerChatCommands } from "./chat-commands.ts";
 import { CLAIM_BEAT_MS, deliverOwnerInbox, OWNER_INBOX_POLL_MS, ownerInboxCursorPath, ownerInboxMessage, pendingInboxRecords, pressureTick, seedInboxFloor } from "./inbox.ts";
 import { adapterLog, MAIN_ENV } from "./launch.ts";
 // Registers the plugin-command matcher into core's writeTargets (side effect).
+import { createLimitWake } from "./limit-wake.ts";
 import "./package-ops.ts";
 import { createRateLimitController, limitProbeSpawn, recordProviderOutFromRateLimit, recordProviderOutFromTask } from "./rate-limit-controller.ts";
 import { createRolloverController } from "./rollover-controller.ts";
@@ -272,6 +273,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 	const mainRules = renderBlock(cfg);
 
 	const rateLimit = createRateLimitController(pi, getCfg);
+	const limitWake = createLimitWake(pi, getCfg);
 	const rollover = createRolloverController(pi, getCfg, { doctor: opts.doctor });
 
 	// Clear the previous adapter's armed grace timer before this one overwrites the pointer (P3c).
@@ -281,6 +283,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 	activeAdapterReset = (): void => {
 		rollover.clearState();
 		rateLimit.stopTick();
+		limitWake.cancel();
 	};
 
 	let callsSinceStop = 0;
@@ -528,6 +531,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 			return content ? { message: { customType: "main-guard.rules", content, display: false } } : undefined;
 		}
 		rateLimit.onOwnerPrompt();
+		limitWake.cancel();
 		const d = checkInject({ inject: prompt, agent: "main" }, cfg);
 		callsSinceStop = d.state?.callsSinceStop ?? callsSinceStop;
 		idleStops = d.state?.idleStops ?? idleStops;
@@ -829,6 +833,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 		idleStops = d.state?.idleStops ?? idleStops;
 		if (d.allow) {
 			recordTurnAnswer(reply);
+			limitWake.arm(asCtx(ctx));
 			notifyHandback(reply, "allowed session_stop");
 			return undefined;
 		}
@@ -844,7 +849,7 @@ export function createOmpAdapter(pi: ExtensionHost, initial: Config, freshConfig
 	// posts from the event's own messages. omp also sets willContinue after a BLOCKED stop
 	// (sessionStopWillContinue) and for todo/plan-mode/rewind continuations, so a post here needs
 	// both: no blocked stop just decided (the flag), and an async job really pending. A terminal
-	// end (willContinue unset) is not a hand-back: the session_stop that follows it decides. A
+	// end (willContinue unset) is not a hand-back: session_stop runs first and has already decided. A
 	// mid-run continuation — tool calls, or a non-"stop" reason such as an auto-retry — posts
 	// nothing.
 	const onDeferredHandback = (e: unknown, ctx: unknown): void => {

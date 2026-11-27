@@ -53,7 +53,7 @@ export function recordProviderOutFromRateLimit(reply: EventReply | null, untilMs
 }
 
 /** The limit tick: one check of the open episode every 30 s (plan 20261027_1500 P3). */
-const LIMIT_TICK_MS = 30_000;
+export const LIMIT_TICK_MS = 30_000;
 
 /** The probe's command line and env. Never process.execPath: inside the harness that is the omp
  * binary, so the child was a full Main session (2026-11-03: stray Mains). bun comes from PATH, as
