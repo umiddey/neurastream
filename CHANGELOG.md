@@ -5,6 +5,8 @@
 ### Added
 
 - Opt-in reuse map (`neurastream reuse on|off|status|map`): a per-repo graphify map that the plan write gate reads, so a plan's `## Reuse` section must cite matching existing code or a none-to-reuse search (at least 3 terms) before the plan is written. Off by default; see `docs/guards.md`.
+- Tools-and-limits card on owner prompts: a three-line card with the per-turn call cap and the open plans' `deny-command` blockers, shown beside the queue summary; see `docs/guards.md`.
+- Limit wake: a Main that stopped on a spent call cap or edit window with open plans gets one `main-guard:` continuation at the latest reset; an owner prompt cancels it and a restart drops it; see `docs/guards.md`.
 ## 0.3.20
 ### Fixed
 - Team client outage memoization (`downUntil` in `src/core/team-client.ts`) is now keyed by `team.name + team.server` instead of `team.name` alone, so an unreachable server URL does not poison a different server URL for the same team name for 60 seconds.
