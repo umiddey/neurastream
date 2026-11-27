@@ -2,7 +2,7 @@
 
 import path from "node:path";
 import type { Decision, InjectEvent, StopEvent } from "../adapter.ts";
-import { currentTier } from "../autonomy.ts";
+import { currentPlanner, currentTier } from "../autonomy.ts";
 import type { Config } from "../config.ts";
 import { withFileLock, writeAtomicSync } from "../file-lock.ts";
 import * as q from "../queue/lib.ts";
@@ -44,9 +44,11 @@ export function flagCancel(text: string, cfg: Config): string {
 	return `\nmain-guard: ${CANCEL_TODO} Flagged: "${words}"`;
 }
 
-/** The owner prompt's Tools-and-limits card: the call cap and the open plans' deny-command blockers, three lines at most. */
+/** The owner prompt's Tools-and-limits card: the call cap, planner mode, approval gate and the open plans' deny-command blockers, three lines at most. */
 function toolsCard(cfg: Config, tier: string, plans: q.Plan[]): string[] {
-	const calls = mainCallsCapOn(cfg, tier) ? `Calls: ${cfg.guards.main_max_calls} per turn (warn at ${cfg.guards.main_warn_calls})` : "Calls: off";
+	const cap = mainCallsCapOn(cfg, tier) ? `Calls: ${cfg.guards.main_max_calls} per turn (warn at ${cfg.guards.main_warn_calls})` : "Calls: off";
+	const approval = cfg.approval.since ? `plans stamped >= ${cfg.approval.since} need page + approve` : "off";
+	const calls = `${cap} | planner: ${currentPlanner(cfg)} | approval: ${approval}`;
 	const denies = plans.flatMap(p => p.blockers.filter(b => path.basename(b.script) === "deny-command").map(b => `${path.basename(p.file)}: ${b.args.join(" ")}`));
 	if (!denies.length) return ["Tools and limits", calls];
 	const more = denies.length > 3 ? ` | +${denies.length - 3} more` : "";
