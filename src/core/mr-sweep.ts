@@ -279,17 +279,33 @@ export function mrSweep(opts: SweepOpts = {}): SweepResult {
 	const mrs: SweepMr[] = [];
 	let missingCli = false;
 	let fail = false;
+	// Checkouts of one forge project share an origin: list its MRs once, and let a plan in any
+	// of those checkouts track them.
+	const urlOf = new Map<string, string>();
+	for (const repo of repos) {
+		if (!gitTop(repo)) continue;
+		const remote = cmd(["git", "-C", repo, "remote", "get-url", "origin"], { env: opts.env });
+		const url = remote.code === 0 ? remote.stdout.trim() : "";
+		if (url) urlOf.set(repo, url);
+	}
+	const keyOf = (repo: string): string | undefined => {
+		const url = urlOf.get(repo);
+		return url ? (remotePath(url) ?? url) : undefined;
+	};
+	const listedUrls = new Set<string>();
 	for (const repo of repos) {
 		if (!gitTop(repo)) {
 			lines.push(skip(repo, "not a git repo"));
 			continue;
 		}
-		const remote = cmd(["git", "-C", repo, "remote", "get-url", "origin"], { env: opts.env });
-		const url = remote.code === 0 ? remote.stdout.trim() : "";
+		const url = urlOf.get(repo) ?? "";
 		if (!url) {
 			lines.push(skip(repo, "no origin remote"));
 			continue;
 		}
+		const key = keyOf(repo) ?? url;
+		if (listedUrls.has(key)) continue;
+		listedUrls.add(key);
 		const host = remoteHost(url);
 		const forge = host ? forgeOf(host) : null;
 		if (!forge) {
@@ -305,7 +321,7 @@ export function mrSweep(opts: SweepOpts = {}): SweepResult {
 			lines.push(skip(repo, "forge unreachable"));
 			continue;
 		}
-		const texts = plans.filter(p => p.repo === repo && p.status === "open").map(p => p.text);
+		const texts = plans.filter(p => keyOf(p.repo) === key && p.status === "open").map(p => p.text);
 		const found = listed.items
 			.map(item => {
 				const token = forge === "gitlab" ? `!${item.number}` : `#${item.number}`;
