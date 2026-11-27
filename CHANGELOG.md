@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.25
+
+### Fixed
+
+- Tools-and-limits card: the calls line also names the planner mode and the approval gate (`approval: off`, or the stamp from which plans need a page + approve), so Main stops asking for approvals that are off.
+
 ## 0.3.24
 
 ### Fixed

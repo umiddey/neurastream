@@ -128,7 +128,7 @@ test("an owner prompt shows the call cap and the open deny-command plan", () => 
 	const out = inject("please keep going");
 	expect(card(out)).toEqual([
 		"Tools and limits",
-		"Calls: 3 per turn (warn at 2)",
+		"Calls: 3 per turn (warn at 2) | planner: main | approval: off",
 		"Deny-commands (open plans): plan-a.md: rm-rf",
 	]);
 });
@@ -142,7 +142,7 @@ test("the card is at most three lines when four plans carry deny-commands", () =
 
 test("no open deny-command plan means no deny line", () => {
 	writeIndex([]);
-	expect(card(inject("please keep going"))).toEqual(["Tools and limits", "Calls: 3 per turn (warn at 2)"]);
+	expect(card(inject("please keep going"))).toEqual(["Tools and limits", "Calls: 3 per turn (warn at 2) | planner: main | approval: off"]);
 });
 
 test("a main-guard continuation gets no card", () => {
@@ -153,7 +153,7 @@ test("a main-guard continuation gets no card", () => {
 test("tier full prints the call cap as off", () => {
 	loadCfg("autonomy:\n  tier: full\nguards:\n  main_warn_calls: 2\n  main_max_calls: 3\n");
 	writeIndex([]);
-	expect(card(inject("please keep going"))).toEqual(["Tools and limits", "Calls: off"]);
+	expect(card(inject("please keep going"))).toEqual(["Tools and limits", "Calls: off | planner: main | approval: off"]);
 });
 
 test("the card never prints the unlock path", () => {
@@ -161,4 +161,10 @@ test("the card never prints the unlock path", () => {
 	const lines = card(inject("please keep going"));
 	expect(lines.length).toBeGreaterThan(1);
 	expect(lines.join("\n")).not.toContain(cfg.paths.unlock);
+});
+
+test("the card names planner mode and the approval gate when they are set", () => {
+	loadCfg("autonomy:\n  planner: delegated\nguards:\n  main_warn_calls: 2\n  main_max_calls: 3\napproval:\n  since: \"20261120_0000\"\n");
+	writeIndex([]);
+	expect(card(inject("please keep going"))[1]).toBe("Calls: 3 per turn (warn at 2) | planner: delegated | approval: plans stamped >= 20261120_0000 need page + approve");
 });
